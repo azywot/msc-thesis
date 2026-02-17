@@ -1,0 +1,115 @@
+# GAIA Sub-Agent Mode + NO Thinking
+# Demonstrates: Sub-agents for tools with NO thinking anywhere (fast)
+# Use case: Maximum speed while still using sub-agent analysis
+
+name: "gaia_subagent_no_thinking"
+description: "Sub-agent mode without thinking (fast sub-agents)"
+
+# Models configuration
+models:
+  planner:
+    name: "Qwen3-32B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"
+    role: "planner"
+
+    # Generation parameters
+    max_model_len: 32768
+    max_tokens: 8192
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+
+    # Capabilities
+    supports_thinking: true   # Model CAN think, but WON'T (NO thinking)
+    supports_vision: false
+
+    # Resource management
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.95
+    gpu_ids: [0, 1]
+
+    # Reproducibility
+    seed: 0
+
+  search:
+    name: "Qwen3-14B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-14B"
+    role: "search"
+
+    max_model_len: 32768
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+
+    supports_thinking: true   # Model CAN think, but WON'T (NO thinking)
+    supports_vision: false
+
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.95
+    gpu_ids: [2]
+
+    seed: 0
+
+  coding:
+    name: "Qwen3-14B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-14B"
+    role: "coding"
+
+    max_model_len: 32768
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+
+    supports_thinking: true   # Model CAN think, but WON'T (NO thinking)
+    supports_vision: false
+
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.95
+    gpu_ids: [3]
+
+    seed: 0
+
+# Tool configuration
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+  direct_tool_call: false  # SUB-AGENT MODE: Tools use LLMs
+  max_search_limit: 10
+  top_k_results: 10
+  max_doc_len: 3000
+
+# Dataset configuration
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: -1
+
+# Execution settings
+max_turns: 15
+seed: 0
+thinking_mode: "NO"  # No thinking anywhere (maximum speed)
+
+# Expected behavior:
+# - Prompts will show examples with "task" parameter (sub-agent mode)
+# - Orchestrator will NOT use thinking mode
+# - Web search sub-agent will analyze results WITHOUT thinking
+# - Code generation sub-agent will generate code WITHOUT thinking
+# - Fastest sub-agent configuration
+
+# Output settings
+output_dir: "./experiments/results/gaia_subagent_no_thinking"
+use_wandb: false
+wandb_project: "msc-thesis"
+
+# Caching
+cache_dir: "./cache"

@@ -1,0 +1,111 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=ExportEnv
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=00:10:00
+#SBATCH --output=out/env/export_env_%A.log
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis Environment Export"
+echo "=========================================="
+echo "Start time: $(date)"
+echo ""
+
+# Load modules
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+# Set project directory
+PROJECT_DIR="${PROJECT_DIR:-$HOME/thesis/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+
+echo "Project directory: $PROJECT_DIR"
+
+# Environment name
+ENV_NAME="${ENV_NAME:-agent_engine}"
+echo "Environment name: $ENV_NAME"
+
+# Accept Conda TOS
+echo "Accepting Conda Terms of Service..."
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
+# Create output directory
+DATE_TAG=$(date +"%Y%m%d_%H%M%S")
+OUTPUT_DIR="jobs/env_exports"
+mkdir -p "$OUTPUT_DIR"
+
+FULL_FILE="$OUTPUT_DIR/environment_full_${DATE_TAG}.yml"
+MINIMAL_FILE="$OUTPUT_DIR/environment_minimal_${DATE_TAG}.yml"
+
+echo ""
+echo "=========================================="
+echo "Exporting Full Environment"
+echo "=========================================="
+
+echo "Exporting fully-pinned environment to: $FULL_FILE"
+conda env export --name "$ENV_NAME" > "$FULL_FILE"
+
+# Remove machine-specific prefix
+echo "Removing machine-specific prefix..."
+sed -i '/^prefix:/d' "$FULL_FILE"
+
+echo "Full environment exported: $FULL_FILE"
+
+echo ""
+echo "=========================================="
+echo "Creating Minimal Environment File"
+echo "=========================================="
+
+# Create a minimal environment file with just the key packages
+echo "Creating minimal environment file: $MINIMAL_FILE"
+cat > "$MINIMAL_FILE" << 'EOF'
+name: agent_engine
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - vllm>=0.5.0
+      - transformers>=4.40.0
+      - torch>=2.0.0
+      - pyyaml>=6.0
+      - numpy>=1.24.0
+      - requests>=2.28.0
+      - pillow>=9.0.0
+      - openai>=1.0.0
+      - anthropic>=0.25.0
+      - datasets>=2.18.0
+      - wandb>=0.16.0
+      - jinja2>=3.1.0
+EOF
+
+echo "Minimal environment exported: $MINIMAL_FILE"
+
+echo ""
+echo "=========================================="
+echo "Environment Export Summary"
+echo "=========================================="
+echo "Full environment: $FULL_FILE"
+echo "Minimal environment: $MINIMAL_FILE"
+echo ""
+echo "File sizes:"
+ls -lh "$FULL_FILE" "$MINIMAL_FILE"
+
+echo ""
+echo "To recreate this environment:"
+echo "  conda env create -f $FULL_FILE -n agent_engine"
+echo "or for a fresh install:"
+echo "  conda env create -f $MINIMAL_FILE -n agent_engine"
+
+echo ""
+echo "Export completed at: $(date)"

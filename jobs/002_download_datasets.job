@@ -1,0 +1,156 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=DownloadDatasets
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=01:00:00
+#SBATCH --output=out/datasets/download_datasets_%A.log
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis Dataset Download"
+echo "=========================================="
+echo "Start time: $(date)"
+echo ""
+
+# Load modules
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+# Set project directory
+PROJECT_DIR="${PROJECT_DIR:-$HOME/thesis/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+
+echo "Project directory: $PROJECT_DIR"
+
+# Activate environment
+ENV_NAME="${ENV_NAME:-agent_engine}"
+echo "Activating environment: $ENV_NAME"
+source activate "$ENV_NAME"
+
+# Set data directory (use scratch-shared for HPC)
+DATA_DIR="${DATA_DIR:-/scratch-shared/$USER/data}"
+mkdir -p "$DATA_DIR"
+
+echo "Data directory: $DATA_DIR"
+echo ""
+
+# Load environment variables from .env if it exists
+if [ -f ".env" ]; then
+    echo "Loading environment variables from .env..."
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+    echo "Loaded .env file"
+else
+    echo "Warning: .env file not found"
+fi
+
+echo ""
+echo "=========================================="
+echo "Downloading GAIA Dataset"
+echo "=========================================="
+
+# Download GAIA dataset (all levels and splits)
+LEVELS=("level1" "level2" "level3" "all")
+SPLITS=("validation" "test")
+
+for level in "${LEVELS[@]}"; do
+    for split in "${SPLITS[@]}"; do
+        echo ""
+        echo "Downloading GAIA ${level} ${split}..."
+        python scripts/download_datasets.py \
+            --dataset gaia \
+            --level "$level" \
+            --split "$split" \
+            --output-dir "$DATA_DIR" || {
+                echo "Warning: Failed to download GAIA ${level} ${split}"
+            }
+    done
+done
+
+echo ""
+echo "=========================================="
+echo "Downloading GPQA Dataset"
+echo "=========================================="
+
+# Download GPQA variants
+VARIANTS=("diamond" "main" "extended")
+for variant in "${VARIANTS[@]}"; do
+    echo ""
+    echo "Downloading GPQA ${variant}..."
+    python scripts/download_datasets.py \
+        --dataset gpqa \
+        --variant "$variant" \
+        --output-dir "$DATA_DIR" || {
+            echo "Warning: Failed to download GPQA ${variant}"
+        }
+done
+
+echo ""
+echo "=========================================="
+echo "Downloading Math Datasets"
+echo "=========================================="
+
+# Download MATH500
+echo ""
+echo "Downloading MATH500..."
+python scripts/download_datasets.py \
+    --dataset math500 \
+    --output-dir "$DATA_DIR" || {
+        echo "Warning: Failed to download MATH500"
+    }
+
+# Download AIME
+echo ""
+echo "Downloading AIME..."
+python scripts/download_datasets.py \
+    --dataset aime \
+    --output-dir "$DATA_DIR" || {
+        echo "Warning: Failed to download AIME"
+    }
+
+# Download AMC
+echo ""
+echo "Downloading AMC..."
+python scripts/download_datasets.py \
+    --dataset amc \
+    --output-dir "$DATA_DIR" || {
+        echo "Warning: Failed to download AMC"
+    }
+
+echo ""
+echo "=========================================="
+echo "Downloading QA Datasets"
+echo "=========================================="
+
+# Download QA datasets
+QA_DATASETS=("natural_questions" "trivia_qa" "hotpot_qa" "musique" "bamboogle" "2wiki")
+for dataset in "${QA_DATASETS[@]}"; do
+    echo ""
+    echo "Downloading ${dataset}..."
+    python scripts/download_datasets.py \
+        --dataset "$dataset" \
+        --output-dir "$DATA_DIR" || {
+            echo "Warning: Failed to download ${dataset}"
+        }
+done
+
+echo ""
+echo "=========================================="
+echo "Dataset Download Summary"
+echo "=========================================="
+echo "Data directory: $DATA_DIR"
+echo ""
+echo "Checking downloaded datasets..."
+ls -lh "$DATA_DIR"
+
+echo ""
+echo "Download completed at: $(date)"
+echo ""
+echo "To use these datasets, set DATA_DIR=$DATA_DIR in your experiment configs"

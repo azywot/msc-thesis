@@ -1,0 +1,97 @@
+# GAIA Sub-Agent Mode with Shared Model Instance
+# This config demonstrates model instance reuse: the same Qwen3-32B model
+# is used for planner, search, and code generation, but only loaded once into GPU memory.
+# Thread-safe locking ensures multiple roles can safely share the instance.
+
+name: "gaia_qwen3_subagent_shared"
+description: "GAIA with sub-agent mode using a single shared Qwen3-32B instance for all roles"
+
+# Model configuration - all roles use the same model instance
+models:
+  planner:
+    name: "Qwen3-32B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"
+    role: "planner"
+    
+    # Generation parameters
+    max_model_len: 32768
+    max_tokens: 8192
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+    
+    # Capabilities
+    supports_thinking: true
+    supports_vision: false
+    
+    # Resource management
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.95
+    gpu_ids: [0, 1]  # Loaded once on GPUs 0-1
+    
+    seed: 0
+
+  search:
+    name: "Qwen3-32B (shared)"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"  # Same path = reuses planner instance
+    role: "search"
+    
+    # These params are ignored since we reuse the planner instance,
+    # but included for clarity. The model is already loaded with planner's config.
+    max_model_len: 32768
+    max_tokens: 8192
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+    supports_thinking: true
+    seed: 0
+
+  code:
+    name: "Qwen3-32B (shared)"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"  # Same path = reuses planner instance
+    role: "code"
+    
+    # These params are ignored since we reuse the planner instance
+    max_model_len: 32768
+    max_tokens: 8192
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+    supports_thinking: true
+    seed: 0
+
+# Tool configuration
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+  direct_tool_call: false  # SUB-AGENT MODE: Tools use LLMs for analysis
+  max_search_limit: 10
+  top_k_results: 10
+  max_doc_len: 3000
+
+# Dataset configuration
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: -1
+
+# Execution settings
+max_turns: 15
+seed: 0
+thinking_mode: "PLANNER_ONLY"  # Options: NO, PLANNER_ONLY, SUBAGENTS_ONLY, ALL
+
+# Output settings
+output_dir: "./experiments/results/gaia_subagent_shared"
+use_wandb: false
+wandb_project: "msc-thesis"
+
+# Caching
+cache_dir: "./cache"

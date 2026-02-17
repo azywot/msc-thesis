@@ -1,0 +1,100 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=SetupMscThesisEnv
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=00:30:00
+#SBATCH --output=out/setup/msc_thesis_env_setup_%A.log
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis Environment Setup"
+echo "=========================================="
+echo "Start time: $(date)"
+echo ""
+
+# Load modules
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+echo "Accepting Conda Terms of Service..."
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
+# Set project directory
+PROJECT_DIR="${PROJECT_DIR:-$HOME/thesis/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+
+echo "Project directory: $PROJECT_DIR"
+echo ""
+
+# Environment configuration
+ENV_NAME="${ENV_NAME:-agent_engine}"
+echo "Target environment name: $ENV_NAME"
+
+# Check if environment.yml exists, otherwise create minimal one
+if [ ! -f "environment.yml" ]; then
+    echo "No environment.yml found. Creating minimal environment..."
+
+    # Remove existing environment if present
+    if conda env list | grep -qE "^$ENV_NAME\s"; then
+        echo "Removing existing environment: $ENV_NAME"
+        conda remove -n "$ENV_NAME" --all -y
+    fi
+
+    # Create new environment with Python 3.10
+    echo "Creating conda environment: $ENV_NAME"
+    conda create -n "$ENV_NAME" python=3.10 -y
+
+    # Activate environment
+    echo "Activating environment: $ENV_NAME"
+    source activate "$ENV_NAME"
+
+    # Install package in editable mode (this will install dependencies from pyproject.toml)
+    echo "Installing msc-thesis package with dependencies..."
+    pip install -e .
+
+else
+    echo "Using environment.yml for setup..."
+
+    # Remove existing environment if present
+    if conda env list | grep -qE "^$ENV_NAME\s"; then
+        echo "Removing existing environment: $ENV_NAME"
+        conda remove -n "$ENV_NAME" --all -y
+    fi
+
+    # Create environment from file
+    echo "Creating environment from environment.yml..."
+    conda env create -f environment.yml -n "$ENV_NAME"
+
+    # Activate environment
+    echo "Activating environment: $ENV_NAME"
+    source activate "$ENV_NAME"
+fi
+
+echo ""
+echo "=========================================="
+echo "Environment Setup Complete!"
+echo "=========================================="
+echo "Environment name: $ENV_NAME"
+echo "Python path: $(which python)"
+echo "Python version: $(python --version)"
+echo ""
+
+# Verify key packages
+echo "Verifying key packages..."
+python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+python -c "import transformers; print(f'Transformers: {transformers.__version__}')"
+python -c "import vllm; print(f'vLLM: {vllm.__version__}')" || echo "Warning: vLLM not installed"
+python -c "import agent_engine; print(f'agent_engine imported successfully')"
+
+echo ""
+echo "Setup completed at: $(date)"
+echo ""
+echo "To use this environment:"
+echo "  source activate $ENV_NAME"

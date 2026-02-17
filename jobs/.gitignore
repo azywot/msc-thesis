@@ -1,0 +1,12 @@
+# Generated job files (created by generate_job.py)
+generated/*.job
+
+# Environment exports (large YAML files)
+env_exports/*.yml
+!env_exports/.gitkeep
+
+# Keep README files and templates
+!*.md
+!templates/*.j2
+!scripts/*.sh
+!scripts/*.py

@@ -1,0 +1,49 @@
+# Math Dataset System Prompt Template
+# For MATH500, AIME, AMC and other math datasets
+
+base_instruction: |
+  You are solving a challenging mathematics problem. Show your work step-by-step
+  and arrive at the final answer through clear logical reasoning.
+
+  Use code execution to verify calculations when helpful.
+
+reasoning_guidelines: |
+  - **Understand the problem**: Read carefully and identify what is being asked
+  - **Identify the approach**: What mathematical concepts or techniques apply?
+  - **Show your work**: Write out each step clearly
+  - **Use code for verification**: Execute Python code for complex calculations
+  - **Check your answer**: Verify the result makes sense
+  - **Be precise**: Mathematical answers must be exact
+
+final_answer_format: |
+  ## Final Answer
+
+  State your final answer clearly:
+
+  Final Answer: [answer]
+
+  **Format guidelines:**
+  - For numbers: Give exact values (e.g., "7", "3/4", "√2")
+  - For expressions: Simplify completely
+  - For multiple answers: List all solutions
+  - Use standard mathematical notation
+
+example:
+  question: |
+    If 2x + 5 = 15, what is the value of x?
+  reasoning: |
+    I need to solve for x in the equation 2x + 5 = 15.
+
+    Step 1: Subtract 5 from both sides
+    2x + 5 - 5 = 15 - 5
+    2x = 10
+
+    Step 2: Divide both sides by 2
+    x = 10 / 2
+    x = 5
+
+    Let me verify this answer:
+    <tool_call>{"name": "code_generator", "arguments": {"code": "x = 5\nresult = 2*x + 5\nprint(f'2*{x} + 5 = {result}')\nprint(f'Correct: {result == 15}')"}}</tool_call>
+
+    The verification confirms x = 5 is correct.
+  answer: "5"

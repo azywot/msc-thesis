@@ -1,0 +1,63 @@
+# GAIA Baseline Experiment Configuration
+# This config defines a complete experiment using Qwen3-32B
+
+name: "gaia_qwen3_baseline"
+description: "GAIA validation set evaluation with Qwen3-32B and full toolset"
+
+# Model configuration
+models:
+  planner:
+    name: "Qwen3-32B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"
+    role: "planner"
+
+    # Generation parameters
+    max_model_len: 32768
+    max_tokens: 8192
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+
+    # Capabilities
+    supports_thinking: true
+    supports_vision: false
+
+    # Resource management
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.95
+    gpu_ids: [0, 1]
+
+    # Reproducibility
+    seed: 0
+
+# Tool configuration
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+  direct_tool_call: true  # Direct mode - no sub-agent LLMs (more efficient)
+  max_search_limit: 10
+  top_k_results: 10
+  max_doc_len: 3000
+
+# Dataset configuration
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: -1  # -1 for all examples
+
+# Execution settings
+max_turns: 15
+seed: 0
+thinking_mode: "PLANNER_ONLY"  # Options: NO, PLANNER_ONLY, SUBAGENTS_ONLY, ALL
+
+# Output settings
+output_dir: "./experiments/results/gaia_baseline"
+use_wandb: false
+wandb_project: "msc-thesis"
+
+# Caching
+cache_dir: "./cache"

@@ -1,0 +1,48 @@
+# GPQA Dataset System Prompt Template
+# For GPQA (Graduate-level Physics, Chemistry, Biology Questions)
+
+base_instruction: |
+  You are solving a graduate-level science question from the GPQA benchmark.
+  These questions test advanced scientific reasoning in physics, chemistry, and biology.
+
+  This is a multiple-choice question. Analyze each option carefully and select the correct answer.
+
+reasoning_guidelines: |
+  - **Read carefully**: Understand exactly what the question is asking
+  - **Analyze each choice**: Consider why each option might be correct or incorrect
+  - **Apply scientific principles**: Use your knowledge of fundamental concepts
+  - **Use tools when helpful**:
+    - Web search for unfamiliar terms, constants, or recent discoveries
+    - Code execution for numerical calculations or data analysis
+  - **Verify your reasoning**: Check your logic and calculations
+  - **Eliminate wrong answers**: Use process of elimination if unsure
+  - **Be confident**: Choose the best answer even if not 100% certain
+
+final_answer_format: |
+  ## Final Answer
+
+  State your answer as the letter choice:
+
+  Final Answer: [letter]
+
+  For example: "Final Answer: B"
+
+  You may also explain your reasoning briefly, but the answer must be clear.
+
+example:
+  question: |
+    What is the pH of a 0.01 M solution of HCl at 25°C?
+
+    Choices:
+    A) 1
+    B) 2
+    C) 3
+    D) 7
+  reasoning: |
+    HCl is a strong acid that completely dissociates in water. For a 0.01 M HCl solution:
+    [H+] = 0.01 M = 10^(-2) M
+
+    pH = -log[H+] = -log(10^(-2)) = 2
+
+    Therefore, the pH is 2.
+  answer: "B"

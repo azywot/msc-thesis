@@ -1,0 +1,55 @@
+# GAIA Direct Mode Configuration
+# Tools execute directly without sub-agent LLMs
+
+name: "gaia_direct_mode"
+description: "GAIA with direct tool execution (no sub-agents)"
+
+# Single model - only orchestrator needed
+models:
+  planner:
+    name: "Qwen3-32B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"
+    role: "planner"
+    max_tokens: 8192
+    temperature: 0.7
+    top_p: 0.8
+    supports_thinking: true
+    tensor_parallel_size: 2
+    gpu_ids: [0, 1]
+    seed: 0
+
+# Tool configuration
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+    - image_inspector
+  direct_tool_call: true  # Direct mode (no sub-agent LLMs)
+  max_search_limit: 10
+  top_k_results: 10
+  max_doc_len: 3000
+
+# Dataset
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "/scratch-shared/azywot/data"
+  subset_num: -1
+
+# Execution settings
+max_turns: 15
+seed: 0
+
+# Thinking mode: PLANNER_ONLY since no sub-agents
+# Options: NO, PLANNER_ONLY, SUBAGENTS_ONLY, ALL
+thinking_mode: "PLANNER_ONLY"
+
+# Output
+output_dir: "./experiments/results/gaia_direct_mode"
+use_wandb: true
+wandb_project: "msc-thesis"
+
+# Caching
+cache_dir: "./cache"
