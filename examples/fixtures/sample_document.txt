@@ -1,0 +1,70 @@
+ANNUAL REPORT — GREENLEAF RENEWABLE ENERGY COOPERATIVE
+Fiscal Year 2023
+
+EXECUTIVE SUMMARY
+-----------------
+Greenleaf Renewable Energy Cooperative (GREC) concluded fiscal year 2023 with its strongest
+financial performance to date.  Total revenue reached €42.7 million, representing a 17 %
+year-on-year increase driven by higher average electricity prices and an expanded installed
+capacity base.
+
+OPERATIONAL HIGHLIGHTS
+-----------------------
+Installed capacity (end of year) : 318 MW
+  - Wind farms              : 194 MW  (12 sites across northern Europe)
+  - Solar photovoltaic      : 101 MW  (7 utility-scale parks)
+  - Run-of-river hydro      :  23 MW  (3 stations in the Alps)
+
+Total energy generated in 2023   : 741 GWh
+  - Wind                    : 498 GWh
+  - Solar                   : 187 GWh
+  - Hydro                   :  56 GWh
+
+Average capacity factor           : 26.6 %
+  - Wind                    : 29.3 %
+  - Solar                   : 21.1 %
+  - Hydro                   : 27.8 %
+
+CO₂ emissions avoided             : 327,240 tonnes
+  (based on a grid emission factor of 441 g CO₂/kWh for the relevant mix)
+
+FINANCIAL SUMMARY (€ millions)
+--------------------------------
+Revenue                    :  42.7
+Operating costs            :  24.1
+EBITDA                     :  18.6  (margin: 43.6 %)
+Depreciation & amortisation:   7.3
+EBIT                       :  11.3
+Interest & financing costs :   2.8
+Net profit before tax      :   8.5
+Corporate tax (28 %)       :   2.4
+Net profit after tax       :   6.1
+
+Total assets               :  189.4
+Total equity               :   87.2
+Net debt                   :   64.0
+Gearing ratio              :  42.4 %
+
+MEMBERSHIP AND GOVERNANCE
+--------------------------
+Number of member co-operatives : 47  (up from 41 in FY 2022)
+Total individual members       : 12,340
+Board of Directors             : 9 elected members, 2 independent advisors
+Annual General Meeting         : 18 March 2024, Brussels
+
+STRATEGY AND OUTLOOK
+---------------------
+GREC aims to reach 500 MW of installed capacity by end of 2026 through a pipeline of
+approved projects totalling 182 MW:
+  - Nordsee V offshore wind extension  (68 MW, expected commissioning Q3 2025)
+  - Iberia Solar Portfolio III         (74 MW, expected commissioning Q1 2026)
+  - Rhône Hydro upgrade                (40 MW, expected commissioning Q4 2025)
+
+The cooperative will also pilot a 10 MWh battery storage facility alongside the
+Iberia Solar Portfolio III project, exploring hybrid dispatchable generation.
+
+CONTACT
+--------
+Greenleaf Renewable Energy Cooperative
+Rue de la Loi 12, 1000 Brussels, Belgium
+info@grec-energy.eu  |  +32 2 555 0100

@@ -8,6 +8,7 @@ Supports two modes:
 2. Sub-agent mode: Uses an LLM to analyze and summarize search results
 """
 
+import json
 from typing import Any, Dict, List, Optional
 
 from ..core.tool import BaseTool, ToolResult
@@ -216,48 +217,98 @@ class WebSearchTool(BaseTool):
         return output
 
     def build_analysis_prompt(self, query: str, formatted_results: str) -> str:
-        """Build the sub-agent LLM prompt for search-result analysis.
+        """Build the sub-agent prompt for web-page analysis.
 
-        This is used by both single and batched sub-agent execution.
+        Kept intentionally close to the legacy multi-agent-tools prompt shape so
+        sub-agent mode behaves similarly across repositories.
         """
-        prompt_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful assistant that analyzes web search results and provides "
-                    "concise, accurate summaries."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Query: {query}\n\nSearch Results:\n{formatted_results}\n\n"
-                    "Please analyze these search results and provide a clear, concise answer to the query. "
-                    "Include relevant facts and cite sources when possible."
-                ),
-            },
-        ]
+        prev_reasoning = ""
+        instruction = f"""**Task Instruction:**
+
+You are tasked with reading and analyzing web pages based on the following inputs: **Previous Reasoning Steps**, **Current Search Query**, and **Searched Web Pages**. Your objective is to extract relevant and helpful information for **Current Search Query** from the **Searched Web Pages** and seamlessly integrate this information into the **Previous Reasoning Steps** to continue reasoning for the original question.
+
+**Guidelines:**
+
+1. **Analyze the Searched Web Pages:**
+- Carefully review the content of each searched web page.
+- Identify factual information that is relevant to the **Current Search Query** and can aid in the reasoning process for the original question.
+
+2. **Extract Relevant Information:**
+- Select the information from the Searched Web Pages that directly contributes to advancing the **Previous Reasoning Steps**.
+- Ensure that the extracted information is accurate and relevant.
+
+3. **Output Format:**
+- **If the web pages provide helpful information for current search query:** Present the information beginning with `**Final Information**` as shown below.
+**Final Information**
+
+[Helpful information]
+
+- **If the web pages do not provide any helpful information for current search query:** Output the following text.
+
+**Final Information**
+
+No helpful information found.
+
+**Inputs:**
+- **Previous Reasoning Steps:**  
+{prev_reasoning}
+
+- **Current Search Query:**  
+{query}
+
+- **Searched Web Pages:**  
+{formatted_results}
+
+Now you should analyze each web page and find helpful information based on the current search query "{query}" and previous reasoning steps.
+"""
+
+        prompt_messages = [{"role": "user", "content": instruction}]
         return self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
 
     def search_and_format(self, query: str) -> Dict[str, Any]:
-        """Run Serper search, populate url_cache, and return raw + formatted results.
+        """Run Serper search and return a batch-friendly payload.
 
-        Used for batch processing pipelines that need both the raw results and the
-        formatted string. URL fetching is handled via _fetch_missing_urls so this
-        method stays consistent with execute().
+        This is used by the batched orchestrator path:
+        - Returns raw Serper results (cache-compatible)
+        - Returns a list of uncached URLs and their snippets for batch URL fetching
+        - Does NOT fetch URLs (that is done in a single batch across jobs)
         """
-        results = self.serper_rm.forward(query)
-        self._fetch_missing_urls(results)
-        formatted_results = self._format_results(results, query)
-        urls_fetched = [r.get('url', '') for r in results if r.get('url') in self.url_cache]
+        cached = False
+        if query in self.search_cache:
+            results = self.search_cache[query]
+            cached = True
+        else:
+            results = self.serper_rm.forward(query, exclude_urls=[])
+            self.search_cache[query] = results
+
+        urls_to_fetch: List[str] = []
+        url_snippets: Dict[str, str] = {}
+        for r in (results or [])[: self.top_k]:
+            url = (r.get("url", "") or "").strip()
+            if not url:
+                continue
+            snippet = ""
+            if r.get("snippets"):
+                snippet = (r.get("snippets") or [""])[0] or ""
+            if not snippet:
+                snippet = r.get("description", "") or ""
+            snippet = snippet.replace("<b>", "").replace("</b>", "")
+
+            # Collect uncached URLs only (legacy behavior).
+            if url not in self.url_cache:
+                urls_to_fetch.append(url)
+                url_snippets[url] = snippet
+
         return {
             "results": results,
-            "formatted_results": formatted_results,
-            "urls_fetched": urls_fetched,
+            "urls_to_fetch": urls_to_fetch,
+            "url_snippets": url_snippets,
+            "cached": cached,
+            "query": query,
         }
 
     def _format_results(self, results: list, query: str) -> str:
-        """Format raw Serper results into an LLM-readable string.
+        """Format raw Serper results into a legacy-compatible document string.
 
         Pure formatting — reads url_cache but never fetches. Call
         _fetch_missing_urls() first if fresh page content is needed.
@@ -267,32 +318,36 @@ class WebSearchTool(BaseTool):
             query: Original search query
 
         Returns:
-            Formatted string with search results
+            A document string similar to multi-agent-tools' `to_doc()` output:
+            repeated blocks of "**Web Page i:**" followed by JSON.
         """
         if not results:
             return f"No results found for query: {query}"
 
-        output_lines = [f"Search results for: {query}\n"]
+        formatted_documents = ""
+        for i, doc_info in enumerate(results[: self.top_k]):
+            url = (doc_info.get("url", "") or "").strip()
+            raw_context = self.url_cache.get(url, "") if (self.fetch_urls and url) else ""
 
-        for idx, result in enumerate(results[:self.top_k], 1):
-            title = result.get('title', 'No title')
-            url = result.get('url', '')
-            snippet = result.get('snippets', [''])[0] if result.get('snippets') else ''
+            snippet = ""
+            if doc_info.get("snippets"):
+                snippet = (doc_info.get("snippets") or [""])[0] or ""
+            if not snippet:
+                snippet = doc_info.get("description", "") or ""
+            snippet = snippet.replace("<b>", "").replace("</b>", "")
 
-            output_lines.append(f"\n[{idx}] {title}")
-            output_lines.append(f"URL: {url}")
+            success, filtered_context = extract_snippet_with_context(raw_context, snippet, context_chars=self.max_doc_len)
+            context = filtered_context if success else (raw_context[: self.max_doc_len * 2] if raw_context else "")
 
-            if self.fetch_urls and url in self.url_cache:
-                full_content = self.url_cache[url]
-                success, context = extract_snippet_with_context(full_content, snippet, self.max_doc_len)
-                label = "Content (with context)" if success else "Content"
-                output_lines.append(f"{label}: {context[:self.max_doc_len]}")
-            elif snippet:
-                if len(snippet) > self.max_doc_len:
-                    snippet = snippet[:self.max_doc_len] + "..."
-                output_lines.append(f"Snippet: {snippet}")
+            # Mutate in-place so search_cache persists the enriched structure
+            # (matches legacy cache shape which includes `snippet` and `context`).
+            doc_info["snippet"] = snippet
+            doc_info["context"] = context
 
-        return "\n".join(output_lines)
+            formatted_documents += f"**Web Page {i + 1}:**\n"
+            formatted_documents += json.dumps(doc_info, ensure_ascii=False, indent=2) + "\n"
+
+        return formatted_documents.strip()
 
     def validate_args(self, **kwargs) -> bool:
         """Validate search arguments.

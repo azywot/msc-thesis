@@ -1,0 +1,127 @@
+# GAIA Sub-Agent Mode Configuration (Qwen3-4B for all roles, including VLM)
+
+name: "gaia_qwen3_subagent"
+description: "GAIA with sub-agent mode using Qwen3-4B for planner and tool agents (text + vision)"
+
+# Models configuration - reuse Qwen3-4B across roles
+models:
+  planner:
+    name: "Qwen3-4B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-4B"
+    role: "planner"
+
+    # Generation parameters
+    max_model_len: 32768
+    max_tokens: 8192
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+
+    # Capabilities
+    supports_thinking: true
+
+    seed: 0
+
+  search:
+    name: "Qwen3-4B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-4B"
+    role: "search"
+
+    max_model_len: 32768
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+
+    supports_thinking: true
+
+    seed: 0
+
+  coding:
+    name: "Qwen3-4B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-4B"
+    role: "coding"
+
+    max_model_len: 32768
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+
+    supports_thinking: true
+
+    seed: 0
+
+  text_inspector:
+    name: "Qwen3-4B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-4B"
+    role: "text_inspector"
+
+    max_model_len: 32768
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+
+    supports_thinking: true
+
+    seed: 0
+
+  image_inspector:
+    name: "Qwen3-4B (VLM)"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-4B"
+    role: "image_inspector"
+
+    max_model_len: 32768
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+
+    supports_thinking: true
+
+    seed: 0
+
+# Tool configuration
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+    - image_inspector
+    - mind_map
+  direct_tool_call: false  # SUB-AGENT MODE: Tools use LLMs for analysis
+  max_search_limit: 10
+  top_k_results: 10
+  max_doc_len: 3000
+
+# Dataset configuration
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: 5  # -1 for all examples
+
+# Execution settings
+max_turns: 15
+seed: 0
+thinking_mode: "ALL"  # Both planner and sub-agents can use thinking
+
+# Output settings
+output_dir: "./experiments/results/gaia_qwen3_subagent"
+use_wandb: false
+wandb_project: "msc-thesis"
+
+# Caching
+cache_dir: "./cache"
+

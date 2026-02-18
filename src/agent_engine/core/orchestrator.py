@@ -229,20 +229,25 @@ class AgenticOrchestrator:
                     if tool and tool_name == "web_search" and getattr(tool, "direct_mode", True) is False:
                         args = tool_call.get("arguments", {}) or {}
                         query = args.get("query", "")
-                        if query and hasattr(tool, "build_analysis_prompt") and hasattr(tool, "search_cache"):
-                            # Cache hit: execute immediately.
-                            if query in tool.search_cache:
+                        if query and hasattr(tool, "build_analysis_prompt") and hasattr(tool, "search_and_format"):
+                            # Keep raw Serper results in `search_cache`.
+                            # Cache analyzed summaries separately so we don't corrupt the cache format.
+                            analysis_cache = getattr(tool, "_analysis_cache", None)
+                            if analysis_cache is None:
+                                analysis_cache = {}
+                                setattr(tool, "_analysis_cache", analysis_cache)
+
+                            if query in analysis_cache:
                                 tr = ToolResult(
                                     success=True,
-                                    output=tool.search_cache[query],
+                                    output=analysis_cache[query],
                                     metadata={"cached": True, "query": query, "mode": "sub-agent"},
                                 )
                                 immediate_tool_results.append((s, tool_call, tr))
                             else:
-                                # Run Serper + collect URLs (don't fetch yet).
+                                # Run Serper (or reuse cached raw results) and collect URLs (don't fetch yet).
                                 try:
                                     payload = tool.search_and_format(query)
-                                    # Don't generate prompt yet - we'll do that after URL fetching
                                     web_jobs.append((s, tool_call, tool, query, payload))
                                 except Exception as exc:
                                     tr = ToolResult(success=False, output="", metadata={"query": query}, error=str(exc))
@@ -325,7 +330,7 @@ class AgenticOrchestrator:
                     payload = job[4]
                     # Regenerate formatted_results with fetched content (URLs are now in cache)
                     results = payload.get("results", [])
-                    formatted_results = tool._format_results(results, query, fetch_now=False, urls_to_fetch=None)
+                    formatted_results = tool._format_results(results, query)
                     prompt = tool.build_analysis_prompt(query, formatted_results)
                     provider_id = id(getattr(tool, "model_provider", None))
                     groups.setdefault(provider_id, []).append((job[0], job[1], tool, query, prompt))
@@ -340,9 +345,13 @@ class AgenticOrchestrator:
                         # Strip thinking tags if use_thinking is enabled
                         if getattr(tool, "use_thinking", False):
                             text = strip_thinking_tags(text)
-                        # Cache and return
+                        # Cache analyzed summaries separately.
                         try:
-                            tool.search_cache[query] = text
+                            analysis_cache = getattr(tool, "_analysis_cache", None)
+                            if analysis_cache is None:
+                                analysis_cache = {}
+                                setattr(tool, "_analysis_cache", analysis_cache)
+                            analysis_cache[query] = text
                         except Exception:
                             pass
                         tr = ToolResult(
