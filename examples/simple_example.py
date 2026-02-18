@@ -8,7 +8,10 @@ This script shows how to:
 5. Run agentic reasoning on a question
 """
 
+import argparse
+import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 # Add src to path
@@ -24,7 +27,26 @@ from agent_engine.tools import WebSearchTool, CodeGeneratorTool
 
 def main():
     """Run a simple example."""
-    # Setup logging
+    parser = argparse.ArgumentParser(description="Run agent_engine simple example")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=str(Path(__file__).parent.parent / "experiments/configs/gaia/baseline.yaml"),
+        help="Path to config YAML (default: experiments/configs/gaia/baseline.yaml)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory override (default: config.output_dir)",
+    )
+    args = parser.parse_args()
+
+    def _save_json(path: Path, obj):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2, ensure_ascii=False)
+
+    # Basic console logging until we know output_dir.
     logger = setup_logging()
     logger.info("Starting simple example")
 
@@ -32,9 +54,21 @@ def main():
     set_seed(0)
 
     # Load configuration
-    config_path = Path(__file__).parent.parent / "experiments/configs/gaia/baseline.yaml"
+    config_path = Path(args.config)
     logger.info(f"Loading config from: {config_path}")
     config = load_experiment_config(config_path)
+
+    # Resolve output directory early (to match scripts/run_experiment.py behavior)
+    output_dir = Path(args.output_dir) if args.output_dir else config.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reconfigure logging to also write to file (same as experiments)
+    logger = setup_logging(log_file=output_dir / "experiment.log")
+    logger.info("=" * 80)
+    logger.info(f"Starting simple example: {datetime.now()}")
+    logger.info("=" * 80)
+    logger.info(f"Config: {config_path}")
+    logger.info(f"Output dir: {output_dir}")
 
     # Initialize model
     logger.info(f"Initializing model: {config.get_model('planner').name}")
@@ -89,12 +123,43 @@ When you have the final answer, state it clearly."""
     logger.info(f"Question: {question}")
 
     # Run agentic reasoning
+    orchestrator = None
     try:
+        orchestrator = AgenticOrchestrator(
+            model_provider=model,
+            tool_registry=tools,
+            max_turns=config.max_turns,
+            tool_limits={'web_search': config.tools.max_search_limit}
+        )
+
         state = orchestrator.run(
             question=question,
             question_id=0,
             system_prompt=system_prompt
         )
+
+        # Persist outputs in the same directory/shape as experiments
+        _save_json(output_dir / "state.json", state.to_dict())
+
+        output_text = "\n".join(
+            (msg.get("content") or "")
+            for msg in state.messages
+            if msg.get("role") in ("assistant", "tool") and (msg.get("content") or "")
+        ).strip()
+
+        results = [{
+            "question_id": state.question_id,
+            "question": state.question,
+            "prediction": state.answer,
+            "ground_truth": None,
+            "correct": None,
+            "evaluation": {},
+            "output_text": output_text,
+            "turns": state.turn,
+            "tool_counts": state.tool_counts,
+            "metadata": state.metadata,
+        }]
+        _save_json(output_dir / "results.json", results)
 
         # Display results
         logger.info("\n" + "="*80)
@@ -107,6 +172,9 @@ When you have the final answer, state it clearly."""
         logger.info(f"Tool calls: {len(state.tool_calls)}")
         logger.info(f"Tool usage: {state.tool_counts}")
         logger.info("="*80)
+        logger.info(f"Saved: {output_dir / 'experiment.log'}")
+        logger.info(f"Saved: {output_dir / 'results.json'}")
+        logger.info(f"Saved: {output_dir / 'state.json'}")
 
         # Show conversation history
         logger.info("\nConversation History:")
@@ -121,7 +189,8 @@ When you have the final answer, state it clearly."""
     finally:
         # Cleanup
         logger.info("Cleaning up resources")
-        orchestrator.cleanup()
+        if orchestrator is not None:
+            orchestrator.cleanup()
 
 
 if __name__ == "__main__":

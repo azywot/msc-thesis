@@ -15,6 +15,30 @@ fi
 
 CONFIG_FILE="$1"
 
+# Ensure we use the intended conda env Python (avoid user-site ~/.local packages)
+PROJECT_DIR="${PROJECT_DIR:-$HOME/thesis/msc-thesis}"
+ENV_NAME="${ENV_NAME:-agent_engine}"
+
+# If we're not in a Slurm job already, load the same modules we use in job scripts.
+# (On many HPC systems, `module` is available on login nodes too; if not, these are no-ops.)
+if command -v module >/dev/null 2>&1; then
+    module purge || true
+    module load 2025 || true
+    module load Miniconda3/25.5.1-1 || true
+    module load CUDA/12.8.0 || true
+fi
+
+cd "$PROJECT_DIR" || exit 1
+
+# Activate conda env if conda is available
+if command -v conda >/dev/null 2>&1; then
+    # shellcheck disable=SC1091
+    source activate "$ENV_NAME" || true
+fi
+
+# Prevent Python from importing ~/.local site-packages (common source of mismatched torch/numpy)
+export PYTHONNOUSERSITE=1
+
 # Check if config file exists
 if [ ! -f "$CONFIG_FILE" ]; then
     echo "Error: Config file not found: $CONFIG_FILE"

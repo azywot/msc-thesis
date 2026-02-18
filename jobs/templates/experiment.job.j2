@@ -28,10 +28,14 @@ source activate {{ conda_env }}
 
 # Set reproducibility
 export PYTHONHASHSEED={{ seed }}
+export PYTHONNOUSERSITE=1
 
 # Set API keys (loaded from environment or .env file)
 if [ -f ".env" ]; then
-    export $(cat .env | xargs)
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
 fi
 
 # Run experiment

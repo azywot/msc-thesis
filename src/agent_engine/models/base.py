@@ -44,10 +44,12 @@ class ModelConfig:
 
     # Capabilities (explicit, not inferred)
     supports_thinking: bool = False
-    supports_vision: bool = False
 
     # Resource management
-    tensor_parallel_size: int = 1
+    # tensor_parallel_size: resolved automatically when None
+    #   - if gpu_ids is set → len(gpu_ids)
+    #   - otherwise         → all visible CUDA devices
+    tensor_parallel_size: Optional[int] = None
     gpu_memory_utilization: float = 0.95
     gpu_ids: Optional[List[int]] = None
 

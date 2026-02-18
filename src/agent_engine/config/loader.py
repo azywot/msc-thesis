@@ -133,7 +133,7 @@ def _config_to_dict(config: ExperimentConfig) -> Dict[str, Any]:
 
     # Add models
     for role, model_config in config.models.items():
-        data["models"][role] = {
+        model_dict = {
             "name": model_config.name,
             "family": model_config.family.value,
             "path_or_id": model_config.path_or_id,
@@ -145,13 +145,16 @@ def _config_to_dict(config: ExperimentConfig) -> Dict[str, Any]:
             "top_k": model_config.top_k,
             "repetition_penalty": model_config.repetition_penalty,
             "supports_thinking": model_config.supports_thinking,
-            "supports_vision": model_config.supports_vision,
-            "tensor_parallel_size": model_config.tensor_parallel_size,
-            "gpu_memory_utilization": model_config.gpu_memory_utilization,
             "seed": model_config.seed,
         }
-        if model_config.gpu_ids:
-            data["models"][role]["gpu_ids"] = model_config.gpu_ids
+        # Only persist resource fields when they carry non-default information.
+        if model_config.gpu_ids is not None:
+            model_dict["gpu_ids"] = model_config.gpu_ids
+        if model_config.tensor_parallel_size is not None:
+            model_dict["tensor_parallel_size"] = model_config.tensor_parallel_size
+        if model_config.gpu_memory_utilization != 0.95:
+            model_dict["gpu_memory_utilization"] = model_config.gpu_memory_utilization
+        data["models"][role] = model_dict
 
     # Add dataset if present
     if config.dataset:

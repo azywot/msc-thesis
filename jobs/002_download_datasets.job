@@ -10,7 +10,7 @@
 set -euo pipefail
 
 echo "=========================================="
-echo "MSC Thesis Dataset Download"
+echo "Datasets Download"
 echo "=========================================="
 echo "Start time: $(date)"
 echo ""
@@ -33,8 +33,9 @@ ENV_NAME="${ENV_NAME:-agent_engine}"
 echo "Activating environment: $ENV_NAME"
 source activate "$ENV_NAME"
 
+DATA_DIR="./data"
 # Set data directory (use scratch-shared for HPC)
-DATA_DIR="${DATA_DIR:-/scratch-shared/$USER/data}"
+# DATA_DIR="${DATA_DIR:-/scratch-shared/$USER/data}"
 mkdir -p "$DATA_DIR"
 
 echo "Data directory: $DATA_DIR"
@@ -73,6 +74,22 @@ for level in "${LEVELS[@]}"; do
             }
     done
 done
+
+echo ""
+echo "=========================================="
+echo "Downloading HLE Dataset"
+echo "=========================================="
+
+echo ""
+echo "Downloading HLE test..."
+python scripts/download_datasets.py \
+    --dataset hle \
+    --split test \
+    --subset 200 \
+    --extract-images \
+    --output-dir "$DATA_DIR" || {
+        echo "Warning: Failed to download HLE test"
+    }
 
 echo ""
 echo "=========================================="
@@ -129,17 +146,18 @@ echo "=========================================="
 echo "Downloading QA Datasets"
 echo "=========================================="
 
-# Download QA datasets
-QA_DATASETS=("natural_questions" "trivia_qa" "hotpot_qa" "musique" "bamboogle" "2wiki")
-for dataset in "${QA_DATASETS[@]}"; do
-    echo ""
-    echo "Downloading ${dataset}..."
-    python scripts/download_datasets.py \
-        --dataset "$dataset" \
-        --output-dir "$DATA_DIR" || {
-            echo "Warning: Failed to download ${dataset}"
-        }
-done
+# # FOR NOW, WE ARE NOT DOWNLOADING QA DATASETS
+# # Download QA datasets
+# QA_DATASETS=("natural_questions" "trivia_qa" "hotpot_qa" "musique" "bamboogle" "2wiki")
+# for dataset in "${QA_DATASETS[@]}"; do
+#     echo ""
+#     echo "Downloading ${dataset}..."
+#     python scripts/download_datasets.py \
+#         --dataset "$dataset" \
+#         --output-dir "$DATA_DIR" || {
+#             echo "Warning: Failed to download ${dataset}"
+#         }
+# done
 
 echo ""
 echo "=========================================="

@@ -9,9 +9,10 @@ import json
 import os
 import sys
 import time
+import logging
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from collections import defaultdict
 
 # Add src to path
@@ -32,6 +33,9 @@ from agent_engine.tools import (
 from agent_engine.datasets import DatasetRegistry
 from agent_engine.prompts import PromptBuilder
 from agent_engine.caching import CacheManager
+
+
+logger = logging.getLogger(__name__)
 
 
 def setup_model_provider(model_config, api_keys: Dict[str, str], model_cache: Optional[Dict[str, Any]] = None):
@@ -107,7 +111,7 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
             tools.register(WebSearchTool(
                 serper_api_key=api_keys.get("serper"),
                 search_cache=cache_manager.search_cache,
-                url_cache=cache_manager.url_cache if hasattr(cache_manager, 'url_cache') else {},
+                url_cache=cache_manager.url_cache,
                 top_k=config.tools.top_k_results,
                 max_doc_len=config.tools.max_doc_len,
                 model_provider=search_model,
@@ -230,6 +234,16 @@ def run_experiment(args):
             logger.info(f"Initializing coding model: {config.get_model('coding').name}")
             model_providers["coding"] = setup_model_provider(config.get_model("coding"), api_keys, model_cache)
 
+        # Optional: model-backed text inspector in sub-agent mode
+        if config.has_model("text_inspector"):
+            logger.info(f"Initializing text_inspector model: {config.get_model('text_inspector').name}")
+            model_providers["text_inspector"] = setup_model_provider(config.get_model("text_inspector"), api_keys, model_cache)
+
+        # Optional: VLM model for image inspection in sub-agent mode
+        if config.has_model("image_inspector"):
+            logger.info(f"Initializing image_inspector model: {config.get_model('image_inspector').name}")
+            model_providers["image_inspector"] = setup_model_provider(config.get_model("image_inspector"), api_keys, model_cache)
+
         logger.info(f"Thinking mode: {config.thinking_mode.value}")
         logger.info(f"Planner uses thinking: {config.use_planner_thinking()}")
         logger.info(f"Sub-agents use thinking: {config.use_subagent_thinking()}")
@@ -329,12 +343,12 @@ def run_experiment(args):
             # Save intermediate results
             if (base_idx + len(batch)) % 10 == 0:
                 save_results(results, output_dir / "results_partial.json")
-                cache_manager.save()
+                cache_manager.save_caches()
 
     finally:
         # Persist whatever we have (even if interrupted)
         save_results(results, output_dir / "results.json")
-        cache_manager.save()
+        cache_manager.save_caches()
 
         # Also save legacy-format outputs + metrics (multi-agent-tools compatible)
         legacy = save_legacy_results_and_metrics(

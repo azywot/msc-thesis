@@ -17,7 +17,6 @@ msc-thesis/
 ├── pyproject.toml                 # Package + tooling config
 ├── requirements.txt               # Python deps (pip)
 ├── environment.yml                # Conda env (HPC-friendly)
-├── implementation_plan.md         # Notes/plan
 │
 ├── src/
 │   └── agent_engine/              # Main Python package

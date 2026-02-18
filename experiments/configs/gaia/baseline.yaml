@@ -1,15 +1,15 @@
 # GAIA Baseline Experiment Configuration
-# This config defines a complete experiment using Qwen3-32B
+# This config defines a complete experiment using Qwen3-4B
 
 name: "gaia_qwen3_baseline"
-description: "GAIA validation set evaluation with Qwen3-32B and full toolset"
+description: "GAIA validation set evaluation with Qwen3-4B and full toolset"
 
 # Model configuration
 models:
   planner:
-    name: "Qwen3-32B"
+    name: "Qwen3-4B"
     family: "qwen3"
-    path_or_id: "Qwen/Qwen3-32B"
+    path_or_id: "Qwen/Qwen3-4B"
     role: "planner"
 
     # Generation parameters
@@ -22,12 +22,6 @@ models:
 
     # Capabilities
     supports_thinking: true
-    supports_vision: false
-
-    # Resource management
-    tensor_parallel_size: 2
-    gpu_memory_utilization: 0.95
-    gpu_ids: [0, 1]
 
     # Reproducibility
     seed: 0
@@ -37,6 +31,8 @@ tools:
   enabled_tools:
     - web_search
     - code_generator
+    - text_inspector
+    - mind_map
   direct_tool_call: true  # Direct mode - no sub-agent LLMs (more efficient)
   max_search_limit: 10
   top_k_results: 10
@@ -47,7 +43,7 @@ dataset:
   name: "gaia"
   split: "all_validation"
   data_dir: "./data"
-  subset_num: -1  # -1 for all examples
+  subset_num: 5  # -1 for all examples
 
 # Execution settings
 max_turns: 15

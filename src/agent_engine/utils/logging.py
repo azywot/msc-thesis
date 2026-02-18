@@ -34,6 +34,7 @@ def setup_logging(
     logger = logging.getLogger('agent_engine')
     logger.setLevel(level)
     logger.handlers = []  # Clear existing handlers
+    logger.propagate = False
 
     # Console handler
     console_handler = logging.StreamHandler(sys.stdout)

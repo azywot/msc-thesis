@@ -1,112 +1,136 @@
 """Cache manager for agent_engine.
 
-This module provides a unified interface for managing different caches
-(search results, URL content, etc.).
+Thread-safe, process-safe cache for search results and fetched URL content.
+
+Key properties:
+- A single lock file (.cache.lock) serialises cross-process writes via fcntl.
+- Every write goes through an atomic temp-file + os.replace() sequence so
+  concurrent readers always see a complete, consistent JSON file.
+- save_caches() merges the current on-disk state into memory (disk ∪ memory,
+  memory wins) before persisting, so parallel workers never overwrite each
+  other's entries.
 """
 
-from pathlib import Path
-from typing import Any, Dict, Optional
-
-from .backends.file import FileCacheBackend
-from ..utils.logging import get_logger
-
-logger = get_logger(__name__)
+import fcntl
+import json
+import os
+import tempfile
+from contextlib import contextmanager
 
 
 class CacheManager:
-    """Manages multiple caches with a unified interface."""
+    def __init__(self, cache_dir: str = './cache'):
+        self.cache_dir = cache_dir
+        self.search_cache_path = os.path.join(cache_dir, 'search_cache.json')
+        self.url_cache_path = os.path.join(cache_dir, 'url_cache.json')
+        # Single lock for both files to avoid deadlocks and cross-file races.
+        self._lock_path = os.path.join(cache_dir, '.cache.lock')
+        self._initialize_cache()
 
-    def __init__(self, cache_dir: Path):
-        """Initialize cache manager.
+    def _initialize_cache(self) -> None:
+        os.makedirs(self.cache_dir, exist_ok=True)
+        # Ensure lock file exists.
+        try:
+            open(self._lock_path, 'a', encoding='utf-8').close()
+        except Exception:
+            # If we can't create the lock file, proceed without hard-failing;
+            # writes may become unsafe, but the run can continue.
+            pass
+        self.search_cache = self._load_cache(self.search_cache_path)
+        self.url_cache = self._load_cache(self.url_cache_path)
 
-        Args:
-            cache_dir: Root directory for all caches
+    def _load_cache(self, path: str) -> dict:
+        # Reading is safe even without locks thanks to atomic replace on writes,
+        # but we still prefer a shared lock if available for consistency.
+        if not os.path.exists(path):
+            return {}
+        try:
+            with self._locked(shared=True):
+                with open(path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception:
+            # If the file is temporarily unreadable/corrupt (e.g. external edit),
+            # fall back to empty cache rather than crashing the run.
+            return {}
+
+    @contextmanager
+    def _locked(self, shared: bool):
+        """Cross-process file lock on a single lock file.
+
+        - shared=True  → multiple readers allowed simultaneously
+        - shared=False → exclusive writer; blocks until all readers release
         """
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            lock_f = open(self._lock_path, 'r+', encoding='utf-8')
+        except Exception:
+            # Best-effort fallback if lock file can't be opened.
+            yield
+            return
 
-        # Create cache backends
-        self.search_backend = FileCacheBackend(cache_dir, "search_cache")
-        self.url_backend = FileCacheBackend(cache_dir, "url_cache")
+        try:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_f.close()
 
-        # Load caches
-        self.search_backend.load()
-        self.url_backend.load()
+    def _atomic_write_json(self, path: str, data: dict) -> None:
+        """Write JSON atomically: write to a temp file, then os.replace().
 
-        logger.info(f"Cache manager initialized at {cache_dir}")
-
-    @property
-    def search_cache(self) -> Dict[str, Any]:
-        """Get search cache as dict-like interface.
-
-        Returns:
-            Dictionary interface to search cache
+        Concurrent readers always see either the old or the new file, never a
+        partially-written one.
         """
-        return self._CacheDict(self.search_backend)
+        dir_name = os.path.dirname(path) or '.'
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=os.path.basename(path) + '.', suffix='.tmp', dir=dir_name
+        )
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as tmp_f:
+                json.dump(data, tmp_f, ensure_ascii=False, indent=2)
+                tmp_f.flush()
+                os.fsync(tmp_f.fileno())
+            os.replace(tmp_path, path)
+        finally:
+            # Clean up temp file if replace() didn't happen.
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
 
-    @property
-    def url_cache(self) -> Dict[str, Any]:
-        """Get URL cache as dict-like interface.
+    def save_caches(self) -> None:
+        """Persist both caches to disk.
 
-        Returns:
-            Dictionary interface to URL cache
+        Acquires an exclusive lock, re-reads the on-disk state, merges it with
+        the in-memory state (memory wins on conflicts), and atomically writes
+        both files. In-memory dicts are then updated to reflect the merged
+        state so subsequent calls remain consistent.
         """
-        return self._CacheDict(self.url_backend)
+        with self._locked(shared=False):
+            disk_search = self._load_cache_unlocked(self.search_cache_path)
+            disk_url = self._load_cache_unlocked(self.url_cache_path)
 
-    def save(self):
-        """Save all caches to disk."""
-        self.search_backend.save()
-        self.url_backend.save()
-        logger.info("All caches saved")
+            # disk ← disk ∪ memory (memory wins)
+            disk_search.update(self.search_cache)
+            disk_url.update(self.url_cache)
 
-    def clear_all(self):
-        """Clear all caches."""
-        self.search_backend.clear()
-        self.url_backend.clear()
-        logger.info("All caches cleared")
+            self._atomic_write_json(self.search_cache_path, disk_search)
+            self._atomic_write_json(self.url_cache_path, disk_url)
 
-    def get_stats(self) -> Dict[str, int]:
-        """Get cache statistics.
+            # Refresh in-memory dicts to include any concurrent writers' additions.
+            self.search_cache.clear()
+            self.search_cache.update(disk_search)
+            self.url_cache.clear()
+            self.url_cache.update(disk_url)
 
-        Returns:
-            Dictionary with cache sizes
-        """
-        return {
-            "search_cache_size": len(self.search_backend),
-            "url_cache_size": len(self.url_backend),
-        }
-
-    class _CacheDict:
-        """Dictionary-like wrapper for cache backend."""
-
-        def __init__(self, backend: FileCacheBackend):
-            self.backend = backend
-
-        def get(self, key: str, default: Any = None) -> Any:
-            """Get value from cache."""
-            value = self.backend.get(key)
-            return value if value is not None else default
-
-        def __getitem__(self, key: str) -> Any:
-            """Get value from cache."""
-            value = self.backend.get(key)
-            if value is None:
-                raise KeyError(key)
-            return value
-
-        def __setitem__(self, key: str, value: Any):
-            """Set value in cache."""
-            self.backend.set(key, value)
-
-        def __contains__(self, key: str) -> bool:
-            """Check if key exists."""
-            return self.backend.has(key)
-
-        def __len__(self) -> int:
-            """Get cache size."""
-            return len(self.backend)
-
-        def update(self, other: Dict[str, Any]):
-            """Update cache with key-value pairs from dict."""
-            for key, value in other.items():
-                self.backend.set(key, value)
+    def _load_cache_unlocked(self, path: str) -> dict:
+        """Load JSON without acquiring a lock (caller must already hold one)."""
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}

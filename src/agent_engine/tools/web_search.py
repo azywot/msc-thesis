@@ -96,6 +96,15 @@ class WebSearchTool(BaseTool):
     def execute(self, query: str) -> ToolResult:
         """Execute web search.
 
+        Flow (mirrors multi-agent-tools):
+        1. search_cache stores raw Serper result dicts (list[dict]) so cache files
+           are interchangeable between the two repos.
+        2. url_cache stores full page content keyed by URL (same as multi-agent-tools).
+        3. URL fetching is always done here, before formatting, so url_cache is
+           populated on every cache miss and any missing URLs are back-filled on hits.
+        4. _format_results is a pure formatting step — it reads url_cache but never
+           fetches.
+
         Args:
             query: Search query string
 
@@ -105,50 +114,44 @@ class WebSearchTool(BaseTool):
         """
         logger.info(f"Executing web search ({'sub-agent' if not self.direct_mode else 'direct'} mode): {query}")
 
-        # Check cache
+        # Cache hit
         if query in self.search_cache:
-            logger.info(f"Using cached search results for: {query}")
+            logger.info(f"Cache hit for: {query}")
+            cached_results = self.search_cache[query]
+            self._fetch_missing_urls(cached_results)
+            formatted = self._format_results(cached_results, query)
+            output = formatted if self.direct_mode else self._analyze_with_llm(query, formatted)
             return ToolResult(
                 success=True,
-                output=self.search_cache[query],
-                metadata={"cached": True, "query": query, "mode": "direct" if self.direct_mode else "sub-agent"}
+                output=output,
+                metadata={"cached": True, "query": query, "mode": "direct" if self.direct_mode else "sub-agent"},
             )
 
-        # Execute search
+        # Cache miss: fetch from Serper, fetch page content, then format/analyse.
         try:
             results = self.serper_rm.forward(query)
             logger.info(f"Retrieved {len(results)} search results")
 
-            # Format results
+            # Persist raw results — same structure as multi-agent-tools search_cache.
+            self.search_cache[query] = results
+
+            # Fetch full page content and populate url_cache
+            self._fetch_missing_urls(results)
+
             formatted_results = self._format_results(results, query)
 
-            # Direct mode: return formatted results
             if self.direct_mode:
-                self.search_cache[query] = formatted_results
                 return ToolResult(
                     success=True,
                     output=formatted_results,
-                    metadata={
-                        "cached": False,
-                        "num_results": len(results),
-                        "query": query,
-                        "mode": "direct"
-                    }
+                    metadata={"cached": False, "num_results": len(results), "query": query, "mode": "direct"},
                 )
 
-            # Sub-agent mode: use LLM to analyze results
             output = self._analyze_with_llm(query, formatted_results)
-            self.search_cache[query] = output
-
             return ToolResult(
                 success=True,
                 output=output,
-                metadata={
-                    "cached": False,
-                    "num_results": len(results),
-                    "query": query,
-                    "mode": "sub-agent",
-                },
+                metadata={"cached": False, "num_results": len(results), "query": query, "mode": "sub-agent"},
             )
 
         except Exception as e:
@@ -157,8 +160,40 @@ class WebSearchTool(BaseTool):
                 success=False,
                 output="",
                 metadata={"query": query},
-                error=str(e)
+                error=str(e),
             )
+
+    def _fetch_missing_urls(self, results: list) -> None:
+        """Fetch page content for any URLs not yet in url_cache.
+
+        Mirrors fetch_urls() in multi-agent-tools/scripts/tools/run_search.py:
+        collects uncached URLs, fetches them in one batch, and updates url_cache.
+        No-op when fetch_urls=False.
+
+        Args:
+            results: List of raw Serper result dicts
+        """
+        if not self.fetch_urls:
+            return
+
+        urls_to_fetch = []
+        snippets = {}
+        for result in results:
+            url = result.get('url', '')
+            if url and url not in self.url_cache:
+                urls_to_fetch.append(url)
+                snippets[url] = result.get('snippets', [''])[0] if result.get('snippets') else ''
+
+        if not urls_to_fetch:
+            return
+
+        logger.info(f"Fetching {len(urls_to_fetch)} URLs")
+        try:
+            fetched = fetch_page_content(urls_to_fetch, use_jina=self.use_jina, snippets=snippets)
+            self.url_cache.update(fetched)
+            logger.info(f"Cached {len(fetched)} URLs")
+        except Exception as e:
+            logger.error(f"URL fetch error: {e}", exc_info=True)
 
     def _analyze_with_llm(self, query: str, search_results: str) -> str:
         """Use LLM to analyze search results (sub-agent mode).
@@ -205,55 +240,37 @@ class WebSearchTool(BaseTool):
         return self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
 
     def search_and_format(self, query: str) -> Dict[str, Any]:
-        """Run Serper search and return formatted results + metadata (no LLM step)."""
+        """Run Serper search, populate url_cache, and return raw + formatted results.
+
+        Used for batch processing pipelines that need both the raw results and the
+        formatted string. URL fetching is handled via _fetch_missing_urls so this
+        method stays consistent with execute().
+        """
         results = self.serper_rm.forward(query)
-        
-        # Extract URLs that need fetching
-        urls_to_fetch = []
-        url_snippets = {}
-        for result in results:
-            url = result.get('url', '')
-            if url and url not in self.url_cache:
-                urls_to_fetch.append(url)
-                snippet = result.get('snippets', [''])[0] if result.get('snippets') else ''
-                url_snippets[url] = snippet
-        
-        formatted_results = self._format_results(results, query, fetch_now=True, urls_to_fetch=urls_to_fetch)
+        self._fetch_missing_urls(results)
+        formatted_results = self._format_results(results, query)
+        urls_fetched = [r.get('url', '') for r in results if r.get('url') in self.url_cache]
         return {
             "results": results,
             "formatted_results": formatted_results,
-            "urls_to_fetch": urls_to_fetch,
-            "url_snippets": url_snippets
+            "urls_fetched": urls_fetched,
         }
 
-    def _format_results(
-        self,
-        results: list,
-        query: str,
-        fetch_now: bool = False,
-        urls_to_fetch: Optional[List[str]] = None
-    ) -> str:
-        """Format search results for model consumption.
+    def _format_results(self, results: list, query: str) -> str:
+        """Format raw Serper results into an LLM-readable string.
+
+        Pure formatting — reads url_cache but never fetches. Call
+        _fetch_missing_urls() first if fresh page content is needed.
 
         Args:
-            results: List of search result dicts
+            results: List of raw Serper result dicts
             query: Original search query
-            fetch_now: Whether to fetch URLs immediately (non-batched mode)
-            urls_to_fetch: List of URLs that need fetching (for batched mode)
 
         Returns:
             Formatted string with search results
         """
         if not results:
             return f"No results found for query: {query}"
-
-        # Fetch URLs immediately if in non-batched mode
-        if fetch_now and self.fetch_urls and urls_to_fetch:
-            logger.info(f"Fetching {len(urls_to_fetch)} URLs immediately")
-            url_snippets = {result.get('url'): result.get('snippets', [''])[0] 
-                          if result.get('snippets') else '' for result in results}
-            fetched = fetch_page_content(urls_to_fetch, use_jina=self.use_jina, snippets=url_snippets)
-            self.url_cache.update(fetched)
 
         output_lines = [f"Search results for: {query}\n"]
 
@@ -264,20 +281,13 @@ class WebSearchTool(BaseTool):
 
             output_lines.append(f"\n[{idx}] {title}")
             output_lines.append(f"URL: {url}")
-            
-            # Use fetched content if available, otherwise use snippet
+
             if self.fetch_urls and url in self.url_cache:
                 full_content = self.url_cache[url]
-                # Extract relevant snippet with context
-                success, context = extract_snippet_with_context(
-                    full_content, snippet, self.max_doc_len
-                )
-                if success:
-                    output_lines.append(f"Content (with context): {context[:self.max_doc_len]}")
-                else:
-                    output_lines.append(f"Content: {context[:self.max_doc_len]}")
+                success, context = extract_snippet_with_context(full_content, snippet, self.max_doc_len)
+                label = "Content (with context)" if success else "Content"
+                output_lines.append(f"{label}: {context[:self.max_doc_len]}")
             elif snippet:
-                # Truncate snippet if too long
                 if len(snippet) > self.max_doc_len:
                     snippet = snippet[:self.max_doc_len] + "..."
                 output_lines.append(f"Snippet: {snippet}")

@@ -32,7 +32,7 @@ class GAIADataset(BaseDataset):
         Expected format:
         {
             "Question": "question text",
-            "Final answer": "answer",
+            "Answer": "answer",
             "Level": 1-3,
             "file_name": "optional_attachment.ext",
             "file_path": "path/to/file"
@@ -70,7 +70,7 @@ class GAIADataset(BaseDataset):
                     example = DatasetExample(
                         question_id=idx,
                         question=data['Question'],
-                        answer=data['Final answer'],
+                        answer=data['Answer'],
                         metadata={
                             'level': data.get('Level', 1),
                             'file_name': data.get('file_name', ''),
