@@ -258,8 +258,8 @@ class MindMapTool(BaseTool):
                 )
                 return self._query_with_keyword_search(query)
 
-            # Truncate if needed
-            MAX_RESULT = 5000
+            # Truncate 
+            MAX_RESULT = 2000
             if original_length > MAX_RESULT:
                 result = result[:MAX_RESULT] + "... [truncated]"
 
@@ -346,7 +346,7 @@ class MindMapTool(BaseTool):
             metadata={"operation": "write", "content_length": len(content)}
         )
 
-    def _read_entries(self, query: Optional[str], max_chars: int = 4000, top_k: int = 5) -> ToolResult:
+    def _read_entries(self, query: Optional[str], max_chars: int = 2000, top_k: int = 3) -> ToolResult:
         """Read entries from persistent text file (direct mode)."""
         mind_map_file = self._get_mind_map_file(self.current_question_id)
 

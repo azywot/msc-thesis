@@ -34,7 +34,7 @@ tools:
     - mind_map
   direct_tool_call: true  # Direct mode (no sub-agent LLMs)
   max_search_limit: 10
-  top_k_results: 10
+  top_k_results: 5
   max_doc_len: 3000
 
 # Dataset

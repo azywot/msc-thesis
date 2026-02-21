@@ -39,7 +39,7 @@ class ToolsConfig:
     enabled_tools: List[str] = field(default_factory=lambda: ["web_search", "code_generator"])
     direct_tool_call: bool = True  # True = direct execution, False = sub-agent mode
     max_search_limit: int = 10
-    top_k_results: int = 10
+    top_k_results: int = 5
     max_doc_len: int = 3000
 
 

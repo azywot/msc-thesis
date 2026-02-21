@@ -31,7 +31,7 @@ class WebSearchTool(BaseTool):
         serper_api_key: str,
         search_cache: Optional[Dict[str, str]] = None,
         url_cache: Optional[Dict[str, str]] = None,
-        top_k: int = 10,
+        top_k: int = 5,
         max_doc_len: int = 3000,
         model_provider = None,  # Optional: for sub-agent mode
         use_thinking: bool = False,  # Whether sub-agent uses thinking

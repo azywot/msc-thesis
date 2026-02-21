@@ -126,7 +126,7 @@ tools:
     - image_inspector
   direct_tool_call: false                 # Sub-agent mode (tools use their model roles)
   max_search_limit: 10                    # Planner tool budget for web_search
-  top_k_results: 10                       # Number of web results returned
+  top_k_results: 5                        # Number of web results returned
   max_doc_len: 3000                       # Per-document character cap when fetching pages
 
 # ------------------------------------------------------------------------------

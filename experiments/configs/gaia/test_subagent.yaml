@@ -114,7 +114,7 @@ tools:
     - mind_map
   direct_tool_call: false  # SUB-AGENT MODE: Tools use LLMs for analysis
   max_search_limit: 10
-  top_k_results: 10
+  top_k_results: 5
   max_doc_len: 3000
 
 # Dataset configuration
