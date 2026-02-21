@@ -190,9 +190,65 @@ def run_experiment(args):
     logger.info(f"Experiment: {config.name}")
     logger.info(f"Description: {config.description}")
 
-    # Set random seed
+    # Set random seed and log full run info for reproducibility
     set_seed(config.seed)
-    logger.info(f"Random seed: {config.seed}")
+    start_time = datetime.now().isoformat()
+
+    run_info = {
+        "seed": config.seed,
+        "start_time": start_time,
+        "config_path": str(args.config),
+        "output_dir": str(output_dir),
+        "experiment_name": config.name,
+        "description": getattr(config, "description", "") or "",
+        "dataset": {
+            "name": config.dataset.name,
+            "split": config.dataset.split,
+            "subset_num": getattr(config.dataset, "subset_num", None),
+            "data_dir": getattr(config.dataset, "data_dir", None),
+        },
+        "max_turns": getattr(config, "max_turns", None),
+        "thinking_mode": getattr(config.thinking_mode, "value", str(config.thinking_mode)) if hasattr(config, "thinking_mode") else None,
+        "tools": {
+            "enabled_tools": list(config.tools.enabled_tools),
+            "direct_tool_call": config.tools.direct_tool_call,
+            "max_search_limit": getattr(config.tools, "max_search_limit", None),
+            "top_k_results": getattr(config.tools, "top_k_results", None),
+            "max_doc_len": getattr(config.tools, "max_doc_len", None),
+        },
+        "cache_dir": str(config.cache_dir),
+        "models": {},
+    }
+    for role in ("planner", "search", "coding", "text_inspector", "image_inspector"):
+        if not config.has_model(role):
+            continue
+        m = config.get_model(role)
+        run_info["models"][role] = {
+            "name": m.name,
+            "path_or_id": m.path_or_id,
+            "role": getattr(m, "role", role),
+            "supports_thinking": getattr(m, "supports_thinking", None),
+            "max_model_len": getattr(m, "max_model_len", None),
+            "max_tokens": getattr(m, "max_tokens", None),
+            "temperature": getattr(m, "temperature", None),
+            "seed": getattr(m, "seed", None),
+        }
+
+    logger.info("Seed (reproducibility): %s", config.seed)
+    logger.info("Run info: config=%s output_dir=%s", run_info["config_path"], run_info["output_dir"])
+    logger.info("Run info: dataset=%s split=%s subset_num=%s", run_info["dataset"]["name"], run_info["dataset"]["split"], run_info["dataset"]["subset_num"])
+    logger.info("Run info: max_turns=%s thinking_mode=%s direct_tool_call=%s", run_info["max_turns"], run_info["thinking_mode"], run_info["tools"]["direct_tool_call"])
+    logger.info("Run info: enabled_tools=%s", run_info["tools"]["enabled_tools"])
+    for role, m in run_info["models"].items():
+        logger.info("Run info: model.%s name=%s path_or_id=%s supports_thinking=%s", role, m["name"], m["path_or_id"], m["supports_thinking"])
+
+    run_info_path = output_dir / "run_info.json"
+    try:
+        with open(run_info_path, "w", encoding="utf-8") as f:
+            json.dump(run_info, f, indent=2)
+        logger.info("Run info (full) saved to: %s", run_info_path)
+    except Exception as e:
+        logger.warning("Could not write run_info.json: %s", e)
 
     # Get API keys from environment
     api_keys = {
@@ -406,6 +462,7 @@ def run_experiment(args):
     logger.info(f"Total examples: {len(examples)}")
     logger.info(f"Correct: {correct_count}")
     logger.info(f"Accuracy: {accuracy:.2%}")
+    logger.info(f"Seed (reproducibility): {getattr(config, 'seed', None)}")
     logger.info(f"Results saved to: {output_dir}")
 
     # Cleanup

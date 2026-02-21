@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..models.base import BaseModelProvider
 from ..utils.logging import get_logger
-from ..utils.parsing import extract_answer, parse_qwen3_tool_call, strip_thinking_tags
+from ..utils.parsing import extract_answer, parse_qwen3_tool_call, subagent_output_for_orchestrator
 from .state import ExecutionState
 from .tool import BaseTool, ToolRegistry, ToolResult
 
@@ -341,10 +341,7 @@ class AgenticOrchestrator:
                     prompts = [j[4] for j in jobs]
                     outs = provider.generate(prompts) if provider else []
                     for (s, tool_call, tool, query, _), out in zip(jobs, outs):
-                        text = out.text
-                        # Strip thinking tags if use_thinking is enabled
-                        if getattr(tool, "use_thinking", False):
-                            text = strip_thinking_tags(text)
+                        text = subagent_output_for_orchestrator(out.text)
                         # Cache analyzed summaries separately.
                         try:
                             analysis_cache = getattr(tool, "_analysis_cache", None)
@@ -379,10 +376,7 @@ class AgenticOrchestrator:
                     for (s, tool_call, tool, _), out in zip(jobs, outs):
                         # Extract code, then execute it (per-item)
                         try:
-                            # Strip thinking tags if use_thinking is enabled
-                            text = out.text
-                            if getattr(tool, "use_thinking", False):
-                                text = strip_thinking_tags(text)
+                            text = subagent_output_for_orchestrator(out.text)
                             code = tool.extract_code_from_llm_response(text)
                             tr = tool.execute_code(code)
                         except Exception as exc:

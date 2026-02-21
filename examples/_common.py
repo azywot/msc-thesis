@@ -33,6 +33,21 @@ DEFAULT_CONFIG = (
     Path(__file__).parent.parent / "experiments/configs/gaia/test_subagent.yaml"
 )
 
+# Which model role each tool needs (None = no LLM, e.g. mind_map in sub-agent mode).
+TOOL_ROLES = {
+    "web_search": "search",
+    "code_generator": "coding",
+    "text_inspector": "text_inspector",
+    "image_inspector": "image_inspector",
+    "mind_map": None,
+}
+
+
+def roles_for_tools(enabled_tools: List[str]) -> List[str]:
+    """Return the list of model roles required for the given tools (no duplicates)."""
+    roles = [TOOL_ROLES[t] for t in enabled_tools if TOOL_ROLES.get(t) is not None]
+    return list(dict.fromkeys(roles))
+
 
 # ---------------------------------------------------------------------------
 # Model initialisation (with instance caching, same logic as run_experiment.py)
@@ -59,8 +74,20 @@ def _get_model_provider(model_config, model_cache: Dict[str, Any]):
         return provider
 
 
-def build_model_providers(config, model_cache: Optional[Dict[str, Any]] = None):
-    """Initialise all model roles defined in *config*.
+def build_model_providers(
+    config,
+    model_cache: Optional[Dict[str, Any]] = None,
+    required_roles: Optional[List[str]] = None,
+):
+    """Initialise planner and only the model roles needed for the example.
+
+    When *required_roles* is set (e.g. from roles_for_tools(enabled_tools)),
+    only the planner and those roles are loaded. This avoids loading the VLM
+    (image_inspector) for examples that do not use it, preventing OOM on a
+    single GPU.
+
+    When the only required role is image_inspector, the VLM is used as the
+    planner as well (single model load) so the example fits on one GPU.
 
     Returns:
         (planner, providers_by_role, model_cache)
@@ -69,10 +96,15 @@ def build_model_providers(config, model_cache: Optional[Dict[str, Any]] = None):
     if model_cache is None:
         model_cache = {}
 
-    planner = _get_model_provider(config.get_model("planner"), model_cache)
+    roles_to_init = (
+        required_roles
+        if required_roles is not None
+        else ["search", "coding", "text_inspector", "image_inspector"]
+    )
 
+    planner = _get_model_provider(config.get_model("planner"), model_cache)
     providers: Dict[str, Any] = {}
-    for role in ("search", "coding", "text_inspector", "image_inspector"):
+    for role in roles_to_init:
         if config.has_model(role):
             providers[role] = _get_model_provider(config.get_model(role), model_cache)
 
@@ -173,11 +205,15 @@ def build_system_prompt(config, tools: ToolRegistry, attachments=None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Result persistence
+# Result persistence and execution trace
 # ---------------------------------------------------------------------------
 
+# Max characters to log per message in execution trace (avoid huge dumps).
+_TRACE_MSG_MAX_LEN = 4000
+
+
 def save_result(output_dir: Path, state, config) -> Path:
-    """Persist state + pretty result to *output_dir*."""
+    """Persist state + pretty result to *output_dir*; also write full trace."""
     out = {
         "question": state.question,
         "answer": state.answer,
@@ -189,13 +225,42 @@ def save_result(output_dir: Path, state, config) -> Path:
     path = output_dir / "result.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
+
+    # Full execution trace (messages + tool_calls) for debugging.
+    trace_path = output_dir / "trace.json"
+    with open(trace_path, "w", encoding="utf-8") as f:
+        json.dump(state.to_dict(), f, indent=2, ensure_ascii=False)
     return path
 
 
+def log_execution_trace(logger, state):
+    """Log a readable execution trace: every message and every tool call with arguments."""
+    logger.info("")
+    logger.info("--- Execution trace (messages) ---")
+    for i, msg in enumerate(state.messages):
+        role = msg.get("role", "?")
+        content = msg.get("content", "")
+        if len(content) > _TRACE_MSG_MAX_LEN:
+            content = content[: _TRACE_MSG_MAX_LEN] + "\n... [truncated]"
+        logger.info("[%d] %s: %s", i + 1, role, content)
+    logger.info("--- Tool calls ---")
+    for j, tc in enumerate(state.tool_calls):
+        name = tc.get("name", "?")
+        args = tc.get("arguments", {}) or {}
+        args_str = json.dumps(args, indent=2, ensure_ascii=False)
+        if len(args_str) > 2000:
+            args_str = args_str[:2000] + "\n... [truncated]"
+        logger.info("Tool call #%d: %s\nArguments:\n%s", j + 1, name, args_str)
+    logger.info("--- End trace ---")
+    logger.info("")
+
+
 def print_summary(logger, state, config, result_path):
+    log_execution_trace(logger, state)
     logger.info("=" * 60)
     logger.info(f"Answer  : {state.answer}")
     logger.info(f"Turns   : {state.turn}/{config.max_turns}")
     logger.info(f"Tools   : {state.tool_counts}")
     logger.info(f"Saved   : {result_path}")
+    logger.info(f"Trace   : {result_path.parent / 'trace.json'}")
     logger.info("=" * 60)

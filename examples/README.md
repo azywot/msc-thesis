@@ -62,7 +62,8 @@ python examples/example_mind_map.py
 
 Each script saves its output under `experiments/results/examples/<tool_name>/`:
 - `result.json` — question, answer, turns used, tool call counts
-- `example.log` — full execution log
+- `trace.json` — full execution state (all messages, tool_calls) for debugging
+- `example.log` — execution log including a readable trace (every message and tool call with arguments). For the code_generator example, the log also includes the generated code and the temp file path where it was written before execution.
 
 ---
 

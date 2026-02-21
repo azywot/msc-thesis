@@ -18,7 +18,7 @@ from typing import Any, Dict, Optional
 
 from ..core.tool import BaseTool, ToolResult
 from ..utils.logging import get_logger
-from ..utils.parsing import strip_thinking_tags
+from ..utils.parsing import subagent_output_for_orchestrator
 
 logger = get_logger(__name__)
 
@@ -292,11 +292,7 @@ class TextInspectorTool(BaseTool):
         prompt = self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
         result = self.model_provider.generate([prompt])[0]
 
-        # Strip thinking tags if present
-        output = result.text
-        if self.use_thinking:
-            output = strip_thinking_tags(output)
-
+        output = subagent_output_for_orchestrator(result.text)
         return output
 
     def _read_plain_text(self, path: Path) -> str:

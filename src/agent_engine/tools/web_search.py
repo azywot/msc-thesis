@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core.tool import BaseTool, ToolResult
 from ..utils.logging import get_logger
-from ..utils.parsing import strip_thinking_tags
+from ..utils.parsing import subagent_output_for_orchestrator
 from ..external.serper import SerperRM
 from ..external.url_fetcher import fetch_page_content, extract_snippet_with_context
 
@@ -209,11 +209,7 @@ class WebSearchTool(BaseTool):
         prompt = self.build_analysis_prompt(query, search_results)
         result = self.model_provider.generate([prompt])[0]
 
-        # Strip thinking tags if present
-        output = result.text
-        if self.use_thinking:
-            output = strip_thinking_tags(output)
-
+        output = subagent_output_for_orchestrator(result.text)
         return output
 
     def build_analysis_prompt(self, query: str, formatted_results: str) -> str:

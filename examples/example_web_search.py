@@ -16,6 +16,7 @@ from _common import (
     build_system_prompt,
     build_tools,
     print_summary,
+    roles_for_tools,
     save_result,
 )
 from agent_engine.caching import CacheManager
@@ -41,8 +42,9 @@ def main():
     set_seed(config.seed)
 
     cache_manager = CacheManager(config.cache_dir)
-    planner, providers, _ = build_model_providers(config)
-    tools = build_tools(config, cache_manager, providers, enabled_tools=["web_search"])
+    enabled = ["web_search"]
+    planner, providers, _ = build_model_providers(config, required_roles=roles_for_tools(enabled))
+    tools = build_tools(config, cache_manager, providers, enabled_tools=enabled)
     system_prompt = build_system_prompt(config, tools)
     orchestrator = build_orchestrator(config, planner, tools)
 

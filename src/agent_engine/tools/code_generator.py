@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core.tool import BaseTool, ToolResult
 from ..utils.logging import get_logger
-from ..utils.parsing import strip_thinking_tags
+from ..utils.parsing import subagent_output_for_orchestrator
 
 logger = get_logger(__name__)
 
@@ -184,11 +184,7 @@ class CodeGeneratorTool(BaseTool):
         prompt = self.build_task_prompt(task)
         result = self.model_provider.generate([prompt])[0]
 
-        # Strip thinking tags if present
-        output = result.text
-        if self.use_thinking:
-            output = strip_thinking_tags(output)
-
+        output = subagent_output_for_orchestrator(result.text)
         return self.extract_code_from_llm_response(output)
 
     def execute_code(self, code: Optional[str]) -> ToolResult:
@@ -234,6 +230,11 @@ class CodeGeneratorTool(BaseTool):
                 error=f"Failed to write code: {e}",
             )
 
+        # Log for traceability (code is removed after execution)
+        logger.info("Code written to: %s", temp_file_path)
+        code_preview = code if len(code) <= 3000 else code[:3000] + "\n... [truncated]"
+        logger.info("Generated code:\n%s", code_preview)
+
         # Execute code
         try:
             process = subprocess.Popen(
@@ -253,10 +254,10 @@ class CodeGeneratorTool(BaseTool):
                 stderr = self._trim_output(stderr)
 
                 # Clean up temp file
-                try:
-                    os.remove(temp_file_path)
-                except Exception:
-                    pass
+                # try:
+                #     os.remove(temp_file_path)
+                # except Exception:
+                #     pass
 
                 if process.returncode == 0:
                     logger.info("Code executed successfully")
@@ -300,10 +301,10 @@ class CodeGeneratorTool(BaseTool):
                 except Exception:
                     pass
 
-                try:
-                    os.remove(temp_file_path)
-                except Exception:
-                    pass
+                # try:
+                #     os.remove(temp_file_path)
+                # except Exception:
+                #     pass
 
                 return ToolResult(
                     success=False,
@@ -314,10 +315,10 @@ class CodeGeneratorTool(BaseTool):
 
         except Exception as e:
             logger.error(f"Code execution error: {e}", exc_info=True)
-            try:
-                os.remove(temp_file_path)
-            except Exception:
-                pass
+            # try:
+            #     os.remove(temp_file_path)
+            # except Exception:
+            #     pass
 
             return ToolResult(
                 success=False,

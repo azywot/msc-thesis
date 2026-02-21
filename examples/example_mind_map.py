@@ -21,6 +21,7 @@ from _common import (
     build_system_prompt,
     build_tools,
     print_summary,
+    roles_for_tools,
     save_result,
 )
 from agent_engine.caching import CacheManager
@@ -29,27 +30,22 @@ from agent_engine.utils import set_seed, setup_logging
 
 OUTPUT_DIR = Path(__file__).parent.parent / "experiments/results/examples/mind_map"
 
-# A multi-step task: the model should store intermediate reasoning steps
-# in the mind map and then query it to compose the final answer.
+# The orchestrator indexes your assistant output into the mind map (GraphRAG) before
+# running any mind_map tool call. So: reason in full, then call mind_map with a query
+# to retrieve from that reasoning; use the retrieval to give the final answer next turn.
 QUESTION = (
-    "You are researching the Apollo moon-landing programme to write a short summary.\n"
-    "Follow these steps strictly:\n"
+    "Answer the following in two steps. You must use the mind_map tool.\n"
     "\n"
-    "Step 1 — Store the basic facts: use mind_map to record that Apollo 11 landed on "
-    "the Moon on 20 July 1969 with astronauts Neil Armstrong and Buzz Aldrin.\n"
+    "Step 1 — In this response: (a) Reason step by step about the Apollo 11 mission: "
+    "when it landed, who was on board, how long they stayed on the Moon, and what "
+    "Neil Armstrong said when he stepped onto the surface. (b) Then call the mind_map "
+    "tool with a natural-language query to retrieve your reasoning, e.g. query: \"key "
+    "facts and quote from Apollo 11 mission\" or \"summary of Apollo 11 landing and "
+    "Armstrong quote\". The system will index your reasoning and run your query.\n"
     "\n"
-    "Step 2 — Store the duration: use mind_map to record that Armstrong and Aldrin "
-    "spent approximately 2 hours 31 minutes on the lunar surface.\n"
-    "\n"
-    "Step 3 — Store the famous quote: use mind_map to record the exact words spoken "
-    "by Neil Armstrong upon stepping onto the Moon: "
-    "'That's one small step for man, one giant leap for mankind.'\n"
-    "\n"
-    "Step 4 — Query your mind map: use mind_map to retrieve everything you stored "
-    "about Apollo 11, then use that information to write a two-sentence summary "
-    "of the mission suitable for an encyclopaedia entry.\n"
-    "\n"
-    "Your final answer should be ONLY the two-sentence encyclopaedia summary."
+    "Step 2 — In your next response: Using only what the mind_map tool returned, "
+    "write exactly one sentence that could go in an encyclopaedia (who, when, what, "
+    "and the famous quote). Your final answer is that one sentence only."
 )
 
 
@@ -62,8 +58,9 @@ def main():
     set_seed(config.seed)
 
     cache_manager = CacheManager(config.cache_dir)
-    planner, providers, _ = build_model_providers(config)
-    tools = build_tools(config, cache_manager, providers, enabled_tools=["mind_map"])
+    enabled = ["mind_map"]
+    planner, providers, _ = build_model_providers(config, required_roles=roles_for_tools(enabled))
+    tools = build_tools(config, cache_manager, providers, enabled_tools=enabled)
     system_prompt = build_system_prompt(config, tools)
     orchestrator = build_orchestrator(config, planner, tools)
 

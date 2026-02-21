@@ -59,22 +59,57 @@ fi
 echo "SERPER_API_KEY is set"
 echo ""
 
-# Run simple example
+# Run examples (simple + per-tool sub-agent mode)
 echo "=========================================="
-echo "Running Simple Example"
+echo "Running Examples"
 echo "=========================================="
 echo ""
 
-python examples/simple_example.py
+FAILURES=()
 
-EXIT_CODE=$?
+run_example() {
+    local name="$1"
+    local cmd="$2"
+    echo "------------------------------------------"
+    echo "Running: $name"
+    echo "Command: $cmd"
+    echo "------------------------------------------"
+    # With `set -e`, wrap failures so we can continue and collect all failing examples.
+    if ! eval "$cmd"; then
+        FAILURES+=("$name")
+        echo "❌ Failed: $name"
+        echo ""
+        return 0
+    fi
+    echo "✅ Passed: $name"
+    echo ""
+}
+
+# Original (direct-mode) example
+run_example "simple_example.py" "python examples/simple_example.py"
+
+# Per-tool (sub-agent mode) examples
+run_example "example_code_generator.py" "python examples/example_code_generator.py"
+run_example "example_text_inspector.py" "python examples/example_text_inspector.py"
+run_example "example_image_inspector.py" "python examples/example_image_inspector.py"
+run_example "example_mind_map.py" "python examples/example_mind_map.py"
+run_example "example_web_search.py" "python examples/example_web_search.py"
+
+EXIT_CODE=0
+if [ ${#FAILURES[@]} -ne 0 ]; then
+    EXIT_CODE=1
+fi
 
 echo ""
 echo "=========================================="
 if [ $EXIT_CODE -eq 0 ]; then
-    echo "✅ Test PASSED"
+    echo "✅ Test PASSED (all examples)"
 else
-    echo "❌ Test FAILED (exit code: $EXIT_CODE)"
+    echo "❌ Test FAILED (some examples failed)"
+    echo "Failed examples:"
+    for ex in "${FAILURES[@]}"; do
+        echo "  - $ex"
+    done
 fi
 echo "=========================================="
 echo "End time: $(date)"

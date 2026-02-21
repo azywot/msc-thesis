@@ -103,3 +103,22 @@ def strip_thinking_tags(text: str) -> str:
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
 
+def subagent_output_for_orchestrator(text: str) -> str:
+    """Prepare sub-agent LLM output for the orchestrator: strip thinking tags.
+
+    Any sub-agent (web_search, code_generator, text_inspector, image_inspector)
+    that returns LLM-generated text to the orchestrator must use this so the
+    planner never sees <think>...</think> content. Always strips; safe to call even
+    when the model did not use thinking mode.
+
+    Args:
+        text: Raw sub-agent LLM output
+
+    Returns:
+        Text with thinking tags removed, suitable for tool_response to orchestrator
+    """
+    if not text:
+        return text
+    return strip_thinking_tags(text)
+
+
