@@ -10,7 +10,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 
 from ..models.base import BaseModelProvider
 from ..utils.logging import get_logger
-from ..utils.parsing import extract_answer, parse_qwen3_tool_call, subagent_output_for_orchestrator
+from ..utils.parsing import extract_answer, parse_qwen3_tool_call, strip_thinking_tags
 from .state import ExecutionState
 from .tool import ToolRegistry, ToolResult
 
@@ -125,7 +125,8 @@ class AgenticOrchestrator:
                 self._index_reasoning_in_mind_map(gen_result.text, tool_call["name"], state)
                 tool_result = self._execute_tool(tool_call, state)
                 state.add_message("assistant", gen_result.text)
-                state.add_message("tool", f"<tool_response>\n{tool_result.output}\n</tool_response>")
+                clean_output = strip_thinking_tags(tool_result.output or "")
+                state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
                 state.tool_calls.append(tool_call)
                 state.increment_tool_count(tool_call["name"])
                 logger.info(f"Tool '{tool_call['name']}' executed. Success: {tool_result.success}")
@@ -326,7 +327,8 @@ class AgenticOrchestrator:
     def _apply_immediate_results(self, results: List[_ImmediateResult]) -> None:
         """Commit tool responses and update usage tracking for immediate results."""
         for item in results:
-            item.state.add_message("tool", f"<tool_response>\n{item.result.output}\n</tool_response>")
+            clean_output = strip_thinking_tags(item.result.output or "")
+            item.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
             item.state.tool_calls.append(item.tool_call)
             item.state.increment_tool_count(item.tool_call["name"])
 
@@ -384,10 +386,11 @@ class AgenticOrchestrator:
         gen_outputs = provider.generate(prompts) if provider else []
 
         for job, out in zip(jobs, gen_outputs):
-            text = subagent_output_for_orchestrator(out.text)
+            text = strip_thinking_tags(out.text)
             analysis_cache[job.query] = text
             tr = ToolResult(success=True, output=text, metadata={"cached": False, "query": job.query, "mode": "sub-agent"})
-            job.state.add_message("tool", f"<tool_response>\n{tr.output}\n</tool_response>")
+            clean_output = strip_thinking_tags(tr.output or "")
+            job.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
 
@@ -412,12 +415,13 @@ class AgenticOrchestrator:
 
         for job, out in zip(jobs, gen_outputs):
             try:
-                text = subagent_output_for_orchestrator(out.text)
+                text = strip_thinking_tags(out.text)
                 code = job.tool.extract_code_from_llm_response(text)
                 tr = job.tool.execute_code(code)
             except Exception as exc:
                 tr = ToolResult(success=False, output="", metadata={}, error=str(exc))
-            job.state.add_message("tool", f"<tool_response>\n{tr.output}\n</tool_response>")
+            clean_output = strip_thinking_tags(tr.output or "")
+            job.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
 

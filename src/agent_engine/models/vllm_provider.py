@@ -191,6 +191,10 @@ class VLLMProvider(BaseModelProvider):
                 )
 
             valid_prompts.append(prompt)
+            # Pause generation after a tool call
+            stop_kwargs: Dict[str, Any] = {}
+            if self.config.role == "planner":
+                stop_kwargs = {"stop": ["</tool_call>"], "include_stop_str_in_output": True}
             params = SamplingParams(
                 max_tokens=safe_max_tokens,
                 temperature=self.config.temperature,
@@ -198,6 +202,7 @@ class VLLMProvider(BaseModelProvider):
                 top_k=self.config.top_k,
                 repetition_penalty=self.config.repetition_penalty,
                 seed=self.config.seed,
+                **stop_kwargs,
             )
             sampling_params_list.append(params)
 

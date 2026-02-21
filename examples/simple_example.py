@@ -97,15 +97,6 @@ def main():
     ))
     logger.info("Registered code_generator tool")
 
-    # Create orchestrator
-    logger.info("Creating orchestrator")
-    orchestrator = AgenticOrchestrator(
-        model_provider=model,
-        tool_registry=tools,
-        max_turns=config.max_turns,
-        tool_limits={'web_search': config.tools.max_search_limit}
-    )
-
     # Build simple system prompt
     system_prompt = """You are a helpful AI assistant with access to tools.
 
@@ -125,11 +116,13 @@ When you have the final answer, state it clearly."""
     # Run agentic reasoning
     orchestrator = None
     try:
+        logger.info("Creating orchestrator")
         orchestrator = AgenticOrchestrator(
             model_provider=model,
             tool_registry=tools,
             max_turns=config.max_turns,
-            tool_limits={'web_search': config.tools.max_search_limit}
+            tool_limits={'web_search': config.tools.max_search_limit},
+            use_thinking=config.use_planner_thinking(),
         )
 
         state = orchestrator.run(

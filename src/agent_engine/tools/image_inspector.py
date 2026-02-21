@@ -11,7 +11,7 @@ from PIL import Image
 
 from ..core.tool import BaseTool, ToolResult
 from ..utils.logging import get_logger
-from ..utils.parsing import subagent_output_for_orchestrator
+from ..utils.parsing import strip_thinking_tags
 
 logger = get_logger(__name__)
 
@@ -223,7 +223,7 @@ class ImageInspectorTool(BaseTool):
                 }
             ])[0]
 
-            output = subagent_output_for_orchestrator(result.text)
+            output = strip_thinking_tags(result.text)
             return output
 
         except Exception as e:

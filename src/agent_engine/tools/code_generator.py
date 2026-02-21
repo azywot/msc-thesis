@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core.tool import BaseTool, ToolResult
 from ..utils.logging import get_logger
-from ..utils.parsing import subagent_output_for_orchestrator
+from ..utils.parsing import strip_thinking_tags
 
 logger = get_logger(__name__)
 
@@ -180,7 +180,7 @@ class CodeGeneratorTool(BaseTool):
         prompt = self.build_task_prompt(task)
         result = self.model_provider.generate([prompt])[0]
 
-        output = subagent_output_for_orchestrator(result.text)
+        output = strip_thinking_tags(result.text)
         return self.extract_code_from_llm_response(output)
 
     def execute_code(self, code: Optional[str]) -> ToolResult:
