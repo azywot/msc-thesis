@@ -85,7 +85,7 @@ def setup_model_provider(model_config, api_keys: Dict[str, str], model_cache: Op
     return provider
 
 
-def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers: Dict[str, Any] = None) -> ToolRegistry:
+def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers: Dict[str, Any] = None, planner_model=None) -> ToolRegistry:
     """Set up tools based on configuration.
 
     Args:
@@ -129,15 +129,22 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
                 use_thinking=use_subagent_thinking
             ))
         elif tool_name == "mind_map":
-            # Mind map has different behavior in direct vs non-direct mode
-            # In non-direct mode, uses GraphRAG for intelligent retrieval
+            # Mind map has different behavior in direct vs non-direct mode.
+            # In non-direct mode, GraphRAG is used with the local model (planner or
+            # dedicated mind_map model) so no OpenAI key is needed — matching MAT.
             storage_path = str(config.cache_dir / "mind_map")
+            mind_map_model = None
+            if not direct_mode:
+                mind_map_model = (
+                    model_providers.get("mind_map") if model_providers else None
+                ) or planner_model
             tools.register(MindMapTool(
                 direct_mode=direct_mode,
                 storage_path=storage_path,
-                use_graphrag=True  # Enable GraphRAG in non-direct mode
+                use_graphrag=True,
+                model_provider=mind_map_model,
             ))
-        elif tool_name == "text_inspector":
+        elif tool_name == "inspect_text_file":
             # Get model provider for sub-agent mode (optional for text inspector)
             text_inspector_model = model_providers.get("text_inspector") if not direct_mode and model_providers else None
 
@@ -146,7 +153,7 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
                 model_provider=text_inspector_model,
                 use_thinking=use_subagent_thinking
             ))
-        elif tool_name == "image_inspector":
+        elif tool_name == "inspect_image_file":
             # Image inspector requires a VLM, so only enable in non-direct mode
             if not direct_mode:
                 # Get VLM model provider for image analysis (required)
@@ -308,7 +315,7 @@ def run_experiment(args):
 
     # Setup tools
     logger.info(f"Setting up tools: {config.tools.enabled_tools}")
-    tools = setup_tools(config, cache_manager, api_keys, model_providers)
+    tools = setup_tools(config, cache_manager, api_keys, model_providers, planner_model=planner_model)
 
     # Initialize prompt builder
     prompt_builder = PromptBuilder()
@@ -436,8 +443,8 @@ def run_experiment(args):
                     enable_search_tool=("web_search" in enabled),
                     enable_code_tool=("code_generator" in enabled),
                     mind_map=("mind_map" in enabled),
-                    enable_text_inspector_tool=("text_inspector" in enabled),
-                    enable_image_inspector_tool=("image_inspector" in enabled),
+                    enable_text_inspector_tool=("inspect_text_file" in enabled),
+                    enable_image_inspector_tool=("inspect_image_file" in enabled),
                     final_metrics=legacy.get("final_metrics") if isinstance(legacy, dict) else None,
                     tool_stats=legacy.get("tool_stats") if isinstance(legacy, dict) else None,
                     metrics_path=str(legacy.get("metrics_path")) if isinstance(legacy, dict) and legacy.get("metrics_path") else None,
@@ -577,7 +584,8 @@ def save_legacy_results_and_metrics(
             "search_total": int(tool_counts.get("web_search", 0)),
             "code_total": int(tool_counts.get("code_generator", 0)),
             "mind_map_total": int(tool_counts.get("mind_map", 0)),
-            "text_inspector_total": int(tool_counts.get("text_inspector", 0)),
+            "text_inspector_total": int(tool_counts.get("inspect_text_file", 0)),
+            "image_inspector_total": int(tool_counts.get("inspect_image_file", 0)),
         }
         if dataset_name == "gaia":
             metrics["gaia_score"] = int(correct)
@@ -638,8 +646,8 @@ def save_legacy_results_and_metrics(
             "search_total": int(tc.get("web_search", 0) or 0),
             "code_total": int(tc.get("code_generator", 0) or 0),
             "mind_map_total": int(tc.get("mind_map", 0) or 0),
-            "text_inspector_total": int(tc.get("text_inspector", 0) or 0),
-            "image_inspector_total": int(tc.get("image_inspector", 0) or 0),
+            "text_inspector_total": int(tc.get("inspect_text_file", 0) or 0),
+            "image_inspector_total": int(tc.get("inspect_image_file", 0) or 0),
         }
         tool_stats["per_question"].append(per_q)
         for k, v in per_q.items():

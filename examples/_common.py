@@ -99,7 +99,7 @@ def build_model_providers(
     roles_to_init = (
         required_roles
         if required_roles is not None
-        else ["search", "coding", "text_inspector", "image_inspector"]
+        else ["search", "coding", "text_inspector", "image_inspector"]  # model roles, not tool names
     )
 
     planner = _get_model_provider(config.get_model("planner"), model_cache)
@@ -120,6 +120,7 @@ def build_tools(
     cache_manager: CacheManager,
     model_providers: Dict[str, Any],
     enabled_tools: List[str],
+    planner_model: Optional[Any] = None,
 ) -> ToolRegistry:
     """Register exactly the tools listed in *enabled_tools* (sub-agent mode).
 
@@ -128,6 +129,7 @@ def build_tools(
         cache_manager:    Cache manager (supplies search_cache / url_cache).
         model_providers:  Role → provider dict from build_model_providers().
         enabled_tools:    Subset of tool names to register for this example.
+        planner_model:    Optional planner provider for mind_map (GraphRAG needs local model).
     """
     tools = ToolRegistry()
     use_thinking = config.use_subagent_thinking()
@@ -171,10 +173,12 @@ def build_tools(
             ))
 
         elif name == "mind_map":
+            mind_map_model = planner_model or model_providers.get("planner")
             tools.register(MindMapTool(
                 direct_mode=False,  # sub-agent mode
                 storage_path=str(config.cache_dir / "mind_map"),
                 use_graphrag=True,
+                model_provider=mind_map_model,  # local model for GraphRAG — no OpenAI key
             ))
 
     return tools

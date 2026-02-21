@@ -51,55 +51,52 @@ class ImageInspectorTool(BaseTool):
     def get_schema(self) -> Dict[str, Any]:
         """Return Qwen3 JSON Schema.
 
-        Image inspector always requires a question parameter for VLM analysis.
+        Image inspector requires only a question. The system injects local_file_path
+        from attachments (no LLM-provided path).
         """
         return {
             "type": "function",
             "function": {
                 "name": "image_inspector",
                 "description": (
-                    "Analyze an attached image file and answer a question about it. "
-                    "Supports JPG, JPEG, and PNG formats. "
-                    "Uses a vision-language model to understand and describe image content."
+                    "Inspect the attached image file for this question. "
+                    "Important: Do NOT guess or provide file paths. The system will automatically use the "
+                    "question's attached image. You MUST include a question about the image."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "Path to the image file to inspect"
-                        },
                         "question": {
                             "type": "string",
-                            "description": "Question to ask about the image. Be specific about what you want to know."
+                            "description": "Question about the attached image."
                         }
                     },
-                    "required": ["file_path", "question"]
+                    "required": ["question"]
                 }
             }
         }
 
-    def execute(self, file_path: str, question: str) -> ToolResult:
+    def execute(self, question: str, local_file_path: str) -> ToolResult:
         """Analyze image file using VLM.
 
         Args:
-            file_path: Path to image file
             question: Question about the image
+            local_file_path: Path to image file (injected by framework from attachments)
 
         Returns:
             ToolResult with VLM analysis
         """
-        logger.info(f"Inspecting image file: {file_path} with question: {question}")
+        logger.info(f"Inspecting image file: {local_file_path} with question: {question}")
 
-        path = Path(file_path)
+        path = Path(local_file_path)
 
         # Check if file exists
         if not path.exists():
             return ToolResult(
                 success=False,
                 output="",
-                metadata={"file_path": file_path},
-                error=f"File not found: {file_path}"
+                metadata={"file_path": local_file_path},
+                error=f"File not found: {local_file_path}"
             )
 
         # Check if it's a file
@@ -107,8 +104,8 @@ class ImageInspectorTool(BaseTool):
             return ToolResult(
                 success=False,
                 output="",
-                metadata={"file_path": file_path},
-                error=f"Path is not a file: {file_path}"
+                metadata={"file_path": local_file_path},
+                error=f"Path is not a file: {local_file_path}"
             )
 
         # Get file extension
@@ -119,7 +116,7 @@ class ImageInspectorTool(BaseTool):
             return ToolResult(
                 success=False,
                 output="",
-                metadata={"file_path": file_path, "file_type": file_ext},
+                metadata={"file_path": local_file_path, "file_type": file_ext},
                 error=f"Unsupported image type: {file_ext}. Supported types: {', '.join(sorted(SUPPORTED_IMAGE_EXTS))}"
             )
 
@@ -128,7 +125,7 @@ class ImageInspectorTool(BaseTool):
             return ToolResult(
                 success=False,
                 output="",
-                metadata={"file_path": file_path},
+                metadata={"file_path": local_file_path},
                 error="Question parameter is required for image inspection"
             )
 
@@ -143,7 +140,7 @@ class ImageInspectorTool(BaseTool):
                 success=True,
                 output=analysis,
                 metadata={
-                    "file_path": file_path,
+                    "file_path": local_file_path,
                     "file_name": path.name,
                     "file_type": file_ext,
                     "image_size": image.size,
@@ -157,7 +154,7 @@ class ImageInspectorTool(BaseTool):
             return ToolResult(
                 success=False,
                 output="",
-                metadata={"file_path": file_path, "file_type": file_ext},
+                metadata={"file_path": local_file_path, "file_type": file_ext},
                 error=f"Error analyzing image: {str(e)}"
             )
 
@@ -237,18 +234,14 @@ class ImageInspectorTool(BaseTool):
         """Validate arguments.
 
         Args:
-            **kwargs: Tool arguments
+            **kwargs: Tool arguments (question from LLM; local_file_path injected by orchestrator)
 
         Returns:
             True if valid
         """
-        if 'file_path' not in kwargs or 'question' not in kwargs:
+        if 'question' not in kwargs:
             return False
 
-        file_path = kwargs['file_path']
         question = kwargs['question']
 
-        return (
-            isinstance(file_path, str) and len(file_path) > 0 and
-            isinstance(question, str) and len(question.strip()) > 0
-        )
+        return isinstance(question, str) and len(question.strip()) > 0

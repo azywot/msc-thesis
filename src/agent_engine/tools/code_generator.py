@@ -73,17 +73,18 @@ class CodeGeneratorTool(BaseTool):
                 "function": {
                     "name": "code_generator",
                     "description": (
-                        "Execute Python code to perform calculations, data analysis, "
-                        "manipulations, or other computational tasks. The code runs in "
-                        "a subprocess with access to standard libraries. Returns the "
-                        "output (stdout) or error message."
+                        "Execute Python code to perform calculations, data processing, or solve computational problems. "
+                        "Provide the Python code directly; the system will execute it and return stdout/stderr."
                     ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "code": {
                                 "type": "string",
-                                "description": "Python code to execute"
+                                "description": (
+                                    "Python code to execute. It must be a standalone script and must print its output. "
+                                    "Do not include markdown fences."
+                                ),
                             }
                         },
                         "required": ["code"]
@@ -97,16 +98,15 @@ class CodeGeneratorTool(BaseTool):
                 "function": {
                     "name": "code_generator",
                     "description": (
-                        "Generate and execute Python code to accomplish a task. "
-                        "Provide a clear description of what you want the code to do, "
-                        "and the system will generate and execute appropriate Python code."
+                        "Generate and execute Python code to perform calculations, data processing, or solve computational problems. "
+                        "The code will be executed and the output will be returned."
                     ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "task": {
                                 "type": "string",
-                                "description": "Description of the task to accomplish with code"
+                                "description": "A clear description of what the code should do. Be specific about inputs, expected outputs, and any constraints."
                             }
                         },
                         "required": ["task"]
@@ -151,23 +151,19 @@ class CodeGeneratorTool(BaseTool):
 
         This is used by both single and batched sub-agent execution.
         """
-        prompt_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are an expert Python programmer. Generate clean, working Python code to "
-                    "accomplish the given task. Return ONLY the Python code, no explanations or "
-                    "markdown formatting."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Task: {task}\n\nGenerate Python code to accomplish this task. "
-                    "Return only the code, no markdown or explanations."
-                ),
-            },
-        ]
+        prompt = (
+            "You are a code generator. Generate ONLY executable Python code, with NO explanations, "
+            "NO comments about what the code does, and NO additional text.\n\n"
+            f"Context: \n\nProblem: {task}\n\n"
+            "Requirements:\n"
+            "- Output ONLY the Python code\n"
+            "- The code must be executable as a standalone script\n"
+            "- The code must print its output directly\n"
+            "- NO explanatory text before or after the code\n"
+            "- NO comments like \"Here's the code\" or \"This will output\"\n\n"
+            "Python code:"
+        )
+        prompt_messages = [{"role": "user", "content": prompt}]
         return self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
 
     def extract_code_from_llm_response(self, response_text: str) -> str:
@@ -412,14 +408,15 @@ class CodeGeneratorTool(BaseTool):
 
     def cleanup(self):
         """Clean up temporary files."""
-        try:
-            # Remove old temp files
-            if os.path.exists(self.temp_dir):
-                for file in os.listdir(self.temp_dir):
-                    if file.startswith("temp_code_"):
-                        try:
-                            os.remove(os.path.join(self.temp_dir, file))
-                        except Exception:
-                            pass
-        except Exception as e:
-            logger.warning(f"Cleanup error: {e}")
+        pass
+        # try:
+        #     # Remove old temp files
+        #     if os.path.exists(self.temp_dir):
+        #         for file in os.listdir(self.temp_dir):
+        #             if file.startswith("temp_code_"):
+        #                 try:
+        #                     os.remove(os.path.join(self.temp_dir, file))
+        #                 except Exception:
+        #                     pass
+        # except Exception as e:
+        #     logger.warning(f"Cleanup error: {e}")

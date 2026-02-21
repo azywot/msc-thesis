@@ -84,29 +84,23 @@ class TextInspectorTool(BaseTool):
         """Return Qwen3 JSON Schema.
 
         Schema differs by mode:
-        - Direct mode: Only file_path parameter (returns raw content)
-        - Non-direct mode: file_path + optional question parameter (LLM analysis)
+        - Direct mode: No parameters (framework injects local_file_path; returns raw content)
+        - Non-direct mode: Optional question parameter only (framework injects local_file_path)
         """
         if self.direct_mode:
-            # Direct mode: return raw file content only
+            # Direct mode: no parameters - return raw file content only
             return {
                 "type": "function",
                 "function": {
                     "name": "text_inspector",
                     "description": (
-                        "Read and inspect text content from attached files. "
-                        "Supports text files, CSV, JSON, Office documents (DOCX, XLSX, PPTX), "
-                        "PDF, Parquet, and code files. Returns the raw file content."
+                        "Return the raw text of the attached file for this question. "
+                        "Use this tool only to retrieve the file contents, and reason about them yourself."
                     ),
                     "parameters": {
                         "type": "object",
-                        "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to the file to inspect"
-                            }
-                        },
-                        "required": ["file_path"]
+                        "properties": {},
+                        "required": []
                     }
                 }
             }
@@ -117,50 +111,44 @@ class TextInspectorTool(BaseTool):
                 "function": {
                     "name": "text_inspector",
                     "description": (
-                        "Read and analyze text content from attached files. "
-                        "Supports text files, CSV, JSON, Office documents (DOCX, XLSX, PPTX), "
-                        "PDF, Parquet, and code files. "
-                        "You can optionally ask a question about the file content for AI-powered analysis. "
-                        "If no question is provided, returns the raw file content."
+                        "Inspect the attached plain-text file for this question. "
+                        "Important: Do NOT guess or provide file paths. The system will automatically use the "
+                        "question's attached file. Optionally ask a question about the file. If you don't have questions about the file and you only want to see the file text, don't include the question parameter."
                     ),
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to the file to inspect"
-                            },
                             "question": {
                                 "type": "string",
-                                "description": "Optional question about the file content. If provided, the AI will analyze the file and answer your question."
+                                "description": "Optional question about the attached file. If omitted, return the file text."
                             }
                         },
-                        "required": ["file_path"]
+                        "required": []
                     }
                 }
             }
 
-    def execute(self, file_path: str, question: Optional[str] = None) -> ToolResult:
+    def execute(self, local_file_path: str, question: Optional[str] = None) -> ToolResult:
         """Read text from file.
 
         Args:
-            file_path: Path to text file
+            local_file_path: Path to text file (injected by orchestrator from attachments)
             question: Optional question about the file (non-direct mode only)
 
         Returns:
             ToolResult with file content or LLM analysis
         """
-        logger.info(f"Inspecting text file: {file_path}")
+        logger.info(f"Inspecting text file: {local_file_path}")
 
-        path = Path(file_path)
+        path = Path(local_file_path)
 
         # Check if file exists
         if not path.exists():
             return ToolResult(
                 success=False,
                 output="",
-                metadata={"file_path": file_path},
-                error=f"File not found: {file_path}"
+                metadata={"file_path": local_file_path},
+                error=f"File not found: {local_file_path}"
             )
 
         # Check if it's a file (not directory)
@@ -168,8 +156,8 @@ class TextInspectorTool(BaseTool):
             return ToolResult(
                 success=False,
                 output="",
-                metadata={"file_path": file_path},
-                error=f"Path is not a file: {file_path}"
+                metadata={"file_path": local_file_path},
+                error=f"Path is not a file: {local_file_path}"
             )
 
         # Get file extension
@@ -180,7 +168,7 @@ class TextInspectorTool(BaseTool):
             return ToolResult(
                 success=False,
                 output="",
-                metadata={"file_path": file_path, "file_type": file_ext},
+                metadata={"file_path": local_file_path, "file_type": file_ext},
                 error=f"Unsupported file type: {file_ext}. Supported types: {', '.join(sorted(SUPPORTED_TEXT_EXTS))}"
             )
 
@@ -229,7 +217,7 @@ class TextInspectorTool(BaseTool):
                     success=True,
                     output=output,
                     metadata={
-                        "file_path": file_path,
+                        "file_path": local_file_path,
                         "file_name": path.name,
                         "file_size": file_size,
                         "file_type": file_ext,
@@ -245,7 +233,7 @@ class TextInspectorTool(BaseTool):
                     success=True,
                     output=analysis,
                     metadata={
-                        "file_path": file_path,
+                        "file_path": local_file_path,
                         "file_name": path.name,
                         "file_size": file_size,
                         "file_type": file_ext,
@@ -260,7 +248,7 @@ class TextInspectorTool(BaseTool):
             return ToolResult(
                 success=False,
                 output="",
-                metadata={"file_path": file_path, "file_type": file_ext},
+                metadata={"file_path": local_file_path, "file_type": file_ext},
                 error=f"Error reading file: {str(e)}"
             )
 

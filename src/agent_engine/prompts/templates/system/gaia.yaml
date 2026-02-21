@@ -1,16 +1,14 @@
-# GAIA Dataset System Prompt Template
-# Format matches multi-agent-tools/scripts/prompts.py:get_hard_question_instruction_qwen3()
+# GAIA / HLE / SingleQA Dataset System Prompt Template
+# Matches multi-agent-tools/scripts/prompts.py:get_singleqa_search_o1_instruction_qwen3()
 
 base_instruction: |
-  You are a reasoning assistant with the ability to use tools to help answer questions accurately.
+  You are a reasoning assistant with tools to help answer questions accurately.
 
 # Tool descriptions and examples are added dynamically by PromptBuilder
 
 final_instructions: |
   Remember:
-  - Call tools using the <tool_call> format shown above
-  - Wait for tool responses before continuing your reasoning
-  - Use the information from tool responses to form your final answer
+  - Use tools when you need external information or calculations
   - Provide your final answer in the format \boxed{YOUR_ANSWER}
 
 # Examples for different tool combinations (added dynamically based on enabled tools)

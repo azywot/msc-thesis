@@ -1,7 +1,7 @@
 """vLLM model provider for local inference with tensor parallelism."""
 
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from vllm import LLM, SamplingParams
 
@@ -91,8 +91,63 @@ class VLLMProvider(BaseModelProvider):
         except Exception:
             return 1
 
-    def generate(self, prompts: List[str]) -> List[GenerationResult]:
-        """Generate completions using vLLM."""
+    def generate(self, prompts: Union[List[str], List[Dict[str, Any]]]) -> List[GenerationResult]:
+        """Generate completions using vLLM. Supports text prompts and multimodal (image) prompts.
+
+        For multimodal prompts, pass a list of dicts: [{"prompt": str, "multi_modal_data": {"image": PIL.Image}}].
+        vLLM's native multimodal API is used; tokenizer.encode is skipped for image prompts.
+        """
+        # Detect multimodal inputs (VLM image analysis)
+        is_multimodal = (
+            prompts
+            and isinstance(prompts[0], dict)
+            and "prompt" in prompts[0]
+            and "multi_modal_data" in prompts[0]
+        )
+
+        if is_multimodal:
+            return self._generate_multimodal(prompts)
+
+        return self._generate_text(prompts)
+
+    def _generate_multimodal(
+        self, prompts: List[Dict[str, Any]]
+    ) -> List[GenerationResult]:
+        """Generate for VLM multimodal (image + text) inputs."""
+        safe_max_tokens = min(self.config.max_tokens, 2048)
+        sampling_params = SamplingParams(
+            max_tokens=safe_max_tokens,
+            temperature=self.config.temperature,
+            top_p=self.config.top_p,
+            top_k=self.config.top_k,
+            repetition_penalty=self.config.repetition_penalty,
+            seed=self.config.seed,
+        )
+
+        with self._lock:
+            outputs = self.llm.generate(
+                prompts,
+                sampling_params=sampling_params,
+            )
+
+        results = []
+        for output in outputs:
+            results.append(
+                GenerationResult(
+                    text=output.outputs[0].text,
+                    finish_reason=output.outputs[0].finish_reason,
+                    usage={
+                        "prompt_tokens": len(output.prompt_token_ids),
+                        "completion_tokens": len(output.outputs[0].token_ids),
+                        "total_tokens": len(output.prompt_token_ids) + len(output.outputs[0].token_ids),
+                    },
+                    metadata={"model": self.config.name, "role": self.config.role},
+                )
+            )
+        return results
+
+    def _generate_text(self, prompts: List[str]) -> List[GenerationResult]:
+        """Generate for text-only prompts."""
         try:
             if hasattr(self.llm, 'llm_engine') and hasattr(self.llm.llm_engine, 'model_config'):
                 max_model_len = self.llm.llm_engine.model_config.max_model_len
@@ -111,7 +166,6 @@ class VLLMProvider(BaseModelProvider):
                 max_model_len,
             )
 
-        # Per-prompt max_tokens so we stay within context length
         sampling_params_list = []
         valid_prompts = []
         for idx, prompt in enumerate(prompts):
@@ -127,7 +181,7 @@ class VLLMProvider(BaseModelProvider):
                 )
                 target_length = max_model_len - 1024
                 tokens = self.tokenizer.encode(prompt, add_special_tokens=False)
-                truncated_tokens = tokens[-target_length:]  # keep tail (better for chat)
+                truncated_tokens = tokens[-target_length:]
                 prompt = self.tokenizer.decode(truncated_tokens)
                 safe_max_tokens = 1024
                 logger.info(
@@ -135,9 +189,8 @@ class VLLMProvider(BaseModelProvider):
                     idx + 1,
                     len(truncated_tokens),
                 )
-            
+
             valid_prompts.append(prompt)
-            
             params = SamplingParams(
                 max_tokens=safe_max_tokens,
                 temperature=self.config.temperature,

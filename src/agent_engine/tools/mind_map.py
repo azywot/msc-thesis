@@ -6,6 +6,7 @@ for memory and context management across turns.
 
 import os
 import re
+import signal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,27 +40,42 @@ class MindMapTool(BaseTool):
     - Non-direct mode (sub-agent): Query-only interface with GraphRAG support
     """
 
-    def __init__(self, max_entries: int = 50, direct_mode: bool = True, storage_path: Optional[str] = None,
-                 use_graphrag: bool = True):
+    def __init__(
+        self,
+        max_entries: int = 50,
+        direct_mode: bool = True,
+        storage_path: Optional[str] = None,
+        use_graphrag: bool = True,
+        model_provider: Optional[Any] = None,
+    ):
         """Initialize mind map tool.
 
         Args:
             max_entries: Maximum number of entries to maintain
             direct_mode: If True, use persistent text files with op-based interface.
                         If False, use query-only interface with GraphRAG.
-            storage_path: Base path for storing mind map files
+            storage_path: Base path for storing mind map files.
+                          Per-question dirs are created as ``<storage_path>/question_<id>``,
+                          matching the multi-agent-tools naming convention.
             use_graphrag: Whether to use GraphRAG in non-direct mode (requires nano_graphrag)
+            model_provider: BaseModelProvider used for GraphRAG entity extraction.
+                            Should be the planner (or a dedicated mind_map) model.
+                            If None, nano_graphrag falls back to its default (OpenAI).
         """
         self.max_entries = max_entries
         self.direct_mode = direct_mode
         self.storage_path = storage_path or "./mind_map_storage"
         self.use_graphrag = use_graphrag and not direct_mode and GRAPHRAG_AVAILABLE
+        self.model_provider = model_provider
         self.entries: Dict[str, list] = {}  # question_id -> list of entries (in-memory/fallback mode)
         self.current_question_id: Optional[int] = None
         self.graphrag_instances: Dict[int, Any] = {}  # question_id -> GraphRAG instance
 
         if self.use_graphrag:
-            logger.info("Mind map initialized with GraphRAG support")
+            if model_provider is not None:
+                logger.info("Mind map initialized with GraphRAG + local model provider")
+            else:
+                logger.warning("Mind map GraphRAG enabled but no model_provider given — will attempt OpenAI fallback")
         elif not direct_mode and not GRAPHRAG_AVAILABLE:
             logger.warning("GraphRAG not available - falling back to simple keyword search")
 
@@ -115,17 +131,13 @@ class MindMapTool(BaseTool):
                 "type": "function",
                 "function": {
                     "name": "mind_map",
-                    "description": (
-                        "Query your reasoning memory (mind map) to recall information "
-                        "from earlier in your thought process. Useful for long "
-                        "conversations to remember key facts, calculations, or decisions."
-                    ),
+                    "description": "Query the reasoning memory to retrieve relevant information from your previous thoughts and reasoning steps. Use this to recall context, avoid repetition, or build on previous conclusions.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "What information are you looking for?"
+                                "description": "The query to search for in your reasoning memory. Ask specific questions about what you've reasoned about before."
                             }
                         },
                         "required": ["query"]
@@ -205,34 +217,60 @@ class MindMapTool(BaseTool):
         return self._query_with_keyword_search(query)
 
     def _query_with_graphrag(self, query: str) -> ToolResult:
-        """Query using GraphRAG."""
-        # Get or create GraphRAG instance for this question
+        """Query using GraphRAG with timeout and length validation (mirrors MAT safe_mind_map_query)."""
+        # Get or create GraphRAG instance for this question.
+        # Working dir matches MAT: <storage_path>/question_<id> (no nested graphrag/ subdir)
         if self.current_question_id not in self.graphrag_instances:
-            working_dir = Path(self.storage_path) / f"question_{self.current_question_id}" / "graphrag"
+            working_dir = Path(self.storage_path) / f"question_{self.current_question_id}"
             self.graphrag_instances[self.current_question_id] = MindMapGraphRAG(
-                working_dir=str(working_dir)
+                working_dir=str(working_dir),
+                model_provider=self.model_provider,
             )
 
         graph = self.graphrag_instances[self.current_question_id]
 
         try:
-            result = graph.graph_retrieval(query)
+
+            def _timeout_handler(signum, frame):
+                raise TimeoutError("Mind map query timed out")
+
+            if hasattr(signal, "SIGALRM"):
+                signal.signal(signal.SIGALRM, _timeout_handler)
+                signal.alarm(30)
+
+            try:
+                result = graph.graph_retrieval(query)
+            finally:
+                if hasattr(signal, "SIGALRM"):
+                    signal.alarm(0)
+
+            if result is None:
+                return self._query_with_keyword_search(query)
+
+            result = str(result).strip()
+            original_length = len(result)
+
+            # Reject suspiciously large results (likely raw graph data, not a summary)
+            MAX_ACCEPTABLE = 5000
+            if original_length > MAX_ACCEPTABLE:
+                logger.warning(
+                    f"GraphRAG result too long ({original_length} chars), falling back to keyword search"
+                )
+                return self._query_with_keyword_search(query)
+
+            # Truncate if needed
+            MAX_RESULT = 2000
+            if original_length > MAX_RESULT:
+                result = result[:MAX_RESULT] + "... [truncated]"
+
             return ToolResult(
                 success=True,
                 output=result,
-                metadata={
-                    "query": query,
-                    "mode": "graphrag"
-                }
+                metadata={"query": query, "mode": "graphrag"},
             )
         except Exception as e:
             logger.error(f"GraphRAG query failed: {e}", exc_info=True)
-            return ToolResult(
-                success=False,
-                output="",
-                metadata={"query": query},
-                error=f"GraphRAG query failed: {str(e)}"
-            )
+            return self._query_with_keyword_search(query)
 
     def _query_with_keyword_search(self, query: str) -> ToolResult:
         """Query using simple keyword search (fallback)."""
@@ -462,9 +500,10 @@ class MindMapTool(BaseTool):
         # Add to GraphRAG if enabled
         if self.use_graphrag:
             if question_id not in self.graphrag_instances:
-                working_dir = Path(self.storage_path) / f"question_{question_id}" / "graphrag"
+                working_dir = Path(self.storage_path) / f"question_{question_id}"
                 self.graphrag_instances[question_id] = MindMapGraphRAG(
-                    working_dir=str(working_dir)
+                    working_dir=str(working_dir),
+                    model_provider=self.model_provider,
                 )
 
             try:

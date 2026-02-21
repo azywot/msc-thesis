@@ -1,48 +1,79 @@
 # GPQA Dataset System Prompt Template
-# For GPQA (Graduate-level Physics, Chemistry, Biology Questions)
+# Matches multi-agent-tools/scripts/prompts.py:get_hard_question_instruction_qwen3()
 
 base_instruction: |
-  You are solving a graduate-level science question from the GPQA benchmark.
-  These questions test advanced scientific reasoning in physics, chemistry, and biology.
+  You are a reasoning assistant with the ability to use tools to help answer questions accurately.
 
-  This is a multiple-choice question. Analyze each option carefully and select the correct answer.
+# Tool descriptions and examples are added dynamically by PromptBuilder
 
-reasoning_guidelines: |
-  - **Read carefully**: Understand exactly what the question is asking
-  - **Analyze each choice**: Consider why each option might be correct or incorrect
-  - **Apply scientific principles**: Use your knowledge of fundamental concepts
-  - **Use tools when helpful**:
-    - Web search for unfamiliar terms, constants, or recent discoveries
-    - Code execution for numerical calculations or data analysis
-  - **Verify your reasoning**: Check your logic and calculations
-  - **Eliminate wrong answers**: Use process of elimination if unsure
-  - **Be confident**: Choose the best answer even if not 100% certain
+final_instructions: |
+  Remember:
+  - Call tools using the <tool_call> format shown above
+  - Wait for tool responses before continuing your reasoning
+  - Use the information from tool responses to form your final answer
+  - Provide your final answer in the format \boxed{YOUR_ANSWER}
 
-final_answer_format: |
-  ## Final Answer
+# Examples for different tool combinations (added dynamically based on enabled tools)
 
-  State your answer as the letter choice:
+# Example for web_search + code_generator (direct mode)
+example_search_code_direct:
+  question: "What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?"
+  steps:
+    - step: 1
+      reasoning: "I need to find the atomic number of Oxygen."
+      tool_call: '{"name": "web_search", "arguments": {"query": "atomic number of Oxygen"}}'
+      tool_response: "The atomic number of Oxygen is 8."
+    - step: 2
+      reasoning: "Now I need to calculate the sum of the first 10 primes and multiply by 8."
+      tool_call: '{"name": "code_generator", "arguments": {"code": "def is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True\n\nprimes = []\nx = 2\nwhile len(primes) < 10:\n    if is_prime(x):\n        primes.append(x)\n    x += 1\n\ns = sum(primes)\nresult = s * 8\nprint(f\"First 10 primes: {primes}\")\nprint(f\"Sum: {s}\")\nprint(f\"Result: {result}\")\n"}}'
+      tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
+    - step: final
+      answer: "The sum of the first 10 prime numbers (129) multiplied by the atomic number of Oxygen (8) is \\boxed{1032}."
 
-  Final Answer: [letter]
+# Example for web_search + code_generator (sub-agent mode)
+example_search_code_subagent:
+  question: "What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?"
+  steps:
+    - step: 1
+      reasoning: "I need to find the atomic number of Oxygen."
+      tool_call: '{"name": "web_search", "arguments": {"query": "atomic number of Oxygen"}}'
+      tool_response: "The atomic number of Oxygen is 8."
+    - step: 2
+      reasoning: "Now I need to calculate the sum of the first 10 primes and multiply by 8."
+      tool_call: '{"name": "code_generator", "arguments": {"task": "Calculate the sum of the first 10 prime numbers, then multiply by 8"}}'
+      tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
+    - step: final
+      answer: "The sum of the first 10 prime numbers (129) multiplied by the atomic number of Oxygen (8) is \\boxed{1032}."
 
-  For example: "Final Answer: B"
+# Example for web_search only
+example_search_only:
+  question: "Who won the first Nobel Prize in Physics?"
+  steps:
+    - step: 1
+      reasoning: "I need to search for information about the first Nobel Prize in Physics."
+      tool_call: '{"name": "web_search", "arguments": {"query": "first Nobel Prize in Physics winner 1901"}}'
+      tool_response: "The first Nobel Prize in Physics was awarded in 1901 to Wilhelm Conrad Röntgen for his discovery of X-rays."
+    - step: final
+      answer: "The winner of the first Nobel Prize in Physics in 1901 was \\boxed{Wilhelm Conrad Röntgen}."
 
-  You may also explain your reasoning briefly, but the answer must be clear.
+# Example for code_generator only (direct mode)
+example_code_direct:
+  question: "Calculate the sum of the first 10 prime numbers."
+  steps:
+    - step: 1
+      reasoning: "I need to find the first 10 prime numbers and calculate their sum."
+      tool_call: '{"name": "code_generator", "arguments": {"code": "def is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True\n\nprimes = []\nx = 2\nwhile len(primes) < 10:\n    if is_prime(x):\n        primes.append(x)\n    x += 1\n\nprint(f\"First 10 primes: {primes}\")\nprint(f\"Sum: {sum(primes)}\")\n"}}'
+      tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
+    - step: final
+      answer: "The sum of the first 10 prime numbers is \\boxed{129}."
 
-example:
-  question: |
-    What is the pH of a 0.01 M solution of HCl at 25°C?
-
-    Choices:
-    A) 1
-    B) 2
-    C) 3
-    D) 7
-  reasoning: |
-    HCl is a strong acid that completely dissociates in water. For a 0.01 M HCl solution:
-    [H+] = 0.01 M = 10^(-2) M
-
-    pH = -log[H+] = -log(10^(-2)) = 2
-
-    Therefore, the pH is 2.
-  answer: "B"
+# Example for code_generator only (sub-agent mode)
+example_code_subagent:
+  question: "Calculate the sum of the first 10 prime numbers."
+  steps:
+    - step: 1
+      reasoning: "I need to find the first 10 prime numbers and calculate their sum."
+      tool_call: '{"name": "code_generator", "arguments": {"task": "1. Generate the first 10 prime numbers\n2. Calculate their sum\n3. Print both the primes and the sum"}}'
+      tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
+    - step: final
+      answer: "The sum of the first 10 prime numbers is \\boxed{129}."

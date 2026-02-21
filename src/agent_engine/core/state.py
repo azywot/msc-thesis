@@ -30,6 +30,9 @@ class ExecutionState:
     question_id: int
     question: str
 
+    # Attachments (e.g. image paths for image_inspector; injected by orchestrator)
+    attachments: Optional[List[str]] = None
+
     # Conversation state
     messages: List[Dict[str, str]] = field(default_factory=list)
     current_output: str = ""
@@ -99,6 +102,7 @@ class ExecutionState:
             "tool_calls": self.tool_calls,
             "tool_counts": self.tool_counts,
             "metadata": self.metadata,
+            "attachments": self.attachments,
         }
 
     @classmethod

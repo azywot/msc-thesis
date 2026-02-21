@@ -77,16 +77,14 @@ class WebSearchTool(BaseTool):
             "function": {
                 "name": "web_search",
                 "description": (
-                    "Search the web for current information, facts, news, or any "
-                    "information not in your training data. Returns relevant search "
-                    "results with titles, URLs, and snippets."
+                    "Search the web for information to help answer questions. Use this when you need to find facts, verify information, or get up-to-date knowledge that you don't have."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "The search query to execute"
+                            "description": "The search query to look up on the web. Be specific and include relevant keywords for better results."
                         }
                     },
                     "required": ["query"]
