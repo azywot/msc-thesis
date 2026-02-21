@@ -259,7 +259,7 @@ class MindMapTool(BaseTool):
                 return self._query_with_keyword_search(query)
 
             # Truncate if needed
-            MAX_RESULT = 2000
+            MAX_RESULT = 5000
             if original_length > MAX_RESULT:
                 result = result[:MAX_RESULT] + "... [truncated]"
 

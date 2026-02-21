@@ -213,7 +213,7 @@ def build_system_prompt(config, tools: ToolRegistry, attachments=None) -> str:
 # ---------------------------------------------------------------------------
 
 # Max characters to log per message in execution trace (avoid huge dumps).
-_TRACE_MSG_MAX_LEN = 4000
+_TRACE_MSG_MAX_LEN = 10000
 
 
 def save_result(output_dir: Path, state, config) -> Path:

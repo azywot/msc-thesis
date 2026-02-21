@@ -50,7 +50,7 @@ WANDB_API_KEY=...
 | `jobs/001_setup.job` | Create conda env `agent_engine` + install project | `out/setup/msc_thesis_env_setup_<job_id>.log` |
 | `jobs/002_download_datasets.job` | Download all benchmark datasets | `out/datasets/download_datasets_<job_id>.log` |
 | `jobs/003_test_simple.job` | Smoke test (`examples/simple_example.py`) | `out/test/simple_example_<job_id>.log` |
-| `jobs/004_export_env.job` | Export conda env YAMLs | `out/env/export_env_<job_id>.log` + `jobs/env_exports/*.yml` |
+| `jobs/004_export_env.job` | Export conda env YAMLs | `out/export_env/export_env_<job_id>.log` + `jobs/env_exports/*.yml` |
 | `jobs/submit_job.sh` | Wrapper for all jobs | prints job id + paths |
 
 Optional overrides (via `sbatch --export=ALL,...`):

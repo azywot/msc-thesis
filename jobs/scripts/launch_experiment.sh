@@ -51,15 +51,13 @@ echo "========================================"
 echo "Config: $CONFIG_FILE"
 echo ""
 
-# Generate job file
+# Generate job file (capture JOB_FILE from script output for consistency)
 echo "Generating SLURM job file..."
-python jobs/scripts/generate_job.py "$CONFIG_FILE"
+GEN_OUT=$(python jobs/scripts/generate_job.py "$CONFIG_FILE")
+echo "$GEN_OUT"
+JOB_FILE=$(echo "$GEN_OUT" | grep "^JOB_FILE=" | cut -d= -f2-)
 
-# Get experiment name from config
-EXPERIMENT_NAME=$(grep "^name:" "$CONFIG_FILE" | sed 's/name: *"\?\([^"]*\)"\?/\1/' | tr -d '"')
-JOB_FILE="jobs/generated/${EXPERIMENT_NAME}.job"
-
-if [ ! -f "$JOB_FILE" ]; then
+if [ -z "$JOB_FILE" ] || [ ! -f "$JOB_FILE" ]; then
     echo "Error: Failed to generate job file"
     exit 1
 fi

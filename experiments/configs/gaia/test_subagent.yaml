@@ -19,6 +19,9 @@ models:
     top_k: 20
     repetition_penalty: 1.05
 
+    # Reserve 50 % of GPU so the VLM (image_inspector) can share the same device.
+    gpu_memory_utilization: 0.5
+
     # Capabilities
     supports_thinking: true
 
@@ -37,6 +40,8 @@ models:
     top_k: 20
     repetition_penalty: 1.05
 
+    gpu_memory_utilization: 0.5
+
     supports_thinking: true
 
     seed: 0
@@ -53,6 +58,8 @@ models:
     top_p: 0.8
     top_k: 20
     repetition_penalty: 1.05
+
+    gpu_memory_utilization: 0.5
 
     supports_thinking: true
 
@@ -71,14 +78,16 @@ models:
     top_k: 20
     repetition_penalty: 1.05
 
+    gpu_memory_utilization: 0.5
+
     supports_thinking: true
 
     seed: 0
 
   image_inspector:
-    name: "Qwen3-4B (VLM)"
+    name: "Qwen2.5-VL-3B"
     family: "qwen3"
-    path_or_id: "Qwen/Qwen3-4B"
+    path_or_id: "Qwen/Qwen2.5-VL-3B-Instruct"
     role: "image_inspector"
 
     max_model_len: 32768
@@ -87,6 +96,9 @@ models:
     top_p: 0.8
     top_k: 20
     repetition_penalty: 1.05
+
+    # Remaining ~46 GiB after planner; 0.4 * 93 GiB = 37 GiB needed, fits comfortably.
+    gpu_memory_utilization: 0.4
 
     supports_thinking: true
 
@@ -115,7 +127,7 @@ dataset:
 # Execution settings
 max_turns: 15
 seed: 0
-thinking_mode: "ALL"  # Both planner and sub-agents can use thinking
+thinking_mode: "PLANNER_ONLY"  # Only planner thinks; tool responses have no <think>
 
 # Output settings
 output_dir: "./experiments/results/gaia_qwen3_subagent"

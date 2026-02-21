@@ -79,6 +79,7 @@ def generate_job(config_path: Path, output_path: Path = None, project_dir: Path 
     print(f"  GPUs: {num_gpus}")
     print(f"  Config: {config_path}")
     print(f"\nTo submit: sbatch {output_path}")
+    print(f"JOB_FILE={output_path}")
 
 
 def main():

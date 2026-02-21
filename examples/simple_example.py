@@ -50,13 +50,13 @@ def main():
     logger = setup_logging()
     logger.info("Starting simple example")
 
-    # Set random seed for reproducibility
-    set_seed(0)
-
     # Load configuration
     config_path = Path(args.config)
     logger.info(f"Loading config from: {config_path}")
     config = load_experiment_config(config_path)
+
+    # Set random seed for reproducibility (use config.seed like run_experiment.py)
+    set_seed(config.seed)
 
     # Resolve output directory early (to match scripts/run_experiment.py behavior)
     output_dir = Path(args.output_dir) if args.output_dir else config.output_dir

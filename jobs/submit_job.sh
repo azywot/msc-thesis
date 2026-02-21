@@ -81,7 +81,7 @@ case "$JOB_TYPE" in
 
     export)
         echo "Submitting environment export job..."
-        mkdir -p out/env
+        mkdir -p out/export_env
         sbatch \
             --export=ALL,PROJECT_DIR="$PROJECT_DIR",ENV_NAME="$ENV_NAME" \
             jobs/004_export_env.job

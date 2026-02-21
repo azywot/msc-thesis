@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --time=00:10:00
-#SBATCH --output=out/env/export_env_%A.log
+#SBATCH --output=out/export_env/export_env_%A.log
 
 set -euo pipefail
 

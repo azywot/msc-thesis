@@ -1,0 +1,168 @@
+################################################################################
+# agent_engine experiment config template
+#
+# Copy this file and customize values. All fields are YAML.
+# Comments explain what each option does and common defaults.
+#
+# Minimal configs only need:
+# - name
+# - models.planner
+# - tools
+# - (optional) dataset
+################################################################################
+
+# ------------------------------------------------------------------------------
+# Metadata
+# ------------------------------------------------------------------------------
+name: "test_gaia_snippet"                     # Required. Used in logs / run_info.json.
+description: "Initial test of GAIA snippet"   # Optional.
+
+models:
+  planner:
+    name: "Qwen3-4B"                       # Friendly label
+    family: "qwen3"                        # Required
+    path_or_id: "Qwen/Qwen3-4B"            # HF model id or local path
+    role: "planner"                        # Must be "planner" for the main model
+
+    # Generation parameters (defaults shown)
+    max_model_len: 32768                   # Context length for vLLM local models
+    max_tokens: 8192                       # Max tokens to generate per turn
+    temperature: 0.7                       # Sampling temperature (0 = greedy)
+    top_p: 0.8                             # Nucleus sampling
+    top_k: 20                              # Top-k sampling
+    repetition_penalty: 1.05               # Penalize repetition
+
+    # Capabilities
+    supports_thinking: true                # Enables <think> when thinking_mode allows
+
+    # Resource management (vLLM only)
+    # tensor_parallel_size: null           # If set, overrides auto TP size selection
+    gpu_memory_utilization: 0.5            # Use ~50% so a VLM tool model can share one GPU
+    # gpu_ids: [0]                         # Pin model to specific visible GPUs
+
+    # Reproducibility
+    seed: 0                                # Used by vLLM/API sampling where supported
+
+  # Sub-agent roles (used when tools.direct_tool_call: false).
+  # This template uses Qwen3-4B shared across all text roles.
+  search:
+    name: "Qwen3-4B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-4B"
+    role: "search"
+    max_model_len: 32768
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+    supports_thinking: true
+    gpu_memory_utilization: 0.5
+    seed: 0
+
+  coding:
+    name: "Qwen3-4B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-4B"
+    role: "coding"
+    max_model_len: 32768
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+    supports_thinking: true
+    gpu_memory_utilization: 0.5
+    seed: 0
+
+  text_inspector:
+    name: "Qwen3-4B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-4B"
+    role: "text_inspector"
+    max_model_len: 32768
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+    supports_thinking: true
+    gpu_memory_utilization: 0.5
+    seed: 0
+
+  image_inspector:
+    name: "Qwen2.5-VL-3B"
+    family: "qwen3"                        # Uses Qwen chat template logic in this repo
+    path_or_id: "Qwen/Qwen2.5-VL-3B-Instruct"
+    role: "image_inspector"
+    max_model_len: 32768
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+    supports_thinking: true
+    gpu_memory_utilization: 0.4
+    seed: 0
+
+# ------------------------------------------------------------------------------
+# Tools
+#
+# enabled_tools: which tools are registered for the run.
+# direct_tool_call:
+#   - true  => tools execute directly (no sub-agent LLM analysis inside tools)
+#   - false => tools are sub-agent style (web_search/code_generator/etc use their
+#             own model role to analyze/summarize).
+#
+# Requirements:
+# - web_search requires SERPER_API_KEY in environment.
+# ------------------------------------------------------------------------------
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+    - mind_map
+    - image_inspector
+  direct_tool_call: false                 # Sub-agent mode (tools use their model roles)
+  max_search_limit: 10                    # Planner tool budget for web_search
+  top_k_results: 10                       # Number of web results returned
+  max_doc_len: 3000                       # Per-document character cap when fetching pages
+
+# ------------------------------------------------------------------------------
+# Dataset (optional)
+#
+# If omitted, you can still run ad-hoc questions (e.g. examples/ scripts).
+# name/split must match the implemented loaders.
+# ------------------------------------------------------------------------------
+dataset:
+  name: "gaia"                            # e.g. gaia, gpqa, math500, aime, amc, ...
+  split: "all_validation"                 # Dataset-specific split name
+  data_dir: "./data"                      # Root directory for datasets
+  subset_num: 5                           # -1 for all examples
+
+# ------------------------------------------------------------------------------
+# Execution
+# ------------------------------------------------------------------------------
+max_turns: 15                              # Maximum reasoning/tool turns per question
+seed: 0                                    # Global seed used by set_seed()
+
+# thinking_mode controls where <think> is enabled (for models that support it):
+# - "NO":             no thinking anywhere
+# - "PLANNER_ONLY":   only orchestrator/planner outputs have <think>
+# - "SUBAGENTS_ONLY": only tool sub-agents have <think>
+# - "ALL":            both planner and sub-agents can have <think>
+thinking_mode: "PLANNER_ONLY"
+
+# ------------------------------------------------------------------------------
+# Output
+# ------------------------------------------------------------------------------
+output_dir: "./experiments/results/test_gaia_snippet" # Where logs/results are written
+use_wandb: true                                      # Enable W&B logging
+wandb_project: "msc-thesis"                           # Only used if use_wandb: true
+
+# ------------------------------------------------------------------------------
+# Caching
+# ------------------------------------------------------------------------------
+cache_dir: "./cache"                        # Where search/url/mind_map caches live
+
