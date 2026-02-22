@@ -82,12 +82,14 @@ def log_results_wandb(
         "search_total": ["search_total", "web_search"],
         "code_total": ["code_total", "code_generator"],
         "context_manager_total": ["context_manager_total", "context_manager"],
+        "mind_map_total": ["mind_map_total", "mind_map"],
         "text_inspector_total": ["text_inspector_total", "text_inspector"],
         "image_inspector_total": ["image_inspector_total", "image_inspector"],
     }
     search_total = 0
     code_total = 0
     context_manager_total = 0
+    mind_map_total = 0
     text_inspector_total = 0
     image_inspector_total = 0
     try:
@@ -108,6 +110,7 @@ def log_results_wandb(
             search_total = _get("search_total", _TOOL_ALIASES["search_total"])
             code_total = _get("code_total", _TOOL_ALIASES["code_total"])
             context_manager_total = _get("context_manager_total", _TOOL_ALIASES["context_manager_total"])
+            mind_map_total = _get("mind_map_total", _TOOL_ALIASES["mind_map_total"])
             text_inspector_total = _get("text_inspector_total", _TOOL_ALIASES["text_inspector_total"])
             image_inspector_total = _get("image_inspector_total", _TOOL_ALIASES["image_inspector_total"])
     except Exception:
@@ -139,6 +142,7 @@ def log_results_wandb(
         "tool/search_total": search_total,
         "tool/code_total": code_total,
         "tool/context_manager_total": context_manager_total,
+        "tool/mind_map_total": mind_map_total,
         "tool/text_inspector_total": text_inspector_total,
         "tool/image_inspector_total": image_inspector_total,
         "tool/total_tool_calls": total_tool_calls,
