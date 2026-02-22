@@ -225,8 +225,7 @@ class WebSearchTool(BaseTool):
     def build_analysis_prompt(self, query: str, formatted_results: str) -> str:
         """Build the sub-agent prompt for web-page analysis.
 
-        Kept intentionally close to the legacy multi-agent-tools prompt shape so
-        sub-agent mode behaves similarly across repositories.
+        Mirrors the multi-agent-tools get_webpage_to_reasonchain_instruction prompt.
         """
         prev_reasoning = ""
         instruction = f"""**Task Instruction:**
@@ -301,7 +300,7 @@ Now you should analyze each web page and find helpful information based on the c
                 snippet = r.get("description", "") or ""
             snippet = snippet.replace("<b>", "").replace("</b>", "")
 
-            # Collect uncached URLs only (legacy behavior).
+            # Collect uncached URLs only
             if url not in self.url_cache:
                 urls_to_fetch.append(url)
                 url_snippets[url] = snippet
@@ -315,7 +314,7 @@ Now you should analyze each web page and find helpful information based on the c
         }
 
     def _format_results(self, results: list, query: str) -> str:
-        """Format raw Serper results into a legacy-compatible document string.
+        """Format raw Serper results into a document string.
 
         Pure formatting — reads url_cache but never fetches. Call
         _fetch_missing_urls() first if fresh page content is needed.
@@ -325,8 +324,7 @@ Now you should analyze each web page and find helpful information based on the c
             query: Original search query
 
         Returns:
-            A document string similar to multi-agent-tools' `to_doc()` output:
-            repeated blocks of "**Web Page i:**" followed by JSON.
+            Repeated blocks of "**Web Page i:**" followed by JSON.
         """
         if not results:
             return f"No results found for query: {query}"
@@ -346,8 +344,7 @@ Now you should analyze each web page and find helpful information based on the c
             success, filtered_context = extract_snippet_with_context(raw_context, snippet, context_chars=self.max_doc_len)
             context = filtered_context if success else (raw_context[: self.max_doc_len * 2] if raw_context else "")
 
-            # Mutate in-place so search_cache persists the enriched structure
-            # (matches legacy cache shape which includes `snippet` and `context`).
+            # Mutate in-place so search_cache persists the enriched structure.
             doc_info["snippet"] = snippet
             doc_info["context"] = context
 

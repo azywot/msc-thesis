@@ -1,6 +1,7 @@
-"""Export prompts for fine-tuning data collection.
+"""Export prompt templates and tool schemas to JSON.
 
-This script exports prompt templates and generates examples for fine-tuning.
+Useful for inspecting what system prompts and tool definitions the agent uses
+for each dataset, without running a full experiment.
 """
 
 import argparse
@@ -73,7 +74,7 @@ def export_all_prompts(output_path: Path):
 
 def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(description="Export prompts for fine-tuning")
+    parser = argparse.ArgumentParser(description="Export prompt templates and tool schemas")
     parser.add_argument("--output", "-o", type=str,
                        default="./experiments/prompts_export.json",
                        help="Output JSON file path")

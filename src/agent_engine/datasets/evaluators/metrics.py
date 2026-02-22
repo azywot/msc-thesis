@@ -192,7 +192,7 @@ def _mc_correct(prediction: str, ground_truth: str, choices: List[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Dataset-specific wrappers (thin shims kept for import compatibility)
+# Dataset-specific wrappers (semantic aliases used by dataset loaders)
 # ---------------------------------------------------------------------------
 
 def evaluate_gaia(prediction: str, ground_truth: str) -> Dict[str, Any]:

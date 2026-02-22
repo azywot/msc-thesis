@@ -413,13 +413,12 @@ def _decode_base64_image(b64: str) -> tuple[bytes, str]:
 
 
 def download_hle(split: str, output_dir: str, token: str | None,
-                 extract_images: bool = False, num_samples: int = 0,
+                 extract_images: bool = False,
                  subset: int = 0, seed: int = 0):
     """Download HLE and save as JSONL.
 
     split: "test" or "dev"
     subset: cap on examples after shuffling; 0 means all. Adds _subset_N suffix to filename.
-    num_samples: deprecated alias for subset (no filename suffix); subset takes precedence.
     extract_images: if True, write base64 images to files and store their paths.
     """
     if not token:
@@ -449,12 +448,10 @@ def download_hle(split: str, output_dir: str, token: str | None,
         sys.exit(1)
 
     examples = list(ds)
-    # subset takes precedence; fall back to legacy num_samples (no filename suffix)
-    effective_subset = subset if subset > 0 else num_samples
-    if effective_subset and effective_subset < len(examples):
+    if subset and subset < len(examples):
         set_seed(seed)
         random.shuffle(examples)
-        examples = examples[:effective_subset]
+        examples = examples[:subset]
     print(f"Processing {len(examples)} samples …")
 
     images_dir = os.path.join(snapshot_dir, "images") if extract_images else None
@@ -549,8 +546,6 @@ def main():
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed for subset sampling. "
                              "Falls back to $PYTHONHASHSEED, then 0.")
-    parser.add_argument("--num-samples", type=int, default=0,
-                        help="HLE only, deprecated: use --subset instead")
     parser.add_argument("--extract-images", action="store_true",
                         help="HLE: extract base64 images to files instead of embedding them")
     args = parser.parse_args()
@@ -581,7 +576,6 @@ def main():
         "gpqa": lambda: download_gpqa(args.variant, output_dir, token, subset, seed),
         "hle": lambda: download_hle(args.split, output_dir, token,
                                     extract_images=args.extract_images,
-                                    num_samples=args.num_samples,
                                     subset=subset, seed=seed),
         "math500": lambda: download_math500(output_dir, token, subset, seed),
         "aime": lambda: download_aime(output_dir, token, subset, seed),

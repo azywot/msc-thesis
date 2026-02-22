@@ -11,7 +11,6 @@ Notes:
 """
 
 from .base import BaseModelProvider, GenerationResult, ModelConfig, ModelFamily
-from .registry import ModelRegistry, get_global_registry
 from .llm_shared import get_llm_lock
 
 try:
@@ -31,8 +30,6 @@ __all__ = [
     "GenerationResult",
     "ModelConfig",
     "ModelFamily",
-    "ModelRegistry",
-    "get_global_registry",
     "VLLMProvider",
     "resolve_gpu_assignments",
     "OpenAIProvider",

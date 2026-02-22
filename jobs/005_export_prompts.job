@@ -1,0 +1,49 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=ExportPrompts
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=00:05:00
+#SBATCH --output=out/export_prompts/export_prompts_%A.log
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis Export Prompts"
+echo "=========================================="
+echo "Start time: $(date)"
+echo ""
+
+# Load modules
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+# Set project directory
+PROJECT_DIR="${PROJECT_DIR:-$HOME/thesis/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+
+echo "Project directory: $PROJECT_DIR"
+
+# Activate environment
+ENV_NAME="${ENV_NAME:-agent_engine}"
+echo "Activating environment: $ENV_NAME"
+source activate "$ENV_NAME"
+
+# Output path (optionally override)
+OUTPUT_PATH="${OUTPUT_PATH:-./experiments/prompts_export.json}"
+echo "Output path: $OUTPUT_PATH"
+echo ""
+
+# Run export
+echo "=========================================="
+echo "Exporting prompt templates and tool schemas"
+echo "=========================================="
+
+python scripts/export_prompts.py --output "$OUTPUT_PATH"
+
+echo ""
+echo "Export completed at: $(date)"
