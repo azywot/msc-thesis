@@ -8,7 +8,7 @@ slurm:
   num_gpus: 1
   ntasks: 1
   cpus_per_task: 8
-  time: "01:00:00"
+  time: "10:00:00"
   conda_env: "agent_engine"
 
 models:
@@ -30,7 +30,7 @@ dataset:
   name: "gaia"
   split: "all_validation"
   data_dir: "./data"
-  subset_num: 5  # -1 for all
+  subset_num: -1  # -1 for all
 
 max_turns: 15
 seed: 0
