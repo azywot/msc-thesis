@@ -39,9 +39,6 @@ tools:
     - image_inspector
     - context_manager
   direct_tool_call: false
-  max_search_limit: 10
-  top_k_results: 5
-  max_doc_len: 3000
 
 dataset:
   name: "gaia"
