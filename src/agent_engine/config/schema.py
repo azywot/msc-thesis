@@ -56,7 +56,7 @@ class DatasetConfig:
     name: str
     split: str
     data_dir: Path = Path("./data")
-    subset_num: int = -1  # -1 for all
+    subset_num: int = -1  # -1 uses the full split
 
     def __post_init__(self):
         """Convert string paths to Path objects."""
@@ -113,7 +113,6 @@ class ExperimentConfig:
     cache_dir: Path = Path("./cache")
 
     def __post_init__(self):
-        """Convert string paths to Path objects."""
         if isinstance(self.output_dir, str):
             self.output_dir = Path(self.output_dir)
         if isinstance(self.cache_dir, str):

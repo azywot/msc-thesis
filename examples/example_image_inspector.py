@@ -97,7 +97,7 @@ def main():
     enabled = ["image_inspector"]
     orchestrator_model, providers, _ = build_model_providers(config, required_roles=enabled)
     tools = build_tools(config, cache_manager, providers, enabled_tools=enabled)
-    system_prompt = build_system_prompt(config, tools, attachments=[IMAGE_PATH.name])
+    system_prompt = build_system_prompt(config, tools)
     orchestrator = build_orchestrator(config, orchestrator_model, tools)
 
     logger.info(f"Question: {QUESTION}")

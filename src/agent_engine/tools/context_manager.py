@@ -19,6 +19,16 @@ logger = get_logger(__name__)
 ENTRY_BEGIN = "=== ENTRY ==="
 ENTRY_END = "=== END ==="
 
+# Constants for GraphRAG
+_GRAPHRAG_MAX_ACCEPTABLE = 5000  # Reject results larger than this (likely raw graph data)
+_GRAPHRAG_MAX_RESULT = 2000      # Truncate results to this length (aligned with MAT)
+# Constants for direct mode
+_READ_MAX_CHARS = 2000           # Default max_chars for _read_entries
+_READ_TOP_K = 3                  # Default top_k for _read_entries
+# Constants for in-memory entries
+_MIN_ENTRY_LEN = 20              # Skip entries shorter than this (noise/tool-call artifacts)
+_MAX_ENTRY_LEN = 500             # Truncate in-memory entries to this length
+
 # Try to import GraphRAG
 try:
     from .graph_rag import ContextManagerGraphRAG
@@ -250,18 +260,14 @@ class ContextManagerTool(BaseTool):
             result = str(result).strip()
             original_length = len(result)
 
-            # Reject suspiciously large results (likely raw graph data, not a summary)
-            MAX_ACCEPTABLE = 5000
-            if original_length > MAX_ACCEPTABLE:
+            if original_length > _GRAPHRAG_MAX_ACCEPTABLE:
                 logger.warning(
                     f"GraphRAG result too long ({original_length} chars), falling back to keyword search"
                 )
                 return self._query_with_keyword_search(query)
 
-            # Truncate to max_result_length (aligned with MAT: 2000)
-            MAX_RESULT = 2000
-            if original_length > MAX_RESULT:
-                result = result[:MAX_RESULT] + "... [truncated]"
+            if original_length > _GRAPHRAG_MAX_RESULT:
+                result = result[:_GRAPHRAG_MAX_RESULT] + "... [truncated]"
 
             return ToolResult(
                 success=True,
@@ -346,7 +352,7 @@ class ContextManagerTool(BaseTool):
             metadata={"operation": "write", "content_length": len(content)}
         )
 
-    def _read_entries(self, query: Optional[str], max_chars: int = 2000, top_k: int = 3) -> ToolResult:
+    def _read_entries(self, query: Optional[str], max_chars: int = _READ_MAX_CHARS, top_k: int = _READ_TOP_K) -> ToolResult:
         """Read entries from persistent text file (direct mode)."""
         context_manager_file = self._get_context_manager_file(self.current_question_id)
 
@@ -427,7 +433,7 @@ class ContextManagerTool(BaseTool):
     def _read_text_tail(self, path: Path, max_chars: int) -> str:
         """Read tail of text file."""
         if max_chars <= 0:
-            max_chars = 2000
+            max_chars = _READ_MAX_CHARS
 
         with open(path, "rb") as f:
             try:
@@ -450,7 +456,6 @@ class ContextManagerTool(BaseTool):
         if not text:
             return []
 
-        # Capture blocks between ENTRY_BEGIN and ENTRY_END
         pattern = re.escape(ENTRY_BEGIN) + r"(.*?)" + re.escape(ENTRY_END)
         matches = list(re.finditer(pattern, text, flags=re.DOTALL))
 
@@ -480,24 +485,16 @@ class ContextManagerTool(BaseTool):
         return score
 
     def add_entry(self, text: str, question_id: int):
-        """Add an entry to the context manager.
+        """Record a reasoning step in the context manager (non-direct mode only).
 
-        This is called externally by the orchestrator to record reasoning steps.
-        Only used in non-direct mode.
-
-        Args:
-            text: Text to add to context manager
-            question_id: Question identifier
+        Called by the orchestrator before tool calls to build the GraphRAG knowledge base.
         """
-        # In direct mode, entries are written explicitly via tool calls
         if self.direct_mode:
             return
 
-        # Skip very short texts and tool calls
-        if len(text) <= 20 or "<tool_call>" in text:
+        if len(text) <= _MIN_ENTRY_LEN or "<tool_call>" in text:
             return
 
-        # Add to GraphRAG if enabled
         if self.use_graphrag:
             if question_id not in self.graphrag_instances:
                 working_dir = Path(self.storage_path) / f"question_{question_id}"
@@ -511,22 +508,16 @@ class ContextManagerTool(BaseTool):
             except Exception as e:
                 logger.error(f"Failed to insert into GraphRAG: {e}", exc_info=True)
 
-        # Also maintain in-memory entries as fallback
         if question_id not in self.entries:
             self.entries[question_id] = []
 
-        self.entries[question_id].append(text[:500])  # Truncate long entries
+        self.entries[question_id].append(text[:_MAX_ENTRY_LEN])
 
-        # Maintain max entries
         if len(self.entries[question_id]) > self.max_entries:
             self.entries[question_id] = self.entries[question_id][-self.max_entries:]
 
     def set_current_question(self, question_id: int):
-        """Set the current question for context manager context.
-
-        Args:
-            question_id: Question identifier
-        """
+        """Set the active question context."""
         self.current_question_id = question_id
 
     def clear_question(self, question_id: int):

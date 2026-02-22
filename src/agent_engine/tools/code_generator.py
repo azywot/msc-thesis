@@ -126,7 +126,6 @@ class CodeGeneratorTool(BaseTool):
         """
         logger.info(f"Executing code ({'sub-agent' if not self.direct_mode else 'direct'} mode)")
 
-        # Sub-agent mode: generate code from task description
         if not self.direct_mode:
             if not task:
                 return ToolResult(
@@ -226,7 +225,7 @@ class CodeGeneratorTool(BaseTool):
                 error=f"Failed to write code: {e}",
             )
 
-        # Log for traceability (code is removed after execution)
+        # Log for traceability
         logger.info("Code written to: %s", temp_file_path)
         code_preview = code if len(code) <= 3000 else code[:3000] + "\n... [truncated]"
         logger.info("Generated code:\n%s", code_preview)
@@ -324,14 +323,7 @@ class CodeGeneratorTool(BaseTool):
             )
 
     def _trim_output(self, text: str) -> str:
-        """Trim output to maximum length.
-
-        Args:
-            text: Output text
-
-        Returns:
-            Trimmed text
-        """
+        """Trim output to maximum length."""
         if not text:
             return ""
         if len(text) > self.max_output_chars:
@@ -339,14 +331,7 @@ class CodeGeneratorTool(BaseTool):
         return text
 
     def _extract_error(self, stderr: str) -> str:
-        """Extract concise error message from stderr.
-
-        Args:
-            stderr: Standard error output
-
-        Returns:
-            Concise error message
-        """
+        """Extract concise error message from stderr."""
         if not stderr:
             return "Unknown error"
 
@@ -360,63 +345,20 @@ class CodeGeneratorTool(BaseTool):
         # Return first 150 chars of stderr
         return stderr[:150]
 
-    def _generate_code_from_task(self, task: str) -> str:
-        """Backward-compatible wrapper (single-call sub-agent generation)."""
-        return self.generate_code(task)
-
     def _extract_code_from_response(self, response: str) -> str:
-        """Extract Python code from LLM response.
-
-        Handles cases where code is wrapped in markdown blocks.
-
-        Args:
-            response: LLM response
-
-        Returns:
-            Extracted Python code
-        """
-        # Try to find code in markdown blocks
+        """Extract Python code from LLM response, handling markdown fences."""
         code_block_pattern = r'```(?:python)?\n(.*?)\n```'
         matches = re.findall(code_block_pattern, response, re.DOTALL)
         if matches:
             return matches[0].strip()
-
-        # No markdown blocks - return as is
         return response.strip()
 
     def validate_args(self, **kwargs) -> bool:
-        """Validate code execution arguments.
-
-        Args:
-            **kwargs: Tool arguments
-
-        Returns:
-            True if valid
-        """
+        """Validate code execution arguments."""
         if self.direct_mode:
-            # Direct mode: requires 'code'
-            if 'code' not in kwargs:
-                return False
-            code = kwargs['code']
+            code = kwargs.get('code', '')
             return isinstance(code, str) and len(code.strip()) > 0
         else:
-            # Sub-agent mode: requires 'task'
-            if 'task' not in kwargs:
-                return False
-            task = kwargs['task']
+            task = kwargs.get('task', '')
             return isinstance(task, str) and len(task.strip()) > 0
 
-    def cleanup(self):
-        """Clean up temporary files."""
-        pass
-        # try:
-        #     # Remove old temp files
-        #     if os.path.exists(self.temp_dir):
-        #         for file in os.listdir(self.temp_dir):
-        #             if file.startswith("temp_code_"):
-        #                 try:
-        #                     os.remove(os.path.join(self.temp_dir, file))
-        #                 except Exception:
-        #                     pass
-        # except Exception as e:
-        #     logger.warning(f"Cleanup error: {e}")

@@ -5,7 +5,6 @@ separating prompt content from code.
 """
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -14,17 +13,6 @@ import yaml
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-_SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
-_SUPPORTED_TEXT_EXTS = {
-    ".txt", ".md", ".log",
-    ".json", ".jsonl", ".xml",
-    ".csv", ".tsv",
-    ".yaml", ".yml",
-    ".docx", ".xlsx", ".jsonld",
-    ".parquet", ".pdf", ".pdb",
-    ".pptx", ".py",
-}
 
 
 class PromptBuilder:
@@ -75,47 +63,29 @@ class PromptBuilder:
         self,
         dataset_name: str,
         tool_schemas: List[Dict[str, Any]],
-        attachments: Optional[List[str]] = None,
         max_search_limit: int = 10,
         direct_tool_call: bool = True
     ) -> str:
-        """Build system prompt with tools and instructions.
-
-        Args:
-            dataset_name: Dataset name (gaia, gpqa, math)
-            tool_schemas: List of tool JSON schemas
-            attachments: Ignored - attachment notes go into the user message via orchestrator
-            max_search_limit: Maximum search attempts
-            direct_tool_call: Whether tools execute directly (True) or use sub-agents (False)
-
-        Returns:
-            Complete system prompt
-        """
+        """Build system prompt with tools and instructions."""
         try:
             template = self.load_template(dataset_name)
         except FileNotFoundError:
             logger.warning(f"Template '{dataset_name}' not found, using base template")
             template = self.load_template("base")
 
-        # Build sections — order matches multi-agent-tools:
-        # base_instruction → tools → example → final_instructions
+        # Section order mirrors MAT: base_instruction → tools → example → final_instructions
         sections = []
 
-        # Base instruction
         if "base_instruction" in template:
             sections.append(template["base_instruction"].strip())
 
-        # Tool descriptions (XML <tools> format matching MAT)
         if tool_schemas:
-            tool_desc = self._format_tool_schemas(tool_schemas, max_search_limit, direct_tool_call)
-            sections.append(tool_desc)
+            sections.append(self._format_tool_schemas(tool_schemas, max_search_limit, direct_tool_call))
 
-        # Example (before final instructions, as in MAT)
         example_text = self._select_and_format_example(template, tool_schemas, direct_tool_call)
         if example_text:
             sections.append(example_text)
 
-        # Final instructions (Remember: block)
         if "final_instructions" in template:
             sections.append(template["final_instructions"].strip())
 
@@ -127,16 +97,7 @@ class PromptBuilder:
         max_search_limit: int,
         direct_tool_call: bool = False,
     ) -> str:
-        """Format tool schemas using the Qwen3 XML <tools> format (matches MAT).
-
-        Args:
-            schemas: List of tool JSON schemas
-            max_search_limit: Maximum search attempts (currently unused in prompt text)
-            direct_tool_call: Whether direct tool call mode is active
-
-        Returns:
-            Formatted tool section string
-        """
+        """Format tool schemas using the Qwen3 XML <tools> format (matches MAT)."""
         if not schemas:
             return ""
 
@@ -165,44 +126,6 @@ class PromptBuilder:
             "After receiving tool results in <tool_response></tool_response> tags, "
             f"continue your reasoning with the new information.{direct_mode_rule}"
         )
-
-    def _format_attachments(self, attachments: List[str]) -> str:
-        """Format attachment information in MAT's [Attachment] style.
-
-        Args:
-            attachments: List of attachment file paths (full paths or basenames)
-
-        Returns:
-            Formatted attachment note
-        """
-        if not attachments:
-            return ""
-
-        lines = []
-        for attachment in attachments:
-            fname = os.path.basename(attachment) if attachment else "attached_file"
-            ext = os.path.splitext(fname)[1].lower()
-
-            lines.append("\n[Attachment]")
-            lines.append(f"- There is an attached file for this question: {fname}")
-
-            if ext in _SUPPORTED_IMAGE_EXTS:
-                lines.append(
-                    "- To inspect the image, call the tool `image_inspector` with a question about the image."
-                )
-            elif ext in _SUPPORTED_TEXT_EXTS:
-                lines.append(
-                    "- To read the file, call the tool `text_inspector` (optionally with a question)."
-                )
-            else:
-                lines.append(
-                    "- The attachment type is not supported by the available inspectors in this run."
-                )
-            lines.append(
-                "- Important: do NOT guess or provide file paths; inspectors use the attached file automatically."
-            )
-
-        return "\n".join(lines) + "\n"
 
     def _select_and_format_example(
         self,
@@ -243,7 +166,6 @@ class PromptBuilder:
         if not example or "question" not in example or "steps" not in example:
             return ""
 
-        # Format in MAT's ### EXAMPLE style with multiline tool call/response tags
         lines = ["### EXAMPLE", ""]
         lines.append(f'Question: "{example["question"]}"')
         lines.append("")
@@ -275,14 +197,7 @@ class PromptBuilder:
         return "\n".join(lines)
 
     def _format_example(self, example: Dict[str, Any]) -> str:
-        """Format example from template (legacy format).
-
-        Args:
-            example: Example dictionary with question, reasoning, answer
-
-        Returns:
-            Formatted example text
-        """
+        """Format example from template."""
         lines = ["### EXAMPLE", ""]
 
         if "question" in example:
@@ -297,14 +212,3 @@ class PromptBuilder:
             lines.append(f'**Answer:** {example["answer"]}')
 
         return "\n".join(lines)
-
-    def get_user_prompt(self, question: str) -> str:
-        """Build user prompt for a question.
-
-        Args:
-            question: Question text
-
-        Returns:
-            User prompt
-        """
-        return question

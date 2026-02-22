@@ -20,8 +20,8 @@ logger = get_logger(__name__)
 # Mirrors MAT: reasoning before search, code, and context_manager calls is inserted.
 _CONTEXT_MANAGER_INDEXED_TOOLS = frozenset({"web_search", "code_generator", "context_manager"})
 
-_IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png"})
-_TEXT_EXTS = frozenset({
+_IMAGE_EXTS = frozenset[str]({".jpg", ".jpeg", ".png"})
+_TEXT_EXTS = frozenset[str]({
     ".txt", ".md", ".log", ".json", ".jsonl", ".xml",
     ".csv", ".tsv", ".yaml", ".yml", ".docx", ".xlsx",
     ".jsonld", ".parquet", ".pdf", ".pdb", ".pptx", ".py",
@@ -388,9 +388,7 @@ class AgenticOrchestrator:
         for job, out in zip(jobs, gen_outputs):
             text = strip_thinking_tags(out.text)
             analysis_cache[job.query] = text
-            tr = ToolResult(success=True, output=text, metadata={"cached": False, "query": job.query, "mode": "sub-agent"})
-            clean_output = strip_thinking_tags(tr.output or "")
-            job.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
+            job.state.add_message("tool", f"<tool_response>\n{text}\n</tool_response>")
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
 
@@ -541,7 +539,7 @@ class AgenticOrchestrator:
         return None
 
     # ------------------------------------------------------------------ #
-    # Mind map helpers                                                    #
+    # Context manager helpers                                             #
     # ------------------------------------------------------------------ #
 
     def _init_context_manager(self, state: ExecutionState) -> None:

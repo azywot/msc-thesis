@@ -107,7 +107,6 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
         if tool_name == "web_search":
             # Get model provider for sub-agent mode
             search_model = model_providers.get("web_search") if not direct_mode and model_providers else None
-
             tools.register(WebSearchTool(
                 serper_api_key=api_keys.get("serper"),
                 search_cache=cache_manager.search_cache,
@@ -115,13 +114,12 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
                 top_k=config.tools.top_k_results,
                 max_doc_len=config.tools.max_doc_len,
                 model_provider=search_model,
-                fetch_urls=True,  # Enable URL fetching (batched in run_batch)
+                fetch_urls=True,
                 use_thinking=use_subagent_thinking
             ))
         elif tool_name == "code_generator":
             # Get model provider for sub-agent mode
             coding_model = model_providers.get("code_generator") if not direct_mode and model_providers else None
-
             tools.register(CodeGeneratorTool(
                 timeout_seconds=60,
                 temp_dir=str(config.cache_dir / "code_temp"),
@@ -129,9 +127,7 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
                 use_thinking=use_subagent_thinking
             ))
         elif tool_name == "context_manager":
-            # Context manager has different behavior in direct vs non-direct mode.
-            # In non-direct mode, GraphRAG is used with the local model (orchestrator or
-            # dedicated context_manager model) so no OpenAI key is needed — matching MAT.
+            # In sub-agent mode, GraphRAG runs with a local model — no OpenAI key needed (mirrors MAT).
             storage_path = str(config.cache_dir / "context_manager")
             context_manager_model = model_providers.get("context_manager") if not direct_mode else None
             tools.register(ContextManagerTool(
@@ -143,7 +139,6 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
         elif tool_name == "text_inspector":
             # Get model provider for sub-agent mode (optional for text inspector)
             text_inspector_model = model_providers.get("text_inspector") if not direct_mode and model_providers else None
-
             tools.register(TextInspectorTool(
                 max_chars=50000,
                 model_provider=text_inspector_model,
@@ -154,10 +149,8 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
             if not direct_mode:
                 # Get VLM model provider for image analysis (required)
                 vlm_model = model_providers.get("image_inspector") if model_providers else None
-
                 if vlm_model is None:
                     logger.warning("image_inspector enabled but no VLM model provider configured - tool will fail at runtime")
-
                 tools.register(ImageInspectorTool(
                     model_provider=vlm_model,
                     use_thinking=use_subagent_thinking
@@ -174,18 +167,14 @@ def run_experiment(args):
     Args:
         args: Command-line arguments
     """
-    # Basic console logging until we know output_dir.
     logger = setup_logging()
 
-    # Load configuration
     logger.info(f"Loading config from: {args.config}")
     config = load_experiment_config(Path(args.config))
 
-    # Resolve output directory early (used for partial + legacy saves)
     output_dir = Path(args.output_dir) if args.output_dir else config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Reconfigure logging to also write to file
     logger = setup_logging(log_file=output_dir / "experiment.log")
     logger.info("=" * 80)
     logger.info(f"Starting experiment: {datetime.now()}")
@@ -253,33 +242,26 @@ def run_experiment(args):
     except Exception as e:
         logger.warning("Could not write run_info.json: %s", e)
 
-    # Get API keys from environment
     api_keys = {
         "serper": os.getenv("SERPER_API_KEY"),
         "openai": os.getenv("OPENAI_API_KEY"),
         "anthropic": os.getenv("ANTHROPIC_API_KEY"),
     }
 
-    # Initialize cache manager
     logger.info(f"Initializing cache at: {config.cache_dir}")
     cache_manager = CacheManager(config.cache_dir)
 
-    # Load dataset
     logger.info(f"Loading dataset: {config.dataset.name}")
     dataset = DatasetRegistry.get(config.dataset)
     examples = dataset.get_subset(config.dataset.subset_num)
     logger.info(f"Loaded {len(examples)} examples")
 
-    # Initialize model cache for instance reuse
-    # This allows sharing the same vLLM instance across multiple roles (memory efficient)
     model_cache: Dict[str, Any] = {}
-    
-    # Initialize models
+
     logger.info(f"Initializing orchestrator model: {config.get_model('orchestrator').name}")
     orchestrator_model = setup_model_provider(config.get_model("orchestrator"), api_keys, model_cache)
 
-    # Initialize sub-agent models if not in direct mode.
-    # For each enabled tool: use models.<tool> if specified, otherwise fall back to orchestrator.
+    # For each enabled tool: use models.<tool> if specified, else fall back to orchestrator.
     model_providers = {}
     if not config.tools.direct_tool_call:
         logger.info("Sub-agent mode enabled - initializing tool models")
@@ -328,7 +310,7 @@ def run_experiment(args):
         batch_size = int(getattr(args, "batch_size", 8) or 8)
         batch_size = max(1, batch_size)
 
-        tool_schemas = tools.get_all_schemas()  # schema is constant across the run
+        tool_schemas = tools.get_all_schemas()
 
         def _chunks(seq, size: int):
             for i in range(0, len(seq), size):
@@ -344,7 +326,6 @@ def run_experiment(args):
                     prompt_builder.build_system_prompt(
                         dataset_name=config.dataset.name,
                         tool_schemas=tool_schemas,
-                        attachments=ex.get_attachments(),
                         max_search_limit=config.tools.max_search_limit,
                         direct_tool_call=config.tools.direct_tool_call,
                     )
@@ -359,7 +340,6 @@ def run_experiment(args):
                     attachments=[ex.get_attachments() for ex in batch],
                 )
             except Exception as e:
-                # Catastrophic failure for the whole batch
                 logger.error(f"Error processing batch starting at {base_idx}: {e}", exc_info=True)
                 for ex in batch:
                     results.append({"question_id": ex.question_id, "question": ex.question, "error": str(e)})
@@ -447,7 +427,7 @@ def run_experiment(args):
         if orchestrator is not None:
             orchestrator.cleanup()
 
-    # Print summary
+    # Summary
     accuracy = correct_count / len(examples) if examples else 0
     logger.info("="*80)
     logger.info("EXPERIMENT COMPLETE")
@@ -457,9 +437,6 @@ def run_experiment(args):
     logger.info(f"Accuracy: {accuracy:.2%}")
     logger.info(f"Seed (reproducibility): {getattr(config, 'seed', None)}")
     logger.info(f"Results saved to: {output_dir}")
-
-    # Cleanup
-    orchestrator.cleanup()
 
 
 def save_results(results: List[Dict[str, Any]], output_path: Path):
