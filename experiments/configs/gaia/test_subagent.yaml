@@ -17,8 +17,6 @@ models:
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-4B"
     role: "orchestrator"
-    # Reserve 50 % of GPU so the VLM (image_inspector) can share the same device.
-    gpu_memory_utilization: 0.5
 
   # web_search, code_generator, text_inspector, context_manager are omitted —
   # they share Qwen3-4B with the orchestrator and will reuse its cached instance.
@@ -28,8 +26,6 @@ models:
     family: "qwen3"                          # Uses Qwen chat-template logic
     path_or_id: "Qwen/Qwen2.5-VL-3B-Instruct"
     role: "image_inspector"
-    # ~46 GiB remain after orchestrator; 0.4 × 93 GiB = 37 GiB needed.
-    gpu_memory_utilization: 0.4
 
 tools:
   enabled_tools:

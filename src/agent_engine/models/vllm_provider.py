@@ -1,7 +1,8 @@
 """vLLM model provider for local inference with tensor parallelism."""
 
 import os
-from typing import Any, Dict, List, Optional, Union
+import torch
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from vllm import LLM, SamplingParams
 
@@ -10,6 +11,9 @@ from .llm_shared import get_llm_lock
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Families that are served via an API and do not occupy local GPU memory.
+_API_FAMILIES = frozenset({ModelFamily.GPT4, ModelFamily.CLAUDE})
 
 
 class VLLMProvider(BaseModelProvider):
@@ -54,7 +58,7 @@ class VLLMProvider(BaseModelProvider):
                 model=config.path_or_id,
                 tensor_parallel_size=tensor_parallel_size,
                 max_model_len=config.max_model_len,
-                gpu_memory_utilization=config.gpu_memory_utilization,
+                gpu_memory_utilization=config.gpu_memory_utilization if config.gpu_memory_utilization is not None else 0.95,
                 seed=config.seed,
                 download_dir=hf_hub_cache,
                 enforce_eager=True,
@@ -84,8 +88,8 @@ class VLLMProvider(BaseModelProvider):
         try:
             import torch
             n = torch.cuda.device_count()
-            # Use all GPUs only when utilization is high; else single-GPU
-            if n > 1 and config.gpu_memory_utilization >= 0.95:
+            # Use all GPUs only when utilization is high (or still unresolved); else single-GPU
+            if n > 1 and (config.gpu_memory_utilization is None or config.gpu_memory_utilization >= 0.95):
                 return n
             return 1
         except Exception:
@@ -252,3 +256,82 @@ class VLLMProvider(BaseModelProvider):
         if hasattr(self, 'llm'):
             del self.llm
             self.llm = None
+
+
+def resolve_gpu_assignments(config) -> Dict[str, Tuple[float, Optional[List[int]]]]:
+    """Compute (gpu_memory_utilization, gpu_ids) for each distinct local model path.
+
+    - 1 distinct local model                        → util=0.95, no pinning
+    - N models sharing fewer GPUs than models       → util = 0.9 / N (split evenly)
+    - N models, each gets its own GPU (≥N GPUs)     → util=0.9, pin each to one GPU
+    - Large (14B/32B/72B) main + ≥4 GPUs            → main gets 2 GPUs (TP=2), rest get 1
+    """
+    try:
+        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+    except Exception:
+        num_gpus = 1
+
+    def _is_local(cfg) -> bool:
+        return cfg is not None and cfg.family not in _API_FAMILIES
+
+    orch_cfg = config.get_model("orchestrator")
+
+    # Collect distinct local model paths preserving load order.
+    seen: set = set[Any]()
+    ordered_paths: List[str] = []
+
+    def _add(path: str) -> None:
+        if path not in seen:
+            seen.add(path)
+            ordered_paths.append(path)
+
+    if _is_local(orch_cfg):
+        _add(orch_cfg.path_or_id)
+
+    if not config.tools.direct_tool_call:
+        for tool_name in config.tools.enabled_tools:
+            model_cfg = config.get_model(tool_name)
+            if model_cfg is None:
+                pass  # falls back to orchestrator instance (same path already in set)
+            elif _is_local(model_cfg):
+                _add(model_cfg.path_or_id)
+
+    n = len(ordered_paths)
+    main_path = orch_cfg.path_or_id if _is_local(orch_cfg) else None
+    main_is_large = main_path and any(s in main_path.lower() for s in ("14b", "32b", "72b"))
+
+    assignment: Dict[str, Tuple[float, Optional[List[int]]]] = {}
+
+    if n == 0:
+        pass  # all API models, nothing to assign
+    elif n >= 2 and num_gpus >= 4 and main_is_large and main_path:
+        # Large main model gets 2 GPUs for tensor parallelism; others get 1 each.
+        gpu_ids_map: Dict[str, List[int]] = {main_path: list(range(0, min(2, num_gpus)))}
+        idx = 2
+        for p in ordered_paths:
+            if p != main_path:
+                gpu_ids_map[p] = [idx % num_gpus]
+                idx += 1
+        for path in ordered_paths:
+            assignment[path] = (0.9, gpu_ids_map[path])
+        logger.info("GPU assignment (large main + multi-model): %s",
+                    {p: v[1] for p, v in assignment.items()})
+    elif n >= 2 and num_gpus >= n:
+        # Pin each model to its own GPU to eliminate contention.
+        pairs = ([main_path] + [p for p in ordered_paths if p != main_path]) if main_path else ordered_paths
+        for i, path in enumerate(pairs):
+            assignment[path] = (0.9, [i % num_gpus])
+        logger.info("GPU assignment (multi-model, one GPU per model): %s",
+                    {p: v[1] for p, v in assignment.items()})
+    elif n >= 2:
+        # More models than GPUs: split utilization evenly on shared GPU.
+        util = round(0.9 / n, 4)
+        for path in ordered_paths:
+            assignment[path] = (util, None)
+        logger.info("GPU assignment (%d models sharing %d GPU(s)): util=%.4f", n, num_gpus, util)
+    else:
+        # Single local model: use most of the GPU.
+        assignment[ordered_paths[0]] = (0.95, None)
+        logger.info("GPU assignment (single model): util=0.95")
+
+    return assignment

@@ -258,6 +258,29 @@ def run_experiment(args):
 
     model_cache: Dict[str, Any] = {}
 
+    # Resolve GPU assignments before loading any model so utilization and GPU pinning
+    # are set automatically (mirrors multi-agent-tools behaviour).
+    try:
+        from agent_engine.models.vllm_provider import resolve_gpu_assignments
+        gpu_assignments = resolve_gpu_assignments(config)
+
+        def _apply_gpu_assignment(model_cfg) -> None:
+            if model_cfg is None:
+                return
+            path = model_cfg.path_or_id
+            if path in gpu_assignments:
+                util, gpu_ids = gpu_assignments[path]
+                if model_cfg.gpu_memory_utilization is None:
+                    model_cfg.gpu_memory_utilization = util
+                if model_cfg.gpu_ids is None and gpu_ids is not None:
+                    model_cfg.gpu_ids = gpu_ids
+
+        _apply_gpu_assignment(config.get_model("orchestrator"))
+        for _tool in config.tools.enabled_tools:
+            _apply_gpu_assignment(config.get_model(_tool))
+    except Exception as _e:
+        logger.warning("GPU assignment resolution skipped (%s); using per-model defaults.", _e)
+
     logger.info(f"Initializing orchestrator model: {config.get_model('orchestrator').name}")
     orchestrator_model = setup_model_provider(config.get_model("orchestrator"), api_keys, model_cache)
 

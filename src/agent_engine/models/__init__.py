@@ -15,9 +15,10 @@ from .registry import ModelRegistry, get_global_registry
 from .llm_shared import get_llm_lock
 
 try:
-    from .vllm_provider import VLLMProvider
+    from .vllm_provider import VLLMProvider, resolve_gpu_assignments
 except Exception:  # pragma: no cover
     VLLMProvider = None  # type: ignore
+    resolve_gpu_assignments = None  # type: ignore
 
 try:
     from .api_provider import OpenAIProvider, AnthropicProvider
@@ -33,6 +34,7 @@ __all__ = [
     "ModelRegistry",
     "get_global_registry",
     "VLLMProvider",
+    "resolve_gpu_assignments",
     "OpenAIProvider",
     "AnthropicProvider",
     "get_llm_lock",

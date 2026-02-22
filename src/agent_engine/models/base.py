@@ -51,7 +51,7 @@ class ModelConfig:
 
     # Resource management (tensor_parallel_size: None → auto from gpu_ids or device count)
     tensor_parallel_size: Optional[int] = None
-    gpu_memory_utilization: float = 0.95
+    gpu_memory_utilization: Optional[float] = None  # None → auto-resolved at load time
     gpu_ids: Optional[List[int]] = None
 
     # Reproducibility

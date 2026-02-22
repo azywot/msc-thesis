@@ -28,6 +28,7 @@ from agent_engine.tools import (
     WebSearchTool,
 )
 from agent_engine.utils import set_seed, setup_logging
+from agent_engine.models.vllm_provider import resolve_gpu_assignments
 
 DEFAULT_CONFIG = (
     Path(__file__).parent.parent / "experiments/configs/gaia/test_subagent.yaml"
@@ -86,6 +87,27 @@ def build_model_providers(
         if required_roles is not None
         else ["web_search", "code_generator", "text_inspector", "image_inspector"]  # model roles = tool names
     )
+
+    # Auto-resolve gpu_memory_utilization and GPU pinning before loading any model.
+    try:
+        gpu_assignments = resolve_gpu_assignments(config)
+
+        def _apply(cfg) -> None:
+            if cfg is None:
+                return
+            path = cfg.path_or_id
+            if path in gpu_assignments:
+                util, gpu_ids = gpu_assignments[path]
+                if cfg.gpu_memory_utilization is None:
+                    cfg.gpu_memory_utilization = util
+                if cfg.gpu_ids is None and gpu_ids is not None:
+                    cfg.gpu_ids = gpu_ids
+
+        _apply(config.get_model("orchestrator"))
+        for _role in roles_to_init:
+            _apply(config.get_model(_role))
+    except Exception:
+        pass  # fall back to per-model defaults
 
     orchestrator = _get_model_provider(config.get_model("orchestrator"), model_cache)
     providers: Dict[str, Any] = {}
