@@ -153,6 +153,7 @@ dataset:
 # Execution
 # ------------------------------------------------------------------------------
 max_turns: 15
+batch_size: -1   # -1 = all in one batch; 1 = no batching
 seed: 0
 
 # thinking_mode: NO | ORCHESTRATOR_ONLY | SUBAGENTS_ONLY | ALL

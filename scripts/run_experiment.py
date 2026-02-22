@@ -294,7 +294,8 @@ def run_experiment(args):
             use_thinking=config.use_orchestrator_thinking(),
         )
 
-        batch_size = max(1, int(getattr(args, "batch_size", 8) or 8))
+        raw_batch = getattr(config, "batch_size", -1) or -1
+        batch_size = len(examples) if raw_batch <= 0 else max(1, int(raw_batch))
         tool_schemas = tools.get_all_schemas()
 
         def _chunks(seq, size: int):
@@ -474,6 +475,7 @@ def _config_to_dict(config) -> Dict[str, Any]:
         "seed": config.seed,
         "thinking_mode": getattr(config.thinking_mode, "value", str(config.thinking_mode)),
         "max_turns": getattr(config, "max_turns", None),
+        "batch_size": getattr(config, "batch_size", -1),
         "dataset": {
             "name": config.dataset.name,
             "split": config.dataset.split,
@@ -594,8 +596,6 @@ def main():
                        help="Path to experiment config YAML file")
     parser.add_argument("--output-dir", type=str,
                        help="Output directory (overrides config)")
-    parser.add_argument("--batch-size", type=int, default=8,
-                       help="Number of questions to batch for model generation (default: 8). Set 1 to disable.")
     args = parser.parse_args()
 
     run_experiment(args)

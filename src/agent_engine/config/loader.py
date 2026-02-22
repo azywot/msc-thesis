@@ -131,6 +131,7 @@ def _config_to_dict(config: ExperimentConfig) -> Dict[str, Any]:
             "max_doc_len": config.tools.max_doc_len,
         },
         "max_turns": config.max_turns,
+        "batch_size": config.batch_size,
         "seed": config.seed,
         "thinking_mode": config.thinking_mode.value,
         "output_dir": str(config.output_dir),

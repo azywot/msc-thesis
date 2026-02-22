@@ -160,9 +160,6 @@ export SERPER_API_KEY="..."
 # Run with a config file
 python scripts/run_experiment.py --config experiments/configs/gaia/baseline.yaml
 
-# Increase batch size for faster vLLM throughput (default: 8)
-python scripts/run_experiment.py --config experiments/configs/gaia/baseline.yaml --batch-size 16
-
 # Override output directory
 python scripts/run_experiment.py --config experiments/configs/gaia/baseline.yaml \
     --output-dir ./experiments/results/my_run
@@ -279,7 +276,7 @@ See `experiments/configs/template.yml` for a fully annotated version. Schema and
 |---|---|---|
 | `tools.direct_tool_call` | `true` / `false` | Direct mode returns raw tool output to the planner; sub-agent mode uses a second LLM to analyse it first |
 | `thinking_mode` | `NO` / `ORCHESTRATOR_ONLY` / `SUBAGENTS_ONLY` / `ALL` | Controls which roles emit extended reasoning (requires a thinking-capable model) |
-| `--batch-size N` | integer | Questions processed in parallel per vLLM call (default 8; set to 1 to disable) |
+| `batch_size` (config) | integer | Questions per batch (-1 = all; 1 = no batching) |
 
 If multiple roles share the same `path_or_id`, the runner reuses the loaded vLLM instance and serialises access with per-model locks — no duplicate GPU memory.
 

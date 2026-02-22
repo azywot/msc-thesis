@@ -60,6 +60,7 @@ class ExperimentConfig:
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     dataset: Optional[DatasetConfig] = None
     max_turns: int = 15
+    batch_size: int = -1  # -1 = all in one batch; 1 = no batching
     seed: int = 0
     thinking_mode: ThinkingMode = ThinkingMode.NO
     output_dir: Path = Path("./experiments/results")
