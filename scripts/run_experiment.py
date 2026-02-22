@@ -11,7 +11,7 @@ import sys
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -83,7 +83,7 @@ def setup_model_provider(model_config, api_keys: Dict[str, str], model_cache: Op
     return provider
 
 
-def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers: Dict[str, Any] = None, orchestrator_model=None) -> ToolRegistry:
+def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers: Dict[str, Any] = None, orchestrator_model=None, context_manager_storage_path: Optional[Path] = None) -> ToolRegistry:
     """Set up tools based on configuration.
 
     Args:
@@ -91,6 +91,9 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
         cache_manager: Cache manager instance
         api_keys: Dictionary of API keys
         model_providers: Dictionary of model providers for sub-agent mode (optional)
+        context_manager_storage_path: Optional run-specific path for context_manager cache
+            (e.g. cache_dir/context_manager/gaia/all_validation/2026-02-22_123abc).
+            If None, falls back to config.cache_dir / "context_manager".
 
     Returns:
         ToolRegistry with registered tools
@@ -126,7 +129,12 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
             ))
         elif tool_name == "context_manager":
             # In sub-agent mode, GraphRAG runs with a local model — no OpenAI key needed (mirrors MAT).
-            storage_path = str(config.cache_dir / "context_manager")
+            # Use run-specific path when provided (mirrors results: cache/context_manager/{dataset}/{split}/{date}_{job_id})
+            if context_manager_storage_path is not None:
+                context_manager_storage_path.mkdir(parents=True, exist_ok=True)
+                storage_path = str(context_manager_storage_path)
+            else:
+                storage_path = str(config.cache_dir / "context_manager")
             context_manager_model = model_providers.get("context_manager") if not direct_mode else None
             tools.register(ContextManagerTool(
                 direct_mode=direct_mode,
@@ -172,7 +180,12 @@ def run_experiment(args):
 
     output_dir = Path(args.output_dir) if args.output_dir else config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    run_dir = _make_run_dir(output_dir, config.dataset.split)
+    run_dir, date_str, job_id = _make_run_dir(output_dir, config.dataset.split)
+
+    # Context manager cache path mirrors results: cache/context_manager/{dataset}/{split}/{date}_{job_id}
+    context_manager_storage = (
+        Path(config.cache_dir) / "context_manager" / config.dataset.name / config.dataset.split / f"{date_str}_{job_id}"
+    )
 
     logger = setup_logging(log_file=run_dir / "experiment.log")
     logger.info("=" * 80)
@@ -253,7 +266,11 @@ def run_experiment(args):
 
     # Setup tools
     logger.info(f"Setting up tools: {config.tools.enabled_tools}")
-    tools = setup_tools(config, cache_manager, api_keys, model_providers, orchestrator_model=orchestrator_model)
+    tools = setup_tools(
+        config, cache_manager, api_keys, model_providers,
+        orchestrator_model=orchestrator_model,
+        context_manager_storage_path=context_manager_storage,
+    )
 
     # Initialize prompt builder
     prompt_builder = PromptBuilder()
@@ -415,13 +432,13 @@ def _state_to_output_text(state: ExecutionState) -> str:
     return "\n".join(parts).strip()
 
 
-def _make_run_dir(output_dir: Path, split: str) -> Path:
-    """Create and return {split}_YYYY-MM-DD-HH-MM-SS-{job_id}/ inside output_dir."""
-    date_str = datetime.now().strftime("%Y-%m-%d")
+def _make_run_dir(output_dir: Path, split: str) -> Tuple[Path, str, str]:
+    """Create and return (run_dir, date_str, job_id). run_dir = {split}_YYYY-MM-DD-HH-MM-SS-{job_id}/."""
+    date_str = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     job_id = os.environ.get("SLURM_JOB_ID") or _short_id()
     run_dir = output_dir / f"{split}_{date_str}_{job_id}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    return run_dir
+    return run_dir, date_str, job_id
 
 
 def _short_id() -> str:

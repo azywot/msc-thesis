@@ -75,20 +75,41 @@ def log_results_wandb(
     l2_em = _lvl("em", "2")
     l3_em = _lvl("em", "3")
 
-    # Tool totals
+    # Tool totals — support both formats:
+    # (1) tool_stats["overall"] with search_total, code_total, etc.
+    # (2) flat tool_stats with web_search, code_generator, etc. (from metrics["tool_usage"])
+    _TOOL_ALIASES = {
+        "search_total": ["search_total", "web_search"],
+        "code_total": ["code_total", "code_generator"],
+        "context_manager_total": ["context_manager_total", "context_manager"],
+        "text_inspector_total": ["text_inspector_total", "text_inspector"],
+        "image_inspector_total": ["image_inspector_total", "image_inspector"],
+    }
     search_total = 0
     code_total = 0
     context_manager_total = 0
     text_inspector_total = 0
     image_inspector_total = 0
     try:
+        overall_tools: Dict[str, Any] = {}
         if isinstance(tool_stats, dict) and isinstance(tool_stats.get("overall"), dict):
             overall_tools = tool_stats["overall"]
-            search_total = int(overall_tools.get("search_total", 0) or 0)
-            code_total = int(overall_tools.get("code_total", 0) or 0)
-            context_manager_total = int(overall_tools.get("context_manager_total", 0) or 0)
-            text_inspector_total = int(overall_tools.get("text_inspector_total", 0) or 0)
-            image_inspector_total = int(overall_tools.get("image_inspector_total", 0) or 0)
+        elif isinstance(tool_stats, dict):
+            overall_tools = tool_stats
+
+        def _get(key: str, aliases: list) -> int:
+            for alias in aliases:
+                v = overall_tools.get(alias)
+                if v is not None:
+                    return int(v or 0)
+            return 0
+
+        if overall_tools:
+            search_total = _get("search_total", _TOOL_ALIASES["search_total"])
+            code_total = _get("code_total", _TOOL_ALIASES["code_total"])
+            context_manager_total = _get("context_manager_total", _TOOL_ALIASES["context_manager_total"])
+            text_inspector_total = _get("text_inspector_total", _TOOL_ALIASES["text_inspector_total"])
+            image_inspector_total = _get("image_inspector_total", _TOOL_ALIASES["image_inspector_total"])
     except Exception:
         pass
 
