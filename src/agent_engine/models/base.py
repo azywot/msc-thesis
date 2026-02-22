@@ -22,6 +22,10 @@ class ModelFamily(Enum):
     CLAUDE = "claude"
 
 
+# Families whose models natively support extended <think> output.
+_THINKING_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ, ModelFamily.DEEPSEEK})
+
+
 @dataclass
 class ModelConfig:
     """Complete model configuration - replaces argparse.
@@ -42,13 +46,10 @@ class ModelConfig:
     top_k: int = 20
     repetition_penalty: float = 1.05
 
-    # Capabilities (explicit, not inferred)
-    supports_thinking: bool = False
+    # Derived from family in __post_init__; set explicitly in YAML to override.
+    supports_thinking: Optional[bool] = None
 
-    # Resource management
-    # tensor_parallel_size: resolved automatically when None
-    #   - if gpu_ids is set → len(gpu_ids)
-    #   - otherwise         → all visible CUDA devices
+    # Resource management (tensor_parallel_size: None → auto from gpu_ids or device count)
     tensor_parallel_size: Optional[int] = None
     gpu_memory_utilization: float = 0.95
     gpu_ids: Optional[List[int]] = None
@@ -57,10 +58,10 @@ class ModelConfig:
     seed: int = 0
 
     def __post_init__(self):
-        """Validate and convert types after initialization."""
-        # Convert string family to enum if needed
         if isinstance(self.family, str):
             self.family = ModelFamily(self.family)
+        if self.supports_thinking is None:
+            self.supports_thinking = self.family in _THINKING_FAMILIES
 
 
 @dataclass

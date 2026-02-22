@@ -1,129 +1,36 @@
-# GAIA Sub-Agent Mode Configuration (Qwen3-4B for all roles, including VLM)
+# GAIA Sub-Agent Mode — Qwen3-4B for all text roles, Qwen2.5-VL-3B for images
 
-name: "gaia_qwen3_subagent"
+name: "gaia_qwen3_subagent_test"
 description: "GAIA with sub-agent mode using Qwen3-4B for orchestrator and tool agents (text + vision)"
 
-# Models configuration - reuse Qwen3-4B across roles
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 1
+  ntasks: 1
+  cpus_per_task: 8
+  time: "01:00:00"
+  conda_env: "agent_engine"
+
 models:
   orchestrator:
     name: "Qwen3-4B"
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-4B"
     role: "orchestrator"
-
-    # Generation parameters
-    max_model_len: 32768
-    max_tokens: 8192
-    temperature: 0.7
-    top_p: 0.8
-    top_k: 20
-    repetition_penalty: 1.05
-
     # Reserve 50 % of GPU so the VLM (image_inspector) can share the same device.
     gpu_memory_utilization: 0.5
 
-    # Capabilities
-    supports_thinking: true
-
-    seed: 0
-
-  web_search:
-    name: "Qwen3-4B"
-    family: "qwen3"
-    path_or_id: "Qwen/Qwen3-4B"
-    role: "web_search"
-
-    max_model_len: 32768
-    max_tokens: 4096
-    temperature: 0.7
-    top_p: 0.8
-    top_k: 20
-    repetition_penalty: 1.05
-
-    gpu_memory_utilization: 0.5
-
-    supports_thinking: true
-
-    seed: 0
-
-  code_generator:
-    name: "Qwen3-4B"
-    family: "qwen3"
-    path_or_id: "Qwen/Qwen3-4B"
-    role: "code_generator"
-
-    max_model_len: 32768
-    max_tokens: 4096
-    temperature: 0.7
-    top_p: 0.8
-    top_k: 20
-    repetition_penalty: 1.05
-
-    gpu_memory_utilization: 0.5
-
-    supports_thinking: true
-
-    seed: 0
-
-  text_inspector:
-    name: "Qwen3-4B"
-    family: "qwen3"
-    path_or_id: "Qwen/Qwen3-4B"
-    role: "text_inspector"
-
-    max_model_len: 32768
-    max_tokens: 4096
-    temperature: 0.7
-    top_p: 0.8
-    top_k: 20
-    repetition_penalty: 1.05
-
-    gpu_memory_utilization: 0.5
-
-    supports_thinking: true
-
-    seed: 0
-
-  context_manager:
-    name: "Qwen3-4B"
-    family: "qwen3"
-    path_or_id: "Qwen/Qwen3-4B"
-    role: "context_manager"
-
-    max_model_len: 32768
-    max_tokens: 4096
-    temperature: 0.7
-    top_p: 0.8
-    top_k: 20
-    repetition_penalty: 1.05
-
-    gpu_memory_utilization: 0.5
-
-    supports_thinking: true
-
-    seed: 0
+  # web_search, code_generator, text_inspector, context_manager are omitted —
+  # they share Qwen3-4B with the orchestrator and will reuse its cached instance.
 
   image_inspector:
     name: "Qwen2.5-VL-3B"
-    family: "qwen3"
+    family: "qwen3"                          # Uses Qwen chat-template logic
     path_or_id: "Qwen/Qwen2.5-VL-3B-Instruct"
     role: "image_inspector"
-
-    max_model_len: 32768
-    max_tokens: 4096
-    temperature: 0.7
-    top_p: 0.8
-    top_k: 20
-    repetition_penalty: 1.05
-
-    # Remaining ~46 GiB after orchestrator; 0.4 * 93 GiB = 37 GiB needed, fits comfortably.
+    # ~46 GiB remain after orchestrator; 0.4 × 93 GiB = 37 GiB needed.
     gpu_memory_utilization: 0.4
 
-    supports_thinking: true
-
-    seed: 0
-
-# Tool configuration
 tools:
   enabled_tools:
     - web_search
@@ -131,28 +38,23 @@ tools:
     - text_inspector
     - image_inspector
     - context_manager
-  direct_tool_call: false  # SUB-AGENT MODE: Tools use LLMs for analysis
+  direct_tool_call: false
   max_search_limit: 10
   top_k_results: 5
   max_doc_len: 3000
 
-# Dataset configuration
 dataset:
   name: "gaia"
   split: "all_validation"
   data_dir: "./data"
-  subset_num: 5  # -1 for all examples
+  subset_num: 5  # -1 for all
 
-# Execution settings
 max_turns: 15
 seed: 0
-thinking_mode: "ORCHESTRATOR_ONLY"  # Only orchestrator thinks; tool responses have no <think>
+thinking_mode: "ORCHESTRATOR_ONLY"
 
-# Output settings
 output_dir: "./experiments/results/gaia_qwen3_subagent"
 use_wandb: false
 wandb_project: "msc-thesis"
 
-# Caching
 cache_dir: "./cache"
-

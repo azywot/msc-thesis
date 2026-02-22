@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --partition=gpu_h100
+#SBATCH --partition={{ partition }}
 #SBATCH --gpus={{ num_gpus }}
 #SBATCH --job-name={{ experiment_name }}
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --time={{ time_limit }}
+#SBATCH --ntasks={{ ntasks }}
+#SBATCH --cpus-per-task={{ cpus_per_task }}
+#SBATCH --time={{ time }}
 #SBATCH --output={{ output_dir }}/{{ experiment_name }}_%A.log
 
 # Load modules

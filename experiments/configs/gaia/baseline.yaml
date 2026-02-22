@@ -1,10 +1,16 @@
-# GAIA Baseline Experiment Configuration
-# This config defines a complete experiment using Qwen3-4B
+# GAIA Baseline — Qwen3-4B, direct tool call, orchestrator thinking
 
-name: "gaia_qwen3_baseline"
+name: "gaia_qwen3_baseline_test"
 description: "GAIA validation set evaluation with Qwen3-4B and full toolset"
 
-# Model configuration
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 1
+  ntasks: 1
+  cpus_per_task: 8
+  time: "01:00:00"
+  conda_env: "agent_engine"
+
 models:
   orchestrator:
     name: "Qwen3-4B"
@@ -12,48 +18,29 @@ models:
     path_or_id: "Qwen/Qwen3-4B"
     role: "orchestrator"
 
-    # Generation parameters
-    max_model_len: 32768
-    max_tokens: 8192
-    temperature: 0.7
-    top_p: 0.8
-    top_k: 20
-    repetition_penalty: 1.05
-
-    # Capabilities
-    supports_thinking: true
-
-    # Reproducibility
-    seed: 0
-
-# Tool configuration
 tools:
   enabled_tools:
     - web_search
     - code_generator
     - text_inspector
     - context_manager
-  direct_tool_call: true  # Direct mode - no sub-agent LLMs (more efficient)
+  direct_tool_call: true
   max_search_limit: 10
   top_k_results: 5
   max_doc_len: 3000
 
-# Dataset configuration
 dataset:
   name: "gaia"
   split: "all_validation"
   data_dir: "./data"
-  subset_num: 5  # -1 for all examples
+  subset_num: 5  # -1 for all
 
-# Execution settings
 max_turns: 15
 seed: 0
-thinking_mode: "ORCHESTRATOR_ONLY"  # Options: NO, ORCHESTRATOR_ONLY, SUBAGENTS_ONLY, ALL
+thinking_mode: "ORCHESTRATOR_ONLY"
 
-# Output settings
 output_dir: "./experiments/results/gaia_baseline"
 use_wandb: false
 wandb_project: "msc-thesis"
 
-# Caching
 cache_dir: "./cache"

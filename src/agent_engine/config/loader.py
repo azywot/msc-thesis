@@ -10,7 +10,7 @@ from typing import Any, Dict
 import yaml
 
 from ..models.base import ModelConfig, ModelFamily
-from .schema import DatasetConfig, ExperimentConfig, ThinkingMode, ToolsConfig
+from .schema import DatasetConfig, ExperimentConfig, SlurmConfig, ThinkingMode, ToolsConfig
 
 
 def load_experiment_config(path: Path) -> ExperimentConfig:
@@ -45,6 +45,9 @@ def load_experiment_config(path: Path) -> ExperimentConfig:
     if "dataset" in data:
         data["dataset"] = DatasetConfig(**data["dataset"])
 
+    if "slurm" in data:
+        data["slurm"] = SlurmConfig(**data["slurm"])
+
     # Convert thinking_mode string to enum
     if "thinking_mode" in data:
         thinking_str = data["thinking_mode"]
@@ -55,8 +58,14 @@ def load_experiment_config(path: Path) -> ExperimentConfig:
         except ValueError:
             raise ValueError(f"Invalid thinking mode: {thinking_str}. Must be one of: NO, ORCHESTRATOR_ONLY, SUBAGENTS_ONLY, ALL")
 
-    # Create ExperimentConfig
-    return ExperimentConfig(**data)
+    config = ExperimentConfig(**data)
+
+    # Propagate top-level seed to any model that doesn't declare its own.
+    for model_cfg in config.models.values():
+        if model_cfg.seed is None:
+            model_cfg.seed = config.seed
+
+    return config
 
 
 def _load_models(models_data: Dict[str, Any]) -> Dict[str, ModelConfig]:
@@ -123,13 +132,20 @@ def _config_to_dict(config: ExperimentConfig) -> Dict[str, Any]:
         },
         "max_turns": config.max_turns,
         "seed": config.seed,
-        "thinking_mode": config.thinking_mode.value,  # Convert enum to string
+        "thinking_mode": config.thinking_mode.value,
         "output_dir": str(config.output_dir),
         "use_wandb": config.use_wandb,
         "cache_dir": str(config.cache_dir),
+        "slurm": {
+            "partition": config.slurm.partition,
+            "num_gpus": config.slurm.num_gpus,
+            "ntasks": config.slurm.ntasks,
+            "cpus_per_task": config.slurm.cpus_per_task,
+            "time": config.slurm.time,
+            "conda_env": config.slurm.conda_env,
+        },
     }
 
-    # Add models
     for role, model_config in config.models.items():
         model_dict = {
             "name": model_config.name,
@@ -142,10 +158,8 @@ def _config_to_dict(config: ExperimentConfig) -> Dict[str, Any]:
             "top_p": model_config.top_p,
             "top_k": model_config.top_k,
             "repetition_penalty": model_config.repetition_penalty,
-            "supports_thinking": model_config.supports_thinking,
-            "seed": model_config.seed,
         }
-        # Only persist resource fields when they carry non-default information.
+        # Only persist fields that differ from auto-derived defaults.
         if model_config.gpu_ids is not None:
             model_dict["gpu_ids"] = model_config.gpu_ids
         if model_config.tensor_parallel_size is not None:
@@ -154,7 +168,6 @@ def _config_to_dict(config: ExperimentConfig) -> Dict[str, Any]:
             model_dict["gpu_memory_utilization"] = model_config.gpu_memory_utilization
         data["models"][role] = model_dict
 
-    # Add dataset if present
     if config.dataset:
         data["dataset"] = {
             "name": config.dataset.name,
@@ -163,7 +176,6 @@ def _config_to_dict(config: ExperimentConfig) -> Dict[str, Any]:
             "subset_num": config.dataset.subset_num,
         }
 
-    # Add W&B project if present
     if config.wandb_project:
         data["wandb_project"] = config.wandb_project
 

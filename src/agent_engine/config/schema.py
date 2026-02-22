@@ -1,8 +1,4 @@
-"""Configuration schema for agent_engine experiments.
-
-This module defines dataclasses for complete experiment configuration,
-replacing scattered argparse arguments with declarative YAML configs.
-"""
+"""Configuration schema for agent_engine experiments."""
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -18,6 +14,17 @@ class ThinkingMode(Enum):
     ORCHESTRATOR_ONLY = "ORCHESTRATOR_ONLY"
     SUBAGENTS_ONLY = "SUBAGENTS_ONLY"
     ALL = "ALL"
+
+
+@dataclass
+class SlurmConfig:
+    """SLURM job resource configuration."""
+    partition: str = "gpu_h100"
+    num_gpus: Optional[int] = 1
+    ntasks: int = 1
+    cpus_per_task: int = 8
+    time: str = "04:00:00"
+    conda_env: str = "agent_engine"
 
 
 @dataclass
@@ -59,6 +66,7 @@ class ExperimentConfig:
     use_wandb: bool = False
     wandb_project: Optional[str] = None
     cache_dir: Path = Path("./cache")
+    slurm: SlurmConfig = field(default_factory=SlurmConfig)
 
     def __post_init__(self):
         if isinstance(self.output_dir, str):
