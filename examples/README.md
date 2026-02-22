@@ -35,7 +35,6 @@ Support files:
 | File | Purpose |
 |---|---|
 | `_common.py` | Shared helpers (model init, tool wiring, orchestrator factory, prompt builder) — mirrors `scripts/run_experiment.py` |
-| `simple_example.py` | Original minimal example (web_search + code_generator, direct mode) |
 | `fixtures/sample_document.txt` | Synthetic annual report used by the text-inspector example |
 | `fixtures/make_test_image.py` | Standalone helper to regenerate the bar-chart PNG manually |
 

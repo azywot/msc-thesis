@@ -9,7 +9,7 @@ Complete setup in 4 steps.
 ```bash
 cd $HOME/thesis/msc-thesis
 
-# 1) Setup environment (~30 min)
+# 1) Setup environment 
 sbatch jobs/001_setup.job
 
 # 2) Create `.env` with API keys
@@ -19,12 +19,11 @@ nano .env  # or vim, emacs, etc.
 # 3) Download datasets
 sbatch jobs/002_download_datasets.job
 
-# 4) Test setup (~15 min)
+# 4) Test setup 
 sbatch jobs/003_test_simple.job
 
 # Monitor jobs / logs
 squeue -u $USER
-tail -f out/test/simple_example_*.log
 ```
 
 `.env` minimum (required):
@@ -49,7 +48,7 @@ WANDB_API_KEY=...
 |------|---------|----------------|
 | `jobs/001_setup.job` | Create conda env `agent_engine` + install project | `out/setup/msc_thesis_env_setup_<job_id>.log` |
 | `jobs/002_download_datasets.job` | Download all benchmark datasets | `out/datasets/download_datasets_<job_id>.log` |
-| `jobs/003_test_simple.job` | Smoke test (`examples/simple_example.py`) | `out/test/simple_example_<job_id>.log` |
+| `jobs/003_test_simple.job` |
 | `jobs/004_export_env.job` | Export conda env YAMLs | `out/export_env/export_env_<job_id>.log` + `jobs/env_exports/*.yml` |
 | `jobs/submit_job.sh` | Wrapper for all jobs | prints job id + paths |
 
@@ -129,16 +128,6 @@ sacct -j <job_id>                   # Accounting info (after / during run)
 scancel <job_id>                    # Cancel one job
 scancel -u $USER                    # Cancel all your jobs
 scancel -n <job_name>               # Cancel by name
-```
-
-### Interactive Session (for debugging)
-```bash
-salloc --partition=gpu_a100 --gpus=1 --time=01:00:00
-# Once allocated:
-module load 2025 Miniconda3/25.5.1-1 CUDA/12.8.0
-source activate agent_engine
-cd $HOME/thesis/msc-thesis
-python examples/simple_example.py
 ```
 
 ---

@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=00:15:00
-#SBATCH --output=out/test/simple_example_%A.log
+#SBATCH --output=out/test/example_subagent_%A.log
 
 set -euo pipefail
 
@@ -85,8 +85,6 @@ run_example() {
     echo ""
 }
 
-# Original (direct-mode) example
-run_example "simple_example.py" "python examples/simple_example.py"
 
 # Per-tool (sub-agent mode) examples
 run_example "example_code_generator.py" "python examples/example_code_generator.py"
