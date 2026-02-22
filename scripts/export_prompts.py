@@ -54,7 +54,7 @@ def export_all_prompts(output_path: Path):
         ("code_generator", CodeGeneratorTool()),
         ("context_manager", ContextManagerTool()),
         ("text_inspector", TextInspectorTool()),
-        ("image_inspector", ImageInspectorTool()),
+        ("image_inspector", ImageInspectorTool(model_provider=None)),
     ]
 
     for tool_name, tool in tools:

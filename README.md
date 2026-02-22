@@ -1,64 +1,68 @@
-# Agent Engine (`msc-thesis`)
+# 🌌 Collaborative Small-Agent System (CoSMAS)
 
-Configuration-driven agentic reasoning system with multi-turn tool calling, built for reproducible LLM experiments on HPC/SLURM.
+CoSMAS is a configuration-driven multi-agent research framework for investigating how small, collaborative language models can be composed to solve complex tasks efficiently. Its primary focus is the design and evaluation of collaboration mechanisms, enabling systematic comparison between single-model baselines and cooperative multi-agent configurations under controlled experimental conditions.
 
-## Key features
-- **YAML experiment configs**: one canonical schema (`src/agent_engine/config/schema.py`)
-- **Multiple model backends**: local vLLM and API providers (OpenAI/Anthropic)
-- **Tool calling**: web search, code execution, mind-map memory, file inspectors
-- **Batching & concurrency**: multi-question batching + concurrent API calls + batched URL fetching
-- **Model instance reuse**: share the same local model across roles with thread-safe locks
+---
+
+## Table of contents
+
+1. [Project structure](#project-structure)
+2. [Installation](#installation)
+3. [HPC / Cluster setup](#hpc--cluster-setup)
+4. [Running experiments](#running-experiments)
+5. [Examples](#examples)
+6. [Configuration reference](#configuration-reference)
+7. [Tools](#tools)
+8. [Datasets](#datasets)
+9. [Outputs](#outputs)
+
+---
 
 ## Project structure
 
 ```
 msc-thesis/
-├── README.md                      # This file
-├── pyproject.toml                 # Package + tooling config
-├── requirements.txt               # Python deps (pip)
-├── environment.yml                # Conda env (HPC-friendly)
+├── src/agent_engine/          # Main Python package
+│   ├── config/                # YAML schema + loader
+│   ├── core/                  # Orchestrator + tool-calling loop
+│   ├── models/                # vLLM + API providers + locking/reuse
+│   ├── tools/                 # web_search, code_generator, context_manager, inspectors
+│   ├── datasets/              # loaders + evaluators + metrics
+│   ├── prompts/               # prompt templates + builders
+│   ├── external/              # Serper + URL fetching utilities
+│   ├── caching/               # cache manager(s)
+│   └── utils/                 # parsing/logging helpers
 │
-├── src/
-│   └── agent_engine/              # Main Python package
-│       ├── config/                # YAML schema + loader
-│       ├── core/                  # Orchestrator + tool-calling loop
-│       ├── models/                # vLLM + API providers + locking/reuse
-│       ├── tools/                 # web_search, code_generator, context_manager, inspectors
-│       ├── datasets/              # loaders + evaluators + metrics
-│       ├── prompts/               # prompt templates + builders
-│       ├── external/              # Serper + URL fetching utilities
-│       ├── caching/               # cache manager(s)
-│       └── utils/                 # parsing/logging helpers
-│
-├── scripts/                       # User-facing entrypoints
-│   ├── run_experiment.py          # Main runner (requires --config)
-│   ├── analyze_results.py         # Metrics + breakdowns
-│   ├── download_datasets.py       # Fetch/prepare datasets
-│   └── export_prompts.py          # Prompt export utilities
+├── scripts/
+│   ├── run_experiment.py      # Main runner (requires --config)
+│   ├── analyze_results.py     # Metrics + breakdowns
+│   ├── download_datasets.py   # Fetch/prepare datasets
+│   └── export_prompts.py      # Dump prompt templates + tool schemas to JSON
 │
 ├── experiments/
-│   ├── configs/                   # Experiment YAMLs (by dataset)
-│   └── results/                   # Default output root (per config output_dir)
+│   ├── configs/               # Experiment YAMLs (by dataset)
+│   └── results/               # Default output root
 │
-├── jobs/                          # SLURM/HPC workflow
-│   ├── QUICKSTART.md              # HPC quickstart
-│   ├── submit_job.sh              # Convenience submit wrapper
-│   ├── scripts/                   # Job generation helpers
-│   ├── templates/                 # SLURM templates
-│   └── generated/                 # Generated .job files
-│
-├── docs/                          # Deeper documentation
-├── examples/                      # Small runnable examples
-└── tests/                         # Unit tests
+├── jobs/                      # SLURM job scripts + HPC tooling
+├── examples/                  # Small runnable single-tool examples
+├── pyproject.toml
+├── requirements.txt
+└── environment.yml            # Conda env for HPC
 ```
 
-### Where to start (common tasks)
-- **Run an experiment**: `scripts/run_experiment.py` + `experiments/configs/**`
-- **Change config fields / defaults**: `src/agent_engine/config/schema.py`
-- **Model providers / batching / reuse**: `src/agent_engine/models/`
-- **Tools**: `src/agent_engine/tools/`
-- **Datasets + evaluation**: `src/agent_engine/datasets/`
-- **SLURM**: `jobs/QUICKSTART.md`, `jobs/submit_job.sh`, `jobs/scripts/`
+**Common navigation:**
+
+| Goal | Where to look |
+|---|---|
+| Run or configure an experiment | `scripts/run_experiment.py` + `experiments/configs/` |
+| Change config schema / defaults | `src/agent_engine/config/schema.py` |
+| Model providers, batching, GPU reuse | `src/agent_engine/models/` |
+| Tool implementations | `src/agent_engine/tools/` |
+| Dataset loaders + metrics | `src/agent_engine/datasets/` |
+| SLURM job scripts | `jobs/` |
+| Single-tool sanity checks | `examples/` |
+
+---
 
 ## Installation
 
@@ -67,60 +71,181 @@ cd msc-thesis
 pip install -e .
 ```
 
-Optional (dev tools):
+Optional dev extras:
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-HPC/Conda setup is documented in `jobs/QUICKSTART.md`.
+For HPC/Conda, follow the [cluster setup](#hpc--cluster-setup) section below.
 
-## Quick start
+---
 
-### 1) Set API keys
+## HPC / Cluster setup
+
+Run these four steps once on Snellius (SURF) before launching any experiment. <br>
+All commands assume `$HOME/thesis/msc-thesis/` as the working directory.
+
+### 1. Build the conda environment
 
 ```bash
-# Required for `web_search`
+sbatch jobs/001_setup.job
+squeue -u $USER    # monitor progress
+```
+
+Creates the `agent_engine` conda environment and installs the project.  
+Log: `out/setup/msc_thesis_env_setup_<job_id>.log`
+
+### 2. Set API keys
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Minimum required:
+
+```bash
+SERPER_API_KEY=your_serper_key_here
+```
+
+Optional:
+
+```bash
+OPENAI_API_KEY=...
+ANTHROPIC_API_KEY=...
+WANDB_API_KEY=...
+```
+
+### 3. Download datasets
+
+```bash
+sbatch jobs/002_download_datasets.job
+```
+
+Downloads all benchmark datasets to `/scratch-shared/$USER/data/`.  
+Log: `out/datasets/download_datasets_<job_id>.log`
+
+### 4. Verify the setup
+
+```bash
+sbatch jobs/003_test_simple.job
+```
+
+Runs a short single-example test using `experiments/configs/gaia/test_subagent.yaml`.  
+Log: `out/test/example_subagent_<job_id>.log`
+
+### Job files reference
+
+| File | Purpose | Log |
+|------|---------|-----|
+| `jobs/001_setup.job` | Create conda env + install project | `out/setup/msc_thesis_env_setup_<job_id>.log` |
+| `jobs/002_download_datasets.job` | Download benchmark datasets | `out/datasets/download_datasets_<job_id>.log` |
+| `jobs/003_test_simple.job` | Smoke-test a single example | `out/test/example_subagent_<job_id>.log` |
+| `jobs/004_export_env.job` | Export conda env YAMLs | `out/export_env/export_env_<job_id>.log` |
+| `jobs/005_export_prompts.job` | Export prompt templates + tool schemas | `out/export_prompts/export_prompts_<job_id>.log` |
+
+Optional overrides (via `sbatch --export=ALL,...`): `ENV_NAME`, `PROJECT_DIR`, `DATA_DIR`.
+
+---
+
+## Running experiments
+
+### Locally
+
+```bash
+# Set required key
 export SERPER_API_KEY="..."
 
-# Optional (API models / W&B)
-export OPENAI_API_KEY="..."
-export ANTHROPIC_API_KEY="..."
-export WANDB_API_KEY="..."
-```
-
-### 2) Run an experiment
-
-```bash
+# Run with a config file
 python scripts/run_experiment.py --config experiments/configs/gaia/baseline.yaml
-```
 
-Increase batching (faster on vLLM; default is 8):
-
-```bash
+# Increase batch size for faster vLLM throughput (default: 8)
 python scripts/run_experiment.py --config experiments/configs/gaia/baseline.yaml --batch-size 16
+
+# Override output directory
+python scripts/run_experiment.py --config experiments/configs/gaia/baseline.yaml \
+    --output-dir ./experiments/results/my_run
 ```
 
-Override the output directory (optional):
+### On SLURM
 
 ```bash
-python scripts/run_experiment.py --config experiments/configs/gaia/baseline.yaml --output-dir ./experiments/results/my_run
+# Convenience wrapper: generates a job file from the config and submits it
+./jobs/submit_job.sh experiment experiments/configs/gaia/baseline.yaml
+
+# Or manually:
+python jobs/scripts/generate_job.py experiments/configs/gaia/baseline.yaml
+sbatch jobs/generated/gaia_qwen3_baseline.job
 ```
 
-### 3) Analyze results
+
+### Available experiment configs
+
+```
+experiments/configs/
+├── gaia/
+│   ├── baseline.yaml        # Full GAIA validation run
+│   ├── test_direct.yaml     # Quick test — direct tool mode
+│   └── test_subagent.yaml   # Quick test — sub-agent mode
+└── template.yml             # Annotated template for new configs
+```
+
+To create a new config:
 
 ```bash
-python scripts/analyze_results.py ./experiments/results/gaia_baseline/results.json --by-level --tools
+cp experiments/configs/gaia/baseline.yaml experiments/configs/gaia/my_run.yaml
+nano experiments/configs/gaia/my_run.yaml
+./jobs/submit_job.sh experiment experiments/configs/gaia/my_run.yaml
 ```
 
-## Configuration
+---
 
-Experiments are defined in YAML and loaded via `src/agent_engine/config/loader.py`.
+## Examples
+
+The `examples/` directory contains one script per tool. Each script runs a single
+question chosen to force the model to call the tool under test. They are the
+recommended sanity check before launching a full experiment.
+
+Run from the `msc-thesis/` root:
+
+```bash
+python examples/example_web_search.py        # web_search
+python examples/example_code_generator.py    # code_generator
+python examples/example_text_inspector.py    # text_inspector (reads fixtures/sample_document.txt)
+python examples/example_image_inspector.py   # image_inspector (generates test PNG automatically)
+python examples/example_context_manager.py   # web_search + context_manager (GraphRAG)
+```
+
+Prerequisites:
+
+```bash
+export SERPER_API_KEY="<your-key>"
+export HF_HOME="/path/to/hf_cache"   # must contain Qwen/Qwen3-4B
+```
+
+Each script writes its output to `experiments/results/examples/<tool_name>/`:
+- `result.json` — question, answer, turns used, tool call counts
+- `trace.json` — full message + tool call history for debugging
+- `example.log` — human-readable execution log
+
+| Script | Tool tested |
+|---|---|
+| `example_web_search.py` | `web_search` |
+| `example_code_generator.py` | `code_generator` |
+| `example_text_inspector.py` | `text_inspector` |
+| `example_image_inspector.py` | `image_inspector` |
+| `example_context_manager.py` | `web_search` + `context_manager` |
+
+---
+
+## Configuration reference
+
+Experiments are defined in YAML. A minimal example:
 
 ```yaml
-# experiments/configs/gaia/baseline.yaml
 name: "gaia_qwen3_baseline"
-description: "GAIA validation (direct tool mode)"
+description: "GAIA validation — direct tool mode"
 
 models:
   orchestrator:
@@ -144,138 +269,91 @@ output_dir: "./experiments/results/gaia_baseline"
 cache_dir: "./cache"
 ```
 
-Defaults live in:
-- `src/agent_engine/config/schema.py` (experiment/tools/dataset defaults)
-- `src/agent_engine/models/base.py` (model generation defaults)
+See `experiments/configs/template.yml` for a fully annotated version. Schema and defaults live in:
+- `src/agent_engine/config/schema.py` — experiment / tools / dataset fields
+- `src/agent_engine/models/base.py` — model generation defaults
 
-## Modes
+### Key options
 
-- **Direct vs sub-agent tools**: `tools.direct_tool_call: true/false`
-- **Thinking**: `thinking_mode: NO | ORCHESTRATOR_ONLY | SUBAGENTS_ONLY | ALL`
-- **Batching**: `--batch-size N` (N=1 disables batching)
-- **Model instance reuse** (local models): if multiple roles share the same `path_or_id`, the runner reuses the loaded model instance and serializes access with per-model locks.
+| Option | Values | Description |
+|---|---|---|
+| `tools.direct_tool_call` | `true` / `false` | Direct mode returns raw tool output to the planner; sub-agent mode uses a second LLM to analyse it first |
+| `thinking_mode` | `NO` / `ORCHESTRATOR_ONLY` / `SUBAGENTS_ONLY` / `ALL` | Controls which roles emit extended reasoning (requires a thinking-capable model) |
+| `--batch-size N` | integer | Questions processed in parallel per vLLM call (default 8; set to 1 to disable) |
+
+If multiple roles share the same `path_or_id`, the runner reuses the loaded vLLM instance and serialises access with per-model locks — no duplicate GPU memory.
+
+---
 
 ## Tools
 
-Enabled via `tools.enabled_tools`:
-- `web_search` (`Serper` + optional URL fetching / sub-agent analysis)
-- `code_generator` (generate + run Python)
-- `context_manager` (persistent memory)
-- `text_inspector` (read/analyze text files)
-- `image_inspector` (vision analysis; requires a vision-capable model)
+Enabled via `tools.enabled_tools` in the config:
+
+| Tool | Description |
+|---|---|
+| `web_search` | Serper API search + URL fetching; optional LLM-based result analysis in sub-agent mode |
+| `code_generator` | Execute Python in a subprocess; LLM generates the code in sub-agent mode |
+| `context_manager` | Persistent per-question memory with optional GraphRAG indexing |
+| `text_inspector` | Read and optionally analyse text files (PDF, DOCX, XLSX, CSV, …) |
+| `image_inspector` | Vision-language analysis of images; requires a VLM in the config |
+
+---
 
 ## Datasets
 
-Supported dataset names include:
-- **GAIA**: `gaia`
-- **GPQA**: `gpqa`
-- **Math**: `math500`, `aime`, `amc`
-- **QA**: `nq`, `triviaqa`, `hotpotqa`, `musique`, `bamboogle`, `2wiki`
+| Name | Key |
+|---|---|
+| GAIA | `gaia` |
+| GPQA | `gpqa` |
+| MATH500 | `math500` |
+| AIME | `aime` |
+| AMC | `amc` |
+| Natural Questions | `nq` |
+| TriviaQA | `triviaqa` |
+| HotpotQA | `hotpotqa` |
+| MuSiQue | `musique` |
+| Bamboogle | `bamboogle` |
+| 2WikiMultiHopQA | `2wiki` |
+
+Download datasets before running:
+
+```bash
+python scripts/download_datasets.py --dataset gaia --split validation
+```
+
+---
 
 ## Outputs
 
-`output_dir/` contains:
-- `results.json` (main per-example results)
-- `results_partial.json` (periodic checkpoint saves)
-- `experiment.log` (runner logs)
-- legacy compatibility: `<split>.<month>.<day>,<hour>:<min>.json` and `.metrics.json`
-- if run via SLURM: `<experiment_name>_<job_id>.log`
+Each run creates a timestamped subdirectory under `output_dir/`
+(e.g. `all_validation_2026-02-22-22-25-02_<job_id>/`):
 
-## Running on SLURM
-
-```bash
-./jobs/submit_job.sh experiment experiments/configs/gaia/baseline.yaml
-```
-
-Or generate a job file from a config:
-
-```bash
-python jobs/scripts/generate_job.py experiments/configs/gaia/baseline.yaml
-sbatch jobs/generated/<experiment_name>.job
-```
-
-## Documentation
-- `jobs/QUICKSTART.md` (HPC/SLURM workflow)
-- `experiments/configs/gaia/README.md` (GAIA config variants)
-
-
-
-# Examples — agent_engine (sub-agent mode)
-
-Each script tests a **single tool** in sub-agent mode using the shared config at
-`experiments/configs/gaia/test_subagent.yaml`.  They are designed to force the
-model to actually call the tool under test rather than answering from its weights.
-
-All scripts should be run from the `msc-thesis/` root directory.
-
----
-
-## Prerequisites
-
-```bash
-# Required for web_search
-export SERPER_API_KEY="<your-key>"
-
-# Required for all examples (models loaded via vLLM)
-# Make sure HF_HOME points to a cache with Qwen/Qwen3-4B
-```
-
----
-
-## Files
-
-| File | Tool tested | Question type |
-|---|---|---|
-| `example_web_search.py` | `web_search` | Recent real-world fact the model cannot know from training data |
-| `example_code_generator.py` | `code_generator` | Multi-part maths problem requiring actual code execution |
-| `example_text_inspector.py` | `text_inspector` | Five specific questions about a local document (`fixtures/sample_document.txt`) |
-| `example_image_inspector.py` | `image_inspector` | Visual questions about a bar-chart PNG (generated on the fly) |
-| `example_context_manager.py` | `web_search` + `context_manager` | Multi-step task: search for facts, then use context_manager to store/query (verifies GraphRAG indexing) |
-
-Support files:
-
-| File | Purpose |
+| File | Contents |
 |---|---|
-| `_common.py` | Shared helpers (model init, tool wiring, orchestrator factory, prompt builder) — mirrors `scripts/run_experiment.py` |
-| `fixtures/sample_document.txt` | Synthetic annual report used by the text-inspector example |
-| `fixtures/make_test_image.py` | Standalone helper to regenerate the bar-chart PNG manually |
+| `raw_results.json` | Per-example results: question, prediction, ground truth, metrics, tool calls |
+| `raw_results.partial.json` | Rolling checkpoint written during the run; deleted on clean completion |
+| `metrics.json` | Aggregate accuracy, EM, F1 |
+| `config.json` | Serialised experiment config for reproducibility |
+| `experiment.log` | Full runner log |
 
----
-
-## Running the examples
+Analyse results:
 
 ```bash
-# Web search
-python examples/example_web_search.py
-
-# Code generation
-python examples/example_code_generator.py
-
-# Text inspection (reads fixtures/sample_document.txt)
-python examples/example_text_inspector.py
-
-# Image inspection (generates fixtures/test_chart.png automatically)
-python examples/example_image_inspector.py
-
-# Context manager + web search (GraphRAG indexing verification)
-python examples/example_context_manager.py
+python scripts/analyze_results.py experiments/results/<run_dir>/raw_results.json
+python scripts/analyze_results.py experiments/results/<run_dir>/raw_results.json --by-level
+python scripts/analyze_results.py experiments/results/<run_dir>/raw_results.json --tools
 ```
 
-Each script saves its output under `experiments/results/examples/<tool_name>/`:
-- `result.json` — question, answer, turns used, tool call counts
-- `trace.json` — full execution state (all messages, tool_calls) for debugging
-- `example.log` — execution log including a readable trace (every message and tool call with arguments). For the code_generator example, the log also includes the generated code and the temp file path where it was written before execution.
+To log to W&B: set `use_wandb: true` + `wandb_project: <name>` in the YAML and provide `WANDB_API_KEY`.
 
 ---
 
-## How it relates to the full experiment runner
 
-The examples use `orchestrator.run()` (single question) instead of
-`orchestrator.run_batch()`. Everything else — model caching, tool constructor
-arguments, `thinking_mode`, `CacheManager`, `PromptBuilder` — is identical to
-`scripts/run_experiment.py`. For a single question `run()` and `run_batch(batch_size=1)`
-produce equivalent results.
+### SLURM quick reference
 
-The config field `tools.enabled_tools` in the YAML is **overridden** in each
-example so that only the one tool under test is registered, even though the YAML
-lists all five tools.
+```bash
+scontrol show job <job_id>   # full job details
+sacct -j <job_id>            # accounting info
+scancel <job_id>             # cancel one job
+scancel -u $USER             # cancel all your jobs
+```
