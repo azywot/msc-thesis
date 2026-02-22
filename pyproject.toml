@@ -34,6 +34,15 @@ dependencies = [
     "datasets>=2.18.0",
     "wandb>=0.16.0",
     "jinja2>=3.1.0",
+    "python-dotenv>=1.0.0",
+    "beautifulsoup4>=4.11.0",
+    "nano-graphrag==0.0.8.2",
+    "pandas>=1.5.0",
+    "pyarrow>=10.0.0",
+    "math-verify[antlr4_13_2]>=0.7.0",
+    "pypdf>=3.0.0",
+    "python-pptx>=0.6.21",
+    "openpyxl>=3.0.0",
 ]
 
 [project.optional-dependencies]

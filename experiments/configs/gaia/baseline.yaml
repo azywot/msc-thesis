@@ -1,6 +1,6 @@
 # GAIA Baseline — Qwen3-4B, direct tool call, orchestrator thinking
 
-name: "gaia_qwen3_baseline_test"
+name: "gaia_qwen3_baseline"
 description: "GAIA validation set evaluation with Qwen3-4B and full toolset"
 
 slurm:

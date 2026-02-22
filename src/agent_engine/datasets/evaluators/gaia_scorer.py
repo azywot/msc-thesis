@@ -8,7 +8,7 @@ import json
 import re
 import string
 import warnings
-from typing import Union, List
+from typing import List, Optional, Union
 
 from ...utils.logging import get_logger
 
@@ -39,7 +39,7 @@ def normalize_number_str(number_str: str) -> float:
 
 def split_string(
     s: str,
-    char_list: List[str] = [",", ";"],
+    char_list: Optional[List[str]] = None,
 ) -> List[str]:
     """Split string by multiple delimiters.
 
@@ -50,6 +50,8 @@ def split_string(
     Returns:
         List of split strings
     """
+    if char_list is None:
+        char_list = [",", ";"]
     pattern = f"[{''.join(char_list)}]"
     return re.split(pattern, s)
 
