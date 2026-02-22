@@ -23,7 +23,7 @@ msc-thesis/
 │       ├── config/                # YAML schema + loader
 │       ├── core/                  # Orchestrator + tool-calling loop
 │       ├── models/                # vLLM + API providers + locking/reuse
-│       ├── tools/                 # web_search, code_generator, mind_map, inspectors
+│       ├── tools/                 # web_search, code_generator, context_manager, inspectors
 │       ├── datasets/              # loaders + evaluators + metrics
 │       ├── prompts/               # prompt templates + builders
 │       ├── external/              # Serper + URL fetching utilities
@@ -123,10 +123,10 @@ name: "gaia_qwen3_baseline"
 description: "GAIA validation (direct tool mode)"
 
 models:
-  planner:
+  orchestrator:
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-32B"
-    role: "planner"
+    role: "orchestrator"
     tensor_parallel_size: 2
     gpu_ids: [0, 1]
 
@@ -139,7 +139,7 @@ dataset:
   split: "all_validation"
 
 max_turns: 15
-thinking_mode: "PLANNER_ONLY"
+thinking_mode: "ORCHESTRATOR_ONLY"
 output_dir: "./experiments/results/gaia_baseline"
 cache_dir: "./cache"
 ```
@@ -151,7 +151,7 @@ Defaults live in:
 ## Modes
 
 - **Direct vs sub-agent tools**: `tools.direct_tool_call: true/false`
-- **Thinking**: `thinking_mode: NO | PLANNER_ONLY | SUBAGENTS_ONLY | ALL`
+- **Thinking**: `thinking_mode: NO | ORCHESTRATOR_ONLY | SUBAGENTS_ONLY | ALL`
 - **Batching**: `--batch-size N` (N=1 disables batching)
 - **Model instance reuse** (local models): if multiple roles share the same `path_or_id`, the runner reuses the loaded model instance and serializes access with per-model locks.
 
@@ -160,7 +160,7 @@ Defaults live in:
 Enabled via `tools.enabled_tools`:
 - `web_search` (`Serper` + optional URL fetching / sub-agent analysis)
 - `code_generator` (generate + run Python)
-- `mind_map` (persistent memory)
+- `context_manager` (persistent memory)
 - `text_inspector` (read/analyze text files)
 - `image_inspector` (vision analysis; requires a vision-capable model)
 

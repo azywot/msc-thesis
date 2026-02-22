@@ -48,14 +48,12 @@ def load_experiment_config(path: Path) -> ExperimentConfig:
     # Convert thinking_mode string to enum
     if "thinking_mode" in data:
         thinking_str = data["thinking_mode"]
-        # Handle both bool (legacy) and string format
-        if isinstance(thinking_str, bool):
-            data["thinking_mode"] = ThinkingMode.PLANNER_ONLY if thinking_str else ThinkingMode.NO
-        elif isinstance(thinking_str, str):
-            try:
-                data["thinking_mode"] = ThinkingMode(thinking_str)
-            except ValueError:
-                raise ValueError(f"Invalid thinking mode: {thinking_str}. Must be one of: NO, PLANNER_ONLY, SUBAGENTS_ONLY, ALL")
+        if not isinstance(thinking_str, str):
+            raise ValueError(f"thinking_mode must be a string (NO, ORCHESTRATOR_ONLY, SUBAGENTS_ONLY, ALL), got {type(thinking_str).__name__}")
+        try:
+            data["thinking_mode"] = ThinkingMode(thinking_str)
+        except ValueError:
+            raise ValueError(f"Invalid thinking mode: {thinking_str}. Must be one of: NO, ORCHESTRATOR_ONLY, SUBAGENTS_ONLY, ALL")
 
     # Create ExperimentConfig
     return ExperimentConfig(**data)
@@ -72,6 +70,12 @@ def _load_models(models_data: Dict[str, Any]) -> Dict[str, ModelConfig]:
     """
     models = {}
     for role, config_data in models_data.items():
+        # Backward compat: planner -> orchestrator
+        if role == "planner":
+            role = "orchestrator"
+            if "role" in config_data and config_data["role"] == "planner":
+                config_data = dict(config_data)
+                config_data["role"] = "orchestrator"
         # Convert family string to enum
         if "family" in config_data:
             family_str = config_data["family"]

@@ -92,7 +92,7 @@ def strip_thinking_tags(text: str) -> str:
     """Remove thinking tags from text.
 
     Models with thinking mode output <think>...</think> tags.
-    Use this for any LLM output returned to the orchestrator so the planner
+    Use this for any LLM output returned to the orchestrator so the orchestrator
     never sees thinking content. Safe to call with None or empty string.
 
     Args:

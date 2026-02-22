@@ -16,9 +16,9 @@ from .tool import ToolRegistry, ToolResult
 
 logger = get_logger(__name__)
 
-# Tools whose pre-call reasoning is indexed into the mind map graph.
-# Mirrors MAT: reasoning before search, code, and mind_map calls is inserted.
-_MIND_MAP_INDEXED_TOOLS = frozenset({"web_search", "code_generator", "mind_map"})
+# Tools whose pre-call reasoning is indexed into the context manager graph.
+# Mirrors MAT: reasoning before search, code, and context_manager calls is inserted.
+_CONTEXT_MANAGER_INDEXED_TOOLS = frozenset({"web_search", "code_generator", "context_manager"})
 
 _IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png"})
 _TEXT_EXTS = frozenset({
@@ -104,7 +104,7 @@ class AgenticOrchestrator:
             attachments=attachments,
         )
 
-        self._init_mind_map(state)
+        self._init_context_manager(state)
         logger.info(f"Starting execution for question {question_id}")
 
         while state.turn < self.max_turns and not state.finished:
@@ -122,7 +122,7 @@ class AgenticOrchestrator:
 
             tool_call = parse_qwen3_tool_call(gen_result.text)
             if tool_call:
-                self._index_reasoning_in_mind_map(gen_result.text, tool_call["name"], state)
+                self._index_reasoning_in_context_manager(gen_result.text, tool_call["name"], state)
                 tool_result = self._execute_tool(tool_call, state)
                 state.add_message("assistant", gen_result.text)
                 clean_output = strip_thinking_tags(tool_result.output or "")
@@ -175,7 +175,7 @@ class AgenticOrchestrator:
         ]
 
         for s in states:
-            self._init_mind_map(s)
+            self._init_context_manager(s)
 
         logger.info(f"Starting batched execution for {len(states)} questions")
 
@@ -259,9 +259,9 @@ class AgenticOrchestrator:
         tool = self.tools.get(tool_name)
         args = tool_call.get("arguments") or {}
 
-        # Index reasoning into the mind map graph before tool execution.
-        # Handles web_search, code_generator, and mind_map (mirrors MAT).
-        self._index_reasoning_in_mind_map(output_text, tool_name, state)
+        # Index reasoning into the context manager graph before tool execution.
+        # Handles web_search, code_generator, and context_manager (mirrors MAT).
+        self._index_reasoning_in_context_manager(output_text, tool_name, state)
 
         if tool and tool_name == "web_search" and not getattr(tool, "direct_mode", True):
             self._schedule_web_job(state, tool_call, tool, args, web_jobs, immediate_results)
@@ -269,7 +269,7 @@ class AgenticOrchestrator:
         elif tool and tool_name == "code_generator" and not getattr(tool, "direct_mode", True):
             self._schedule_code_job(state, tool_call, tool, args, code_jobs, immediate_results)
 
-        elif tool and tool_name == "mind_map":
+        elif tool and tool_name == "context_manager":
             tool.set_current_question(state.question_id)
             immediate_results.append(_ImmediateResult(state, tool_call, self._execute_tool(tool_call, state)))
 
@@ -544,24 +544,24 @@ class AgenticOrchestrator:
     # Mind map helpers                                                    #
     # ------------------------------------------------------------------ #
 
-    def _init_mind_map(self, state: ExecutionState) -> None:
-        """Set the active question context on the mind map tool (both modes)."""
-        tool = self.tools.get("mind_map")
+    def _init_context_manager(self, state: ExecutionState) -> None:
+        """Set the active question context on the context manager tool (both modes)."""
+        tool = self.tools.get("context_manager")
         if tool is not None:
             tool.set_current_question(state.question_id)
 
-    def _index_reasoning_in_mind_map(
+    def _index_reasoning_in_context_manager(
         self, output_text: str, tool_name: str, state: ExecutionState
     ) -> None:
-        """Index pre-tool reasoning into the mind map graph (non-direct mode).
+        """Index pre-tool reasoning into the context manager graph (non-direct mode).
 
         Mirrors MAT: reasoning produced before web_search, code_generator, and
-        mind_map calls is inserted into the GraphRAG knowledge base so the
-        mind_map query has richer context to draw from.
+        context_manager calls is inserted into the GraphRAG knowledge base so the
+        context_manager query has richer context to draw from.
         """
-        if tool_name not in _MIND_MAP_INDEXED_TOOLS:
+        if tool_name not in _CONTEXT_MANAGER_INDEXED_TOOLS:
             return
-        tool = self.tools.get("mind_map")
+        tool = self.tools.get("context_manager")
         if tool is None or getattr(tool, "direct_mode", True):
             return
         tool.set_current_question(state.question_id)

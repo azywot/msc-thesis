@@ -6,11 +6,11 @@ description: "GAIA with direct tool execution using Qwen3-4B (no sub-agents)"
 
 # Single model - only orchestrator needed
 models:
-  planner:
+  orchestrator:
     name: "Qwen3-4B"
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-4B"
-    role: "planner"
+    role: "orchestrator"
 
     # Generation parameters
     max_model_len: 32768
@@ -31,7 +31,7 @@ tools:
     - web_search
     - code_generator
     - text_inspector
-    - mind_map
+    - context_manager
   direct_tool_call: true  # Direct mode (no sub-agent LLMs)
   max_search_limit: 10
   top_k_results: 5
@@ -48,9 +48,9 @@ dataset:
 max_turns: 15
 seed: 0
 
-# Thinking mode: PLANNER_ONLY since no sub-agents
-# Options: NO, PLANNER_ONLY, SUBAGENTS_ONLY, ALL
-thinking_mode: "PLANNER_ONLY"
+# Thinking mode: ORCHESTRATOR_ONLY since no sub-agents
+# Options: NO, ORCHESTRATOR_ONLY, SUBAGENTS_ONLY, ALL
+thinking_mode: "ORCHESTRATOR_ONLY"
 
 # Output
 output_dir: "./experiments/results/gaia_direct_mode"

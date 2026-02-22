@@ -26,7 +26,7 @@ from agent_engine.utils.wandb_logging import log_results_wandb
 from agent_engine.tools import (
     WebSearchTool,
     CodeGeneratorTool,
-    MindMapTool,
+    ContextManagerTool,
     TextInspectorTool,
     ImageInspectorTool,
 )
@@ -42,7 +42,7 @@ def setup_model_provider(model_config, api_keys: Dict[str, str], model_cache: Op
     """Initialize model provider with instance caching for memory efficiency.
     
     This function implements model instance reuse: if the same model path is
-    requested multiple times (e.g., for different roles like planner/search/code),
+    requested multiple times (e.g., for different roles like orchestrator/search/code),
     it returns the cached instance instead of loading a new one. This is critical
     for memory efficiency when using the same model for multiple roles.
     
@@ -85,7 +85,7 @@ def setup_model_provider(model_config, api_keys: Dict[str, str], model_cache: Op
     return provider
 
 
-def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers: Dict[str, Any] = None, planner_model=None) -> ToolRegistry:
+def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers: Dict[str, Any] = None, orchestrator_model=None) -> ToolRegistry:
     """Set up tools based on configuration.
 
     Args:
@@ -128,21 +128,21 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
                 model_provider=coding_model,
                 use_thinking=use_subagent_thinking
             ))
-        elif tool_name == "mind_map":
-            # Mind map has different behavior in direct vs non-direct mode.
-            # In non-direct mode, GraphRAG is used with the local model (planner or
-            # dedicated mind_map model) so no OpenAI key is needed — matching MAT.
-            storage_path = str(config.cache_dir / "mind_map")
-            mind_map_model = None
+        elif tool_name == "context_manager":
+            # Context manager has different behavior in direct vs non-direct mode.
+            # In non-direct mode, GraphRAG is used with the local model (orchestrator or
+            # dedicated context_manager model) so no OpenAI key is needed — matching MAT.
+            storage_path = str(config.cache_dir / "context_manager")
+            context_manager_model = None
             if not direct_mode:
-                mind_map_model = (
-                    model_providers.get("mind_map") if model_providers else None
-                ) or planner_model
-            tools.register(MindMapTool(
+                context_manager_model = (
+                    model_providers.get("context_manager") if model_providers else None
+                ) or orchestrator_model
+            tools.register(ContextManagerTool(
                 direct_mode=direct_mode,
                 storage_path=storage_path,
                 use_graphrag=True,
-                model_provider=mind_map_model,
+                model_provider=context_manager_model,
             ))
         elif tool_name == "inspect_text_file":
             # Get model provider for sub-agent mode (optional for text inspector)
@@ -226,7 +226,7 @@ def run_experiment(args):
         "cache_dir": str(config.cache_dir),
         "models": {},
     }
-    for role in ("planner", "search", "coding", "text_inspector", "image_inspector"):
+    for role in ("orchestrator", "search", "coding", "text_inspector", "image_inspector"):
         if not config.has_model(role):
             continue
         m = config.get_model(role)
@@ -279,20 +279,20 @@ def run_experiment(args):
     model_cache: Dict[str, Any] = {}
     
     # Initialize models
-    logger.info(f"Initializing planner model: {config.get_model('planner').name}")
-    planner_model = setup_model_provider(config.get_model("planner"), api_keys, model_cache)
+    logger.info(f"Initializing orchestrator model: {config.get_model('orchestrator').name}")
+    orchestrator_model = setup_model_provider(config.get_model("orchestrator"), api_keys, model_cache)
 
-    # Initialize sub-agent models if not in direct mode (may reuse planner instance)
+    # Initialize sub-agent models if not in direct mode (may reuse orchestrator instance)
     model_providers = {}
     if not config.tools.direct_tool_call:
         logger.info("Sub-agent mode enabled - initializing tool models")
 
-        # Initialize search model if configured (will reuse if same path as planner)
+        # Initialize search model if configured (will reuse if same path as orchestrator)
         if config.has_model("search"):
             logger.info(f"Initializing search model: {config.get_model('search').name}")
             model_providers["search"] = setup_model_provider(config.get_model("search"), api_keys, model_cache)
 
-        # Initialize coding model if configured (will reuse if same path as planner)
+        # Initialize coding model if configured (will reuse if same path as orchestrator)
         if config.has_model("coding"):
             logger.info(f"Initializing coding model: {config.get_model('coding').name}")
             model_providers["coding"] = setup_model_provider(config.get_model("coding"), api_keys, model_cache)
@@ -308,14 +308,14 @@ def run_experiment(args):
             model_providers["image_inspector"] = setup_model_provider(config.get_model("image_inspector"), api_keys, model_cache)
 
         logger.info(f"Thinking mode: {config.thinking_mode.value}")
-        logger.info(f"Planner uses thinking: {config.use_planner_thinking()}")
+        logger.info(f"Orchestrator uses thinking: {config.use_orchestrator_thinking()}")
         logger.info(f"Sub-agents use thinking: {config.use_subagent_thinking()}")
     else:
         logger.info("Direct tool mode enabled - no sub-agent models needed")
 
     # Setup tools
     logger.info(f"Setting up tools: {config.tools.enabled_tools}")
-    tools = setup_tools(config, cache_manager, api_keys, model_providers, planner_model=planner_model)
+    tools = setup_tools(config, cache_manager, api_keys, model_providers, orchestrator_model=orchestrator_model)
 
     # Initialize prompt builder
     prompt_builder = PromptBuilder()
@@ -331,11 +331,11 @@ def run_experiment(args):
     try:
         # Create orchestrator
         orchestrator = AgenticOrchestrator(
-            model_provider=planner_model,
+            model_provider=orchestrator_model,
             tool_registry=tools,
             max_turns=config.max_turns,
             tool_limits={'web_search': config.tools.max_search_limit},
-            use_thinking=config.use_planner_thinking(),
+            use_thinking=config.use_orchestrator_thinking(),
         )
 
         # Batch size (default: 8 for higher throughput on vLLM; set to 1 to disable batching)
@@ -427,8 +427,8 @@ def run_experiment(args):
             if not project:
                 logger.warning("use_wandb=true but wandb_project is not set; skipping W&B logging.")
             else:
-                planner = config.get_model("planner")
-                model_name = planner.name if planner else "unknown"
+                orchestrator_model_config = config.get_model("orchestrator")
+                model_name = orchestrator_model_config.name if orchestrator_model_config else "unknown"
                 mode = "direct" if config.tools.direct_tool_call else "subagent"
                 enabled = set(config.tools.enabled_tools or [])
                 log_results_wandb(
@@ -442,7 +442,7 @@ def run_experiment(args):
                     direct_tool_call=bool(config.tools.direct_tool_call),
                     enable_search_tool=("web_search" in enabled),
                     enable_code_tool=("code_generator" in enabled),
-                    mind_map=("mind_map" in enabled),
+                    context_manager=("context_manager" in enabled),
                     enable_text_inspector_tool=("inspect_text_file" in enabled),
                     enable_image_inspector_tool=("inspect_image_file" in enabled),
                     final_metrics=legacy.get("final_metrics") if isinstance(legacy, dict) else None,
@@ -583,7 +583,7 @@ def save_legacy_results_and_metrics(
             "math_equal": int(correct),
             "search_total": int(tool_counts.get("web_search", 0)),
             "code_total": int(tool_counts.get("code_generator", 0)),
-            "mind_map_total": int(tool_counts.get("mind_map", 0)),
+            "context_manager_total": int(tool_counts.get("context_manager", 0)),
             "text_inspector_total": int(tool_counts.get("inspect_text_file", 0)),
             "image_inspector_total": int(tool_counts.get("inspect_image_file", 0)),
         }
@@ -645,7 +645,7 @@ def save_legacy_results_and_metrics(
         per_q = {
             "search_total": int(tc.get("web_search", 0) or 0),
             "code_total": int(tc.get("code_generator", 0) or 0),
-            "mind_map_total": int(tc.get("mind_map", 0) or 0),
+            "context_manager_total": int(tc.get("context_manager", 0) or 0),
             "text_inspector_total": int(tc.get("inspect_text_file", 0) or 0),
             "image_inspector_total": int(tc.get("inspect_image_file", 0) or 0),
         }

@@ -6,11 +6,11 @@ description: "GAIA validation set evaluation with Qwen3-4B and full toolset"
 
 # Model configuration
 models:
-  planner:
+  orchestrator:
     name: "Qwen3-4B"
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-4B"
-    role: "planner"
+    role: "orchestrator"
 
     # Generation parameters
     max_model_len: 32768
@@ -32,7 +32,7 @@ tools:
     - web_search
     - code_generator
     - text_inspector
-    - mind_map
+    - context_manager
   direct_tool_call: true  # Direct mode - no sub-agent LLMs (more efficient)
   max_search_limit: 10
   top_k_results: 5
@@ -48,7 +48,7 @@ dataset:
 # Execution settings
 max_turns: 15
 seed: 0
-thinking_mode: "PLANNER_ONLY"  # Options: NO, PLANNER_ONLY, SUBAGENTS_ONLY, ALL
+thinking_mode: "ORCHESTRATOR_ONLY"  # Options: NO, ORCHESTRATOR_ONLY, SUBAGENTS_ONLY, ALL
 
 # Output settings
 output_dir: "./experiments/results/gaia_baseline"

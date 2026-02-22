@@ -96,10 +96,10 @@ def main():
 
     cache_manager = CacheManager(config.cache_dir)
     enabled = ["image_inspector"]
-    planner, providers, _ = build_model_providers(config, required_roles=roles_for_tools(enabled))
+    orchestrator_model, providers, _ = build_model_providers(config, required_roles=roles_for_tools(enabled))
     tools = build_tools(config, cache_manager, providers, enabled_tools=enabled)
     system_prompt = build_system_prompt(config, tools, attachments=[IMAGE_PATH.name])
-    orchestrator = build_orchestrator(config, planner, tools)
+    orchestrator = build_orchestrator(config, orchestrator_model, tools)
 
     logger.info(f"Question: {QUESTION}")
     try:

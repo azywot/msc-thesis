@@ -47,7 +47,7 @@ class ExecutionState:
     tool_counts: Dict[str, int] = field(default_factory=lambda: {
         'web_search': 0,
         'code_generator': 0,
-        'mind_map': 0,
+        'context_manager': 0,
         'text_inspector': 0,
         'image_inspector': 0,
     })

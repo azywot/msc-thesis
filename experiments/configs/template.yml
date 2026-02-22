@@ -6,7 +6,7 @@
 #
 # Minimal configs only need:
 # - name
-# - models.planner
+# - models.orchestrator
 # - tools
 # - (optional) dataset
 ################################################################################
@@ -18,11 +18,11 @@ name: "test_gaia_snippet"                     # Required. Used in logs / run_inf
 description: "Initial test of GAIA snippet"   # Optional.
 
 models:
-  planner:
+  orchestrator:
     name: "Qwen3-4B"                       # Friendly label
     family: "qwen3"                        # Required
     path_or_id: "Qwen/Qwen3-4B"            # HF model id or local path
-    role: "planner"                        # Must be "planner" for the main model
+    role: "orchestrator"                   # Must be "orchestrator" for the main model
 
     # Generation parameters (defaults shown)
     max_model_len: 32768                   # Context length for vLLM local models
@@ -122,7 +122,7 @@ tools:
     - web_search
     - code_generator
     - text_inspector
-    - mind_map
+    - context_manager
     - image_inspector
   direct_tool_call: false                 # Sub-agent mode (tools use their model roles)
   max_search_limit: 10                    # Planner tool budget for web_search
@@ -149,10 +149,10 @@ seed: 0                                    # Global seed used by set_seed()
 
 # thinking_mode controls where <think> is enabled (for models that support it):
 # - "NO":             no thinking anywhere
-# - "PLANNER_ONLY":   only orchestrator/planner outputs have <think>
+# - "ORCHESTRATOR_ONLY": only orchestrator outputs have <think>
 # - "SUBAGENTS_ONLY": only tool sub-agents have <think>
-# - "ALL":            both planner and sub-agents can have <think>
-thinking_mode: "PLANNER_ONLY"
+# - "ALL":            both orchestrator and sub-agents can have <think>
+thinking_mode: "ORCHESTRATOR_ONLY"
 
 # ------------------------------------------------------------------------------
 # Output
@@ -164,5 +164,5 @@ wandb_project: "msc-thesis"                           # Only used if use_wandb: 
 # ------------------------------------------------------------------------------
 # Caching
 # ------------------------------------------------------------------------------
-cache_dir: "./cache"                        # Where search/url/mind_map caches live
+cache_dir: "./cache"                        # Where search/url/context_manager caches live
 

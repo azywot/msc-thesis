@@ -71,8 +71,8 @@ def main():
     logger.info(f"Output dir: {output_dir}")
 
     # Initialize model
-    logger.info(f"Initializing model: {config.get_model('planner').name}")
-    model = VLLMProvider(config.get_model("planner"))
+    logger.info(f"Initializing model: {config.get_model('orchestrator').name}")
+    model = VLLMProvider(config.get_model("orchestrator"))
 
     # Setup tools
     logger.info("Setting up tools")
@@ -122,7 +122,7 @@ When you have the final answer, state it clearly."""
             tool_registry=tools,
             max_turns=config.max_turns,
             tool_limits={'web_search': config.tools.max_search_limit},
-            use_thinking=config.use_planner_thinking(),
+            use_thinking=config.use_orchestrator_thinking(),
         )
 
         state = orchestrator.run(

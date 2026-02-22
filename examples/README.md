@@ -28,7 +28,7 @@ export SERPER_API_KEY="<your-key>"
 | `example_code_generator.py` | `code_generator` | Multi-part maths problem requiring actual code execution |
 | `example_text_inspector.py` | `text_inspector` | Five specific questions about a local document (`fixtures/sample_document.txt`) |
 | `example_image_inspector.py` | `image_inspector` | Visual questions about a bar-chart PNG (generated on the fly) |
-| `example_mind_map.py` | `web_search` + `mind_map` | Multi-step task: search for facts, then use mind_map to store/query (verifies GraphRAG indexing) |
+| `example_context_manager.py` | `web_search` + `context_manager` | Multi-step task: search for facts, then use context_manager to store/query (verifies GraphRAG indexing) |
 
 Support files:
 
@@ -56,8 +56,8 @@ python examples/example_text_inspector.py
 # Image inspection (generates fixtures/test_chart.png automatically)
 python examples/example_image_inspector.py
 
-# Mind map + web search (GraphRAG indexing verification)
-python examples/example_mind_map.py
+# Context manager + web search (GraphRAG indexing verification)
+python examples/example_context_manager.py
 ```
 
 Each script saves its output under `experiments/results/examples/<tool_name>/`:

@@ -24,7 +24,7 @@ class ModelRegistry:
         """Register a model provider instance.
 
         Args:
-            key: Unique key to identify this model (e.g., "planner", "search")
+            key: Unique key to identify this model (e.g., "orchestrator", "search")
             provider: Model provider instance
         """
         self._models[key] = provider

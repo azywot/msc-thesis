@@ -1,15 +1,15 @@
 # GAIA Sub-Agent Mode Configuration (Qwen3-4B for all roles, including VLM)
 
 name: "gaia_qwen3_subagent"
-description: "GAIA with sub-agent mode using Qwen3-4B for planner and tool agents (text + vision)"
+description: "GAIA with sub-agent mode using Qwen3-4B for orchestrator and tool agents (text + vision)"
 
 # Models configuration - reuse Qwen3-4B across roles
 models:
-  planner:
+  orchestrator:
     name: "Qwen3-4B"
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-4B"
-    role: "planner"
+    role: "orchestrator"
 
     # Generation parameters
     max_model_len: 32768
@@ -97,7 +97,7 @@ models:
     top_k: 20
     repetition_penalty: 1.05
 
-    # Remaining ~46 GiB after planner; 0.4 * 93 GiB = 37 GiB needed, fits comfortably.
+    # Remaining ~46 GiB after orchestrator; 0.4 * 93 GiB = 37 GiB needed, fits comfortably.
     gpu_memory_utilization: 0.4
 
     supports_thinking: true
@@ -111,7 +111,7 @@ tools:
     - code_generator
     - text_inspector
     - image_inspector
-    - mind_map
+    - context_manager
   direct_tool_call: false  # SUB-AGENT MODE: Tools use LLMs for analysis
   max_search_limit: 10
   top_k_results: 5
@@ -127,7 +127,7 @@ dataset:
 # Execution settings
 max_turns: 15
 seed: 0
-thinking_mode: "PLANNER_ONLY"  # Only planner thinks; tool responses have no <think>
+thinking_mode: "ORCHESTRATOR_ONLY"  # Only orchestrator thinks; tool responses have no <think>
 
 # Output settings
 output_dir: "./experiments/results/gaia_qwen3_subagent"

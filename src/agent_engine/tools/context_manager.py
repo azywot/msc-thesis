@@ -1,6 +1,6 @@
-"""Mind map tool for memory management.
+"""Context manager tool for memory management.
 
-This tool maintains a text-based mind map of the reasoning process
+This tool maintains a text-based context store of the reasoning process
 for memory and context management across turns.
 """
 
@@ -21,16 +21,16 @@ ENTRY_END = "=== END ==="
 
 # Try to import GraphRAG
 try:
-    from .graph_rag import MindMapGraphRAG
+    from .graph_rag import ContextManagerGraphRAG
     GRAPHRAG_AVAILABLE = True
 except ImportError:
     GRAPHRAG_AVAILABLE = False
-    MindMapGraphRAG = None
-    logger.warning("GraphRAG not available - mind map will use simple keyword search")
+    ContextManagerGraphRAG = None
+    logger.warning("GraphRAG not available - context manager will use simple keyword search")
 
 
-class MindMapTool(BaseTool):
-    """Mind map tool for tracking reasoning context.
+class ContextManagerTool(BaseTool):
+    """Context manager tool for tracking reasoning context.
 
     Maintains a simple text-based memory of key information,
     useful for long conversations with many turns.
@@ -48,23 +48,23 @@ class MindMapTool(BaseTool):
         use_graphrag: bool = True,
         model_provider: Optional[Any] = None,
     ):
-        """Initialize mind map tool.
+        """Initialize context manager tool.
 
         Args:
             max_entries: Maximum number of entries to maintain
             direct_mode: If True, use persistent text files with op-based interface.
                         If False, use query-only interface with GraphRAG.
-            storage_path: Base path for storing mind map files.
+            storage_path: Base path for storing context manager files.
                           Per-question dirs are created as ``<storage_path>/question_<id>``,
                           matching the multi-agent-tools naming convention.
             use_graphrag: Whether to use GraphRAG in non-direct mode (requires nano_graphrag)
             model_provider: BaseModelProvider used for GraphRAG entity extraction.
-                            Should be the planner (or a dedicated mind_map) model.
+                            Should be the orchestrator (or a dedicated context_manager) model.
                             If None, nano_graphrag falls back to its default (OpenAI).
         """
         self.max_entries = max_entries
         self.direct_mode = direct_mode
-        self.storage_path = storage_path or "./mind_map_storage"
+        self.storage_path = storage_path or "./context_manager_storage"
         self.use_graphrag = use_graphrag and not direct_mode and GRAPHRAG_AVAILABLE
         self.model_provider = model_provider
         self.entries: Dict[str, list] = {}  # question_id -> list of entries (in-memory/fallback mode)
@@ -73,22 +73,22 @@ class MindMapTool(BaseTool):
 
         if self.use_graphrag:
             if model_provider is not None:
-                logger.info("Mind map initialized with GraphRAG + local model provider")
+                logger.info("Context manager initialized with GraphRAG + local model provider")
             else:
-                logger.warning("Mind map GraphRAG enabled but no model_provider given — will attempt OpenAI fallback")
+                logger.warning("Context manager GraphRAG enabled but no model_provider given — will attempt OpenAI fallback")
         elif not direct_mode and not GRAPHRAG_AVAILABLE:
             logger.warning("GraphRAG not available - falling back to simple keyword search")
 
     @property
     def name(self) -> str:
-        return "mind_map"
+        return "context_manager"
 
     @property
     def description(self) -> str:
         if self.direct_mode:
             return "Persistent notes - write to save information, read to retrieve it"
         else:
-            return "Query the mind map of your previous reasoning to recall key information"
+            return "Query the context manager of your previous reasoning to recall key information"
 
     def get_schema(self) -> Dict[str, Any]:
         """Return Qwen3 JSON Schema.
@@ -102,7 +102,7 @@ class MindMapTool(BaseTool):
             return {
                 "type": "function",
                 "function": {
-                    "name": "mind_map",
+                    "name": "context_manager",
                     "description": "Persistent notes for this question. Use op='write' to save key facts/decisions, and op='read' to retrieve them later (optionally by query).",
                     "parameters": {
                         "type": "object",
@@ -130,7 +130,7 @@ class MindMapTool(BaseTool):
             return {
                 "type": "function",
                 "function": {
-                    "name": "mind_map",
+                    "name": "context_manager",
                     "description": "Query the reasoning memory to retrieve relevant information from your previous thoughts and reasoning steps. Use this to recall context, avoid repetition, or build on previous conclusions.",
                     "parameters": {
                         "type": "object",
@@ -146,7 +146,7 @@ class MindMapTool(BaseTool):
             }
 
     def execute(self, op: Optional[str] = None, query: Optional[str] = None, content: Optional[str] = None) -> ToolResult:
-        """Execute mind map operation.
+        """Execute context manager operation.
 
         Direct mode args:
             op: Operation to perform ("write" or "read")
@@ -154,7 +154,7 @@ class MindMapTool(BaseTool):
             query: Optional search query (for op='read')
 
         Non-direct mode args:
-            query: Search query for mind map
+            query: Search query for context manager
 
         Returns:
             ToolResult with operation result
@@ -165,11 +165,11 @@ class MindMapTool(BaseTool):
             return self._execute_query_mode(query)
 
     def _execute_direct_mode(self, op: Optional[str], content: Optional[str], query: Optional[str]) -> ToolResult:
-        """Execute mind map in direct mode (persistent text files)."""
+        """Execute context manager in direct mode (persistent text files)."""
         if self.current_question_id is None:
             return ToolResult(
                 success=False,
-                output="Mind map not initialized for current question",
+                output="Context manager not initialized for current question",
                 metadata={},
                 error="No active question"
             )
@@ -190,7 +190,7 @@ class MindMapTool(BaseTool):
             )
 
     def _execute_query_mode(self, query: Optional[str]) -> ToolResult:
-        """Execute mind map in non-direct mode (query-only interface)."""
+        """Execute context manager in non-direct mode (query-only interface)."""
         if query is None:
             return ToolResult(
                 success=False,
@@ -199,12 +199,12 @@ class MindMapTool(BaseTool):
                 error="Query parameter is required"
             )
 
-        logger.info(f"Mind map query: {query}")
+        logger.info(f"Context manager query: {query}")
 
         if self.current_question_id is None:
             return ToolResult(
                 success=False,
-                output="Mind map not initialized for current question",
+                output="Context manager not initialized for current question",
                 metadata={"query": query},
                 error="No active question"
             )
@@ -222,7 +222,7 @@ class MindMapTool(BaseTool):
         # Working dir matches MAT: <storage_path>/question_<id> (no nested graphrag/ subdir)
         if self.current_question_id not in self.graphrag_instances:
             working_dir = Path(self.storage_path) / f"question_{self.current_question_id}"
-            self.graphrag_instances[self.current_question_id] = MindMapGraphRAG(
+            self.graphrag_instances[self.current_question_id] = ContextManagerGraphRAG(
                 working_dir=str(working_dir),
                 model_provider=self.model_provider,
             )
@@ -232,7 +232,7 @@ class MindMapTool(BaseTool):
         try:
 
             def _timeout_handler(signum, frame):
-                raise TimeoutError("Mind map query timed out")
+                raise TimeoutError("Context manager query timed out")
 
             if hasattr(signal, "SIGALRM"):
                 signal.signal(signal.SIGALRM, _timeout_handler)
@@ -258,7 +258,7 @@ class MindMapTool(BaseTool):
                 )
                 return self._query_with_keyword_search(query)
 
-            # Truncate 
+            # Truncate to max_result_length (aligned with MAT: 2000)
             MAX_RESULT = 2000
             if original_length > MAX_RESULT:
                 result = result[:MAX_RESULT] + "... [truncated]"
@@ -280,7 +280,7 @@ class MindMapTool(BaseTool):
         if not entries:
             return ToolResult(
                 success=True,
-                output="Mind map is empty. No previous reasoning recorded yet.",
+                output="Context manager is empty. No previous reasoning recorded yet.",
                 metadata={"query": query, "num_entries": 0, "mode": "keyword"}
             )
 
@@ -311,19 +311,19 @@ class MindMapTool(BaseTool):
         )
 
     def _get_question_dir(self, question_id: int) -> Path:
-        """Get directory path for a question's mind map."""
+        """Get directory path for a question's context store."""
         return Path(self.storage_path) / f"question_{question_id}"
 
-    def _get_mind_map_file(self, question_id: int) -> Path:
-        """Get file path for a question's mind map."""
-        return self._get_question_dir(question_id) / "mind_map.txt"
+    def _get_context_manager_file(self, question_id: int) -> Path:
+        """Get file path for a question's context store."""
+        return self._get_question_dir(question_id) / "context_manager.txt"
 
     def _write_entry(self, content: Optional[str]) -> ToolResult:
         """Write an entry to persistent text file (direct mode)."""
         if not content or not content.strip():
             return ToolResult(
                 success=True,
-                output="mind_map write skipped: empty content.",
+                output="context_manager write skipped: empty content.",
                 metadata={"operation": "write"}
             )
 
@@ -332,28 +332,28 @@ class MindMapTool(BaseTool):
         question_dir.mkdir(parents=True, exist_ok=True)
 
         # Append entry to file
-        mind_map_file = self._get_mind_map_file(self.current_question_id)
+        context_manager_file = self._get_context_manager_file(self.current_question_id)
         block = f"{ENTRY_BEGIN}\n{content.rstrip()}\n{ENTRY_END}\n\n"
 
-        with open(mind_map_file, "a", encoding="utf-8") as f:
+        with open(context_manager_file, "a", encoding="utf-8") as f:
             f.write(block)
 
-        logger.info(f"Mind map write: appended {len(content)} chars to {mind_map_file}")
+        logger.info(f"Context manager write: appended {len(content)} chars to {context_manager_file}")
 
         return ToolResult(
             success=True,
-            output=f"mind_map write ok: appended {len(content)} chars.",
+            output=f"context_manager write ok: appended {len(content)} chars.",
             metadata={"operation": "write", "content_length": len(content)}
         )
 
     def _read_entries(self, query: Optional[str], max_chars: int = 2000, top_k: int = 3) -> ToolResult:
         """Read entries from persistent text file (direct mode)."""
-        mind_map_file = self._get_mind_map_file(self.current_question_id)
+        context_manager_file = self._get_context_manager_file(self.current_question_id)
 
-        if not mind_map_file.exists():
+        if not context_manager_file.exists():
             return ToolResult(
                 success=True,
-                output="mind_map is empty (no memory written yet).",
+                output="context_manager is empty (no memory written yet).",
                 metadata={"operation": "read", "num_entries": 0}
             )
 
@@ -361,11 +361,11 @@ class MindMapTool(BaseTool):
 
         if not q:
             # No query: return tail of file
-            output = self._read_text_tail(mind_map_file, max_chars)
+            output = self._read_text_tail(context_manager_file, max_chars)
             if not output or not output.strip():
                 return ToolResult(
                     success=True,
-                    output="mind_map is empty",
+                    output="context_manager is empty",
                     metadata={"operation": "read", "mode": "tail"}
                 )
             return ToolResult(
@@ -375,14 +375,14 @@ class MindMapTool(BaseTool):
             )
 
         # Query mode: parse and rank entries
-        with open(mind_map_file, "r", encoding="utf-8", errors="replace") as f:
+        with open(context_manager_file, "r", encoding="utf-8", errors="replace") as f:
             text = f.read()
 
         entries = self._parse_entries(text)
         if not entries:
             return ToolResult(
                 success=True,
-                output="mind_map has no parsable entries yet.",
+                output="context_manager has no parsable entries yet.",
                 metadata={"operation": "read", "num_entries": 0}
             )
 
@@ -407,7 +407,7 @@ class MindMapTool(BaseTool):
         output = "\n\n".join(picked).strip()
         if not output:
             # Fall back to tail
-            output = self._read_text_tail(mind_map_file, max_chars)
+            output = self._read_text_tail(context_manager_file, max_chars)
 
         if len(output) > max_chars:
             output = output[:max_chars] + "\n...[truncated]"
@@ -480,13 +480,13 @@ class MindMapTool(BaseTool):
         return score
 
     def add_entry(self, text: str, question_id: int):
-        """Add an entry to the mind map.
+        """Add an entry to the context manager.
 
         This is called externally by the orchestrator to record reasoning steps.
         Only used in non-direct mode.
 
         Args:
-            text: Text to add to mind map
+            text: Text to add to context manager
             question_id: Question identifier
         """
         # In direct mode, entries are written explicitly via tool calls
@@ -501,7 +501,7 @@ class MindMapTool(BaseTool):
         if self.use_graphrag:
             if question_id not in self.graphrag_instances:
                 working_dir = Path(self.storage_path) / f"question_{question_id}"
-                self.graphrag_instances[question_id] = MindMapGraphRAG(
+                self.graphrag_instances[question_id] = ContextManagerGraphRAG(
                     working_dir=str(working_dir),
                     model_provider=self.model_provider,
                 )
@@ -522,7 +522,7 @@ class MindMapTool(BaseTool):
             self.entries[question_id] = self.entries[question_id][-self.max_entries:]
 
     def set_current_question(self, question_id: int):
-        """Set the current question for mind map context.
+        """Set the current question for context manager context.
 
         Args:
             question_id: Question identifier
@@ -530,7 +530,7 @@ class MindMapTool(BaseTool):
         self.current_question_id = question_id
 
     def clear_question(self, question_id: int):
-        """Clear mind map for a specific question.
+        """Clear context manager for a specific question.
 
         Args:
             question_id: Question identifier
@@ -539,7 +539,7 @@ class MindMapTool(BaseTool):
             del self.entries[question_id]
 
     def cleanup(self):
-        """Clear all mind map data."""
+        """Clear all context manager data."""
         self.entries.clear()
         self.graphrag_instances.clear()
         self.current_question_id = None

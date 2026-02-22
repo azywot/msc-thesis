@@ -23,7 +23,7 @@ def log_results_wandb(
     direct_tool_call: bool,
     enable_search_tool: bool,
     enable_code_tool: bool,
-    mind_map: bool,
+    context_manager: bool,
     enable_text_inspector_tool: bool,
     enable_image_inspector_tool: bool,
     final_metrics: Optional[Dict[str, Any]],
@@ -82,7 +82,7 @@ def log_results_wandb(
     # Tool totals
     search_total = 0
     code_total = 0
-    mind_map_total = 0
+    context_manager_total = 0
     text_inspector_total = 0
     image_inspector_total = 0
     try:
@@ -90,13 +90,13 @@ def log_results_wandb(
             overall_tools = tool_stats["overall"]
             search_total = int(overall_tools.get("search_total", 0) or 0)
             code_total = int(overall_tools.get("code_total", 0) or 0)
-            mind_map_total = int(overall_tools.get("mind_map_total", 0) or 0)
+            context_manager_total = int(overall_tools.get("context_manager_total", 0) or 0)
             text_inspector_total = int(overall_tools.get("text_inspector_total", 0) or 0)
             image_inspector_total = int(overall_tools.get("image_inspector_total", 0) or 0)
     except Exception:
         pass
 
-    total_tool_calls = search_total + code_total + mind_map_total + text_inspector_total + image_inspector_total
+    total_tool_calls = search_total + code_total + context_manager_total + text_inspector_total + image_inspector_total
 
     log_data: Dict[str, Any] = {
         "dataset": f"{dataset_name}_{dataset_split}",
@@ -107,7 +107,7 @@ def log_results_wandb(
         "direct_tool_call": bool(direct_tool_call),
         "enable_search_tool": bool(enable_search_tool),
         "enable_code_tool": bool(enable_code_tool),
-        "mind_map": bool(mind_map),
+        "context_manager": bool(context_manager),
         "enable_text_inspector_tool": bool(enable_text_inspector_tool),
         "enable_image_inspector_tool": bool(enable_image_inspector_tool),
         "acc": None if acc is None else float(acc),
@@ -124,7 +124,7 @@ def log_results_wandb(
         "L3_em": None if l3_em is None else float(l3_em),
         "tool/search_total": search_total,
         "tool/code_total": code_total,
-        "tool/mind_map_total": mind_map_total,
+        "tool/context_manager_total": context_manager_total,
         "tool/text_inspector_total": text_inspector_total,
         "tool/image_inspector_total": image_inspector_total,
         "tool/total_tool_calls": total_tool_calls,

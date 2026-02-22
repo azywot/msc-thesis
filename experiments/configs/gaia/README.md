@@ -12,14 +12,14 @@ Two orthogonal settings can be mixed freely:
 
 2. **Thinking Mode** (`thinking_mode`)
    - `NO` = No thinking mode
-   - `PLANNER_ONLY` = Only orchestrator uses thinking
+   - `ORCHESTRATOR_ONLY` = Only orchestrator uses thinking
    - `SUBAGENTS_ONLY` = Only tool sub-agents use thinking
    - `ALL` = Both use thinking
 
 ## Available configurations
 
 ### `baseline.yaml` (recommended)
-- **setup**: 1 model (planner), direct tools, `thinking_mode: PLANNER_ONLY`
+- **setup**: 1 model (orchestrator), direct tools, `thinking_mode: ORCHESTRATOR_ONLY`
 - **resources (typical)**: 2× H100 (TP=2), ~8–10h for full validation
 
 Run:
@@ -32,12 +32,12 @@ Run:
 Same as `baseline.yaml` (kept as an explicit “direct mode” example).
 
 ### `multimodel_subagent.yaml`
-- **setup**: 3 models (planner + tool sub-agents), sub-agent tools, `thinking_mode: ALL`
+- **setup**: 3 models (orchestrator + tool sub-agents), sub-agent tools, `thinking_mode: ALL`
 - **resources (typical)**: 4× H100, ~12–16h
 
-### `subagent_planner_thinking.yaml` (independence demo)
-- **setup**: sub-agent tools, but `thinking_mode: PLANNER_ONLY`
-- **meaning**: sub-agents run tools, but only the planner uses thinking
+### `subagent_orchestrator_thinking.yaml` (independence demo)
+- **setup**: sub-agent tools, but `thinking_mode: ORCHESTRATOR_ONLY`
+- **meaning**: sub-agents run tools, but only the orchestrator uses thinking
 
 ### `subagent_no_thinking.yaml`
 - **setup**: sub-agent tools, `thinking_mode: NO`
@@ -47,20 +47,20 @@ Same as `baseline.yaml` (kept as an explicit “direct mode” example).
 
 | Config | Models | direct_tool_call | thinking_mode | GPUs (typical) | Use case |
 |--------|--------|------------------|---------------|----------------|----------|
-| `baseline.yaml` | 1 (32B) | `true` | `PLANNER_ONLY` | 2 | Production baseline |
-| `direct_mode.yaml` | 1 (32B) | `true` | `PLANNER_ONLY` | 2 | Same as baseline |
+| `baseline.yaml` | 1 (32B) | `true` | `ORCHESTRATOR_ONLY` | 2 | Production baseline |
+| `direct_mode.yaml` | 1 (32B) | `true` | `ORCHESTRATOR_ONLY` | 2 | Same as baseline |
 | `multimodel_subagent.yaml` | 3 (32B+14B+14B) | `false` | `ALL` | 4 | Max capability |
-| `subagent_planner_thinking.yaml` | 3 (32B+14B+14B) | `false` | `PLANNER_ONLY` | 4 | Independence demo |
+| `subagent_orchestrator_thinking.yaml` | 3 (32B+14B+14B) | `false` | `ORCHESTRATOR_ONLY` | 4 | Independence demo |
 | `subagent_no_thinking.yaml` | 3 (32B+14B+14B) | `false` | `NO` | 4 | Fast sub-agents |
 
 ## 📊 Configuration Matrix
 
 | Config | Models | Instance Reuse | direct_tool_call | thinking_mode | GPUs | Runtime | Best For |
 |--------|--------|----------------|------------------|---------------|------|---------|----------|
-| `baseline.yaml` | 1 (32B) | N/A | ✅ true | PLANNER_ONLY | 2 | ~8-10h | **Production** |
-| `subagent_shared_model.yaml` 🆕 | 1 (32B shared) | ✅ Yes | ❌ false | PLANNER_ONLY | 2 | ~10-12h | **Sub-agents, low memory** |
+| `baseline.yaml` | 1 (32B) | N/A | ✅ true | ORCHESTRATOR_ONLY | 2 | ~8-10h | **Production** |
+| `subagent_shared_model.yaml` 🆕 | 1 (32B shared) | ✅ Yes | ❌ false | ORCHESTRATOR_ONLY | 2 | ~10-12h | **Sub-agents, low memory** |
 | `multimodel_subagent.yaml` | 3 separate | ❌ No | ❌ false | ALL | 4 | ~12-16h | **Max capability** |
-| `subagent_planner_thinking.yaml` | 3 separate | ❌ No | ❌ false | PLANNER_ONLY | 4 | ~11-14h | **Ablations** |
+| `subagent_orchestrator_thinking.yaml` | 3 separate | ❌ No | ❌ false | ORCHESTRATOR_ONLY | 4 | ~11-14h | **Ablations** |
 | `subagent_no_thinking.yaml` | 3 separate | ❌ No | ❌ false | NO | 4 | ~10-13h | **Fast sub-agents** |
 
 ## 🛠️ Creating Custom Configs
@@ -70,10 +70,10 @@ Same as `baseline.yaml` (kept as an explicit “direct mode” example).
 ```yaml
 name: "my_gaia_experiment"
 models:
-  planner:
+  orchestrator:
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-32B"
-    role: "planner"
+    role: "orchestrator"
     gpu_ids: [0, 1]
 
 tools:
@@ -91,13 +91,13 @@ output_dir: "./experiments/results/my_experiment"
 ```yaml
 name: "my_subagent_experiment"
 models:
-  planner:
+  orchestrator:
     path_or_id: "Qwen/Qwen3-32B"
     gpu_ids: [0, 1]
   search:
-    path_or_id: "Qwen/Qwen3-32B"  # Reuses planner!
+    path_or_id: "Qwen/Qwen3-32B"  # Reuses orchestrator!
   code:
-    path_or_id: "Qwen/Qwen3-32B"  # Reuses planner!
+    path_or_id: "Qwen/Qwen3-32B"  # Reuses orchestrator!
 
 tools:
   direct_tool_call: false  # Enable sub-agents
@@ -223,13 +223,13 @@ export WANDB_API_KEY="your_key_here"
 When using sub-agent mode with the same model:
 ```yaml
 models:
-  planner:
+  orchestrator:
     path_or_id: "Qwen/Qwen3-32B"
     gpu_ids: [0, 1]
   search:
-    path_or_id: "Qwen/Qwen3-32B"  # Auto-reuses planner instance!
+    path_or_id: "Qwen/Qwen3-32B"  # Auto-reuses orchestrator instance!
   code:
-    path_or_id: "Qwen/Qwen3-32B"  # Auto-reuses planner instance!
+    path_or_id: "Qwen/Qwen3-32B"  # Auto-reuses orchestrator instance!
 ```
 
 **Benefits:**

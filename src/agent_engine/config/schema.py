@@ -19,7 +19,7 @@ class ThinkingMode(Enum):
     like Qwen3).
     """
     NO = "NO"                      # No thinking enabled
-    PLANNER_ONLY = "PLANNER_ONLY"  # Only orchestrator uses thinking
+    ORCHESTRATOR_ONLY = "ORCHESTRATOR_ONLY"  # Only orchestrator uses thinking
     SUBAGENTS_ONLY = "SUBAGENTS_ONLY"  # Only tool sub-agents use thinking
     ALL = "ALL"                    # Both orchestrator and sub-agents use thinking
 
@@ -79,7 +79,7 @@ class ExperimentConfig:
         dataset: Dataset configuration
         max_turns: Maximum reasoning turns per question
         seed: Random seed for reproducibility
-        thinking_mode: Enable thinking mode for planner
+        thinking_mode: Enable thinking mode for orchestrator
         output_dir: Directory for results
         use_wandb: Enable Weights & Biases logging
         wandb_project: W&B project name
@@ -102,7 +102,7 @@ class ExperimentConfig:
     # Execution
     max_turns: int = 15
     seed: int = 0
-    thinking_mode: ThinkingMode = ThinkingMode.NO  # Thinking mode: NO, PLANNER_ONLY, SUBAGENTS_ONLY, ALL
+    thinking_mode: ThinkingMode = ThinkingMode.NO  # Thinking mode: NO, ORCHESTRATOR_ONLY, SUBAGENTS_ONLY, ALL
 
     # Output
     output_dir: Path = Path("./experiments/results")
@@ -123,7 +123,7 @@ class ExperimentConfig:
         """Get model config by role.
 
         Args:
-            role: Model role (e.g., "planner")
+            role: Model role (e.g., "orchestrator")
 
         Returns:
             ModelConfig or None if not found
@@ -141,13 +141,13 @@ class ExperimentConfig:
         """
         return role in self.models
 
-    def use_planner_thinking(self) -> bool:
-        """Check if planner should use thinking mode.
+    def use_orchestrator_thinking(self) -> bool:
+        """Check if orchestrator should use thinking mode.
 
         Returns:
-            True if planner uses thinking
+            True if orchestrator uses thinking
         """
-        return self.thinking_mode in (ThinkingMode.PLANNER_ONLY, ThinkingMode.ALL)
+        return self.thinking_mode in (ThinkingMode.ORCHESTRATOR_ONLY, ThinkingMode.ALL)
 
     def use_subagent_thinking(self) -> bool:
         """Check if sub-agents should use thinking mode.

@@ -23,7 +23,7 @@ from agent_engine.prompts import PromptBuilder
 from agent_engine.tools import (
     CodeGeneratorTool,
     ImageInspectorTool,
-    MindMapTool,
+    ContextManagerTool,
     TextInspectorTool,
     WebSearchTool,
 )
@@ -33,13 +33,13 @@ DEFAULT_CONFIG = (
     Path(__file__).parent.parent / "experiments/configs/gaia/test_subagent.yaml"
 )
 
-# Which model role each tool needs (None = no LLM, e.g. mind_map in sub-agent mode).
+# Which model role each tool needs (None = no LLM, e.g. context_manager in sub-agent mode).
 TOOL_ROLES = {
     "web_search": "search",
     "code_generator": "coding",
     "text_inspector": "text_inspector",
     "image_inspector": "image_inspector",
-    "mind_map": None,
+    "context_manager": None,
 }
 
 
@@ -79,18 +79,18 @@ def build_model_providers(
     model_cache: Optional[Dict[str, Any]] = None,
     required_roles: Optional[List[str]] = None,
 ):
-    """Initialise planner and only the model roles needed for the example.
+    """Initialise orchestrator and only the model roles needed for the example.
 
     When *required_roles* is set (e.g. from roles_for_tools(enabled_tools)),
-    only the planner and those roles are loaded. This avoids loading the VLM
+    only the orchestrator and those roles are loaded. This avoids loading the VLM
     (image_inspector) for examples that do not use it, preventing OOM on a
     single GPU.
 
     When the only required role is image_inspector, the VLM is used as the
-    planner as well (single model load) so the example fits on one GPU.
+    orchestrator as well (single model load) so the example fits on one GPU.
 
     Returns:
-        (planner, providers_by_role, model_cache)
+        (orchestrator, providers_by_role, model_cache)
         where *providers_by_role* maps role name → provider for tool sub-agents.
     """
     if model_cache is None:
@@ -102,13 +102,13 @@ def build_model_providers(
         else ["search", "coding", "text_inspector", "image_inspector"]  # model roles, not tool names
     )
 
-    planner = _get_model_provider(config.get_model("planner"), model_cache)
+    orchestrator = _get_model_provider(config.get_model("orchestrator"), model_cache)
     providers: Dict[str, Any] = {}
     for role in roles_to_init:
         if config.has_model(role):
             providers[role] = _get_model_provider(config.get_model(role), model_cache)
 
-    return planner, providers, model_cache
+    return orchestrator, providers, model_cache
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ def build_tools(
     cache_manager: CacheManager,
     model_providers: Dict[str, Any],
     enabled_tools: List[str],
-    planner_model: Optional[Any] = None,
+    orchestrator_model: Optional[Any] = None,
 ) -> ToolRegistry:
     """Register exactly the tools listed in *enabled_tools* (sub-agent mode).
 
@@ -129,7 +129,7 @@ def build_tools(
         cache_manager:    Cache manager (supplies search_cache / url_cache).
         model_providers:  Role → provider dict from build_model_providers().
         enabled_tools:    Subset of tool names to register for this example.
-        planner_model:    Optional planner provider for mind_map (GraphRAG needs local model).
+        orchestrator_model: Optional orchestrator provider for context_manager (GraphRAG needs local model).
     """
     tools = ToolRegistry()
     use_thinking = config.use_subagent_thinking()
@@ -172,13 +172,13 @@ def build_tools(
                 use_thinking=use_thinking,
             ))
 
-        elif name == "mind_map":
-            mind_map_model = planner_model or model_providers.get("planner")
-            tools.register(MindMapTool(
+        elif name == "context_manager":
+            context_manager_model = orchestrator_model or model_providers.get("orchestrator")
+            tools.register(ContextManagerTool(
                 direct_mode=False,  # sub-agent mode
-                storage_path=str(config.cache_dir / "mind_map"),
+                storage_path=str(config.cache_dir / "context_manager"),
                 use_graphrag=True,
-                model_provider=mind_map_model,  # local model for GraphRAG — no OpenAI key
+                model_provider=context_manager_model,  # local model for GraphRAG — no OpenAI key
             ))
 
     return tools
@@ -188,13 +188,13 @@ def build_tools(
 # Orchestrator factory
 # ---------------------------------------------------------------------------
 
-def build_orchestrator(config, planner, tools: ToolRegistry) -> AgenticOrchestrator:
+def build_orchestrator(config, orchestrator_model, tools: ToolRegistry) -> AgenticOrchestrator:
     return AgenticOrchestrator(
-        model_provider=planner,
+        model_provider=orchestrator_model,
         tool_registry=tools,
         max_turns=config.max_turns,
         tool_limits={"web_search": config.tools.max_search_limit},
-        use_thinking=config.use_planner_thinking(),
+        use_thinking=config.use_orchestrator_thinking(),
     )
 
 

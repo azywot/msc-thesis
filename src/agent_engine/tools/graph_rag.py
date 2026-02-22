@@ -1,4 +1,4 @@
-"""GraphRAG wrapper for mind map tool.
+"""GraphRAG wrapper for context manager tool.
 
 This module provides a wrapper around nano_graphrag for intelligent
 retrieval in non-direct mode.  It mirrors the local-model configuration
@@ -79,7 +79,7 @@ except ImportError:
 #
 # nano_graphrag uses embeddings only for the initial vector-store lookup
 # (find nearest entities to the query). With zero embeddings, that lookup
-# is effectively uniform — but for a per-question mind map the graph is
+# is effectively uniform — but for a per-question context manager the graph is
 # tiny (handful of entities), so the real signal comes from graph traversal
 # and LLM synthesis.
 #
@@ -141,11 +141,11 @@ def _make_completion_func(model_provider):
 
 
 # ---------------------------------------------------------------------------
-# MindMapGraphRAG wrapper
+# ContextManagerGraphRAG wrapper
 # ---------------------------------------------------------------------------
 
-class MindMapGraphRAG:
-    """Wrapper for GraphRAG mind map functionality.
+class ContextManagerGraphRAG:
+    """Wrapper for GraphRAG context manager functionality.
 
     Configures nano_graphrag to use a local LLM (via model_provider) and
     zero embeddings — matching the multi-agent-tools setup exactly.
@@ -157,7 +157,7 @@ class MindMapGraphRAG:
         model_provider=None,
         ini_content: str = "",
     ):
-        """Initialize GraphRAG mind map.
+        """Initialize GraphRAG context manager.
 
         Args:
             working_dir: Working directory for GraphRAG storage.
