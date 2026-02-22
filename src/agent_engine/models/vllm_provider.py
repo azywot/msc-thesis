@@ -22,14 +22,9 @@ class VLLMProvider(BaseModelProvider):
     def __init__(self, config: ModelConfig):
         super().__init__(config)
 
-        # Cache dir: TRANSFORMERS_CACHE → HF_HUB_CACHE → HF_HOME/hub
-        hf_hub_cache = os.environ.get(
-            "TRANSFORMERS_CACHE",
-            os.environ.get(
-                "HF_HUB_CACHE",
-                os.path.join(os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")), "hub"),
-            ),
-        )
+        # Cache dir: HF_HOME/hub
+        hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+        hf_hub_cache = os.path.join(hf_home, "hub")
         tensor_parallel_size = self._resolve_tensor_parallel_size(config)
         logger.info(
             "Model %s: tensor_parallel_size=%d (source: %s)",

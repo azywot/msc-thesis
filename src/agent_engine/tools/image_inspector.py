@@ -215,7 +215,6 @@ class ImageInspectorTool(BaseTool):
             prompt = self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
 
             # vLLM multimodal generation: pass prompt + multi_modal_data dict
-            # This matches the legacy repository's approach
             result = self.model_provider.generate([
                 {
                     "prompt": prompt,

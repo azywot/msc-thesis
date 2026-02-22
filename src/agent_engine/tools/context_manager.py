@@ -506,7 +506,14 @@ class ContextManagerTool(BaseTool):
             try:
                 self.graphrag_instances[question_id].insert(text)
             except Exception as e:
-                logger.error(f"Failed to insert into GraphRAG: {e}", exc_info=True)
+                # Leiden clustering fails when the graph has nodes but no edges (EmptyNetworkError).
+                # -> this is common for short reasoning with few entities and no relations
+                if type(e).__name__ == "EmptyNetworkError":
+                    logger.warning(
+                        "GraphRAG insert skipped: graph has no edges. Falling back to keyword search."
+                    )
+                else:
+                    logger.error(f"Failed to insert into GraphRAG: {e}", exc_info=True)
 
         if question_id not in self.entries:
             self.entries[question_id] = []

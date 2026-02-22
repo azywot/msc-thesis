@@ -15,7 +15,7 @@ All scripts should be run from the `msc-thesis/` root directory.
 export SERPER_API_KEY="<your-key>"
 
 # Required for all examples (models loaded via vLLM)
-# Make sure HF_HOME / TRANSFORMERS_CACHE points to a cache with Qwen/Qwen3-4B
+# Make sure HF_HOME points to a cache with Qwen/Qwen3-4B
 ```
 
 ---
