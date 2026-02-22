@@ -37,7 +37,7 @@ seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
 output_dir: "./experiments/results/gaia_baseline"
-use_wandb: false
+use_wandb: true
 wandb_project: "msc-thesis"
 
 cache_dir: "./cache"

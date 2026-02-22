@@ -18,7 +18,15 @@
 
 set -e
 
-# Default values
+# Load .env if present (PROJECT_DIR, ENV_NAME, DATA_DIR, API keys, etc.)
+if [ -f ".env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+fi
+
+# Default values (PROJECT_DIR and ENV_NAME read from env / .env above)
 PROJECT_DIR="${PROJECT_DIR:-$HOME/thesis/msc-thesis}"
 ENV_NAME="${ENV_NAME:-agent_engine}"
 DATA_DIR="${DATA_DIR:-/scratch-shared/$USER/data}"
@@ -40,10 +48,10 @@ show_usage() {
     echo "  $0 export"
     echo "  $0 experiment experiments/configs/gaia/baseline.yaml"
     echo ""
-    echo "Environment variables:"
-    echo "  PROJECT_DIR     - Project directory (default: $HOME/thesis/msc-thesis)"
+    echo "Environment variables (from env or .env):"
+    echo "  PROJECT_DIR     - Project directory (default: \$HOME/thesis/msc-thesis)"
     echo "  ENV_NAME        - Conda environment name (default: agent_engine)"
-    echo "  DATA_DIR        - Data directory (default: /scratch-shared/$USER/data)"
+    echo "  DATA_DIR        - Data directory (default: /scratch-shared/\$USER/data)"
 }
 
 if [ $# -eq 0 ]; then

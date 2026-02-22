@@ -58,22 +58,18 @@ def log_results_wandb(
     overall = final_metrics.get("overall", {}) if isinstance(final_metrics, dict) else {}
     per_level = final_metrics.get("per_level", {}) if isinstance(final_metrics, dict) else {}
 
-    acc = overall.get("acc")
-    gaia_score = overall.get("gaia_score")
+    accuracy = overall.get("accuracy")
     em = overall.get("em")
+    f1 = overall.get("f1")
 
     def _lvl(metric_key: str, level: str):
         if isinstance(per_level, dict):
             return (per_level.get(level, {}) or {}).get(metric_key)
         return None
 
-    l1_acc = _lvl("acc", "1")
-    l2_acc = _lvl("acc", "2")
-    l3_acc = _lvl("acc", "3")
-
-    l1_gaia_score = _lvl("gaia_score", "1")
-    l2_gaia_score = _lvl("gaia_score", "2")
-    l3_gaia_score = _lvl("gaia_score", "3")
+    l1_accuracy = _lvl("accuracy", "1")
+    l2_accuracy = _lvl("accuracy", "2")
+    l3_accuracy = _lvl("accuracy", "3")
 
     l1_em = _lvl("em", "1")
     l2_em = _lvl("em", "2")
@@ -110,15 +106,12 @@ def log_results_wandb(
         "context_manager": bool(context_manager),
         "enable_text_inspector_tool": bool(enable_text_inspector_tool),
         "enable_image_inspector_tool": bool(enable_image_inspector_tool),
-        "acc": None if acc is None else float(acc),
-        "L1_acc": None if l1_acc is None else float(l1_acc),
-        "L2_acc": None if l2_acc is None else float(l2_acc),
-        "L3_acc": None if l3_acc is None else float(l3_acc),
-        "gaia_score": None if gaia_score is None else float(gaia_score),
-        "L1_gaia_score": None if l1_gaia_score is None else float(l1_gaia_score),
-        "L2_gaia_score": None if l2_gaia_score is None else float(l2_gaia_score),
-        "L3_gaia_score": None if l3_gaia_score is None else float(l3_gaia_score),
+        "accuracy": None if accuracy is None else float(accuracy),
+        "L1_accuracy": None if l1_accuracy is None else float(l1_accuracy),
+        "L2_accuracy": None if l2_accuracy is None else float(l2_accuracy),
+        "L3_accuracy": None if l3_accuracy is None else float(l3_accuracy),
         "em": None if em is None else float(em),
+        "f1": None if f1 is None else float(f1),
         "L1_em": None if l1_em is None else float(l1_em),
         "L2_em": None if l2_em is None else float(l2_em),
         "L3_em": None if l3_em is None else float(l3_em),

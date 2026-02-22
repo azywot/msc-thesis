@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from ..base import BaseDataset, DatasetExample, DatasetRegistry
-from ..evaluators.gaia_scorer import question_scorer, check_close_call
+from ..evaluators.metrics import evaluate_gaia
 from ...utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -102,28 +102,6 @@ class GAIADataset(BaseDataset):
         ground_truth: str,
         metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Evaluate GAIA prediction using official scorer.
-
-        Uses the exact evaluation logic from multi-agent-tools to ensure
-        consistent scoring with the original implementation.
-
-        Args:
-            prediction: Model's predicted answer
-            ground_truth: Ground truth answer
-            metadata: Example metadata
-
-        Returns:
-            Evaluation results with 'correct' and 'score' keys
-        """
-        # Use the official GAIA scorer
-        is_correct = question_scorer(prediction, ground_truth)
-
-        # Check for close calls (borderline cases)
-        is_close_call = check_close_call(prediction, ground_truth, is_correct)
-
-        return {
-            'correct': is_correct,
-            'close_call': is_close_call,
-            'score': 1.0 if is_correct else 0.0,
-            'level': metadata.get('level', 1),
-        }
+        result = evaluate_gaia(prediction, ground_truth)
+        result['level'] = metadata.get('level', 1)
+        return result

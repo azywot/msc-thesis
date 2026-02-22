@@ -15,7 +15,15 @@ fi
 
 CONFIG_FILE="$1"
 
-# Ensure we use the intended conda env Python (avoid user-site ~/.local packages)
+# Load .env if present (PROJECT_DIR, ENV_NAME, etc.)
+if [ -f ".env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+fi
+
+# Project dir and conda env (from env / .env)
 PROJECT_DIR="${PROJECT_DIR:-$HOME/thesis/msc-thesis}"
 ENV_NAME="${ENV_NAME:-agent_engine}"
 

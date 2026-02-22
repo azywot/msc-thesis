@@ -128,10 +128,12 @@ class WebSearchTool(BaseTool):
 
         # Cache miss: fetch from Serper, fetch page content, then format/analyse.
         try:
-            results = self.serper_rm.forward(query)
-            logger.info(f"Retrieved {len(results)} search results")
+            raw_results = self.serper_rm.forward(query)
+            logger.info(f"Retrieved {len(raw_results)} search results")
 
             # Persist raw results — same structure as multi-agent-tools search_cache.
+            # Normalize so we only ever store list-of-dicts (Serper shape).
+            results = self._normalize_search_results(raw_results)
             self.search_cache[query] = results
 
             # Fetch full page content and populate url_cache
@@ -162,6 +164,16 @@ class WebSearchTool(BaseTool):
                 error=str(e),
             )
 
+    @staticmethod
+    def _normalize_search_results(results: list) -> list:
+        """Return a list containing only dict items (Serper result shape).
+
+        Ensures we never persist non-dict entries to search_cache.
+        """
+        if not isinstance(results, list):
+            return []
+        return [r for r in results if isinstance(r, dict)]
+
     def _fetch_missing_urls(self, results: list) -> None:
         """Fetch page content for any URLs not yet in url_cache.
 
@@ -170,14 +182,14 @@ class WebSearchTool(BaseTool):
         No-op when fetch_urls=False.
 
         Args:
-            results: List of raw Serper result dicts
+            results: List of raw Serper result dicts (normalized at load/write).
         """
         if not self.fetch_urls:
             return
 
         urls_to_fetch = []
         snippets = {}
-        for result in results:
+        for result in results or []:
             url = result.get('url', '')
             if url and url not in self.url_cache:
                 urls_to_fetch.append(url)
@@ -272,7 +284,8 @@ Now you should analyze each web page and find helpful information based on the c
             results = self.search_cache[query]
             cached = True
         else:
-            results = self.serper_rm.forward(query, exclude_urls=[])
+            raw = self.serper_rm.forward(query, exclude_urls=[])
+            results = self._normalize_search_results(raw)
             self.search_cache[query] = results
 
         urls_to_fetch: List[str] = []
@@ -319,7 +332,7 @@ Now you should analyze each web page and find helpful information based on the c
             return f"No results found for query: {query}"
 
         formatted_documents = ""
-        for i, doc_info in enumerate(results[: self.top_k]):
+        for i, doc_info in enumerate((results or [])[: self.top_k]):
             url = (doc_info.get("url", "") or "").strip()
             raw_context = self.url_cache.get(url, "") if (self.fetch_urls and url) else ""
 

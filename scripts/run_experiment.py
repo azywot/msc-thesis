@@ -8,12 +8,10 @@ import argparse
 import json
 import os
 import sys
-import time
 import logging
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from collections import defaultdict
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -174,73 +172,22 @@ def run_experiment(args):
 
     output_dir = Path(args.output_dir) if args.output_dir else config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = _make_run_dir(output_dir, config.dataset.split)
 
-    logger = setup_logging(log_file=output_dir / "experiment.log")
+    logger = setup_logging(log_file=run_dir / "experiment.log")
     logger.info("=" * 80)
     logger.info(f"Starting experiment: {datetime.now()}")
     logger.info("=" * 80)
     logger.info(f"Experiment: {config.name}")
     logger.info(f"Description: {config.description}")
 
-    # Set random seed and log full run info for reproducibility
     set_seed(config.seed)
     start_time = datetime.now().isoformat()
 
-    run_info = {
-        "seed": config.seed,
-        "start_time": start_time,
-        "config_path": str(args.config),
-        "output_dir": str(output_dir),
-        "experiment_name": config.name,
-        "description": getattr(config, "description", "") or "",
-        "dataset": {
-            "name": config.dataset.name,
-            "split": config.dataset.split,
-            "subset_num": getattr(config.dataset, "subset_num", None),
-            "data_dir": getattr(config.dataset, "data_dir", None),
-        },
-        "max_turns": getattr(config, "max_turns", None),
-        "thinking_mode": getattr(config.thinking_mode, "value", str(config.thinking_mode)) if hasattr(config, "thinking_mode") else None,
-        "tools": {
-            "enabled_tools": list(config.tools.enabled_tools),
-            "direct_tool_call": config.tools.direct_tool_call,
-            "max_search_limit": getattr(config.tools, "max_search_limit", None),
-            "top_k_results": getattr(config.tools, "top_k_results", None),
-            "max_doc_len": getattr(config.tools, "max_doc_len", None),
-        },
-        "cache_dir": str(config.cache_dir),
-        "models": {},
-    }
-    for role in ("orchestrator", "web_search", "code_generator", "text_inspector", "context_manager", "image_inspector"):
-        if not config.has_model(role):
-            continue
-        m = config.get_model(role)
-        run_info["models"][role] = {
-            "name": m.name,
-            "path_or_id": m.path_or_id,
-            "role": getattr(m, "role", role),
-            "supports_thinking": getattr(m, "supports_thinking", None),
-            "max_model_len": getattr(m, "max_model_len", None),
-            "max_tokens": getattr(m, "max_tokens", None),
-            "temperature": getattr(m, "temperature", None),
-            "seed": getattr(m, "seed", None),
-        }
-
-    logger.info("Seed (reproducibility): %s", config.seed)
-    logger.info("Run info: config=%s output_dir=%s", run_info["config_path"], run_info["output_dir"])
-    logger.info("Run info: dataset=%s split=%s subset_num=%s", run_info["dataset"]["name"], run_info["dataset"]["split"], run_info["dataset"]["subset_num"])
-    logger.info("Run info: max_turns=%s thinking_mode=%s direct_tool_call=%s", run_info["max_turns"], run_info["thinking_mode"], run_info["tools"]["direct_tool_call"])
-    logger.info("Run info: enabled_tools=%s", run_info["tools"]["enabled_tools"])
-    for role, m in run_info["models"].items():
-        logger.info("Run info: model.%s name=%s path_or_id=%s supports_thinking=%s", role, m["name"], m["path_or_id"], m["supports_thinking"])
-
-    run_info_path = output_dir / "run_info.json"
-    try:
-        with open(run_info_path, "w", encoding="utf-8") as f:
-            json.dump(run_info, f, indent=2)
-        logger.info("Run info (full) saved to: %s", run_info_path)
-    except Exception as e:
-        logger.warning("Could not write run_info.json: %s", e)
+    logger.info("Seed: %s  dataset: %s/%s  thinking: %s  direct_tool_call: %s",
+                config.seed, config.dataset.name, config.dataset.split,
+                getattr(config.thinking_mode, "value", "?"), config.tools.direct_tool_call)
+    logger.info("Enabled tools: %s", list(config.tools.enabled_tools))
 
     api_keys = {
         "serper": os.getenv("SERPER_API_KEY"),
@@ -311,16 +258,17 @@ def run_experiment(args):
     # Initialize prompt builder
     prompt_builder = PromptBuilder()
 
+    logger.info("Run output directory: %s", run_dir)
+
     orchestrator = None
     results: List[Dict[str, Any]] = []
-    correct_count = 0
+    metrics: Dict[str, Any] = {}
 
     logger.info("="*80)
     logger.info("Starting evaluation")
     logger.info("="*80)
 
     try:
-        # Create orchestrator
         orchestrator = AgenticOrchestrator(
             model_provider=orchestrator_model,
             tool_registry=tools,
@@ -329,10 +277,7 @@ def run_experiment(args):
             use_thinking=config.use_orchestrator_thinking(),
         )
 
-        # Batch size (default: 8 for higher throughput on vLLM; set to 1 to disable batching)
-        batch_size = int(getattr(args, "batch_size", 8) or 8)
-        batch_size = max(1, batch_size)
-
+        batch_size = max(1, int(getattr(args, "batch_size", 8) or 8))
         tool_schemas = tools.get_all_schemas()
 
         def _chunks(seq, size: int):
@@ -342,19 +287,16 @@ def run_experiment(args):
         for base_idx, batch in _chunks(examples, batch_size):
             logger.info(f"\nProcessing batch {base_idx + 1}-{base_idx + len(batch)} / {len(examples)}")
 
-            # Build per-example system prompts (include attachments)
-            system_prompts = []
-            for ex in batch:
-                system_prompts.append(
-                    prompt_builder.build_system_prompt(
-                        dataset_name=config.dataset.name,
-                        tool_schemas=tool_schemas,
-                        max_search_limit=config.tools.max_search_limit,
-                        direct_tool_call=config.tools.direct_tool_call,
-                    )
+            system_prompts = [
+                prompt_builder.build_system_prompt(
+                    dataset_name=config.dataset.name,
+                    tool_schemas=tool_schemas,
+                    max_search_limit=config.tools.max_search_limit,
+                    direct_tool_call=config.tools.direct_tool_call,
                 )
+                for _ in batch
+            ]
 
-            # Run batched orchestrator
             try:
                 states = orchestrator.run_batch(
                     questions=[ex.question for ex in batch],
@@ -368,7 +310,6 @@ def run_experiment(args):
                     results.append({"question_id": ex.question_id, "question": ex.question, "error": str(e)})
                 continue
 
-            # Evaluate + store results
             for ex, state in zip(batch, states):
                 prediction = state.answer or ""
                 eval_result = dataset.evaluate(
@@ -376,41 +317,46 @@ def run_experiment(args):
                     ground_truth=ex.answer,
                     metadata=ex.metadata,
                 )
-                if eval_result.get("correct", False):
-                    correct_count += 1
-
                 results.append({
                     "question_id": ex.question_id,
                     "question": ex.question,
                     "prediction": prediction,
                     "ground_truth": ex.answer,
-                    "correct": eval_result.get("correct", False),
+                    "correct": bool(eval_result.get("correct", False)),
                     "evaluation": eval_result,
-                    "output_text": _state_to_legacy_output_text(state),
+                    "output_text": _state_to_output_text(state),
                     "turns": state.turn,
                     "tool_counts": state.tool_counts,
                     "metadata": ex.metadata,
                 })
 
-            # Save intermediate results
+            # Flush intermediate raw results every 10 examples
             if (base_idx + len(batch)) % 10 == 0:
-                save_results(results, output_dir / "results_partial.json")
+                _write_json(run_dir / "raw_results.partial.json", results)
                 cache_manager.save_caches()
 
     finally:
-        # Persist whatever we have (even if interrupted)
-        save_results(results, output_dir / "results.json")
         cache_manager.save_caches()
 
-        # Also save legacy-format outputs + metrics (multi-agent-tools compatible)
-        legacy = save_legacy_results_and_metrics(
-            config=config,
-            examples=examples,
-            results=results,
-            output_dir=output_dir,
-        )
+        # ── raw_results.json ────────────────────────────────────────────────
+        _write_json(run_dir / "raw_results.json", results)
+        # Remove partial file if it exists
+        (run_dir / "raw_results.partial.json").unlink(missing_ok=True)
 
-        # W&B logging (only if configured in YAML)
+        # ── metrics.json ────────────────────────────────────────────────────
+        metrics = _compute_metrics(results, examples, config.dataset.name)
+        metrics["start_time"] = start_time
+        metrics["end_time"] = datetime.now().isoformat()
+        _write_json(run_dir / "metrics.json", metrics)
+
+        # ── config.json ─────────────────────────────────────────────────────
+        config_dict = _config_to_dict(config)
+        config_dict["config_path"] = str(args.config)
+        _write_json(run_dir / "config.json", config_dict)
+
+        logger.info("Results saved to: %s", run_dir)
+
+        # ── W&B logging ─────────────────────────────────────────────────────
         if getattr(config, "use_wandb", False):
             project = getattr(config, "wandb_project", None)
             if not project:
@@ -434,219 +380,194 @@ def run_experiment(args):
                     context_manager=("context_manager" in enabled),
                     enable_text_inspector_tool=("text_inspector" in enabled),
                     enable_image_inspector_tool=("image_inspector" in enabled),
-                    final_metrics=legacy.get("final_metrics") if isinstance(legacy, dict) else None,
-                    tool_stats=legacy.get("tool_stats") if isinstance(legacy, dict) else None,
-                    metrics_path=str(legacy.get("metrics_path")) if isinstance(legacy, dict) and legacy.get("metrics_path") else None,
-                    config_summary={
-                        "experiment": config.name,
-                        "dataset": config.dataset.name,
-                        "split": config.dataset.split,
-                        "direct_tool_call": config.tools.direct_tool_call,
-                        "thinking_mode": config.thinking_mode.value,
-                        "seed": config.seed,
-                    },
+                    final_metrics=metrics,
+                    tool_stats=metrics.get("tool_usage"),
+                    metrics_path=str(run_dir / "metrics.json"),
+                    config_summary=config_dict,
                 )
 
         if orchestrator is not None:
             orchestrator.cleanup()
 
-    # Summary
-    accuracy = correct_count / len(examples) if examples else 0
+    overall = metrics.get("overall", {})
+    accuracy = overall.get("accuracy", 0.0)
     logger.info("="*80)
     logger.info("EXPERIMENT COMPLETE")
     logger.info("="*80)
-    logger.info(f"Total examples: {len(examples)}")
-    logger.info(f"Correct: {correct_count}")
-    logger.info(f"Accuracy: {accuracy:.2%}")
-    logger.info(f"Seed (reproducibility): {getattr(config, 'seed', None)}")
-    logger.info(f"Results saved to: {output_dir}")
+    logger.info("Total examples : %d", len(examples))
+    logger.info("Accuracy: %.2f%%", accuracy * 100)
+    logger.info("Results saved to: %s", run_dir)
 
 
-def save_results(results: List[Dict[str, Any]], output_path: Path):
-    """Save results to JSON file.
-
-    Args:
-        results: List of result dictionaries
-        output_path: Path to output file
-    """
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
+def _write_json(path: Path, data: Any) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def _state_to_legacy_output_text(state: ExecutionState) -> str:
-    """Flatten state.messages into a single string containing tool I/O.
-
-    multi-agent-tools stores a single `Output` field which includes the
-    model's <tool_call> and the subsequent <tool_response> blocks.
-    """
+def _state_to_output_text(state: ExecutionState) -> str:
+    """Flatten state messages into a single string of assistant + tool content."""
     parts: List[str] = []
     for msg in state.messages:
-        role = msg.get("role")
-        if role in ("assistant", "tool"):
+        if msg.get("role") in ("assistant", "tool"):
             content = msg.get("content") or ""
             if content:
                 parts.append(content)
     return "\n".join(parts).strip()
 
 
-def save_legacy_results_and_metrics(
-    config,
-    examples,
+def _make_run_dir(output_dir: Path, split: str) -> Path:
+    """Create and return {split}_YYYY-MM-DD-HH-MM-SS-{job_id}/ inside output_dir."""
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    job_id = os.environ.get("SLURM_JOB_ID") or _short_id()
+    run_dir = output_dir / f"{split}_{date_str}_{job_id}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def _short_id() -> str:
+    """Generate a short random hex ID for non-SLURM runs."""
+    import secrets
+    return secrets.token_hex(3)
+
+
+def _config_to_dict(config) -> Dict[str, Any]:
+    """Serialise config to a dict, stripping sensitive fields."""
+    _SENSITIVE = {"wandb_project", "use_wandb", "openai_api_key", "anthropic_api_key", "serper_api_key"}
+
+    def _model_cfg(m) -> Dict[str, Any]:
+        if m is None:
+            return {}
+        return {
+            "name": m.name,
+            "family": m.family.value if hasattr(m.family, "value") else str(m.family),
+            "path_or_id": m.path_or_id,
+            "role": m.role,
+            "max_model_len": m.max_model_len,
+            "max_tokens": m.max_tokens,
+            "temperature": m.temperature,
+            "top_p": m.top_p,
+            "top_k": m.top_k,
+            "repetition_penalty": m.repetition_penalty,
+            "supports_thinking": m.supports_thinking,
+        }
+
+    d: Dict[str, Any] = {
+        "name": config.name,
+        "description": getattr(config, "description", "") or "",
+        "seed": config.seed,
+        "thinking_mode": getattr(config.thinking_mode, "value", str(config.thinking_mode)),
+        "max_turns": getattr(config, "max_turns", None),
+        "dataset": {
+            "name": config.dataset.name,
+            "split": config.dataset.split,
+            "subset_num": getattr(config.dataset, "subset_num", None),
+        },
+        "tools": {
+            "enabled_tools": list(config.tools.enabled_tools),
+            "direct_tool_call": config.tools.direct_tool_call,
+            "max_search_limit": getattr(config.tools, "max_search_limit", None),
+            "top_k_results": getattr(config.tools, "top_k_results", None),
+        },
+        "models": {},
+    }
+    for role in ("orchestrator", "web_search", "code_generator", "text_inspector", "context_manager", "image_inspector"):
+        if config.has_model(role):
+            d["models"][role] = _model_cfg(config.get_model(role))
+
+    # Drop anything sensitive just in case
+    for key in _SENSITIVE:
+        d.pop(key, None)
+
+    return d
+
+
+def _level_key(example, dataset_name: str) -> str:
+    if dataset_name == "gaia":
+        return str(example.metadata.get("level", "unknown"))
+    if dataset_name in ("math500", "amc"):
+        return str(example.metadata.get("difficulty", example.metadata.get("year", "unknown")))
+    if dataset_name == "aime":
+        return str(example.metadata.get("year", "unknown"))
+    return "all"
+
+
+def _compute_metrics(
     results: List[Dict[str, Any]],
-    output_dir: Path,
+    examples,
+    dataset_name: str,
 ) -> Dict[str, Any]:
-    """Write multi-agent-tools-style `<split>.<ts>.json` + `.metrics.json`.
+    """Aggregate per-example results into overall + per-level metrics.
 
-    The goal is not to perfectly replicate every legacy field, but to keep the
-    **shape** (list of per-example dicts with `Answer` + `Output`) and always
-    produce a metrics JSON alongside.
+    Structure:
+        overall:    accuracy, em, f1, num_correct
+        tool_usage: per-tool total counts (overall)
+        per_level:  (for stratified datasets) same scores + tool_usage per level
     """
-    if not getattr(config, "dataset", None):
-        return {}
+    _STRATIFIED = {"gaia", "math500", "aime", "amc", "hle"}
 
-    dataset_name = config.dataset.name
-    split = config.dataset.split
+    # Per-level accumulators: level -> list of (accuracy, em, f1, tool_counts)
+    per_level_rows: Dict[str, List[Dict]] = {}
 
-    t = time.localtime()
-    result_name = f"{split}.{t.tm_mon}.{t.tm_mday},{t.tm_hour}:{t.tm_min}.json"
-    metrics_name = f"{split}.{t.tm_mon}.{t.tm_mday},{t.tm_hour}:{t.tm_min}.metrics.json"
-
-    legacy_items: List[Dict[str, Any]] = []
-    per_level: Dict[str, List[int]] = defaultdict(list)
-
-    total = len(examples)
-    correct_flags: List[int] = []
+    all_gaia: List[float] = []
+    all_em: List[float] = []
+    all_f1: List[float] = []
+    all_tools: Dict[str, int] = {}
 
     for idx, example in enumerate(examples):
         r = results[idx] if idx < len(results) else {}
-        prediction = r.get("prediction", "") or ""
-        output_text = r.get("output_text", "") or prediction
-        evaluation = r.get("evaluation", {}) or {}
-        correct = bool(evaluation.get("correct", False))
+        evaluation = r.get("evaluation") or {}
+        tc = r.get("tool_counts") or {}
 
-        item: Dict[str, Any] = {
-            "Question": example.question,
-            "Answer": example.answer,
-            "Output": output_text,
-            "Pred_Answer": prediction,
+        gs = float(evaluation.get("accuracy", 0.0))
+        em = float(evaluation.get("em", float(evaluation.get("correct", gs > 0))))
+        f1 = float(evaluation.get("f1", gs))
+
+        all_gaia.append(gs)
+        all_em.append(em)
+        all_f1.append(f1)
+        for tool, count in tc.items():
+            all_tools[tool] = all_tools.get(tool, 0) + int(count or 0)
+
+        if dataset_name in _STRATIFIED:
+            lk = _level_key(example, dataset_name)
+            per_level_rows.setdefault(lk, []).append({"gs": gs, "em": em, "f1": f1, "tc": tc})
+
+    total = len(examples)
+
+    def _agg(rows: List[Dict]) -> Dict[str, Any]:
+        n = len(rows)
+        if n == 0:
+            return {"accuracy": 0.0, "em": 0.0, "f1": 0.0, "num_correct": "0 of 0"}
+        n_correct = sum(1 for r in rows if r["gs"] > 0)
+        level_tools: Dict[str, int] = {}
+        for row in rows:
+            for tool, count in row["tc"].items():
+                level_tools[tool] = level_tools.get(tool, 0) + int(count or 0)
+        result: Dict[str, Any] = {
+            "accuracy": sum(r["gs"] for r in rows) / n,
+            "em":         sum(r["em"] for r in rows) / n,
+            "f1":         sum(r["f1"] for r in rows) / n,
+            "num_correct": f"{n_correct} of {n}",
         }
+        if level_tools:
+            result["tool_usage"] = level_tools
+        return result
 
-        # Dataset-specific fields (minimal subset for legacy tooling)
-        if dataset_name == "gaia":
-            level = example.metadata.get("level", 1)
-            item["Level"] = level
-            item["file_name"] = example.metadata.get("file_name", "")
-            item["file_path"] = example.metadata.get("file_path", "")
-            attachments = example.get_attachments()
-            item["local_file_path"] = attachments[0] if attachments else None
-            item["input_output"] = json.dumps({"inputs": [example.question], "outputs": [example.answer]})
-            level_key = str(level)
-        elif dataset_name == "gpqa":
-            # Legacy evaluator expects `Choices` for GPQA.
-            item["Choices"] = example.metadata.get("choices", [])
-            level_key = "all"
-        elif dataset_name in ("math500", "amc"):
-            level = example.metadata.get("difficulty", example.metadata.get("year", "unknown"))
-            item["Level"] = level
-            item["type"] = example.metadata.get("problem_type", example.metadata.get("competition", "unknown"))
-            level_key = str(level)
-        elif dataset_name == "aime":
-            year = example.metadata.get("year", "unknown")
-            item["Year"] = year
-            item["Level"] = year  # legacy evaluator mostly buckets by `Level`
-            level_key = str(year)
-        else:
-            level_key = "all"
-
-        # Always attach a metrics dict (legacy evaluate.py also adds this).
-        # We use correctness-based placeholders to keep a stable schema.
-        tool_counts = r.get("tool_counts", {}) or {}
-        metrics: Dict[str, Any] = {
-            "is_valid_answer": bool(prediction),
-            "em": int(correct),
-            "acc": int(correct),
-            "f1": float(correct),
-            "math_equal": int(correct),
-            "search_total": int(tool_counts.get("web_search", 0)),
-            "code_total": int(tool_counts.get("code_generator", 0)),
-            "context_manager_total": int(tool_counts.get("context_manager", 0)),
-            "text_inspector_total": int(tool_counts.get("text_inspector", 0)),
-            "image_inspector_total": int(tool_counts.get("image_inspector", 0)),
-        }
-        if dataset_name == "gaia":
-            metrics["gaia_score"] = int(correct)
-
-        item["Metrics"] = metrics
-
-        legacy_items.append(item)
-        correct_flags.append(int(correct))
-        per_level[level_key].append(int(correct))
-
-    overall_acc = sum(correct_flags) / total if total else 0.0
-    overall_metrics: Dict[str, Any] = {
-        "em": overall_acc,
-        "acc": overall_acc,
-        "f1": overall_acc,
-        "math_equal": overall_acc,
-        "num_valid_answer": f"{sum(1 for x in correct_flags if x)} of {total}",
+    n_correct_overall = sum(1 for g in all_gaia if g > 0)
+    overall: Dict[str, Any] = {
+        "accuracy": sum(all_gaia) / total if total else 0.0,
+        "em":         sum(all_em) / total if total else 0.0,
+        "f1":         sum(all_f1) / total if total else 0.0,
+        "num_correct": f"{n_correct_overall} of {total}",
     }
-    if dataset_name == "gaia":
-        overall_metrics["gaia_score"] = overall_acc
 
-    per_level_metrics: Dict[str, Any] = {}
-    for level_key, flags in per_level.items():
-        if not flags:
-            continue
-        acc = sum(flags) / len(flags)
-        entry = {
-            "em": acc,
-            "acc": acc,
-            "f1": acc,
-            "math_equal": acc,
-            "num_valid_answer": f"{sum(1 for x in flags if x)} of {len(flags)}",
-        }
-        if dataset_name == "gaia":
-            entry["gaia_score"] = acc
-        per_level_metrics[level_key] = entry
+    metrics: Dict[str, Any] = {"overall": overall}
+    if all_tools:
+        metrics["tool_usage"] = all_tools
+    if dataset_name in _STRATIFIED and per_level_rows:
+        metrics["per_level"] = {k: _agg(v) for k, v in sorted(per_level_rows.items())}
 
-    final_metrics: Dict[str, Any] = {"overall": overall_metrics}
-    if dataset_name in ("gaia", "math500", "aime", "hle"):
-        final_metrics["per_level"] = per_level_metrics
-
-    # Save files
-    results_path = output_dir / result_name
-    metrics_path = output_dir / metrics_name
-
-    with open(results_path, "w", encoding="utf-8") as f:
-        json.dump(legacy_items, f, indent=2, ensure_ascii=False)
-
-    with open(metrics_path, "w", encoding="utf-8") as f:
-        json.dump(final_metrics, f, indent=2, ensure_ascii=False)
-
-    # Tool stats (useful for W&B logging; mirrors multi-agent-tools shape)
-    tool_stats: Dict[str, Any] = {"overall": {}, "per_question": []}
-    overall_tools = defaultdict(int)
-    for r in results:
-        tc = (r.get("tool_counts") or {}) if isinstance(r, dict) else {}
-        per_q = {
-            "search_total": int(tc.get("web_search", 0) or 0),
-            "code_total": int(tc.get("code_generator", 0) or 0),
-            "context_manager_total": int(tc.get("context_manager", 0) or 0),
-            "text_inspector_total": int(tc.get("text_inspector", 0) or 0),
-            "image_inspector_total": int(tc.get("image_inspector", 0) or 0),
-        }
-        tool_stats["per_question"].append(per_q)
-        for k, v in per_q.items():
-            overall_tools[k] += int(v)
-
-    tool_stats["overall"] = dict(overall_tools)
-
-    return {
-        "results_path": results_path,
-        "metrics_path": metrics_path,
-        "final_metrics": final_metrics,
-        "tool_stats": tool_stats,
-    }
+    return metrics
 
 
 def main():

@@ -5,7 +5,7 @@
 #SBATCH --ntasks={{ ntasks }}
 #SBATCH --cpus-per-task={{ cpus_per_task }}
 #SBATCH --time={{ time }}
-#SBATCH --output={{ output_dir }}/{{ experiment_name }}_%A.log
+#SBATCH --output={{ slurm_output_dir }}/{{ experiment_name }}_%A.log
 
 # Load modules
 module purge

@@ -5,13 +5,14 @@ from .metrics import (
     normalized_match,
     contains_match,
     numeric_match,
+    token_f1,
+    evaluate_with_math_verify,
+    evaluate_answer,
     evaluate_gaia,
     evaluate_gpqa,
     evaluate_math,
     evaluate_qa,
 )
-
-# GAIA official scorer functions (from multi-agent-tools)
 from .gaia_scorer import (
     question_scorer,
     normalize_str,
@@ -23,17 +24,17 @@ from .gaia_scorer import (
 )
 
 __all__ = [
-    # Generic metrics
     "exact_match",
     "normalized_match",
     "contains_match",
     "numeric_match",
-    # Dataset-specific evaluators
+    "token_f1",
+    "evaluate_with_math_verify",
+    "evaluate_answer",
     "evaluate_gaia",
     "evaluate_gpqa",
     "evaluate_math",
     "evaluate_qa",
-    # GAIA official scorer
     "question_scorer",
     "normalize_str",
     "normalize_number_str",

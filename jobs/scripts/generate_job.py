@@ -31,6 +31,10 @@ def generate_job(config_path: Path, output_path: Path = None, project_dir: Path 
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # SLURM stdout goes to out/experiments/<experiment_name>/
+    slurm_output_dir = f"out/experiments/{config.name}"
+    (project_dir / slurm_output_dir).mkdir(parents=True, exist_ok=True)
+
     template_dir = Path(__file__).parent.parent / "templates"
     env = Environment(loader=FileSystemLoader(str(template_dir)))
     template = env.get_template("experiment.job.j2")
@@ -47,6 +51,7 @@ def generate_job(config_path: Path, output_path: Path = None, project_dir: Path 
         config_path=str(config_path.absolute()),
         output_dir=str(config.output_dir),
         project_dir=str(project_dir.absolute()),
+        slurm_output_dir=slurm_output_dir,
     )
 
     with open(output_path, 'w') as f:

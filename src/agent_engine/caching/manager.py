@@ -16,6 +16,7 @@ import json
 import os
 import tempfile
 from contextlib import contextmanager
+from typing import Any
 
 
 class CacheManager:
@@ -39,6 +40,17 @@ class CacheManager:
         self.search_cache = self._load_cache(self.search_cache_path)
         self.url_cache = self._load_cache(self.url_cache_path)
 
+    @staticmethod
+    def _normalize_search_results(value: Any) -> list:
+        """Ensure search cache value is always a list of dicts (Serper result shape).
+
+        Cache files may come from other tools or older versions; normalizing on
+        load guarantees the rest of the code sees list[dict] per query.
+        """
+        if not isinstance(value, list):
+            return []
+        return [r for r in value if isinstance(r, dict)]
+
     def _load_cache(self, path: str) -> dict:
         # Reading is safe even without locks thanks to atomic replace on writes,
         # but we still prefer a shared lock if available for consistency.
@@ -47,7 +59,10 @@ class CacheManager:
         try:
             with self._locked(shared=True):
                 with open(path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    data = json.load(f)
+            if path == self.search_cache_path:
+                data = {k: self._normalize_search_results(v) for k, v in data.items()}
+            return data
         except Exception:
             # If the file is temporarily unreadable/corrupt (e.g. external edit),
             # fall back to empty cache rather than crashing the run.
@@ -131,6 +146,9 @@ class CacheManager:
             return {}
         try:
             with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+            if path == self.search_cache_path:
+                data = {k: self._normalize_search_results(v) for k, v in data.items()}
+            return data
         except Exception:
             return {}
