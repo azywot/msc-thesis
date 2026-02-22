@@ -32,7 +32,7 @@ class ModelConfig:
     name: str                          # Human-readable name
     family: ModelFamily                # Explicit family (no string matching)
     path_or_id: str                    # Local path or API model ID
-    role: str                          # "orchestrator", "search", "code", etc.
+    role: str                          # "orchestrator", "web_search", "code_generator", etc.
 
     # Generation params
     max_model_len: int = 32768

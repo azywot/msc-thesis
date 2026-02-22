@@ -70,12 +70,6 @@ def _load_models(models_data: Dict[str, Any]) -> Dict[str, ModelConfig]:
     """
     models = {}
     for role, config_data in models_data.items():
-        # Backward compat: planner -> orchestrator
-        if role == "planner":
-            role = "orchestrator"
-            if "role" in config_data and config_data["role"] == "planner":
-                config_data = dict(config_data)
-                config_data["role"] = "orchestrator"
         # Convert family string to enum
         if "family" in config_data:
             family_str = config_data["family"]

@@ -33,21 +33,6 @@ DEFAULT_CONFIG = (
     Path(__file__).parent.parent / "experiments/configs/gaia/test_subagent.yaml"
 )
 
-# Which model role each tool needs (None = no LLM, e.g. context_manager in sub-agent mode).
-TOOL_ROLES = {
-    "web_search": "search",
-    "code_generator": "coding",
-    "text_inspector": "text_inspector",
-    "image_inspector": "image_inspector",
-    "context_manager": None,
-}
-
-
-def roles_for_tools(enabled_tools: List[str]) -> List[str]:
-    """Return the list of model roles required for the given tools (no duplicates)."""
-    roles = [TOOL_ROLES[t] for t in enabled_tools if TOOL_ROLES.get(t) is not None]
-    return list(dict.fromkeys(roles))
-
 
 # ---------------------------------------------------------------------------
 # Model initialisation (with instance caching, same logic as run_experiment.py)
@@ -81,7 +66,7 @@ def build_model_providers(
 ):
     """Initialise orchestrator and only the model roles needed for the example.
 
-    When *required_roles* is set (e.g. from roles_for_tools(enabled_tools)),
+    When *required_roles* is set (the list of enabled tool names),
     only the orchestrator and those roles are loaded. This avoids loading the VLM
     (image_inspector) for examples that do not use it, preventing OOM on a
     single GPU.
@@ -99,14 +84,14 @@ def build_model_providers(
     roles_to_init = (
         required_roles
         if required_roles is not None
-        else ["search", "coding", "text_inspector", "image_inspector"]  # model roles, not tool names
+        else ["web_search", "code_generator", "text_inspector", "image_inspector"]  # model roles = tool names
     )
 
     orchestrator = _get_model_provider(config.get_model("orchestrator"), model_cache)
     providers: Dict[str, Any] = {}
     for role in roles_to_init:
-        if config.has_model(role):
-            providers[role] = _get_model_provider(config.get_model(role), model_cache)
+        model_cfg = config.get_model(role)
+        providers[role] = _get_model_provider(model_cfg, model_cache) if model_cfg is not None else orchestrator
 
     return orchestrator, providers, model_cache
 
@@ -145,7 +130,7 @@ def build_tools(
                 url_cache=cache_manager.url_cache,
                 top_k=config.tools.top_k_results,
                 max_doc_len=config.tools.max_doc_len,
-                model_provider=model_providers.get("search"),
+                model_provider=model_providers.get("web_search"),
                 fetch_urls=True,
                 use_thinking=use_thinking,
             ))
@@ -154,7 +139,7 @@ def build_tools(
             tools.register(CodeGeneratorTool(
                 timeout_seconds=60,
                 temp_dir=str(config.cache_dir / "code_temp"),
-                model_provider=model_providers.get("coding"),
+                model_provider=model_providers.get("code_generator"),
                 use_thinking=use_thinking,
             ))
 
@@ -173,7 +158,7 @@ def build_tools(
             ))
 
         elif name == "context_manager":
-            context_manager_model = orchestrator_model or model_providers.get("orchestrator")
+            context_manager_model = model_providers.get("context_manager") or orchestrator_model
             tools.register(ContextManagerTool(
                 direct_mode=False,  # sub-agent mode
                 storage_path=str(config.cache_dir / "context_manager"),

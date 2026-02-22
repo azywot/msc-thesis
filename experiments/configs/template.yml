@@ -45,11 +45,11 @@ models:
 
   # Sub-agent roles (used when tools.direct_tool_call: false).
   # This template uses Qwen3-4B shared across all text roles.
-  search:
+  web_search:
     name: "Qwen3-4B"
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-4B"
-    role: "search"
+    role: "web_search"
     max_model_len: 32768
     max_tokens: 4096
     temperature: 0.7
@@ -60,11 +60,11 @@ models:
     gpu_memory_utilization: 0.5
     seed: 0
 
-  coding:
+  code_generator:
     name: "Qwen3-4B"
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-4B"
-    role: "coding"
+    role: "code_generator"
     max_model_len: 32768
     max_tokens: 4096
     temperature: 0.7
@@ -80,6 +80,21 @@ models:
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-4B"
     role: "text_inspector"
+    max_model_len: 32768
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+    supports_thinking: true
+    gpu_memory_utilization: 0.5
+    seed: 0
+
+  context_manager:
+    name: "Qwen3-4B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-4B"
+    role: "context_manager"
     max_model_len: 32768
     max_tokens: 4096
     temperature: 0.7

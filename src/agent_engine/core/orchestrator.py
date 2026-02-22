@@ -457,10 +457,10 @@ class AgenticOrchestrator:
             f"- There is an attached file for this question: {fname}",
         ]
 
-        if ext in _IMAGE_EXTS and self.tools.get("inspect_image_file") is not None:
-            lines.append("- To inspect the image, call the tool `inspect_image_file` with a question about the image.")
-        elif ext in _TEXT_EXTS and self.tools.get("inspect_text_file") is not None:
-            lines.append("- To read the file, call the tool `inspect_text_file` (optionally with a question).")
+        if ext in _IMAGE_EXTS and self.tools.get("image_inspector") is not None:
+            lines.append("- To inspect the image, call the tool `image_inspector` with a question about the image.")
+        elif ext in _TEXT_EXTS and self.tools.get("text_inspector") is not None:
+            lines.append("- To read the file, call the tool `text_inspector` (optionally with a question).")
         else:
             lines.append("- The attachment type is not supported by the available inspectors in this run.")
 
@@ -507,13 +507,13 @@ class AgenticOrchestrator:
         Returns an error message string if the required attachment is missing,
         or None on success.
         """
-        if tool_name in ("inspect_image_file", "image_inspector"):
+        if tool_name == "image_inspector":
             path = self._get_first_attachment_with_exts(state, _IMAGE_EXTS)
             if not path:
                 return "No supported image attachment found (provide image via attachments)"
             arguments["local_file_path"] = path
 
-        elif tool_name in ("inspect_text_file", "text_inspector"):
+        elif tool_name == "text_inspector":
             path = self._get_first_attachment_with_exts(state, _TEXT_EXTS)
             if not path:
                 return "No supported text attachment found (provide file via attachments)"

@@ -42,7 +42,7 @@ def setup_model_provider(model_config, api_keys: Dict[str, str], model_cache: Op
     """Initialize model provider with instance caching for memory efficiency.
     
     This function implements model instance reuse: if the same model path is
-    requested multiple times (e.g., for different roles like orchestrator/search/code),
+    requested multiple times (e.g., for different roles like orchestrator/web_search/code_generator),
     it returns the cached instance instead of loading a new one. This is critical
     for memory efficiency when using the same model for multiple roles.
     
@@ -106,7 +106,7 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
     for tool_name in config.tools.enabled_tools:
         if tool_name == "web_search":
             # Get model provider for sub-agent mode
-            search_model = model_providers.get("search") if not direct_mode and model_providers else None
+            search_model = model_providers.get("web_search") if not direct_mode and model_providers else None
 
             tools.register(WebSearchTool(
                 serper_api_key=api_keys.get("serper"),
@@ -120,7 +120,7 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
             ))
         elif tool_name == "code_generator":
             # Get model provider for sub-agent mode
-            coding_model = model_providers.get("coding") if not direct_mode and model_providers else None
+            coding_model = model_providers.get("code_generator") if not direct_mode and model_providers else None
 
             tools.register(CodeGeneratorTool(
                 timeout_seconds=60,
@@ -133,18 +133,14 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
             # In non-direct mode, GraphRAG is used with the local model (orchestrator or
             # dedicated context_manager model) so no OpenAI key is needed — matching MAT.
             storage_path = str(config.cache_dir / "context_manager")
-            context_manager_model = None
-            if not direct_mode:
-                context_manager_model = (
-                    model_providers.get("context_manager") if model_providers else None
-                ) or orchestrator_model
+            context_manager_model = model_providers.get("context_manager") if not direct_mode else None
             tools.register(ContextManagerTool(
                 direct_mode=direct_mode,
                 storage_path=storage_path,
                 use_graphrag=True,
                 model_provider=context_manager_model,
             ))
-        elif tool_name == "inspect_text_file":
+        elif tool_name == "text_inspector":
             # Get model provider for sub-agent mode (optional for text inspector)
             text_inspector_model = model_providers.get("text_inspector") if not direct_mode and model_providers else None
 
@@ -153,7 +149,7 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
                 model_provider=text_inspector_model,
                 use_thinking=use_subagent_thinking
             ))
-        elif tool_name == "inspect_image_file":
+        elif tool_name == "image_inspector":
             # Image inspector requires a VLM, so only enable in non-direct mode
             if not direct_mode:
                 # Get VLM model provider for image analysis (required)
@@ -226,7 +222,7 @@ def run_experiment(args):
         "cache_dir": str(config.cache_dir),
         "models": {},
     }
-    for role in ("orchestrator", "search", "coding", "text_inspector", "image_inspector"):
+    for role in ("orchestrator", "web_search", "code_generator", "text_inspector", "context_manager", "image_inspector"):
         if not config.has_model(role):
             continue
         m = config.get_model(role)
@@ -282,30 +278,20 @@ def run_experiment(args):
     logger.info(f"Initializing orchestrator model: {config.get_model('orchestrator').name}")
     orchestrator_model = setup_model_provider(config.get_model("orchestrator"), api_keys, model_cache)
 
-    # Initialize sub-agent models if not in direct mode (may reuse orchestrator instance)
+    # Initialize sub-agent models if not in direct mode.
+    # For each enabled tool: use models.<tool> if specified, otherwise fall back to orchestrator.
     model_providers = {}
     if not config.tools.direct_tool_call:
         logger.info("Sub-agent mode enabled - initializing tool models")
 
-        # Initialize search model if configured (will reuse if same path as orchestrator)
-        if config.has_model("search"):
-            logger.info(f"Initializing search model: {config.get_model('search').name}")
-            model_providers["search"] = setup_model_provider(config.get_model("search"), api_keys, model_cache)
-
-        # Initialize coding model if configured (will reuse if same path as orchestrator)
-        if config.has_model("coding"):
-            logger.info(f"Initializing coding model: {config.get_model('coding').name}")
-            model_providers["coding"] = setup_model_provider(config.get_model("coding"), api_keys, model_cache)
-
-        # Optional: model-backed text inspector in sub-agent mode
-        if config.has_model("text_inspector"):
-            logger.info(f"Initializing text_inspector model: {config.get_model('text_inspector').name}")
-            model_providers["text_inspector"] = setup_model_provider(config.get_model("text_inspector"), api_keys, model_cache)
-
-        # Optional: VLM model for image inspection in sub-agent mode
-        if config.has_model("image_inspector"):
-            logger.info(f"Initializing image_inspector model: {config.get_model('image_inspector').name}")
-            model_providers["image_inspector"] = setup_model_provider(config.get_model("image_inspector"), api_keys, model_cache)
+        for tool_name in config.tools.enabled_tools:
+            model_cfg = config.get_model(tool_name)
+            if model_cfg is not None:
+                logger.info(f"Initializing {tool_name} model: {model_cfg.name}")
+                model_providers[tool_name] = setup_model_provider(model_cfg, api_keys, model_cache)
+            else:
+                logger.info(f"No models.{tool_name} in config — using orchestrator model as fallback")
+                model_providers[tool_name] = orchestrator_model
 
         logger.info(f"Thinking mode: {config.thinking_mode.value}")
         logger.info(f"Orchestrator uses thinking: {config.use_orchestrator_thinking()}")
@@ -443,8 +429,8 @@ def run_experiment(args):
                     enable_search_tool=("web_search" in enabled),
                     enable_code_tool=("code_generator" in enabled),
                     context_manager=("context_manager" in enabled),
-                    enable_text_inspector_tool=("inspect_text_file" in enabled),
-                    enable_image_inspector_tool=("inspect_image_file" in enabled),
+                    enable_text_inspector_tool=("text_inspector" in enabled),
+                    enable_image_inspector_tool=("image_inspector" in enabled),
                     final_metrics=legacy.get("final_metrics") if isinstance(legacy, dict) else None,
                     tool_stats=legacy.get("tool_stats") if isinstance(legacy, dict) else None,
                     metrics_path=str(legacy.get("metrics_path")) if isinstance(legacy, dict) and legacy.get("metrics_path") else None,
@@ -584,8 +570,8 @@ def save_legacy_results_and_metrics(
             "search_total": int(tool_counts.get("web_search", 0)),
             "code_total": int(tool_counts.get("code_generator", 0)),
             "context_manager_total": int(tool_counts.get("context_manager", 0)),
-            "text_inspector_total": int(tool_counts.get("inspect_text_file", 0)),
-            "image_inspector_total": int(tool_counts.get("inspect_image_file", 0)),
+            "text_inspector_total": int(tool_counts.get("text_inspector", 0)),
+            "image_inspector_total": int(tool_counts.get("image_inspector", 0)),
         }
         if dataset_name == "gaia":
             metrics["gaia_score"] = int(correct)
@@ -646,8 +632,8 @@ def save_legacy_results_and_metrics(
             "search_total": int(tc.get("web_search", 0) or 0),
             "code_total": int(tc.get("code_generator", 0) or 0),
             "context_manager_total": int(tc.get("context_manager", 0) or 0),
-            "text_inspector_total": int(tc.get("inspect_text_file", 0) or 0),
-            "image_inspector_total": int(tc.get("inspect_image_file", 0) or 0),
+            "text_inspector_total": int(tc.get("text_inspector", 0) or 0),
+            "image_inspector_total": int(tc.get("image_inspector", 0) or 0),
         }
         tool_stats["per_question"].append(per_q)
         for k, v in per_q.items():

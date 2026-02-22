@@ -94,9 +94,9 @@ models:
   orchestrator:
     path_or_id: "Qwen/Qwen3-32B"
     gpu_ids: [0, 1]
-  search:
+  web_search:
     path_or_id: "Qwen/Qwen3-32B"  # Reuses orchestrator!
-  code:
+  code_generator:
     path_or_id: "Qwen/Qwen3-32B"  # Reuses orchestrator!
 
 tools:
@@ -226,9 +226,9 @@ models:
   orchestrator:
     path_or_id: "Qwen/Qwen3-32B"
     gpu_ids: [0, 1]
-  search:
+  web_search:
     path_or_id: "Qwen/Qwen3-32B"  # Auto-reuses orchestrator instance!
-  code:
+  code_generator:
     path_or_id: "Qwen/Qwen3-32B"  # Auto-reuses orchestrator instance!
 ```
 

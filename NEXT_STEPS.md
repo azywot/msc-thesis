@@ -529,11 +529,11 @@ dataset:
 
 # Models (same as inference)
 models:
-  planner:
+  orchestrator:
     name: "Qwen3-32B"
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-32B"
-    role: "planner"
+    role: "orchestrator"
     tensor_parallel_size: 2
     gpu_ids: [0, 1]
 
