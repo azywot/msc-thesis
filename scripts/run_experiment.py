@@ -116,7 +116,8 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
                 max_doc_len=config.tools.max_doc_len,
                 model_provider=search_model,
                 fetch_urls=True,
-                use_thinking=use_subagent_thinking
+                use_thinking=use_subagent_thinking,
+                cache_manager=cache_manager,
             ))
         elif tool_name == "code_generator":
             # Get model provider for sub-agent mode
@@ -292,6 +293,7 @@ def run_experiment(args):
             max_turns=config.max_turns,
             tool_limits={'web_search': config.tools.max_search_limit},
             use_thinking=config.use_orchestrator_thinking(),
+            cache_manager=cache_manager,
         )
 
         raw_batch = getattr(config, "batch_size", -1) or -1

@@ -155,6 +155,7 @@ def build_tools(
                 model_provider=model_providers.get("web_search"),
                 fetch_urls=True,
                 use_thinking=use_thinking,
+                cache_manager=cache_manager,
             ))
 
         elif name == "code_generator":
@@ -195,13 +196,14 @@ def build_tools(
 # Orchestrator factory
 # ---------------------------------------------------------------------------
 
-def build_orchestrator(config, orchestrator_model, tools: ToolRegistry) -> AgenticOrchestrator:
+def build_orchestrator(config, orchestrator_model, tools: ToolRegistry, cache_manager=None) -> AgenticOrchestrator:
     return AgenticOrchestrator(
         model_provider=orchestrator_model,
         tool_registry=tools,
         max_turns=config.max_turns,
         tool_limits={"web_search": config.tools.max_search_limit},
         use_thinking=config.use_orchestrator_thinking(),
+        cache_manager=cache_manager,
     )
 
 

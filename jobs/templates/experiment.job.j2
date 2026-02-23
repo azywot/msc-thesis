@@ -26,17 +26,17 @@ cd "$PROJECT_DIR" || exit 1
 # Activate environment
 source activate {{ conda_env }}
 
-# Set reproducibility
-export PYTHONHASHSEED={{ seed }}
-export PYTHONNOUSERSITE=1
-
-# Set API keys (loaded from environment or .env file)
+# Load API keys and env defaults first so config values can override them
 if [ -f ".env" ]; then
     set -a
     # shellcheck disable=SC1091
     source .env
     set +a
 fi
+
+# Set reproducibility (must come AFTER .env so config seed wins over any PYTHONHASHSEED in .env)
+export PYTHONHASHSEED={{ seed }}
+export PYTHONNOUSERSITE=1
 
 # Run experiment
 echo "Running experiment: {{ experiment_name }}"

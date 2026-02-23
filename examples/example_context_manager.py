@@ -60,7 +60,7 @@ def main():
     orchestrator, providers, _ = build_model_providers(config, required_roles=enabled)
     tools = build_tools(config, cache_manager, providers, enabled_tools=enabled, orchestrator_model=orchestrator)
     system_prompt = build_system_prompt(config, tools)
-    orchestrator_instance = build_orchestrator(config, orchestrator, tools)
+    orchestrator_instance = build_orchestrator(config, orchestrator, tools, cache_manager=cache_manager)
 
     logger.info(f"Question: {QUESTION}")
     try:

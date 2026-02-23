@@ -36,7 +36,8 @@ class WebSearchTool(BaseTool):
         model_provider = None,  # Optional: for sub-agent mode
         use_thinking: bool = False,  # Whether sub-agent uses thinking
         use_jina: bool = False,  # Whether to use Jina for URL fetching
-        fetch_urls: bool = True  # Whether to fetch full page content
+        fetch_urls: bool = True,  # Whether to fetch full page content
+        cache_manager=None,  # Optional: persist cache on each update (for parallel runs)
     ):
         """Initialize web search tool.
 
@@ -60,6 +61,7 @@ class WebSearchTool(BaseTool):
         self.use_thinking = use_thinking
         self.use_jina = use_jina
         self.fetch_urls = fetch_urls
+        self.cache_manager = cache_manager
         self.direct_mode = model_provider is None
 
     @property
@@ -117,7 +119,9 @@ class WebSearchTool(BaseTool):
         if query in self.search_cache:
             logger.info(f"Cache hit for: {query}")
             cached_results = self.search_cache[query]
-            self._fetch_missing_urls(cached_results)
+            url_cache_updated = self._fetch_missing_urls(cached_results)
+            if self.cache_manager and url_cache_updated:
+                self.cache_manager.save_url_cache()
             formatted = self._format_results(cached_results, query)
             output = formatted if self.direct_mode else self._analyze_with_llm(query, formatted)
             return ToolResult(
@@ -138,6 +142,9 @@ class WebSearchTool(BaseTool):
 
             # Fetch full page content and populate url_cache
             self._fetch_missing_urls(results)
+
+            if self.cache_manager:
+                self.cache_manager.save_caches()
 
             formatted_results = self._format_results(results, query)
 
@@ -174,7 +181,7 @@ class WebSearchTool(BaseTool):
             return []
         return [r for r in results if isinstance(r, dict)]
 
-    def _fetch_missing_urls(self, results: list) -> None:
+    def _fetch_missing_urls(self, results: list) -> bool:
         """Fetch page content for any URLs not yet in url_cache.
 
         Mirrors fetch_urls() in multi-agent-tools/scripts/tools/run_search.py:
@@ -183,9 +190,12 @@ class WebSearchTool(BaseTool):
 
         Args:
             results: List of raw Serper result dicts (normalized at load/write).
+
+        Returns:
+            True if url_cache was updated (new URLs fetched).
         """
         if not self.fetch_urls:
-            return
+            return False
 
         urls_to_fetch = []
         snippets = {}
@@ -196,15 +206,17 @@ class WebSearchTool(BaseTool):
                 snippets[url] = result.get('snippets', [''])[0] if result.get('snippets') else ''
 
         if not urls_to_fetch:
-            return
+            return False
 
         logger.info(f"Fetching {len(urls_to_fetch)} URLs")
         try:
             fetched = fetch_page_content(urls_to_fetch, use_jina=self.use_jina, snippets=snippets)
             self.url_cache.update(fetched)
             logger.info(f"Cached {len(fetched)} URLs")
+            return bool(fetched)
         except Exception as e:
             logger.error(f"URL fetch error: {e}", exc_info=True)
+            return False
 
     def _analyze_with_llm(self, query: str, search_results: str) -> str:
         """Use LLM to analyze search results (sub-agent mode).
@@ -286,6 +298,8 @@ Now you should analyze each web page and find helpful information based on the c
             raw = self.serper_rm.forward(query, exclude_urls=[])
             results = self._normalize_search_results(raw)
             self.search_cache[query] = results
+            if self.cache_manager:
+                self.cache_manager.save_search_cache()
 
         urls_to_fetch: List[str] = []
         url_snippets: Dict[str, str] = {}

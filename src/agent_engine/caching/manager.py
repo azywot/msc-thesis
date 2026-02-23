@@ -115,6 +115,30 @@ class CacheManager:
             except Exception:
                 pass
 
+    def _save_cache(self, path: str, cache: dict, normalize: bool = False) -> None:
+        """Persist a single cache to disk.
+
+        Acquires an exclusive lock, merges on-disk with in-memory (memory wins),
+        atomically writes, and refreshes the in-memory dict. Caller ensures path
+        and cache are the correct pair (search vs url).
+        """
+        with self._locked(shared=False):
+            disk = self._load_cache_unlocked(path)
+            disk.update(cache)
+            if normalize and path == self.search_cache_path:
+                disk = {k: self._normalize_search_results(v) for k, v in disk.items()}
+            self._atomic_write_json(path, disk)
+            cache.clear()
+            cache.update(disk)
+
+    def save_search_cache(self) -> None:
+        """Persist only search_cache. Use when only search results changed."""
+        self._save_cache(self.search_cache_path, self.search_cache, normalize=True)
+
+    def save_url_cache(self) -> None:
+        """Persist only url_cache. Use when only fetched URLs changed."""
+        self._save_cache(self.url_cache_path, self.url_cache)
+
     def save_caches(self) -> None:
         """Persist both caches to disk.
 

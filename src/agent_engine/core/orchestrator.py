@@ -75,9 +75,11 @@ class AgenticOrchestrator:
         max_turns: int = 15,
         tool_limits: Optional[Dict[str, int]] = None,
         use_thinking: bool = False,
+        cache_manager=None,  # Optional: persist cache after each URL fetch (for parallel runs)
     ):
         self.model = model_provider
         self.tools = tool_registry
+        self.cache_manager = cache_manager
         self.max_turns = max_turns
         self.tool_limits = tool_limits or {"web_search": 10}
         self.use_thinking = use_thinking and model_provider.config.supports_thinking
@@ -287,12 +289,14 @@ class AgenticOrchestrator:
     ) -> None:
         query = args.get("query", "")
         if not query or not hasattr(tool, "build_analysis_prompt") or not hasattr(tool, "search_and_format"):
+            logger.info("Tool call: %s, %s", tool_call["name"], tool_call.get("arguments", {}))
             tr = ToolResult(success=False, output="", metadata={}, error="Missing required web_search arguments")
             immediate_results.append(_ImmediateResult(state, tool_call, tr))
             return
 
         analysis_cache = self._get_analysis_cache(tool)
         if query in analysis_cache:
+            logger.info("Tool call: %s, %s", tool_call["name"], tool_call.get("arguments", {}))
             tr = ToolResult(success=True, output=analysis_cache[query], metadata={"cached": True, "query": query, "mode": "sub-agent"})
             immediate_results.append(_ImmediateResult(state, tool_call, tr))
             return
@@ -314,6 +318,7 @@ class AgenticOrchestrator:
     ) -> None:
         task = args.get("task", "")
         if not task or not hasattr(tool, "build_task_prompt") or not hasattr(tool, "execute_code"):
+            logger.info("Tool call: %s, %s", tool_call["name"], tool_call.get("arguments", {}))
             tr = ToolResult(success=False, output="", metadata={}, error="Missing required code_generator arguments")
             immediate_results.append(_ImmediateResult(state, tool_call, tr))
             return
@@ -338,6 +343,8 @@ class AgenticOrchestrator:
 
     def _flush_web_batch(self, jobs: List[_WebJob]) -> None:
         """Fetch URLs across all web jobs then run batched LLM analysis."""
+        for job in jobs:
+            logger.info("Tool call: %s, %s", job.tool_call["name"], job.tool_call.get("arguments", {}))
         self._fetch_urls_for_web_jobs(jobs)
 
         groups: Dict[int, List[_WebJob]] = {}
@@ -371,6 +378,8 @@ class AgenticOrchestrator:
                 if hasattr(job.tool, "url_cache"):
                     job.tool.url_cache.update(fetched)
             logger.info(f"Successfully fetched {len(fetched)} URLs")
+            if self.cache_manager and fetched:
+                self.cache_manager.save_url_cache()
         except Exception:
             logger.exception("Error during batch URL fetching")
 
@@ -415,6 +424,7 @@ class AgenticOrchestrator:
             try:
                 text = strip_thinking_tags(out.text)
                 code = job.tool.extract_code_from_llm_response(text)
+                logger.info("Tool call: %s, %s", job.tool_call["name"], job.tool_call.get("arguments", {}))
                 tr = job.tool.execute_code(code)
             except Exception as exc:
                 tr = ToolResult(success=False, output="", metadata={}, error=str(exc))
@@ -488,7 +498,7 @@ class AgenticOrchestrator:
             if inject_error:
                 return ToolResult(success=False, output="", metadata={}, error=inject_error)
 
-            logger.debug(f"Executing {tool_name} with args: {arguments}")
+            logger.info("Tool call: %s, %s", tool_name, arguments)
             return tool.execute(**arguments)
         except Exception as e:
             logger.exception("Tool execution error")
