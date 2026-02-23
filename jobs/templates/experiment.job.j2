@@ -37,6 +37,10 @@ fi
 # Set reproducibility (must come AFTER .env so config seed wins over any PYTHONHASHSEED in .env)
 export PYTHONHASHSEED={{ seed }}
 export PYTHONNOUSERSITE=1
+export TOKENIZERS_PARALLELISM=false
+
+# Ensure env has required packages (avoid using ~/.local on compute nodes)
+python -c "import numpy, torch" 2>/dev/null || { echo "ERROR: numpy/torch not in conda env. Re-run the setup job (001_setup.job) so dependencies are installed into the env."; exit 1; }
 
 # Run experiment
 echo "Running experiment: {{ experiment_name }}"

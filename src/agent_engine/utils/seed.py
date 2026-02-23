@@ -1,14 +1,12 @@
 """Reproducibility utilities for setting random seeds.
 
 This module provides utilities to set random seeds across different libraries
-for reproducible experiments.
+for reproducible experiments. NumPy and PyTorch are imported lazily in set_seed()
+so that config loading (e.g. for SLURM job generation) does not require them.
 """
 
 import os
 import random
-
-import numpy as np
-import torch
 
 
 def set_seed(seed: int):
@@ -23,6 +21,9 @@ def set_seed(seed: int):
     Args:
         seed: Random seed value
     """
+    import numpy as np
+    import torch
+
     # Python random
     random.seed(seed)
 

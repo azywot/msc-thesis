@@ -1,6 +1,6 @@
 # GAIA Sub-Agent Mode — Qwen3-4B for all text roles, Qwen2.5-VL-3B for images
 
-name: "gaia_qwen3_subagent_test"
+name: "gaia_qwen3_subagent_test_10"
 description: "GAIA with sub-agent mode using Qwen3-4B for orchestrator and tool agents (text + vision)"
 
 slurm:
@@ -40,7 +40,7 @@ dataset:
   name: "gaia"
   split: "all_validation"
   data_dir: "./data"
-  subset_num: 5  # -1 for all
+  subset_num: 10  # -1 for all
 
 max_turns: 15
 seed: 0

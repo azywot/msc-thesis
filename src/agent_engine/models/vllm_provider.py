@@ -57,6 +57,8 @@ class VLLMProvider(BaseModelProvider):
                 seed=config.seed,
                 download_dir=hf_hub_cache,
                 enforce_eager=True,
+                trust_remote_code=True,
+                enable_prefix_caching=False,
             )
         finally:
             if prev_cuda_visible is None:

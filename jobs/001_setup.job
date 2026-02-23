@@ -75,6 +75,12 @@ else
     # Activate environment
     echo "Activating environment: $ENV_NAME"
     source activate "$ENV_NAME"
+
+    # Force pip to install into the env (ignore user .local so compute nodes see packages)
+    export PYTHONNOUSERSITE=1
+    echo "Installing/refreshing dependencies into env (PYTHONNOUSERSITE=1)..."
+    pip install --no-cache-dir -r requirements.txt
+    pip install -e .
 fi
 
 echo ""
@@ -86,8 +92,9 @@ echo "Python path: $(which python)"
 echo "Python version: $(python --version)"
 echo ""
 
-# Verify key packages
-echo "Verifying key packages..."
+# Verify key packages (must come from env, not ~/.local)
+echo "Verifying key packages (location must be inside env)..."
+python -c "import numpy; print(f'NumPy: {numpy.__version__} at {numpy.__file__}')"
 python -c "import torch; print(f'PyTorch: {torch.__version__}')"
 python -c "import transformers; print(f'Transformers: {transformers.__version__}')"
 python -c "import vllm; print(f'vLLM: {vllm.__version__}')" || echo "Warning: vLLM not installed"
