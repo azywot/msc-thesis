@@ -63,6 +63,11 @@ def strip_latex_wrappers(ans: str) -> str:
         if m:
             s = m.group(1).strip()
             break
+        prefix = f"\\{_cmd}" + "{"
+        if s.startswith(prefix):
+            # Drop leading "\cmd{" and keep the rest, even if the closing brace is missing.
+            s = s[len(prefix):].strip()
+            break
 
     return s
 

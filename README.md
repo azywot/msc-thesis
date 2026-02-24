@@ -298,10 +298,19 @@ Enabled via `tools.enabled_tools` in the config:
 
 ## Datasets
 
+**Currently supported benchmarks:**
+
 | Name | Key |
 |---|---|
 | GAIA | `gaia` |
+| HLE (Humanity's Last Exam) | `hle` |
 | GPQA | `gpqa` |
+
+Additional QA datasets are partially wired via the downloader and can be added
+as full benchmarks by extending the dataset loaders and configs.
+
+| Name | Key |
+|---|---|
 | MATH500 | `math500` |
 | AIME | `aime` |
 | AMC | `amc` |
@@ -312,7 +321,10 @@ Enabled via `tools.enabled_tools` in the config:
 | Bamboogle | `bamboogle` |
 | 2WikiMultiHopQA | `2wiki` |
 
-Download datasets before running:
+**TODO:** Add more datasets
+
+
+**Download datasets before running:**
 
 ```bash
 python scripts/download_datasets.py --dataset gaia --split validation
