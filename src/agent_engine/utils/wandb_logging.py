@@ -7,6 +7,7 @@ This is intentionally lightweight:
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Dict, Optional
 
@@ -31,6 +32,7 @@ def log_results_wandb(
     tool_stats: Optional[Dict[str, Any]],
     metrics_path: Optional[str] = None,
     config_summary: Optional[Dict[str, Any]] = None,
+    config_path: Optional[str] = None,
 ) -> None:
     """Log a single W&B row with final metrics + tool usage."""
     if not final_metrics:
@@ -164,6 +166,14 @@ def log_results_wandb(
     log_data = {k: v for k, v in log_data.items() if _present(v)}
 
     wandb.log(log_data, step=0)
+
+    # Store the full config.json as a file artifact in W&B.
+    if config_path and os.path.exists(config_path):
+        try:
+            wandb.save(config_path)
+        except Exception:
+            print(f"Failed to save config.json as a file artifact in W&B: {config_path}")
+            pass
 
     if created_run:
         # HPC jobs can exit quickly; give the backend time to flush.

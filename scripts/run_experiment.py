@@ -283,12 +283,22 @@ def run_experiment(args):
     orchestrator = None
     results: List[Dict[str, Any]] = []
     metrics: Dict[str, Any] = {}
+    system_prompt_for_config: Optional[str] = None
 
     logger.info("="*80)
     logger.info("Starting evaluation")
     logger.info("="*80)
 
     try:
+        # Capture the common system prompt once for this run (same for all questions).
+        tool_schemas = tools.get_all_schemas()
+        system_prompt_for_config = prompt_builder.build_system_prompt(
+            dataset_name=config.dataset.name,
+            tool_schemas=tool_schemas,
+            max_search_limit=config.tools.max_search_limit,
+            direct_tool_call=config.tools.direct_tool_call,
+        )
+
         orchestrator = AgenticOrchestrator(
             model_provider=orchestrator_model,
             tool_registry=tools,
@@ -300,7 +310,6 @@ def run_experiment(args):
 
         raw_batch = getattr(config, "batch_size", -1) or -1
         batch_size = len(examples) if raw_batch <= 0 else max(1, int(raw_batch))
-        tool_schemas = tools.get_all_schemas()
 
         def _chunks(seq, size: int):
             for i in range(0, len(seq), size):
@@ -309,15 +318,8 @@ def run_experiment(args):
         for base_idx, batch in _chunks(examples, batch_size):
             logger.info(f"\nProcessing batch {base_idx + 1}-{base_idx + len(batch)} / {len(examples)}")
 
-            system_prompts = [
-                prompt_builder.build_system_prompt(
-                    dataset_name=config.dataset.name,
-                    tool_schemas=tool_schemas,
-                    max_search_limit=config.tools.max_search_limit,
-                    direct_tool_call=config.tools.direct_tool_call,
-                )
-                for _ in batch
-            ]
+            # Reuse the common system prompt for all questions in the batch
+            system_prompts = [system_prompt_for_config] * len(batch)
 
             try:
                 states = orchestrator.run_batch(
@@ -374,6 +376,8 @@ def run_experiment(args):
 
         # ── config.json ─────────────────────────────────────────────────────
         config_dict = _config_to_dict(config)
+        if system_prompt_for_config is not None:
+            config_dict["system_prompt"] = system_prompt_for_config
         config_dict["config_path"] = str(args.config)
         _write_json(run_dir / "config.json", config_dict)
 
@@ -408,6 +412,7 @@ def run_experiment(args):
                     tool_stats=metrics.get("tool_usage"),
                     metrics_path=str(run_dir / "metrics.json"),
                     config_summary=config_dict,
+                    config_path=str(run_dir / "config.json"),
                 )
 
         if orchestrator is not None:

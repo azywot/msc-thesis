@@ -32,13 +32,6 @@ echo "Project directory: $PROJECT_DIR"
 ENV_NAME="${ENV_NAME:-agent_engine}"
 echo "Activating environment: $ENV_NAME"
 source activate "$ENV_NAME"
-
-DATA_DIR="./data"
-# Set data directory (use scratch-shared for HPC)
-# DATA_DIR="${DATA_DIR:-/scratch-shared/$USER/data}"
-mkdir -p "$DATA_DIR"
-
-echo "Data directory: $DATA_DIR"
 echo ""
 
 # Load environment variables from .env if it exists
@@ -51,6 +44,12 @@ if [ -f ".env" ]; then
 else
     echo "Warning: .env file not found"
 fi
+
+# Set data directory (use scratch-shared for HPC)
+DATA_DIR="${DATA_DIR:-/scratch-shared/$USER/data}"
+mkdir -p "$DATA_DIR"
+
+echo "Data directory: $DATA_DIR"
 
 echo ""
 echo "=========================================="
