@@ -35,7 +35,8 @@ class GAIADataset(BaseDataset):
             "Answer": "answer",
             "Level": 1-3,
             "file_name": "optional_attachment.ext",
-            "file_path": "path/to/file"
+            "file_path": "relative/path/inside_HF_repo.ext",
+            "full_file_path": "/absolute/path/to/downloaded/file.ext"  # preferred for tools
         }
 
         Returns:
@@ -60,22 +61,29 @@ class GAIADataset(BaseDataset):
 
                     # Extract attachments
                     attachments = []
-                    if 'file_name' in data and data['file_name']:
-                        file_path = data.get('file_path', '')
-                        if file_path:
-                            # Make path absolute relative to data directory
-                            attachment_path = self.config.data_dir / "GAIA" / file_path
-                            attachments.append(str(attachment_path))
+                    if data.get("file_name"):
+                        # Prefer the absolute full_file_path written by download_gaia(),
+                        # since GAIA files live inside a HF snapshot directory.
+                        full_fp = data.get("full_file_path")
+                        if full_fp:
+                            attachments.append(str(full_fp))
+                        else:
+                            file_path = data.get("file_path", "")
+                            if file_path:
+                                # Fallback: construct path relative to data_dir/GAIA
+                                attachment_path = self.config.data_dir / "GAIA" / file_path
+                                attachments.append(str(attachment_path))
 
                     example = DatasetExample(
                         question_id=idx,
                         question=data['Question'],
                         answer=data['Answer'],
                         metadata={
-                            'level': data.get('Level', 1),
-                            'file_name': data.get('file_name', ''),
-                            'file_path': data.get('file_path', ''),
-                            'attachments': attachments,
+                            "level": data.get("Level", 1),
+                            "file_name": data.get("file_name", ""),
+                            "file_path": data.get("file_path", ""),
+                            "full_file_path": data.get("full_file_path", ""),
+                            "attachments": attachments,
                         }
                     )
                     examples.append(example)

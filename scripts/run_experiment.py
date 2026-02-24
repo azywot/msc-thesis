@@ -543,9 +543,14 @@ def _config_to_dict(config) -> Dict[str, Any]:
 def _level_key(example, dataset_name: str) -> str:
     if dataset_name == "gaia":
         return str(example.metadata.get("level", "unknown"))
+    if dataset_name == "hle":
+        # HLE's "category" field is treated as its level.
+        return str(example.metadata.get("category", "unknown"))
     if dataset_name in ("math500", "amc"):
+        # Math500's "difficulty" field is treated as its level.
         return str(example.metadata.get("difficulty", example.metadata.get("year", "unknown")))
     if dataset_name == "aime":
+        # AIME's "year" field is treated as its level.
         return str(example.metadata.get("year", "unknown"))
     return "all"
 

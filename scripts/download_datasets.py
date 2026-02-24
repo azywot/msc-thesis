@@ -59,7 +59,7 @@ def _subset_filename(base: str, subset: int) -> str:
     return base
 
 
-def _safe_local_file_path(snapshot_dir: str, rel_path: str | None) -> str | None:
+def _safe_full_file_path(snapshot_dir: str, rel_path: str | None) -> str | None:
     """Resolve a repo-relative file path to an absolute path, guarding against traversal."""
     if not rel_path:
         return None
@@ -110,7 +110,7 @@ def download_gaia(level: str, split: str, output_dir: str, token: str | None, su
                 "Answer": answer,
                 "file_name": ex.get("file_name"),
                 "file_path": file_path,
-                "local_file_path": _safe_local_file_path(snapshot_root, file_path),
+                "full_file_path": _safe_full_file_path(snapshot_root, file_path),
                 "input_output": json.dumps({"inputs": [question], "outputs": [answer]}),
             })
 
@@ -484,7 +484,7 @@ def download_hle(split: str, output_dir: str, token: str | None,
             "category": ex.get("category", ""),
             "file_name": "",
             "file_path": "",
-            "local_file_path": "",
+            "full_file_path": "",
             "has_image": False,
             "input_output": json.dumps({"inputs": [question], "outputs": [answer]}),
         }
@@ -506,7 +506,7 @@ def download_hle(split: str, output_dir: str, token: str | None,
                         img_f.write(img_bytes)
                     record["file_name"] = fname
                     record["file_path"] = f"images/{fname}"
-                    record["local_file_path"] = os.path.abspath(fpath)
+                    record["full_file_path"] = os.path.abspath(fpath)
                 except Exception as e:
                     print(f"  Warning: failed to extract image for {record['id']}: {e}", file=sys.stderr)
                     record["image_base64"] = image_b64

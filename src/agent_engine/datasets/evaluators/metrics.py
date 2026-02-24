@@ -26,10 +26,45 @@ def normalize_answer(answer: str) -> str:
     """Lowercase, strip punctuation, articles, and extra whitespace."""
     if not answer:
         return ""
+    # Strip common LaTeX wrappers like \text{No} or \boxed{42}.
+    answer = strip_latex_wrappers(answer)
     answer = answer.lower()
-    answer = answer.translate(str.maketrans('', '', string.punctuation))
-    answer = re.sub(r'\b(a|an|the)\b', ' ', answer)
-    return ' '.join(answer.split()).strip()
+    answer = answer.translate(str.maketrans("", "", string.punctuation))
+    answer = re.sub(r"\b(a|an|the)\b", " ", answer)
+    return " ".join(answer.split()).strip()
+
+
+def strip_latex_wrappers(ans: str) -> str:
+    """Remove simple LaTeX wrappers that often surround plain answers.
+
+    Examples:
+      '\\text{No}'     -> 'No'
+      '\\boxed{42}'    -> '42'
+      '$42$'           -> '42'
+      '\\(No\\)'       -> 'No'
+    """
+    if not ans:
+        return ans
+
+    s = ans.strip()
+
+    # Strip surrounding $...$ or $$...$$
+    if s.startswith("$$") and s.endswith("$$") and len(s) >= 4:
+        s = s[2:-2].strip()
+    elif s.startswith("$") and s.endswith("$") and len(s) >= 2:
+        s = s[1:-1].strip()
+    
+    if s.startswith(r"\(") and s.endswith(r"\)"):
+        s = s[2:-2].strip()
+
+    # Iteratively strip simple single-argument wrappers like \text{...}, \boxed{...}
+    for _cmd in ("text", "boxed"):
+        m = re.fullmatch(rf"\s*\\{_cmd}\{{(.+)\}}\s*", s)
+        if m:
+            s = m.group(1).strip()
+            break
+
+    return s
 
 
 def exact_match(prediction: str, ground_truth: str, case_sensitive: bool = False) -> bool:
@@ -141,6 +176,18 @@ def evaluate_answer(
     """
     pred = (prediction or "").strip()
     gt = (ground_truth or "").strip()
+
+    # Fast path: identical after stripping common LaTeX/text wrappers and normalising.
+    # This handles cases like prediction='\\text{No}' vs ground_truth='No'.
+    stripped_pred = strip_latex_wrappers(pred)
+    stripped_gt = strip_latex_wrappers(gt)
+    if normalize_answer(stripped_pred) == normalize_answer(stripped_gt):
+        return {
+            "correct": True,
+            "accuracy": 1.0,
+            "em": 1.0,
+            "f1": 1.0,
+        }
 
     if choices is not None:
         # Multiple-choice: letter matching (GPQA style)

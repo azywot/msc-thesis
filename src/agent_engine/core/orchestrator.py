@@ -510,7 +510,7 @@ class AgenticOrchestrator:
         state: ExecutionState,
         arguments: Dict[str, Any],
     ) -> Optional[str]:
-        """Inject `local_file_path` for file-inspector tools.
+        """Inject `full_file_path` for file-inspector tools.
 
         Returns an error message string if the required attachment is missing,
         or None on success.
@@ -519,13 +519,13 @@ class AgenticOrchestrator:
             path = self._get_first_attachment_with_exts(state, _IMAGE_EXTS)
             if not path:
                 return "No supported image attachment found (provide image via attachments)"
-            arguments["local_file_path"] = path
+            arguments["full_file_path"] = path
 
         elif tool_name == "text_inspector":
             path = self._get_first_attachment_with_exts(state, _TEXT_EXTS)
             if not path:
                 return "No supported text attachment found (provide file via attachments)"
-            arguments["local_file_path"] = path
+            arguments["full_file_path"] = path
 
         return None
 

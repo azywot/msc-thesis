@@ -84,8 +84,8 @@ class TextInspectorTool(BaseTool):
         """Return Qwen3 JSON Schema.
 
         Schema differs by mode:
-        - Direct mode: No parameters (framework injects local_file_path; returns raw content)
-        - Non-direct mode: Optional question parameter only (framework injects local_file_path)
+        - Direct mode: No parameters (framework injects full_file_path; returns raw content)
+        - Non-direct mode: Optional question parameter only (framework injects full_file_path)
         """
         if self.direct_mode:
             # Direct mode: no parameters - return raw file content only
@@ -128,36 +128,38 @@ class TextInspectorTool(BaseTool):
                 }
             }
 
-    def execute(self, local_file_path: str, question: Optional[str] = None) -> ToolResult:
+    def execute(self, full_file_path: str, question: Optional[str] = None) -> ToolResult:
         """Read text from file.
 
         Args:
-            local_file_path: Path to text file (injected by orchestrator from attachments)
+            full_file_path: Path to text file (injected by orchestrator from attachments)
             question: Optional question about the file (non-direct mode only)
 
         Returns:
             ToolResult with file content or LLM analysis
         """
-        logger.info(f"Inspecting text file: {local_file_path}")
+        logger.info(f"Inspecting text file: {full_file_path}")
 
-        path = Path(local_file_path)
+        path = Path(full_file_path)
 
         # Check if file exists
         if not path.exists():
+            msg = f"[text_inspector] File not found: {full_file_path}"
             return ToolResult(
                 success=False,
-                output="",
-                metadata={"file_path": local_file_path},
-                error=f"File not found: {local_file_path}"
+                output=msg,
+                metadata={"file_path": full_file_path},
+                error=msg,
             )
 
         # Check if it's a file (not directory)
         if not path.is_file():
+            msg = f"[text_inspector] Path is not a file: {full_file_path}"
             return ToolResult(
                 success=False,
-                output="",
-                metadata={"file_path": local_file_path},
-                error=f"Path is not a file: {local_file_path}"
+                output=msg,
+                metadata={"file_path": full_file_path},
+                error=msg,
             )
 
         # Get file extension
@@ -165,11 +167,15 @@ class TextInspectorTool(BaseTool):
 
         # Check if supported
         if file_ext not in SUPPORTED_TEXT_EXTS:
+            msg = (
+                f"[text_inspector] Unsupported file type: {file_ext}. "
+                f"Supported types: {', '.join(sorted(SUPPORTED_TEXT_EXTS))}"
+            )
             return ToolResult(
                 success=False,
-                output="",
-                metadata={"file_path": local_file_path, "file_type": file_ext},
-                error=f"Unsupported file type: {file_ext}. Supported types: {', '.join(sorted(SUPPORTED_TEXT_EXTS))}"
+                output=msg,
+                metadata={"file_path": full_file_path, "file_type": file_ext},
+                error=msg,
             )
 
         # Read file content based on type
@@ -217,7 +223,7 @@ class TextInspectorTool(BaseTool):
                     success=True,
                     output=output,
                     metadata={
-                        "file_path": local_file_path,
+                        "file_path": full_file_path,
                         "file_name": path.name,
                         "file_size": file_size,
                         "file_type": file_ext,
@@ -233,7 +239,7 @@ class TextInspectorTool(BaseTool):
                     success=True,
                     output=analysis,
                     metadata={
-                        "file_path": local_file_path,
+                        "file_path": full_file_path,
                         "file_name": path.name,
                         "file_size": file_size,
                         "file_type": file_ext,
@@ -245,11 +251,12 @@ class TextInspectorTool(BaseTool):
 
         except Exception as e:
             logger.error(f"Error reading file: {e}", exc_info=True)
+            msg = f"[text_inspector] Error reading file {full_file_path}: {str(e)}"
             return ToolResult(
                 success=False,
-                output="",
-                metadata={"file_path": local_file_path, "file_type": file_ext},
-                error=f"Error reading file: {str(e)}"
+                output=msg,
+                metadata={"file_path": full_file_path, "file_type": file_ext},
+                error=msg,
             )
 
     def _analyze_with_llm(self, file_content: str, question: str) -> str:
@@ -405,23 +412,28 @@ class TextInspectorTool(BaseTool):
         return "\n".join(lines).strip()
 
     def _read_xlsx(self, path: Path, max_rows: int = 200, max_cols: int = 50) -> str:
-        """Read XLSX file using openpyxl."""
+        """Read XLSX file using openpyxl, including both values and fill layout."""
         try:
             from openpyxl import load_workbook
         except ImportError:
             raise ImportError("openpyxl is required for XLSX support. Install with: pip install openpyxl")
 
-        wb = load_workbook(filename=str(path), read_only=False, data_only=True)
+        file_path = str(path)
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+        if not os.path.isfile(file_path):
+            raise ValueError(f"Not a file: {file_path}")
+
+        wb = load_workbook(filename=file_path, read_only=False, data_only=True)
         parts = []
 
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
             parts.append(f"[SHEET] {sheet_name}")
 
-            # Determine used range
+            # Determine used range (rows/cols), taking into account internal cell dict.
             used_max_r = int(getattr(ws, "max_row", 0) or 0)
             used_max_c = int(getattr(ws, "max_column", 0) or 0)
-
             try:
                 cells_dict = getattr(ws, "_cells", None)
                 if cells_dict:
@@ -437,35 +449,132 @@ class TextInspectorTool(BaseTool):
                 max_r = min(used_max_r, max_rows) if max_rows else used_max_r
                 max_c = min(used_max_c, max_cols) if max_cols else used_max_c
 
-            # Extract cell values
-            values_lines = []
+            # Palette + legend for fills (single-letter tokens → RGB/theme/index).
+            _palette = {}
+            _legend = {}
+            _token_iter = iter(string.ascii_uppercase)
+
+            def _safe_getattr(obj, name: str):
+                try:
+                    return getattr(obj, name, None)
+                except Exception:
+                    return None
+
+            def _safe_str(x):
+                if x is None:
+                    return None
+                try:
+                    s = str(x)
+                except Exception:
+                    return None
+                s = s.strip()
+                if "Values must be of type" in s:
+                    return None
+                return s or None
+
+            def _fill_key_and_desc(cell):
+                fill = getattr(cell, "fill", None)
+                if not fill:
+                    return None, None
+                pattern = _safe_getattr(fill, "patternType")
+
+                fg = _safe_getattr(fill, "fgColor")
+                rgb = _safe_getattr(fg, "rgb") if fg is not None else None
+                index = _safe_getattr(fg, "index") if fg is not None else None
+                theme = _safe_getattr(fg, "theme") if fg is not None else None
+                tint = _safe_getattr(fg, "tint") if fg is not None else None
+                typ = _safe_getattr(fg, "type") if fg is not None else None
+
+                pattern_is_none = (pattern is None) or (str(pattern).lower() == "none")
+                rgb_str = _safe_str(rgb)
+                rgb_meaningful = rgb_str is not None and rgb_str != "00000000"
+                has_any_color = rgb_meaningful or any(x is not None for x in (index, theme, tint, typ))
+                if pattern_is_none and not has_any_color:
+                    return None, None
+
+                key = (
+                    f"patternType={pattern}|fg.type={typ}|fg.rgb={rgb}|"
+                    f"fg.index={index}|fg.theme={theme}|fg.tint={tint}"
+                )
+                if rgb_meaningful:
+                    desc = rgb_str
+                else:
+                    theme_str = _safe_str(theme)
+                    index_str = _safe_str(index)
+                    if theme_str is not None:
+                        desc = f"THEME:{theme_str}"
+                    elif index_str is not None:
+                        desc = f"INDEX:{index_str}"
+                    else:
+                        desc = "NO_RGB"
+                return key, desc
+
+            def _fill_to_token(cell):
+                key, desc = _fill_key_and_desc(cell)
+                if key is None:
+                    return "."
+                token = _palette.get(key)
+                if token is None:
+                    try:
+                        token = next(_token_iter)
+                    except StopIteration:
+                        token = str(len(_palette) + 1)
+                    _palette[key] = token
+                    _legend[token] = desc
+                return token
+
             has_values = False
+            has_fills = False
+            values_lines = []
+            grid_lines = []
 
             for r in range(1, max_r + 1):
-                row_values = []
+                row_tokens = []
                 for c in range(1, max_c + 1):
                     cell = ws.cell(row=r, column=c)
-                    v = cell.value
+                    tok = _fill_to_token(cell)
+                    if tok != ".":
+                        has_fills = True
+                    row_tokens.append(tok)
 
+                    v = cell.value
                     if v not in (None, ""):
                         has_values = True
                         s = str(v)
                         s = s.replace("\\", "\\\\")
                         s = s.replace("\t", "\\t").replace("\r", "\\r").replace("\n", "\\n")
-                        row_values.append(f"{cell.coordinate}={s}")
-
-                if row_values:
-                    values_lines.append(" ".join(row_values))
+                        values_lines.append(f"R{r}C{c}: {s}")
+                grid_lines.append("".join(row_tokens).rstrip())
 
             if has_values:
-                parts.append("\n".join(values_lines))
-            else:
+                parts.append("[VALUES] (with coordinates)")
+                parts.extend(values_lines)
+
+            if has_fills:
+                if has_values:
+                    parts.append("")
+                parts.append("[FILL_GRID] (tokens)")
+                parts.append("[LEGEND] .=no fill; other tokens map to RGB in [FILL_LEGEND]")
+                parts.extend(grid_lines)
+                if _legend:
+                    parts.append("")
+                    parts.append("[FILL_LEGEND]")
+
+                    def _legend_sort_key(tok):
+                        return (0, tok) if tok.isalpha() else (1, int(tok)) if tok.isdigit() else (2, tok)
+
+                    for tok in sorted(_legend.keys(), key=_legend_sort_key):
+                        parts.append(f"[{tok}] {_legend[tok]}")
+
+            if not has_values and not has_fills:
                 parts.append("[Empty sheet]")
 
-            parts.append("")
-
-            if max_rows and used_max_r > max_rows:
+            if ws.max_row and max_rows and ws.max_row > max_rows:
                 parts.append("[TRUNCATED_ROWS]")
+            if ws.max_column and max_cols and ws.max_column > max_cols:
+                parts.append("[TRUNCATED_COLS]")
+
+            parts.append("")
 
         return "\n".join(parts).strip()
 
@@ -478,7 +587,6 @@ class TextInspectorTool(BaseTool):
         Returns:
             True if valid
         """
-        if 'file_path' not in kwargs:
-            return False
-        file_path = kwargs['file_path']
+        # Orchestrator injects `full_file_path` for attached files.
+        file_path = kwargs.get("full_file_path")
         return isinstance(file_path, str) and len(file_path) > 0

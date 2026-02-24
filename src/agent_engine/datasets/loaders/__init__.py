@@ -1,5 +1,5 @@
 """Dataset loaders."""
 
-from . import gaia, gpqa, math, qa
+from . import gaia, gpqa, hle, math, qa
 
-__all__ = ["gaia", "gpqa", "math", "qa"]
+__all__ = ["gaia", "gpqa", "hle", "math", "qa"]

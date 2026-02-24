@@ -7,7 +7,7 @@ different datasets.
 from .base import BaseDataset, DatasetExample, DatasetRegistry
 
 # Import loaders to trigger registration
-from .loaders import gaia, gpqa, math, qa
+from .loaders import gaia, gpqa, hle, math, qa
 
 # Import evaluators
 from .evaluators import metrics
