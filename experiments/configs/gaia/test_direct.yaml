@@ -32,7 +32,6 @@ dataset:
   data_dir: "./data"
   subset_num: 5  # -1 for all
 
-max_turns: 15
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 

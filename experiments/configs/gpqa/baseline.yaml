@@ -1,7 +1,7 @@
-# GAIA Baseline — Qwen3-4B, direct tool call, orchestrator thinking
+# GPQA Diamond Baseline — Qwen3-4B, direct tool call, orchestrator thinking
 
-name: "gaia_qwen3_baseline"
-description: "GAIA validation set evaluation with Qwen3-4B and full toolset"
+name: "gpqa_diamond_qwen3_baseline"
+description: "GPQA diamond split evaluation with Qwen3-4B and full toolset"
 
 slurm:
   partition: "gpu_h100"
@@ -27,16 +27,17 @@ tools:
   direct_tool_call: true
 
 dataset:
-  name: "gaia"
-  split: "all_validation"
+  name: "gpqa"
+  split: "diamond"
   data_dir: "./data"
   subset_num: -1  # -1 for all
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/gaia_baseline"
+output_dir: "./experiments/results/gpqa_diamond_baseline"
 use_wandb: true
 wandb_project: "msc-thesis"
 
 cache_dir: "./cache"
+

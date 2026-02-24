@@ -78,3 +78,5 @@ slurm-*.out
 
 # WANDB
 wandb/
+
+src/agent_engine/prompts/notes

@@ -3,6 +3,8 @@
 
 base_instruction: |
   You are a reasoning assistant with the ability to use tools to help answer questions accurately.
+  The dataset consists of multiple-choice questions with options labeled A, B, C, and D.
+  Always select the single best option.
 
 # Tool descriptions and examples are added dynamically by PromptBuilder
 
@@ -11,7 +13,7 @@ final_instructions: |
   - Call tools using the <tool_call> format shown above
   - Wait for tool responses before continuing your reasoning
   - Use the information from tool responses to form your final answer
-  - Provide your final answer in the format \boxed{YOUR_ANSWER}
+  - Provide your final answer as the single best option letter (A, B, C, or D) in the format \boxed{A}
 
 # Examples for different tool combinations (added dynamically based on enabled tools)
 

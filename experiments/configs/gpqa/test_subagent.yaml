@@ -1,7 +1,7 @@
-# GAIA Sub-Agent Mode — Qwen3-4B for all text roles, Qwen2.5-VL-3B for images
+# GPQA Diamond Sub-Agent Mode — Qwen3-4B for all text roles, Qwen2.5-VL-3B for images (if needed)
 
-name: "gaia_qwen3_subagent_test_10"
-description: "GAIA with sub-agent mode using Qwen3-4B for orchestrator and tool agents (text + vision)"
+name: "gpqa_diamond_qwen3_subagent_test_10"
+description: "GPQA diamond split with sub-agent mode using Qwen3-4B for orchestrator and tool agents"
 
 slurm:
   partition: "gpu_h100"
@@ -37,16 +37,17 @@ tools:
   direct_tool_call: false
 
 dataset:
-  name: "gaia"
-  split: "all_validation"
+  name: "gpqa"
+  split: "diamond"
   data_dir: "./data"
   subset_num: 10  # -1 for all
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/gaia_qwen3_subagent"
+output_dir: "./experiments/results/gpqa_diamond_qwen3_subagent"
 use_wandb: true
 wandb_project: "msc-thesis"
 
 cache_dir: "./cache"
+

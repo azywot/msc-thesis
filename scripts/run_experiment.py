@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import logging
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
@@ -142,6 +143,7 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
                 storage_path=storage_path,
                 use_graphrag=True,
                 model_provider=context_manager_model,
+                use_thinking=use_subagent_thinking,
             ))
         elif tool_name == "text_inspector":
             # Get model provider for sub-agent mode (optional for text inspector)
@@ -345,6 +347,7 @@ def run_experiment(args):
                     "correct": bool(eval_result.get("correct", False)),
                     "evaluation": eval_result,
                     "output_text": _state_to_output_text(state),
+                    "tool_calls": _collect_tool_call_records(state),
                     "turns": state.turn,
                     "tool_counts": state.tool_counts,
                     "metadata": ex.metadata,
@@ -433,6 +436,40 @@ def _state_to_output_text(state: ExecutionState) -> str:
             if content:
                 parts.append(content)
     return "\n".join(parts).strip()
+
+
+def _collect_tool_call_records(state: ExecutionState) -> List[Dict[str, Any]]:
+    """Return a list of tool call records with name, arguments, and response text.
+
+    Each record has the form:
+        {
+            "name": "<tool_name>",
+            "arguments": {...},
+            "response": "<tool_response text without XML wrapper>",
+        }
+    """
+    records: List[Dict[str, Any]] = []
+    tool_msgs = [m for m in state.messages if m.get("role") == "tool"]
+
+    for call, msg in zip(state.tool_calls, tool_msgs):
+        raw_content = (msg.get("content") or "").strip()
+        # Strip <tool_response> wrapper if present
+        m = re.search(
+            r"<tool_response>\s*(.*?)\s*</tool_response>",
+            raw_content,
+            flags=re.DOTALL,
+        )
+        response = m.group(1).strip() if m else raw_content
+
+        records.append(
+            {
+                "name": call.get("name"),
+                "arguments": call.get("arguments") or {},
+                "response": response,
+            }
+        )
+
+    return records
 
 
 def _make_run_dir(output_dir: Path, split: str) -> Tuple[Path, str, str]:

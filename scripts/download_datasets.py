@@ -139,23 +139,35 @@ def download_gpqa(variant: str, output_dir: str, token: str | None, subset: int 
     data = []
     for ex in ds:
         question = ex.get("Question") or ex.get("Pre‑Revision Question")
+        correct_text = ex.get("Correct Answer")
+        if correct_text:
+            correct_text = correct_text.strip()
+
+        # Build and shuffle choices (texts)
         choices = [
-            ex.get("Correct Answer"),
+            correct_text,
             ex.get("Incorrect Answer 1"),
             ex.get("Incorrect Answer 2"),
             ex.get("Incorrect Answer 3"),
         ]
         choices = [c.strip() for c in choices if c is not None]
         random.shuffle(choices)
-        answer = ex.get("Correct Answer")
-        if answer:
-            answer = answer.strip()
+
+        # Map correct text → letter after shuffle
+        answer_letter = ""
+        if correct_text:
+            for i, choice in enumerate(choices):
+                if choice == correct_text:
+                    answer_letter = chr(ord("A") + i)
+                    break
+
         data.append({
             "Question": question,
             "Choices": choices,
-            "Answer": answer,
+            "Answer": answer_letter,
+            "AnswerText": correct_text,
             "Domain": ex.get("High-level domain"),
-            "input_output": json.dumps({"inputs": [question], "outputs": [answer]}),
+            "input_output": json.dumps({"inputs": [question], "outputs": [correct_text]}),
         })
 
     data = _apply_subset(data, subset, seed)

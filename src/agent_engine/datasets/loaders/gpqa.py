@@ -29,8 +29,9 @@ class GPQADataset(BaseDataset):
         Expected format:
         {
             "Question": "question text",
-            "Choices": ["A", "B", "C", "D"],
-            "Answer": "B"
+            "Choices": ["option A text", "option B text", "option C text", "option D text"],
+            "Answer": "B",              # correct option letter
+            "AnswerText": "option B text"  # (optional) sanity-check copy of the correct option text
         }
 
         Returns:
@@ -54,23 +55,31 @@ class GPQADataset(BaseDataset):
                     data = json.loads(line)
 
                     # Extract choices
-                    choices = data.get('Choices', [])
+                    choices = data.get("Choices", []) or []
+
+                    # Ground-truth letter and answer text from JSONL.
+                    raw_answer_letter = str(data.get("Answer", "") or "").strip().upper()
+                    answer_letter = raw_answer_letter or None
+                    raw_answer_text = data.get("AnswerText")
+                    answer_text = str(raw_answer_text).strip() if isinstance(raw_answer_text, str) and raw_answer_text.strip() else None
+
 
                     # Format question with choices
-                    question_text = data['Question']
+                    question_text = data["Question"]
                     if choices:
                         question_text += "\n\nChoices:"
                         for i, choice in enumerate(choices):
-                            letter = chr(ord('A') + i)
-                            question_text += f"\n{letter}) {choice}"
+                            letter = chr(ord("A") + i)
+                            question_text += f"\n{letter}. {choice}"
 
                     example = DatasetExample(
                         question_id=idx,
                         question=question_text,
-                        answer=data['Answer'],
+                        answer=answer_letter or "",
                         metadata={
-                            'choices': choices,
-                            'answer_letter': data['Answer'],
+                            "choices": choices,
+                            "answer_letter": answer_letter,
+                            "answer_text": answer_text,
                         }
                     )
                     examples.append(example)

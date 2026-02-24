@@ -57,6 +57,7 @@ class ContextManagerTool(BaseTool):
         storage_path: Optional[str] = None,
         use_graphrag: bool = True,
         model_provider: Optional[Any] = None,
+        use_thinking: bool = False,
     ):
         """Initialize context manager tool.
 
@@ -71,12 +72,14 @@ class ContextManagerTool(BaseTool):
             model_provider: BaseModelProvider used for GraphRAG entity extraction.
                             Should be the orchestrator (or a dedicated context_manager) model.
                             If None, nano_graphrag falls back to its default (OpenAI).
+            use_thinking: Whether to use thinking mode for the context manager.
         """
         self.max_entries = max_entries
         self.direct_mode = direct_mode
         self.storage_path = storage_path or "./context_manager_storage"
         self.use_graphrag = use_graphrag and not direct_mode and GRAPHRAG_AVAILABLE
         self.model_provider = model_provider
+        self.use_thinking = use_thinking
         self.entries: Dict[str, list] = {}  # question_id -> list of entries (in-memory/fallback mode)
         self.current_question_id: Optional[int] = None
         self.graphrag_instances: Dict[int, Any] = {}  # question_id -> GraphRAG instance
@@ -235,6 +238,7 @@ class ContextManagerTool(BaseTool):
             self.graphrag_instances[self.current_question_id] = ContextManagerGraphRAG(
                 working_dir=str(working_dir),
                 model_provider=self.model_provider,
+                use_thinking=self.use_thinking,
             )
 
         graph = self.graphrag_instances[self.current_question_id]
@@ -501,6 +505,7 @@ class ContextManagerTool(BaseTool):
                 self.graphrag_instances[question_id] = ContextManagerGraphRAG(
                     working_dir=str(working_dir),
                     model_provider=self.model_provider,
+                    use_thinking=self.use_thinking,
                 )
 
             try:

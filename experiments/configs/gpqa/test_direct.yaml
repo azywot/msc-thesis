@@ -1,14 +1,14 @@
-# GAIA Baseline — Qwen3-4B, direct tool call, orchestrator thinking
+# GPQA Diamond Direct Mode — single orchestrator model, tools execute without sub-agent LLMs
 
-name: "gaia_qwen3_baseline"
-description: "GAIA validation set evaluation with Qwen3-4B and full toolset"
+name: "gpqa_diamond_qwen3_direct_test_10"
+description: "GPQA diamond split with direct tool execution using Qwen3-4B (no sub-agents), small subset for quick tests"
 
 slurm:
   partition: "gpu_h100"
   num_gpus: 1
   ntasks: 1
   cpus_per_task: 8
-  time: "10:00:00"
+  time: "04:00:00"
   conda_env: "agent_engine"
 
 models:
@@ -27,16 +27,17 @@ tools:
   direct_tool_call: true
 
 dataset:
-  name: "gaia"
-  split: "all_validation"
+  name: "gpqa"
+  split: "diamond"
   data_dir: "./data"
-  subset_num: -1  # -1 for all
+  subset_num: 10  # -1 for all
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/gaia_baseline"
-use_wandb: true
+output_dir: "./experiments/results/gpqa_diamond_direct_mode_test"
+use_wandb: false
 wandb_project: "msc-thesis"
 
 cache_dir: "./cache"
+

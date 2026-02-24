@@ -110,7 +110,7 @@ _zero_embedding = _make_zero_embedding()
 # Local-model completion function factory (mirrors MAT's _create_vllm_completion)
 # ---------------------------------------------------------------------------
 
-def _make_completion_func(model_provider):
+def _make_completion_func(model_provider, use_thinking: bool = False):
     """Wrap a BaseModelProvider into an async completion function for nano_graphrag.
 
     nano_graphrag calls:  await func(prompt, system_prompt=None, history_messages=None, **kwargs)
@@ -129,7 +129,10 @@ def _make_completion_func(model_provider):
             messages.extend(history_messages)
         messages.append({"role": "user", "content": prompt})
 
-        prompt_text = model_provider.apply_chat_template(messages, use_thinking=False)
+        prompt_text = model_provider.apply_chat_template(
+            messages,
+            use_thinking=bool(use_thinking),
+        )
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
@@ -156,6 +159,7 @@ class ContextManagerGraphRAG:
         working_dir: str = "./local_mem",
         model_provider=None,
         ini_content: str = "",
+        use_thinking: bool = False,
     ):
         """Initialize GraphRAG context manager.
 
@@ -165,6 +169,7 @@ class ContextManagerGraphRAG:
             model_provider: BaseModelProvider instance used for entity extraction.
                             Required when no OpenAI key is available (the normal case).
             ini_content: Optional initial text to insert on first run.
+            use_thinking: Whether to enable thinking mode when calling the local model.
         """
         if not GRAPHRAG_AVAILABLE:
             raise ImportError(
@@ -178,7 +183,7 @@ class ContextManagerGraphRAG:
         kwargs: dict = {"working_dir": str(self.working_dir)}
 
         if model_provider is not None:
-            completion = _make_completion_func(model_provider)
+            completion = _make_completion_func(model_provider, use_thinking=use_thinking)
             kwargs.update(
                 {
                     "best_model_func": completion,
