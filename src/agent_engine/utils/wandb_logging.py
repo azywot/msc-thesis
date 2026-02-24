@@ -17,6 +17,7 @@ def log_results_wandb(
     run_name: str,
     dataset_name: str,
     dataset_split: str,
+    subset_num: Optional[int],
     model_name: str,
     mode: str,
     thinking_mode: str,
@@ -42,16 +43,14 @@ def log_results_wandb(
 
     created_run = False
     if wandb.run is None:
-        safe_config: Dict[str, Any] = {}
+        minimal_config: Dict[str, Any] = {}
         if isinstance(config_summary, dict):
-            for k, v in config_summary.items():
-                k_l = str(k).lower()
-                if any(s in k_l for s in ("key", "token", "secret", "password")):
-                    continue
-                if isinstance(v, (str, int, float, bool)) or v is None:
-                    safe_config[k] = v
+            for key in ("seed", "max_turns", "batch_size"):
+                v = config_summary.get(key)
+                if v is not None and (not isinstance(v, str) or v.strip()):
+                    minimal_config[key] = v
 
-        wandb.init(project=project, name=run_name, config=safe_config)
+        wandb.init(project=project, name=run_name, config=minimal_config)
         created_run = True
 
     # Metrics (overall + per-level if present)
@@ -75,6 +74,13 @@ def log_results_wandb(
     l2_em = _lvl("em", "2")
     l3_em = _lvl("em", "3")
 
+    # Optional: experiment description (for table readability)
+    description: Optional[str] = None
+    if isinstance(config_summary, dict):
+        desc = config_summary.get("description")
+        if isinstance(desc, str) and desc.strip():
+            description = desc.strip()
+
     # Tool totals — support both formats:
     # (1) tool_stats["overall"] with search_total, code_total, etc.
     # (2) flat tool_stats with web_search, code_generator, etc. (from metrics["tool_usage"])
@@ -82,14 +88,12 @@ def log_results_wandb(
         "search_total": ["search_total", "web_search"],
         "code_total": ["code_total", "code_generator"],
         "context_manager_total": ["context_manager_total", "context_manager"],
-        "mind_map_total": ["mind_map_total", "mind_map"],
         "text_inspector_total": ["text_inspector_total", "text_inspector"],
         "image_inspector_total": ["image_inspector_total", "image_inspector"],
     }
     search_total = 0
     code_total = 0
     context_manager_total = 0
-    mind_map_total = 0
     text_inspector_total = 0
     image_inspector_total = 0
     try:
@@ -110,7 +114,6 @@ def log_results_wandb(
             search_total = _get("search_total", _TOOL_ALIASES["search_total"])
             code_total = _get("code_total", _TOOL_ALIASES["code_total"])
             context_manager_total = _get("context_manager_total", _TOOL_ALIASES["context_manager_total"])
-            mind_map_total = _get("mind_map_total", _TOOL_ALIASES["mind_map_total"])
             text_inspector_total = _get("text_inspector_total", _TOOL_ALIASES["text_inspector_total"])
             image_inspector_total = _get("image_inspector_total", _TOOL_ALIASES["image_inspector_total"])
     except Exception:
@@ -118,9 +121,17 @@ def log_results_wandb(
 
     total_tool_calls = search_total + code_total + context_manager_total + text_inspector_total + image_inspector_total
 
+    def _present(v: Any) -> bool:
+        if v is None:
+            return False
+        if isinstance(v, str) and not v.strip():
+            return False
+        return True
+
     log_data: Dict[str, Any] = {
-        "dataset": f"{dataset_name}_{dataset_split}",
+        "dataset": str(dataset_name),
         "dataset_split": str(dataset_split),
+        "subset_num": subset_num,
         "model_name": str(model_name),
         "mode": str(mode),
         "thinking_mode": str(thinking_mode),
@@ -130,24 +141,27 @@ def log_results_wandb(
         "context_manager": bool(context_manager),
         "enable_text_inspector_tool": bool(enable_text_inspector_tool),
         "enable_image_inspector_tool": bool(enable_image_inspector_tool),
-        "accuracy": None if accuracy is None else float(accuracy),
-        "L1_accuracy": None if l1_accuracy is None else float(l1_accuracy),
-        "L2_accuracy": None if l2_accuracy is None else float(l2_accuracy),
-        "L3_accuracy": None if l3_accuracy is None else float(l3_accuracy),
-        "em": None if em is None else float(em),
-        "f1": None if f1 is None else float(f1),
-        "L1_em": None if l1_em is None else float(l1_em),
-        "L2_em": None if l2_em is None else float(l2_em),
-        "L3_em": None if l3_em is None else float(l3_em),
+        "description": description,
+        "accuracy": float(accuracy) if accuracy is not None else None,
+        "L1_accuracy": float(l1_accuracy) if l1_accuracy is not None else None,
+        "L2_accuracy": float(l2_accuracy) if l2_accuracy is not None else None,
+        "L3_accuracy": float(l3_accuracy) if l3_accuracy is not None else None,
+        "em": float(em) if em is not None else None,
+        "f1": float(f1) if f1 is not None else None,
+        "L1_em": float(l1_em) if l1_em is not None else None,
+        "L2_em": float(l2_em) if l2_em is not None else None,
+        "L3_em": float(l3_em) if l3_em is not None else None,
         "tool/search_total": search_total,
         "tool/code_total": code_total,
         "tool/context_manager_total": context_manager_total,
-        "tool/mind_map_total": mind_map_total,
         "tool/text_inspector_total": text_inspector_total,
         "tool/image_inspector_total": image_inspector_total,
         "tool/total_tool_calls": total_tool_calls,
-        "metrics_path": None if metrics_path is None else str(metrics_path),
+        "metrics_path": str(metrics_path) if metrics_path else None,
     }
+
+    # Only log keys with non-empty values to avoid empty/duplicate columns in the table
+    log_data = {k: v for k, v in log_data.items() if _present(v)}
 
     wandb.log(log_data, step=0)
 

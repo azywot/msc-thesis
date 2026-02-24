@@ -318,6 +318,9 @@ Download datasets before running:
 python scripts/download_datasets.py --dataset gaia --split validation
 ```
 
+**Prompt templates note:** GAIA and HLE (and other single-question QA datasets) intentionally share the same system prompt template. In code, dataset names like `hle` are transparently mapped to use the GAIA system prompt.
+This can be found in `src/agent_engine/prompts/builder.py` inside `PromptBuilder.build_system_prompt`, where `dataset_name` values `"gaia"` and `"hle"` both resolve to the `gaia.yaml` system template.
+
 ---
 
 ## Outputs

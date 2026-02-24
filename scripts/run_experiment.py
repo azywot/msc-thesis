@@ -394,6 +394,7 @@ def run_experiment(args):
                     run_name=str(config.name),
                     dataset_name=str(config.dataset.name),
                     dataset_split=str(config.dataset.split),
+                    subset_num=int(getattr(config.dataset, "subset_num", -1)),
                     model_name=str(model_name),
                     mode=mode,
                     thinking_mode=str(config.thinking_mode.value),

@@ -68,7 +68,12 @@ class PromptBuilder:
     ) -> str:
         """Build system prompt with tools and instructions."""
         try:
-            template = self.load_template(dataset_name)
+            # GAIA and HLE share the same single‑QA prompt template.
+            template_name = dataset_name
+            if dataset_name.lower() in ("gaia", "hle"):
+                template_name = "gaia"
+
+            template = self.load_template(template_name)
         except FileNotFoundError:
             logger.warning(f"Template '{dataset_name}' not found, using base template")
             template = self.load_template("base")
