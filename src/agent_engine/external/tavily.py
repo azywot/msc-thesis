@@ -95,16 +95,14 @@ class TavilyRM:
                     max_results=self.k
                 )
 
-                # Extract results from Tavily response
-                # Tavily returns: {"results": [{"url": ..., "title": ..., "content": ...}, ...]}
                 results = response.get("results", [])
 
                 for result in results:
+                    content = result.get("content", "") or ""
                     collected_results.append({
-                        "snippets": [result.get("content", "")],
                         "title": result.get("title", ""),
                         "url": result.get("url", ""),
-                        "description": result.get("content", ""),
+                        "content": content,
                     })
 
             except Exception as e:

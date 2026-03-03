@@ -9,6 +9,7 @@ Supports two modes:
 """
 
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from ..core.tool import BaseTool, ToolResult
@@ -145,29 +146,29 @@ class WebSearchTool(BaseTool):
                     self.cache_manager.save_url_cache()
             formatted = self._format_results(cached_results, query)
 
-            ############ TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
-            # Write to temp file for direct mode (sub-agent writes in _analyze_with_llm)
-            if self.direct_mode:
-                try:
-                    with open("temp_search_direct.txt", "w", encoding="utf-8") as f:
-                        f.write("=" * 80 + "\n")
-                        f.write("WEB SEARCH DIRECT MODE - ACTUAL RUNTIME DATA (CACHED)\n")
-                        f.write("=" * 80 + "\n\n")
-                        f.write(f"Query: {query}\n")
-                        f.write(f"Provider: {self.provider}\n")
-                        f.write(f"Number of results: {len(cached_results)}\n")
-                        f.write(f"Cached: True\n")
-                        f.write(f"Timestamp: {__import__('datetime').datetime.now().isoformat()}\n\n")
-                        f.write("=" * 80 + "\n")
-                        f.write("FORMATTED RESULTS SENT TO ORCHESTRATOR:\n")
-                        f.write("=" * 80 + "\n\n")
-                        f.write(formatted)
-                        f.write("\n\n" + "=" * 80 + "\n")
-                        f.write("(This text goes directly to the orchestrator as the tool output)\n")
-                        f.write("=" * 80 + "\n")
-                except Exception as e:
-                    logger.warning(f"Failed to write temp_search_direct.txt: {e}")
-            ######### TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
+            # ############ TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
+            # # Write to temp file for direct mode (sub-agent writes in _analyze_with_llm)
+            # if self.direct_mode:
+            #     try:
+            #         with open("temp_search_direct.txt", "a", encoding="utf-8") as f:
+            #             f.write("=" * 80 + "\n")
+            #             f.write("WEB SEARCH DIRECT MODE - ACTUAL RUNTIME DATA (CACHED)\n")
+            #             f.write("=" * 80 + "\n\n")
+            #             f.write(f"Query: {query}\n")
+            #             f.write(f"Provider: {self.provider}\n")
+            #             f.write(f"Number of results: {len(cached_results)}\n")
+            #             f.write(f"Cached: True\n")
+            #             f.write(f"Timestamp: {__import__('datetime').datetime.now().isoformat()}\n\n")
+            #             f.write("=" * 80 + "\n")
+            #             f.write("FORMATTED RESULTS SENT TO ORCHESTRATOR:\n")
+            #             f.write("=" * 80 + "\n\n")
+            #             f.write(formatted)
+            #             f.write("\n\n" + "=" * 80 + "\n")
+            #             f.write("(This text goes directly to the orchestrator as the tool output)\n")
+            #             f.write("=" * 80 + "\n")
+            #     except Exception as e:
+            #         logger.warning(f"Failed to write temp_search_direct.txt: {e}")
+            # ######### TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
 
             output = formatted if self.direct_mode else self._analyze_with_llm(query, formatted)
             return ToolResult(
@@ -201,27 +202,27 @@ class WebSearchTool(BaseTool):
             formatted_results = self._format_results(results, query)
 
             if self.direct_mode:
-                ############ TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
-                # Write direct mode output to temp file for inspection
-                try:
-                    with open("temp_search_direct.txt", "w", encoding="utf-8") as f:
-                        f.write("=" * 80 + "\n")
-                        f.write("WEB SEARCH DIRECT MODE - ACTUAL RUNTIME DATA\n")
-                        f.write("=" * 80 + "\n\n")
-                        f.write(f"Query: {query}\n")
-                        f.write(f"Provider: {self.provider}\n")
-                        f.write(f"Number of results: {len(results)}\n")
-                        f.write(f"Timestamp: {__import__('datetime').datetime.now().isoformat()}\n\n")
-                        f.write("=" * 80 + "\n")
-                        f.write("FORMATTED RESULTS SENT TO ORCHESTRATOR:\n")
-                        f.write("=" * 80 + "\n\n")
-                        f.write(formatted_results)
-                        f.write("\n\n" + "=" * 80 + "\n")
-                        f.write("(This text goes directly to the orchestrator as the tool output)\n")
-                        f.write("=" * 80 + "\n")
-                except Exception as e:
-                    logger.warning(f"Failed to write temp_search_direct.txt: {e}")
-                    ############ TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
+                # ############ TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
+                # # Write direct mode output to temp file for inspection
+                # try:
+                #     with open("temp_search_direct.txt", "a", encoding="utf-8") as f:
+                #         f.write("=" * 80 + "\n")
+                #         f.write("WEB SEARCH DIRECT MODE - ACTUAL RUNTIME DATA\n")
+                #         f.write("=" * 80 + "\n\n")
+                #         f.write(f"Query: {query}\n")
+                #         f.write(f"Provider: {self.provider}\n")
+                #         f.write(f"Number of results: {len(results)}\n")
+                #         f.write(f"Timestamp: {__import__('datetime').datetime.now().isoformat()}\n\n")
+                #         f.write("=" * 80 + "\n")
+                #         f.write("FORMATTED RESULTS SENT TO ORCHESTRATOR:\n")
+                #         f.write("=" * 80 + "\n\n")
+                #         f.write(formatted_results)
+                #         f.write("\n\n" + "=" * 80 + "\n")
+                #         f.write("(This text goes directly to the orchestrator as the tool output)\n")
+                #         f.write("=" * 80 + "\n")
+                # except Exception as e:
+                #     logger.warning(f"Failed to write temp_search_direct.txt: {e}")
+                #     ############ TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
 
                 return ToolResult(
                     success=True,
@@ -304,27 +305,6 @@ class WebSearchTool(BaseTool):
         """
         prompt = self.build_analysis_prompt(query, search_results)
 
-        ########## TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
-        # Write prompt to temp file for inspection
-        try:
-            with open("temp_search_subagent.txt", "w", encoding="utf-8") as f:
-                f.write("=" * 80 + "\n")
-                f.write("WEB SEARCH SUB-AGENT MODE - ACTUAL RUNTIME DATA\n")
-                f.write("=" * 80 + "\n\n")
-                f.write(f"Query: {query}\n")
-                f.write(f"Provider: {self.provider}\n")
-                f.write(f"Timestamp: {__import__('datetime').datetime.now().isoformat()}\n\n")
-                f.write("=" * 80 + "\n")
-                f.write("FULL PROMPT SENT TO SUB-AGENT LLM:\n")
-                f.write("=" * 80 + "\n\n")
-                f.write(prompt)
-                f.write("\n\n" + "=" * 80 + "\n")
-                f.write("(Output will be generated by the LLM and returned to orchestrator)\n")
-                f.write("=" * 80 + "\n")
-        except Exception as e:
-            logger.warning(f"Failed to write temp_search_subagent.txt: {e}")
-        ########### TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
-
         result = self.model_provider.generate([prompt])[0]
 
         output = strip_thinking_tags(result.text)
@@ -376,7 +356,31 @@ Now you should analyze each web page and find helpful information based on the c
 """
 
         prompt_messages = [{"role": "user", "content": instruction}]
-        return self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
+        prompt = self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
+
+        # ########## TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
+        # # Write prompt to temp file for inspection (supports both single and batched modes)
+        # try:
+        #     debug_path = Path("temp_search_subagent.txt")
+        #     with debug_path.open("a", encoding="utf-8") as f:
+        #         f.write("=" * 80 + "\n")
+        #         f.write("WEB SEARCH SUB-AGENT MODE - ACTUAL RUNTIME DATA\n")
+        #         f.write("=" * 80 + "\n\n")
+        #         f.write(f"Query: {query}\n")
+        #         f.write(f"Provider: {self.provider}\n")
+        #         f.write(f"Timestamp: {__import__('datetime').datetime.now().isoformat()}\n\n")
+        #         f.write("=" * 80 + "\n")
+        #         f.write("FULL PROMPT SENT TO SUB-AGENT LLM:\n")
+        #         f.write("=" * 80 + "\n\n")
+        #         f.write(prompt)
+        #         f.write("\n\n" + "=" * 80 + "\n")
+        #         f.write("(Output will be generated by the LLM and returned to orchestrator)\n")
+        #         f.write("=" * 80 + "\n\n")
+        # except Exception as e:
+        #     logger.warning(f"Failed to write temp_search_subagent.txt: {e}")
+        # ########### TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
+
+        return prompt
 
     def search_and_format(self, query: str) -> Dict[str, Any]:
         """Run search and return a batch-friendly payload.
@@ -447,7 +451,6 @@ Now you should analyze each web page and find helpful information based on the c
         for i, doc_info in enumerate((results or [])[: self.top_k]):
             url = (doc_info.get("url", "") or "").strip()
 
-            # Extract snippet
             snippet = ""
             if doc_info.get("snippets"):
                 snippet = (doc_info.get("snippets") or [""])[0] or ""
@@ -455,23 +458,29 @@ Now you should analyze each web page and find helpful information based on the c
                 snippet = doc_info.get("description", "") or ""
             snippet = snippet.replace("<b>", "").replace("</b>", "")
 
-            # For Tavily, use the content field directly (already cleaned and structured)
-            # For Serper, fetch and use URL content
             if self.provider == "tavily":
-                # Tavily's content is already in the description/snippets field
-                context = snippet[:self.max_doc_len * 2] if snippet else ""
+                base = doc_info.get("content") or ""
+                content = base[: self.max_doc_len * 2] if base else ""
             else:
-                # Serper: fetch full page content
                 raw_context = self.url_cache.get(url, "") if (self.fetch_urls and url) else ""
-                success, filtered_context = extract_snippet_with_context(raw_context, snippet, context_chars=self.max_doc_len)
-                context = filtered_context if success else (raw_context[: self.max_doc_len * 2] if raw_context else "")
+                if raw_context:
+                    _, focused = extract_snippet_with_context(
+                        raw_context,
+                        snippet,
+                        context_chars=self.max_doc_len,
+                    )
+                    content = focused
+                else:
+                    content = ""
 
-            # Mutate in-place so search_cache persists the enriched structure.
-            doc_info["snippet"] = snippet
-            doc_info["context"] = context
+            minimal_doc = {
+                "title": doc_info.get("title", ""),
+                "url": url,
+                "content": content,
+            }
 
             formatted_documents += f"**Web Page {i + 1}:**\n"
-            formatted_documents += json.dumps(doc_info, ensure_ascii=False, indent=2) + "\n"
+            formatted_documents += json.dumps(minimal_doc, ensure_ascii=False, indent=2) + "\n"
 
         return formatted_documents.strip()
 
