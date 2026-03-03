@@ -126,7 +126,8 @@ models:
 #   true  → tools run inline (no sub-agent LLM inside each tool)
 #   false → tools use their model role to analyse/summarise results
 #
-# web_search requires SERPER_API_KEY in the environment.
+# web_search requires SERPER_API_KEY or TAVILY_API_KEY in the environment,
+# depending on web_tool_provider setting.
 # ------------------------------------------------------------------------------
 tools:
   enabled_tools:
@@ -136,6 +137,7 @@ tools:
     - context_manager
     - image_inspector
   direct_tool_call: false
+  web_tool_provider: "serper"  # "serper" or "tavily"
   max_search_limit: 10
   top_k_results: 5
   max_doc_len: 3000

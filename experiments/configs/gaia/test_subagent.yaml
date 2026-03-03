@@ -35,6 +35,7 @@ tools:
     - image_inspector
     - context_manager
   direct_tool_call: false
+  web_tool_provider: "serper"  # "serper" or "tavily"
 
 dataset:
   name: "gaia"

@@ -1,6 +1,6 @@
-"""Web search tool using Serper API.
+"""Web search tool using Serper or Tavily API.
 
-This tool provides web search functionality using the Serper API,
+This tool provides web search functionality using either Serper or Tavily API,
 with caching support for efficiency.
 
 Supports two modes:
@@ -9,26 +9,28 @@ Supports two modes:
 """
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from ..core.tool import BaseTool, ToolResult
 from ..utils.logging import get_logger
 from ..utils.parsing import strip_thinking_tags
 from ..external.serper import SerperRM
+from ..external.tavily import TavilyRM
 from ..external.url_fetcher import fetch_page_content, extract_snippet_with_context
 
 logger = get_logger(__name__)
 
 
 class WebSearchTool(BaseTool):
-    """Web search using Serper API.
+    """Web search using Serper or Tavily API.
 
     Supports direct mode (no LLM) or sub-agent mode (with LLM analysis).
     """
 
     def __init__(
         self,
-        serper_api_key: str,
+        api_key: str,
+        provider: str = "serper",
         search_cache: Optional[Dict[str, str]] = None,
         url_cache: Optional[Dict[str, str]] = None,
         top_k: int = 5,
@@ -42,17 +44,34 @@ class WebSearchTool(BaseTool):
         """Initialize web search tool.
 
         Args:
-            serper_api_key: Serper API key
+            api_key: API key for the selected provider (Serper or Tavily)
+            provider: Web search provider - "serper" or "tavily"
+                     Note: Tavily provides pre-cleaned content, so URL fetching is skipped
             search_cache: Optional shared cache dictionary for search results
             url_cache: Optional shared cache dictionary for fetched URL content
+                      (only used for Serper; Tavily doesn't require URL fetching)
             top_k: Number of search results to return
             max_doc_len: Maximum document length in characters
             model_provider: Optional model provider for sub-agent mode
             use_thinking: Whether sub-agent uses thinking mode
-            use_jina: Whether to use Jina AI reader API for URL fetching
-            fetch_urls: Whether to fetch full page content (vs just snippets)
+            use_jina: Whether to use Jina AI reader API for URL fetching (Serper only)
+            fetch_urls: Whether to fetch full page content (Serper only; ignored for Tavily)
+            cache_manager: Optional cache manager for atomic cache persistence
         """
-        self.serper_rm = SerperRM(serper_search_api_key=serper_api_key, k=top_k)
+        self.provider = provider.lower()
+
+        # Initialize the appropriate search provider
+        if self.provider == "serper":
+            self.search_rm: Union[SerperRM, TavilyRM] = SerperRM(
+                serper_search_api_key=api_key, k=top_k
+            )
+        elif self.provider == "tavily":
+            self.search_rm = TavilyRM(
+                tavily_api_key=api_key, k=top_k, search_depth="advanced"
+            )
+        else:
+            raise ValueError(f"Unknown web search provider: {provider}. Must be 'serper' or 'tavily'")
+
         self.search_cache = search_cache if search_cache is not None else {}
         self.url_cache = url_cache if url_cache is not None else {}
         self.top_k = top_k
@@ -70,7 +89,7 @@ class WebSearchTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Search the web for information using Serper API"
+        return f"Search the web for information using {self.provider.capitalize()} API"
 
     def get_schema(self) -> Dict[str, Any]:
         """Return Qwen3 JSON Schema."""
@@ -97,14 +116,14 @@ class WebSearchTool(BaseTool):
     def execute(self, query: str) -> ToolResult:
         """Execute web search.
 
-        Flow (mirrors multi-agent-tools):
-        1. search_cache stores raw Serper result dicts (list[dict]) so cache files
-           are interchangeable between the two repos.
-        2. url_cache stores full page content keyed by URL (same as multi-agent-tools).
-        3. URL fetching is always done here, before formatting, so url_cache is
-           populated on every cache miss and any missing URLs are back-filled on hits.
-        4. _format_results is a pure formatting step — it reads url_cache but never
-           fetches.
+        Flow:
+        1. search_cache stores raw search result dicts (list[dict]) for both Serper and Tavily.
+        2. url_cache stores full page content keyed by URL (Serper only; Tavily doesn't use this).
+        3. URL fetching:
+           - Serper: Fetches full page content before formatting, populates url_cache
+           - Tavily: Skipped (content is already provided in search results)
+        4. _format_results is a pure formatting step — reads url_cache for Serper,
+           uses content field directly for Tavily.
 
         Args:
             query: Search query string
@@ -119,9 +138,11 @@ class WebSearchTool(BaseTool):
         if query in self.search_cache:
             logger.info(f"Cache hit for: {query}")
             cached_results = self.search_cache[query]
-            url_cache_updated = self._fetch_missing_urls(cached_results)
-            if self.cache_manager and url_cache_updated:
-                self.cache_manager.save_url_cache()
+            # Only fetch URLs for Serper (Tavily already provides cleaned content)
+            if self.provider == "serper":
+                url_cache_updated = self._fetch_missing_urls(cached_results)
+                if self.cache_manager and url_cache_updated:
+                    self.cache_manager.save_url_cache()
             formatted = self._format_results(cached_results, query)
             output = formatted if self.direct_mode else self._analyze_with_llm(query, formatted)
             return ToolResult(
@@ -130,21 +151,27 @@ class WebSearchTool(BaseTool):
                 metadata={"cached": True, "query": query, "mode": "direct" if self.direct_mode else "sub-agent"},
             )
 
-        # Cache miss: fetch from Serper, fetch page content, then format/analyse.
+        # Cache miss: fetch from search provider, fetch page content, then format/analyse.
         try:
-            raw_results = self.serper_rm.forward(query)
-            logger.info(f"Retrieved {len(raw_results)} search results")
+            raw_results = self.search_rm.forward(query)
+            logger.info(f"Retrieved {len(raw_results)} search results from {self.provider}")
 
             # Persist raw results — same structure as multi-agent-tools search_cache.
             # Normalize so we only ever store list-of-dicts (Serper shape).
             results = self._normalize_search_results(raw_results)
             self.search_cache[query] = results
 
-            # Fetch full page content and populate url_cache
-            self._fetch_missing_urls(results)
+            # Fetch full page content and populate url_cache (only for Serper)
+            # Tavily already provides cleaned content, no URL fetching needed
+            if self.provider == "serper":
+                self._fetch_missing_urls(results)
 
             if self.cache_manager:
-                self.cache_manager.save_caches()
+                if self.provider == "serper":
+                    self.cache_manager.save_caches()
+                else:
+                    # For Tavily, only save search cache (no URL cache needed)
+                    self.cache_manager.save_search_cache()
 
             formatted_results = self._format_results(results, query)
 
@@ -283,19 +310,20 @@ Now you should analyze each web page and find helpful information based on the c
         return self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
 
     def search_and_format(self, query: str) -> Dict[str, Any]:
-        """Run Serper search and return a batch-friendly payload.
+        """Run search and return a batch-friendly payload.
 
         This is used by the batched orchestrator path:
-        - Returns raw Serper results (cache-compatible)
-        - Returns a list of uncached URLs and their snippets for batch URL fetching
+        - Returns raw search results (cache-compatible)
+        - Returns a list of uncached URLs and their snippets for batch URL fetching (Serper only)
         - Does NOT fetch URLs (that is done in a single batch across jobs)
+        - For Tavily, returns empty urls_to_fetch since content is already provided
         """
         cached = False
         if query in self.search_cache:
             results = self.search_cache[query]
             cached = True
         else:
-            raw = self.serper_rm.forward(query, exclude_urls=[])
+            raw = self.search_rm.forward(query, exclude_urls=[])
             results = self._normalize_search_results(raw)
             self.search_cache[query] = results
             if self.cache_manager:
@@ -303,21 +331,24 @@ Now you should analyze each web page and find helpful information based on the c
 
         urls_to_fetch: List[str] = []
         url_snippets: Dict[str, str] = {}
-        for r in (results or [])[: self.top_k]:
-            url = (r.get("url", "") or "").strip()
-            if not url:
-                continue
-            snippet = ""
-            if r.get("snippets"):
-                snippet = (r.get("snippets") or [""])[0] or ""
-            if not snippet:
-                snippet = r.get("description", "") or ""
-            snippet = snippet.replace("<b>", "").replace("</b>", "")
 
-            # Collect uncached URLs only
-            if url not in self.url_cache:
-                urls_to_fetch.append(url)
-                url_snippets[url] = snippet
+        # Only collect URLs to fetch for Serper (Tavily already provides content)
+        if self.provider == "serper":
+            for r in (results or [])[: self.top_k]:
+                url = (r.get("url", "") or "").strip()
+                if not url:
+                    continue
+                snippet = ""
+                if r.get("snippets"):
+                    snippet = (r.get("snippets") or [""])[0] or ""
+                if not snippet:
+                    snippet = r.get("description", "") or ""
+                snippet = snippet.replace("<b>", "").replace("</b>", "")
+
+                # Collect uncached URLs only
+                if url not in self.url_cache:
+                    urls_to_fetch.append(url)
+                    url_snippets[url] = snippet
 
         return {
             "results": results,
@@ -328,13 +359,13 @@ Now you should analyze each web page and find helpful information based on the c
         }
 
     def _format_results(self, results: list, query: str) -> str:
-        """Format raw Serper results into a document string.
+        """Format raw search results into a document string.
 
         Pure formatting — reads url_cache but never fetches. Call
         _fetch_missing_urls() first if fresh page content is needed.
 
         Args:
-            results: List of raw Serper result dicts
+            results: List of raw search result dicts (from Serper or Tavily)
             query: Original search query
 
         Returns:
@@ -346,8 +377,8 @@ Now you should analyze each web page and find helpful information based on the c
         formatted_documents = ""
         for i, doc_info in enumerate((results or [])[: self.top_k]):
             url = (doc_info.get("url", "") or "").strip()
-            raw_context = self.url_cache.get(url, "") if (self.fetch_urls and url) else ""
 
+            # Extract snippet
             snippet = ""
             if doc_info.get("snippets"):
                 snippet = (doc_info.get("snippets") or [""])[0] or ""
@@ -355,8 +386,16 @@ Now you should analyze each web page and find helpful information based on the c
                 snippet = doc_info.get("description", "") or ""
             snippet = snippet.replace("<b>", "").replace("</b>", "")
 
-            success, filtered_context = extract_snippet_with_context(raw_context, snippet, context_chars=self.max_doc_len)
-            context = filtered_context if success else (raw_context[: self.max_doc_len * 2] if raw_context else "")
+            # For Tavily, use the content field directly (already cleaned and structured)
+            # For Serper, fetch and use URL content
+            if self.provider == "tavily":
+                # Tavily's content is already in the description/snippets field
+                context = snippet[:self.max_doc_len * 2] if snippet else ""
+            else:
+                # Serper: fetch full page content
+                raw_context = self.url_cache.get(url, "") if (self.fetch_urls and url) else ""
+                success, filtered_context = extract_snippet_with_context(raw_context, snippet, context_chars=self.max_doc_len)
+                context = filtered_context if success else (raw_context[: self.max_doc_len * 2] if raw_context else "")
 
             # Mutate in-place so search_cache persists the enriched structure.
             doc_info["snippet"] = snippet

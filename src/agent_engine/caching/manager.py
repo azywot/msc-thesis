@@ -20,16 +20,23 @@ from typing import Any
 
 
 class CacheManager:
-    def __init__(self, cache_dir: str = './cache'):
+    def __init__(self, cache_dir: str = './cache', web_tool_provider: str = 'serper'):
         self.cache_dir = cache_dir
-        self.search_cache_path = os.path.join(cache_dir, 'search_cache.json')
-        self.url_cache_path = os.path.join(cache_dir, 'url_cache.json')
+        self.web_tool_provider = web_tool_provider
+
+        # Create provider-specific cache directory
+        provider_cache_dir = os.path.join(cache_dir, web_tool_provider)
+        self.provider_cache_dir = provider_cache_dir
+
+        self.search_cache_path = os.path.join(provider_cache_dir, 'search_cache.json')
+        self.url_cache_path = os.path.join(provider_cache_dir, 'url_cache.json')
         # Single lock for both files to avoid deadlocks and cross-file races.
-        self._lock_path = os.path.join(cache_dir, '.cache.lock')
+        self._lock_path = os.path.join(provider_cache_dir, '.cache.lock')
         self._initialize_cache()
 
     def _initialize_cache(self) -> None:
         os.makedirs(self.cache_dir, exist_ok=True)
+        os.makedirs(self.provider_cache_dir, exist_ok=True)
         # Ensure lock file exists.
         try:
             open(self._lock_path, 'a', encoding='utf-8').close()

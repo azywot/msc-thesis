@@ -109,8 +109,14 @@ def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers
         if tool_name == "web_search":
             # Get model provider for sub-agent mode
             search_model = model_providers.get("web_search") if not direct_mode and model_providers else None
+            # Select the correct API key based on provider
+            provider = config.tools.web_tool_provider
+            api_key = api_keys.get(provider)
+            if not api_key:
+                raise RuntimeError(f"{provider.upper()}_API_KEY environment variable is required for web_tool_provider='{provider}'")
             tools.register(WebSearchTool(
-                serper_api_key=api_keys.get("serper"),
+                api_key=api_key,
+                provider=provider,
                 search_cache=cache_manager.search_cache,
                 url_cache=cache_manager.url_cache,
                 top_k=config.tools.top_k_results,
@@ -207,12 +213,13 @@ def run_experiment(args):
 
     api_keys = {
         "serper": os.getenv("SERPER_API_KEY"),
+        "tavily": os.getenv("TAVILY_API_KEY"),
         "openai": os.getenv("OPENAI_API_KEY"),
         "anthropic": os.getenv("ANTHROPIC_API_KEY"),
     }
 
-    logger.info(f"Initializing cache at: {config.cache_dir}")
-    cache_manager = CacheManager(config.cache_dir)
+    logger.info(f"Initializing cache at: {config.cache_dir}/{config.tools.web_tool_provider}")
+    cache_manager = CacheManager(config.cache_dir, web_tool_provider=config.tools.web_tool_provider)
 
     logger.info(f"Loading dataset: {config.dataset.name}")
     dataset = DatasetRegistry.get(config.dataset)

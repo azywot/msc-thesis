@@ -32,6 +32,7 @@ class ToolsConfig:
     """Tool configuration."""
     enabled_tools: List[str] = field(default_factory=lambda: ["web_search", "code_generator"])
     direct_tool_call: bool = True
+    web_tool_provider: str = "serper"  # "serper" or "tavily"
     max_search_limit: int = 10
     top_k_results: int = 5
     max_doc_len: int = 3000
