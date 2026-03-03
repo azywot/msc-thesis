@@ -137,8 +137,8 @@ class WebSearchTool(BaseTool):
 
         # Cache hit
         if query in self.search_cache:
-            logger.info(f"Cache hit for: {query}")
             cached_results = self.search_cache[query]
+            logger.info(f"Cache hit for: {query} ({len(cached_results)} results)")
             # Only fetch URLs for Serper (Tavily already provides cleaned content)
             if self.provider == "serper":
                 url_cache_updated = self._fetch_missing_urls(cached_results)
@@ -248,7 +248,7 @@ class WebSearchTool(BaseTool):
 
     @staticmethod
     def _normalize_search_results(results: list) -> list:
-        """Return a list containing only dict items (Serper result shape).
+        """Return a list containing only dict items.
 
         Ensures we never persist non-dict entries to search_cache.
         """
@@ -278,7 +278,7 @@ class WebSearchTool(BaseTool):
             url = result.get('url', '')
             if url and url not in self.url_cache:
                 urls_to_fetch.append(url)
-                snippets[url] = result.get('snippets', [''])[0] if result.get('snippets') else ''
+                snippets[url] = result.get('content', '')
 
         if not urls_to_fetch:
             return False
@@ -395,10 +395,12 @@ Now you should analyze each web page and find helpful information based on the c
         if query in self.search_cache:
             results = self.search_cache[query]
             cached = True
+            logger.info(f"Cache hit for: {query} ({len(results)} results)")
         else:
             raw = self.search_rm.forward(query, exclude_urls=[])
             results = self._normalize_search_results(raw)
             self.search_cache[query] = results
+            logger.info(f"Retrieved {len(results)} search results from {self.provider}")
             if self.cache_manager:
                 self.cache_manager.save_search_cache()
 
@@ -411,12 +413,7 @@ Now you should analyze each web page and find helpful information based on the c
                 url = (r.get("url", "") or "").strip()
                 if not url:
                     continue
-                snippet = ""
-                if r.get("snippets"):
-                    snippet = (r.get("snippets") or [""])[0] or ""
-                if not snippet:
-                    snippet = r.get("description", "") or ""
-                snippet = snippet.replace("<b>", "").replace("</b>", "")
+                snippet = r.get("content", "").replace("<b>", "").replace("</b>", "")
 
                 # Collect uncached URLs only
                 if url not in self.url_cache:
@@ -451,22 +448,16 @@ Now you should analyze each web page and find helpful information based on the c
         for i, doc_info in enumerate((results or [])[: self.top_k]):
             url = (doc_info.get("url", "") or "").strip()
 
-            snippet = ""
-            if doc_info.get("snippets"):
-                snippet = (doc_info.get("snippets") or [""])[0] or ""
-            if not snippet:
-                snippet = doc_info.get("description", "") or ""
-            snippet = snippet.replace("<b>", "").replace("</b>", "")
-
             if self.provider == "tavily":
                 base = doc_info.get("content") or ""
                 content = base[: self.max_doc_len * 2] if base else ""
             else:
+                hint = doc_info.get("content", "").replace("<b>", "").replace("</b>", "")
                 raw_context = self.url_cache.get(url, "") if (self.fetch_urls and url) else ""
                 if raw_context:
                     _, focused = extract_snippet_with_context(
                         raw_context,
-                        snippet,
+                        hint,
                         context_chars=self.max_doc_len,
                     )
                     content = focused

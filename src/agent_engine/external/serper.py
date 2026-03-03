@@ -99,10 +99,9 @@ class SerperRM:
 
         Returns:
             List of search results, each with keys:
-                - snippets: List of text snippets
                 - title: Page title
                 - url: Page URL
-                - description: Knowledge graph description if available
+                - content: Search result snippet
         """
         # Convert to list if single query
         queries = (
@@ -129,18 +128,12 @@ class SerperRM:
 
                 # Extract organic results
                 organic_results = result.get("organic", [])
-                knowledge_graph = result.get("knowledgeGraph")
 
                 for organic in organic_results:
                     collected_results.append({
-                        "snippets": [organic.get("snippet", "")],
                         "title": organic.get("title", ""),
                         "url": organic.get("link", ""),
-                        "description": (
-                            knowledge_graph.get("description", "")
-                            if knowledge_graph
-                            else ""
-                        ),
+                        "content": organic.get("snippet", ""),
                     })
 
             except Exception as e:
