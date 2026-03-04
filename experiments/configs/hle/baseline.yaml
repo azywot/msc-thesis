@@ -25,7 +25,6 @@ tools:
     - text_inspector
     - context_manager
   direct_tool_call: true
-  web_tool_provider: "serper"  # "serper" or "tavily"
 
 dataset:
   name: "hle"

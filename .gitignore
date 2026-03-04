@@ -80,3 +80,4 @@ slurm-*.out
 wandb/
 
 src/agent_engine/prompts/notes
+experiments/archive

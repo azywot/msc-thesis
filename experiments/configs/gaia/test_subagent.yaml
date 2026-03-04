@@ -1,6 +1,6 @@
 # GAIA Sub-Agent Mode — Qwen3-4B for all text roles, Qwen2.5-VL-3B for images
 
-name: "gaia_qwen3_subagent_test_10"
+name: "gaia_qwen3_subagent_test"
 description: "GAIA with sub-agent mode using Qwen3-4B for orchestrator and tool agents (text + vision)"
 
 slurm:
@@ -35,7 +35,6 @@ tools:
     - image_inspector
     - context_manager
   direct_tool_call: false
-  web_tool_provider: "serper"  # "serper" or "tavily"
 
 dataset:
   name: "gaia"
@@ -46,8 +45,8 @@ dataset:
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/gaia_qwen3_subagent"
+output_dir: "./experiments/results/gaia_qwen3_subagent_test"
 use_wandb: true
-wandb_project: "msc-thesis"
+wandb_project: "msc-thesis-benchmarks"
 
 cache_dir: "./cache"
