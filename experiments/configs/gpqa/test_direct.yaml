@@ -1,6 +1,6 @@
 # GPQA Diamond Direct Mode — single orchestrator model, tools execute without sub-agent LLMs
 
-name: "gpqa_diamond_qwen3_direct_test_10"
+name: "gpqa_diamond_qwen3_direct_test"
 description: "GPQA diamond split with direct tool execution using Qwen3-4B (no sub-agents), small subset for quick tests"
 
 slurm:
@@ -35,9 +35,8 @@ dataset:
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/gpqa_diamond_direct_mode_test"
+output_dir: "./experiments/results/gpqa_diamond_qwen3_direct_test"
 use_wandb: false
 wandb_project: "msc-thesis"
 
 cache_dir: "./cache"
-

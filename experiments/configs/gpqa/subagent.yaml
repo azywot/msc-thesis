@@ -1,14 +1,14 @@
-# HLE Sub-Agent Mode — Qwen3-4B for all text roles, Qwen2.5-VL-3B for images
+# GPQA Diamond Sub-Agent Mode — Qwen3-4B for all text roles, Qwen2.5-VL-3B for images (if needed)
 
-name: "hle_qwen3_subagent_test"
-description: "HLE with sub-agent mode using Qwen3-4B for orchestrator and tool agents (text + vision)"
+name: "gpqa_diamond_qwen3_subagent"
+description: "GPQA diamond split with sub-agent mode using Qwen3-4B for orchestrator and tool agents"
 
 slurm:
   partition: "gpu_h100"
-  num_gpus: 1
+  num_gpus: 2
   ntasks: 1
   cpus_per_task: 8
-  time: "01:00:00"
+  time: "14:00:00"
   conda_env: "agent_engine"
 
 models:
@@ -37,16 +37,16 @@ tools:
   direct_tool_call: false
 
 dataset:
-  name: "hle"
-  split: "test_subset_200"
+  name: "gpqa"
+  split: "diamond"
   data_dir: "./data"
-  subset_num: 10  # -1 for all
+  subset_num: -1  # -1 for all
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/hle_qwen3_subagent_test"
+output_dir: "./experiments/results/gpqa_diamond_qwen3_subagent"
 use_wandb: true
-wandb_project: "msc-thesis"
+wandb_project: "msc-thesis-benchmarks"
 
 cache_dir: "./cache"

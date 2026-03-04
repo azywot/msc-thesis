@@ -1,6 +1,6 @@
 # GPQA Diamond Sub-Agent Mode — Qwen3-4B for all text roles, Qwen2.5-VL-3B for images (if needed)
 
-name: "gpqa_diamond_qwen3_subagent_test_10"
+name: "gpqa_diamond_qwen3_subagent_test"
 description: "GPQA diamond split with sub-agent mode using Qwen3-4B for orchestrator and tool agents"
 
 slurm:
@@ -45,9 +45,8 @@ dataset:
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/gpqa_diamond_qwen3_subagent"
+output_dir: "./experiments/results/gpqa_diamond_qwen3_subagent_test"
 use_wandb: true
 wandb_project: "msc-thesis"
 
 cache_dir: "./cache"
-
