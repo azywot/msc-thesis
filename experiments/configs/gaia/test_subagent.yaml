@@ -47,6 +47,6 @@ thinking_mode: "ORCHESTRATOR_ONLY"
 
 output_dir: "./experiments/results/gaia_qwen3_subagent_test"
 use_wandb: true
-wandb_project: "msc-thesis-benchmarks"
+wandb_project: "msc-thesis"
 
 cache_dir: "./cache"

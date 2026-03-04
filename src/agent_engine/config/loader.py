@@ -126,6 +126,7 @@ def _config_to_dict(config: ExperimentConfig) -> Dict[str, Any]:
         "tools": {
             "enabled_tools": config.tools.enabled_tools,
             "direct_tool_call": config.tools.direct_tool_call,
+            "web_tool_provider": config.tools.web_tool_provider,
             "max_search_limit": config.tools.max_search_limit,
             "top_k_results": config.tools.top_k_results,
             "max_doc_len": config.tools.max_doc_len,
