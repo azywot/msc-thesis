@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from ..base import BaseDataset, DatasetExample, DatasetRegistry
+from ..base import BaseDataset, DatasetExample, DatasetRegistry, _random_subset
 from ..evaluators.metrics import evaluate_qa
 from ...utils.logging import get_logger
 
@@ -57,7 +57,7 @@ def _load_qa_jsonl(data_path: Path, dataset_name: str, subset_num: int = -1) -> 
     logger.info(f"Loaded {len(examples)} {dataset_name} examples")
 
     if subset_num > 0:
-        examples = examples[:subset_num]
+        examples = _random_subset(examples, subset_num)
         logger.info(f"Using subset of {len(examples)} examples")
 
     return examples

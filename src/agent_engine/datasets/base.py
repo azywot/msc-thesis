@@ -4,6 +4,7 @@ This module defines the core abstractions for working with different datasets
 in a unified way, with automatic registration support.
 """
 
+import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +14,21 @@ from ..config.schema import DatasetConfig
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _random_subset(examples: list, num: int) -> list:
+    """Randomly sample num examples, preserving original order.
+
+    Matches multi-agent-tools behavior: shuffle indices with the current
+    random state (seeded before dataset loading), take first num, then
+    sort to restore original dataset order.
+    """
+    if num <= 0 or num >= len(examples):
+        return examples
+    indices = list(range(len(examples)))
+    random.shuffle(indices)
+    selected = sorted(indices[:num])
+    return [examples[i] for i in selected]
 
 
 @dataclass
@@ -126,9 +142,7 @@ class BaseDataset(ABC):
             List of examples
         """
         self.load_if_needed()
-        if num < 0 or num >= len(self._examples):
-            return self._examples
-        return self._examples[:num]
+        return _random_subset(self._examples, num)
 
 
 class DatasetRegistry:

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from ..base import BaseDataset, DatasetExample, DatasetRegistry
+from ..base import BaseDataset, DatasetExample, DatasetRegistry, _random_subset
 from ..evaluators.metrics import evaluate_math
 from ...utils.logging import get_logger
 
@@ -57,7 +57,7 @@ class MATH500Dataset(BaseDataset):
         logger.info(f"Loaded {len(examples)} MATH500 examples")
 
         if self.config.subset_num > 0:
-            examples = examples[:self.config.subset_num]
+            examples = _random_subset(examples, self.config.subset_num)
 
         return examples
 
@@ -110,7 +110,7 @@ class AIMEDataset(BaseDataset):
         logger.info(f"Loaded {len(examples)} AIME examples")
 
         if self.config.subset_num > 0:
-            examples = examples[:self.config.subset_num]
+            examples = _random_subset(examples, self.config.subset_num)
 
         return examples
 
@@ -163,7 +163,7 @@ class AMCDataset(BaseDataset):
         logger.info(f"Loaded {len(examples)} AMC examples")
 
         if self.config.subset_num > 0:
-            examples = examples[:self.config.subset_num]
+            examples = _random_subset(examples, self.config.subset_num)
 
         return examples
 

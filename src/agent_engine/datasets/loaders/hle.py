@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from ..base import BaseDataset, DatasetExample, DatasetRegistry
+from ..base import BaseDataset, DatasetExample, DatasetRegistry, _random_subset
 from ..evaluators.metrics import evaluate_hle
 from ...utils.logging import get_logger
 
@@ -106,8 +106,8 @@ class HLEDataset(BaseDataset):
         logger.info(f"Loaded {len(examples)} HLE examples")
 
         # Apply subset if specified at runtime (independent of any on-disk subset)
-        if self.config.subset_num > 0 and self.config.subset_num < len(examples):
-            examples = examples[: self.config.subset_num]
+        if self.config.subset_num > 0:
+            examples = _random_subset(examples, self.config.subset_num)
             logger.info(f"Using subset of {len(examples)} examples")
 
         return examples

@@ -40,6 +40,7 @@ def set_seed(seed: int):
     # Make PyTorch deterministic (may impact performance)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    print(f"[INFO] Random seed set to {seed} for reproducibility")
 
 
 def get_seed_from_env(default: int = 0) -> int:
