@@ -310,12 +310,12 @@ class WebSearchTool(BaseTool):
         output = strip_thinking_tags(result.text)
         return output
 
-    def build_analysis_prompt(self, query: str, formatted_results: str) -> str:
+    def build_analysis_prompt(self, query: str, formatted_results: str, prev_reasoning: str = "") -> str:
         """Build the sub-agent prompt for web-page analysis.
 
-        Mirrors the multi-agent-tools get_webpage_to_reasonchain_instruction prompt.
+        Mirrors multi-agent-tools/scripts/prompts.py get_webpage_to_reasonchain_instruction().
+        prev_reasoning = extract_reasoning_context(state.full_output), passed by orchestrator.
         """
-        prev_reasoning = ""
         instruction = f"""**Task Instruction:**
 
 You are tasked with reading and analyzing web pages based on the following inputs: **Previous Reasoning Steps**, **Current Search Query**, and **Searched Web Pages**. Your objective is to extract relevant and helpful information for **Current Search Query** from the **Searched Web Pages** and seamlessly integrate this information into the **Previous Reasoning Steps** to continue reasoning for the original question.

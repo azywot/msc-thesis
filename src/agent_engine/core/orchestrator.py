@@ -17,7 +17,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 
 from ..models.base import BaseModelProvider
 from ..utils.logging import get_logger
-from ..utils.parsing import extract_answer, parse_qwen3_tool_call, strip_thinking_tags
+from ..utils.parsing import extract_answer, extract_reasoning_context, parse_qwen3_tool_call, strip_thinking_tags
 from .state import ExecutionState
 from .tool import ToolRegistry, ToolResult
 
@@ -368,7 +368,8 @@ class AgenticOrchestrator:
             return
 
         try:
-            prompt = tool.build_task_prompt(task)
+            context = self._get_reasoning_context(state)
+            prompt = tool.build_task_prompt(task, context)
             code_jobs.append(_CodeJob(state, tool_call, tool, prompt))
         except Exception as exc:
             immediate_results.append(_ImmediateResult(state, tool_call, ToolResult(success=False, output="", metadata={}, error=str(exc))))
@@ -436,7 +437,11 @@ class AgenticOrchestrator:
         analysis_cache = self._get_analysis_cache(jobs[0].tool)
 
         prompts = [
-            job.tool.build_analysis_prompt(job.query, job.tool._format_results(job.payload.get("results", []), job.query))
+            job.tool.build_analysis_prompt(
+                job.query,
+                job.tool._format_results(job.payload.get("results", []), job.query),
+                self._get_reasoning_context(job.state),
+            )
             for job in jobs
         ]
         gen_outputs = provider.generate(prompts) if provider else []
@@ -627,6 +632,33 @@ class AgenticOrchestrator:
     # ------------------------------------------------------------------ #
     # Utility                                                             #
     # ------------------------------------------------------------------ #
+
+    def _get_reasoning_context(self, state: ExecutionState) -> str:
+        """Get previous reasoning context for sub-agent prompts.
+
+        Mirrors old extract_reasoning_context(all_reasoning_steps, mind_map=question_mind_map):
+          - If context_manager exists in non-direct (GraphRAG) mode:
+              query with "Summarize the reasoning process..." (same as old safe_mind_map_query).
+              Truncate to 2000 chars, fall back to line-splitting on failure.
+          - Otherwise: line-splitting fallback (no mind_map branch).
+        """
+        cm = self.tools.get("context_manager")
+        if cm is not None and not getattr(cm, "direct_mode", True):
+            _SUMMARIZE_QUERY = (
+                "Summarize the reasoning process, be short and clear. "
+                "Keep the summary under 500 words."
+            )
+            try:
+                result = cm._execute_query_mode(_SUMMARIZE_QUERY)
+                if result.success and result.output and result.output.strip():
+                    summary = result.output.strip()
+                    if len(summary) > 2000:
+                        summary = summary[:2000]
+                    return summary
+            except Exception:
+                pass
+        # Fallback: line-splitting (mirrors old else-branch of extract_reasoning_context)
+        return extract_reasoning_context(state.full_output)
 
     def _log_qa_pair(self, state: ExecutionState) -> None:
         """Log the question/answer pair once an answer has been finalised."""

@@ -145,15 +145,19 @@ class CodeGeneratorTool(BaseTool):
 
         return self.execute_code(code)
 
-    def build_task_prompt(self, task: str) -> str:
+    def build_task_prompt(self, task: str, context: str = "") -> str:
         """Build the sub-agent LLM prompt for code generation.
+
+        Mirrors multi-agent-tools/scripts/tools/run_code.py CodeAgent.generate_code().
+        context = extract_reasoning_context(state.full_output), passed by orchestrator.
 
         This is used by both single and batched sub-agent execution.
         """
         prompt = (
             "You are a code generator. Generate ONLY executable Python code, with NO explanations, "
             "NO comments about what the code does, and NO additional text.\n\n"
-            f"Context: \n\nProblem: {task}\n\n"
+            f"Context: {context}\n\n"
+            f"Problem: {task}\n\n"
             "Requirements:\n"
             "- Output ONLY the Python code\n"
             "- The code must be executable as a standalone script\n"

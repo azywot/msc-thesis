@@ -98,6 +98,50 @@ def extract_answer(output: str, mode: str = 'gen') -> str:
     return extracted_text
 
 
+def extract_reasoning_context(full_output: str) -> str:
+    """Extract truncated previous reasoning context from accumulated output.
+
+    Mirrors multi-agent-tools/scripts/agentic_reason/utils.py extract_reasoning_context()
+    (no mind_map branch — used for the sub-agent web search and code generator prompts).
+
+    Algorithm (matches old exactly):
+      1. Split full_output by double-newlines converted to single newlines.
+      2. Label each line "Step i+1: ...".
+      3. If ≤5 paragraph chunks: keep all.
+         Otherwise: keep first + last-4 + any chunk containing a tool marker,
+         inserting "..." for skipped chunks.
+    """
+    if not full_output or not full_output.strip():
+        return ""
+
+    # Mirrors old: all_reasoning_steps = seq['output'].replace('\n\n', '\n').split('\n')
+    all_reasoning_steps = full_output.replace('\n\n', '\n').split('\n')
+
+    meaningful_steps = [s for s in all_reasoning_steps if s and s.strip()]
+    if not meaningful_steps:
+        return ""
+
+    truncated = ""
+    for i, step in enumerate(all_reasoning_steps):
+        truncated += f"Step {i + 1}: {step}\n\n"
+
+    prev_steps = truncated.split('\n\n')
+    if len(prev_steps) <= 5:
+        truncated = '\n\n'.join(prev_steps)
+    else:
+        truncated = ''
+        for i, step in enumerate(prev_steps):
+            # Keep first step, last 4 steps, and any step with tool markers.
+            # Old checked BEGIN_SEARCH_QUERY/BEGIN_SEARCH_RESULT; Qwen3 equivalent:
+            if i == 0 or i >= len(prev_steps) - 4 or '<tool_call>' in step or '<tool_response>' in step:
+                truncated += step + '\n\n'
+            else:
+                if truncated[-len('\n\n...\n\n'):] != '\n\n...\n\n':
+                    truncated += '...\n\n'
+
+    return truncated.strip('\n')
+
+
 def strip_thinking_tags(text: str) -> str:
     """Remove thinking tags from text.
 
