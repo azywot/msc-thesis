@@ -65,7 +65,7 @@ models:
     path_or_id: "Qwen/Qwen3-4B"
     role: "web_search"
     max_model_len: 32768
-    max_tokens: 4096
+    max_tokens: 8192
     temperature: 0.7
     top_p: 0.8
     top_k: 20
@@ -77,11 +77,11 @@ models:
     path_or_id: "Qwen/Qwen3-4B"
     role: "code_generator"
     max_model_len: 32768
-    max_tokens: 4096
-    temperature: 0.7
-    top_p: 0.8
-    top_k: 20
-    repetition_penalty: 1.05
+    max_tokens: 2048
+    temperature: 0.0   # greedy — matches multi-agent-tools run_code.py hardcoded greedy
+    top_p: 1.0
+    top_k: -1
+    repetition_penalty: 1.0
 
   text_inspector:
     name: "Qwen3-4B"
@@ -89,7 +89,7 @@ models:
     path_or_id: "Qwen/Qwen3-4B"
     role: "text_inspector"
     max_model_len: 32768
-    max_tokens: 4096
+    max_tokens: 8192
     temperature: 0.7
     top_p: 0.8
     top_k: 20

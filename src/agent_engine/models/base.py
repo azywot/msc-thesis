@@ -25,6 +25,33 @@ class ModelFamily(Enum):
 # Families whose models natively support extended <think> output.
 _THINKING_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ, ModelFamily.DEEPSEEK})
 
+# Base generation defaults — match multi-agent-tools CLI defaults.
+_BASE_GEN_DEFAULTS: Dict[str, Any] = {
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 20,
+    "max_tokens": 8192,
+    "repetition_penalty": 1.05,
+}
+
+# Role-specific overrides applied on top of _BASE_GEN_DEFAULTS when the
+# field is not explicitly set (i.e. still None).  Mirrors multi-agent-tools
+# hardcoded per-tool SamplingParams values.
+_ROLE_GEN_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    # run_code.py always uses greedy decoding (temp=0, top_p=1, top_k=-1),
+    # max_tokens=2048, no repetition penalty.
+    "code_generator": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "top_k": -1,
+        "max_tokens": 2048,
+        "repetition_penalty": 1.0,
+    },
+    # search and text inspector sub-agents receive max_tokens=8192 from CLI.
+    "web_search":     {"max_tokens": 8192},
+    "text_inspector": {"max_tokens": 8192},
+}
+
 
 @dataclass
 class ModelConfig:
@@ -32,20 +59,24 @@ class ModelConfig:
 
     This dataclass encapsulates all model-related configuration including
     generation parameters, resource management, and capability flags.
+
+    Generation params default to None so that __post_init__ can distinguish
+    "explicitly set by user" from "not set" and apply the correct role-specific
+    default (matching multi-agent-tools hardcoded per-tool values).
     """
     name: str                          # Human-readable name
     family: ModelFamily                # Explicit family (no string matching)
     path_or_id: str                    # Local path or API model ID
     role: str                          # "orchestrator", "web_search", "code_generator", etc.
 
-    # Generation params — defaults match multi-agent-tools CLI defaults:
-    #   temperature=0.7, top_p=0.8, top_k=20, repetition_penalty=1.1
     max_model_len: int = 32768
-    max_tokens: int = 8192
-    temperature: float = 0.7
-    top_p: float = 0.8
-    top_k: int = 20
-    repetition_penalty: float = 1.1
+
+    # Generation params: None → resolved per-role in __post_init__.
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    repetition_penalty: Optional[float] = None
 
     # Derived from family in __post_init__; set explicitly in YAML to override.
     supports_thinking: Optional[bool] = None
@@ -63,6 +94,20 @@ class ModelConfig:
             self.family = ModelFamily(self.family)
         if self.supports_thinking is None:
             self.supports_thinking = self.family in _THINKING_FAMILIES
+
+        # Resolve generation params: role-specific defaults override base defaults,
+        # but any value explicitly set in the YAML (non-None) is kept as-is.
+        defaults = {**_BASE_GEN_DEFAULTS, **_ROLE_GEN_DEFAULTS.get(self.role, {})}
+        if self.max_tokens is None:
+            self.max_tokens = defaults["max_tokens"]
+        if self.temperature is None:
+            self.temperature = defaults["temperature"]
+        if self.top_p is None:
+            self.top_p = defaults["top_p"]
+        if self.top_k is None:
+            self.top_k = defaults["top_k"]
+        if self.repetition_penalty is None:
+            self.repetition_penalty = defaults["repetition_penalty"]
 
 
 @dataclass
