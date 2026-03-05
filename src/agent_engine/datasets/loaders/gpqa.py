@@ -64,13 +64,15 @@ class GPQADataset(BaseDataset):
                     answer_text = str(raw_answer_text).strip() if isinstance(raw_answer_text, str) and raw_answer_text.strip() else None
 
 
-                    # Format question with choices
+                    # Format question with choices.
+                    # Matches old prompt_manager.py: no "Choices:" header, just "A. choice" lines.
                     question_text = data["Question"]
                     if choices:
-                        question_text += "\n\nChoices:"
+                        formatted_choices = []
                         for i, choice in enumerate(choices):
                             letter = chr(ord("A") + i)
-                            question_text += f"\n{letter}. {choice}"
+                            formatted_choices.append(f"{letter}. {str(choice).strip()}")
+                        question_text = f"{question_text.strip()}\n\n" + "\n".join(formatted_choices)
 
                     example = DatasetExample(
                         question_id=idx,

@@ -1,7 +1,6 @@
 """Parsing utilities for Qwen3 tool calls and answers.
 
-This module provides utilities to parse tool calls from model outputs and
-extract final answers from responses.
+Matches multi-agent-tools/scripts/evaluate.py extract_answer() exactly.
 """
 
 import json
@@ -21,71 +20,82 @@ def parse_qwen3_tool_call(text: str) -> Optional[Dict[str, Any]]:
     Returns:
         Dictionary with 'name' and 'arguments' keys, or None if no tool call found
     """
-    # Look for <tool_call>...</tool_call> pattern
     pattern = r'<tool_call>(.*?)</tool_call>'
     matches = re.findall(pattern, text, re.DOTALL)
 
     if not matches:
         return None
 
-    # Parse the JSON inside the tool_call tags
     tool_call_json = matches[-1].strip()  # Take the last tool call if multiple
 
     try:
         tool_call = json.loads(tool_call_json)
         if isinstance(tool_call, dict) and "name" in tool_call:
-            # Ensure arguments exist
             if "arguments" not in tool_call:
                 tool_call["arguments"] = {}
             return tool_call
     except json.JSONDecodeError:
-        # Invalid JSON in tool call
         return None
 
     return None
 
 
-def extract_answer(text: str) -> Optional[str]:
+def extract_answer(output: str, mode: str = 'gen') -> str:
     """Extract final answer from model output.
 
-    Looks for patterns like:
-    - "\\boxed{answer}" (LaTeX format from multi-agent-tools)
-    - "Final Answer: <answer>"
-    - "Answer: <answer>"
-    - "The answer is <answer>"
+    Exactly matches multi-agent-tools/scripts/evaluate.py extract_answer().
 
     Args:
-        text: Model output text
+        output: Full accumulated model output (all turns + tool responses)
+        mode: Extraction mode: 'gen' (default), 'choose' (MC), 'qa' (open QA)
 
     Returns:
-        Extracted answer string or None if not found
+        Extracted answer string (empty string if not found)
     """
-    # Pattern 0: LaTeX boxed format (priority - matches multi-agent-tools)
-    # Look for \boxed{answer} or \\boxed{answer}
-    boxed_pattern = r'\\+boxed\{([^}]+)\}'
-    match = re.search(boxed_pattern, text, re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
+    extracted_text = ''
 
-    # Pattern 1: "Final Answer: <answer>"
-    pattern1 = r'Final Answer:\s*(.+?)(?:\n|$)'
-    match = re.search(pattern1, text, re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
+    # Pre-processing: strip thinking blocks.
+    # Matches old: output.split('</think>')[-1]
+    think_end_pattern = r'</think>'
+    if think_end_pattern in output:
+        output = output.split(think_end_pattern)[-1]
 
-    # Pattern 2: "Answer: <answer>"
-    pattern2 = r'(?<!Final )Answer:\s*(.+?)(?:\n|$)'
-    match = re.search(pattern2, text, re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
+    # Try \boxed{...} first (greedy, last match — mirrors old)
+    pattern = r'\\boxed\{(.*)\}'
+    matches = re.findall(pattern, output)
+    if matches:
+        extracted_text = matches[-1]  # Take the last match
+        if mode in ['choose', 'qa']:
+            # Strip \text{...} wrapper inside boxed content
+            inner_pattern = r'\\text\{(.*)\}'
+            inner_matches = re.findall(inner_pattern, extracted_text)
+            if inner_matches:
+                extracted_text = inner_matches[-1]
+            extracted_text = extracted_text.strip("()")
+    else:
+        # Fallback: first non-empty line not starting with a known prefix
+        lines = output.strip().split('\n')
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith(('Assistant:', 'Answer:', 'Final Answer:', '**')):
+                extracted_text = line.rstrip('.,;:!?')
+                break
+        # If still empty, try splitting on "Assistant:" or take last chunk
+        if not extracted_text:
+            remainder = output.strip()
+            if remainder:
+                for prefix in ['Assistant:', 'Answer:', 'Final Answer:']:
+                    if remainder.startswith(prefix):
+                        remainder = remainder[len(prefix):].strip()
+                        break
+                first_line = remainder.split('\n')[0].strip()
+                if first_line:
+                    extracted_text = first_line.rstrip('.,;:!?')
+                elif remainder:
+                    extracted_text = remainder[-100:].strip().rstrip('.,;:!?')
 
-    # Pattern 3: "The answer is <answer>"
-    pattern3 = r'The answer is[:\s]+(.+?)(?:\n|$)'
-    match = re.search(pattern3, text, re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-
-    return None
+    print(f">>> Extracted text: {extracted_text}")
+    return extracted_text
 
 
 def strip_thinking_tags(text: str) -> str:
@@ -104,5 +114,3 @@ def strip_thinking_tags(text: str) -> str:
     if not text:
         return text
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
-
-

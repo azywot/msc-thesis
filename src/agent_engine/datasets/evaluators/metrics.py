@@ -258,6 +258,8 @@ def evaluate_math(prediction: str, ground_truth: str) -> Dict[str, Any]:
 def evaluate_gpqa(prediction: str, ground_truth: str, choices: List[str]) -> Dict[str, Any]:
     return evaluate_answer(prediction, ground_truth, choices=choices)
 
+def evaluate_hle(prediction: str, ground_truth: str) -> Dict[str, Any]:
+    return evaluate_answer(prediction, ground_truth)
 
 def evaluate_qa(prediction: str, ground_truth: str) -> Dict[str, Any]:
     return evaluate_answer(prediction, ground_truth)

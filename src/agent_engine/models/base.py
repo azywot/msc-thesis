@@ -38,10 +38,11 @@ class ModelConfig:
     path_or_id: str                    # Local path or API model ID
     role: str                          # "orchestrator", "web_search", "code_generator", etc.
 
-    # Generation params (defaults: temperature=0 for reproducibility)
+    # Generation params — defaults match multi-agent-tools CLI defaults:
+    #   temperature=0.7, top_p=0.8, top_k=20, repetition_penalty=1.1
     max_model_len: int = 32768
     max_tokens: int = 8192
-    temperature: float = 0.0
+    temperature: float = 0.7
     top_p: float = 0.8
     top_k: int = 20
     repetition_penalty: float = 1.1

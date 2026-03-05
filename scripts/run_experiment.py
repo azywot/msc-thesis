@@ -297,7 +297,7 @@ def run_experiment(args):
     logger.info("="*80)
 
     try:
-        # Capture the common system prompt once for this run (same for all questions).
+        # Build instruction text once (same for all questions in this run).
         tool_schemas = tools.get_all_schemas()
         system_prompt_for_config = prompt_builder.build_system_prompt(
             dataset_name=config.dataset.name,
@@ -306,6 +306,10 @@ def run_experiment(args):
             direct_tool_call=config.tools.direct_tool_call,
         )
 
+        # Determine answer extraction mode for this dataset (mirrors old mode routing).
+        extract_mode = prompt_builder.get_extract_mode(config.dataset.name)
+        logger.info(f"Answer extraction mode: {extract_mode}")
+
         orchestrator = AgenticOrchestrator(
             model_provider=orchestrator_model,
             tool_registry=tools,
@@ -313,6 +317,7 @@ def run_experiment(args):
             tool_limits={'web_search': config.tools.max_search_limit},
             use_thinking=config.use_orchestrator_thinking(),
             cache_manager=cache_manager,
+            extract_mode=extract_mode,
         )
 
         raw_batch = getattr(config, "batch_size", -1) or -1
@@ -325,12 +330,19 @@ def run_experiment(args):
         for base_idx, batch in _chunks(examples, batch_size):
             logger.info(f"\nProcessing batch {base_idx + 1}-{base_idx + len(batch)} / {len(examples)}")
 
-            # Reuse the common system prompt for all questions in the batch
+            # Build per-question user content: instruction merged into user message.
+            # Mirrors old: prompt_data = [{"role": "user", "content": instruction + user_prompt}]
+            # Old instruction functions end with "\n\n", so we preserve that separator here.
+            merged_questions = [
+                system_prompt_for_config + "\n\n" + prompt_builder.build_user_prompt(config.dataset.name, ex.question)
+                for ex in batch
+            ]
+            # system_prompts kept for API compat but ignored by orchestrator
             system_prompts = [system_prompt_for_config] * len(batch)
 
             try:
                 states = orchestrator.run_batch(
-                    questions=[ex.question for ex in batch],
+                    questions=merged_questions,
                     question_ids=[ex.question_id for ex in batch],
                     system_prompts=system_prompts,
                     attachments=[ex.get_attachments() for ex in batch],

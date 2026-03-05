@@ -2,6 +2,13 @@
 
 This module implements the main reasoning loop that coordinates LLM generation
 with tool execution.
+
+Matches multi-agent-tools/scripts/run_agentic_reason.py behavior exactly:
+- Single user message (instruction merged into user role, no system role)
+- Flat growing prompt (apply_chat_template once, then append)
+- full_output accumulates all model output + tool responses (mirrors seq['output'])
+- extract_answer called on full_output (full conversation), not just last turn
+- Tool response format: "\n\n<tool_response>\n{result}\n</tool_response>\n\n"
 """
 
 import os
@@ -17,7 +24,6 @@ from .tool import ToolRegistry, ToolResult
 logger = get_logger(__name__)
 
 # Tools whose pre-call reasoning is indexed into the context manager graph.
-# Mirrors MAT: reasoning before search, code, and context_manager calls is inserted.
 _CONTEXT_MANAGER_INDEXED_TOOLS = frozenset({"web_search", "code_generator", "context_manager"})
 
 _IMAGE_EXTS = frozenset[str]({".jpg", ".jpeg", ".png"})
@@ -26,6 +32,16 @@ _TEXT_EXTS = frozenset[str]({
     ".csv", ".tsv", ".yaml", ".yml", ".docx", ".xlsx",
     ".jsonld", ".parquet", ".pdf", ".pdb", ".pptx", ".py",
 })
+
+
+def _format_tool_response(result: str) -> str:
+    """Format a tool response matching old format_qwen3_tool_response().
+
+    Matches multi-agent-tools/scripts/agentic_reason/utils.py:
+        f"\n\n{TOOL_RESPONSE_START}\n{result}\n{TOOL_RESPONSE_END}\n\n"
+    where TOOL_RESPONSE_START = "<tool_response>", TOOL_RESPONSE_END = "</tool_response>"
+    """
+    return f"\n\n<tool_response>\n{result}\n</tool_response>\n\n"
 
 
 # ---------------------------------------------------------------------------
@@ -60,12 +76,11 @@ class _ImmediateResult(NamedTuple):
 class AgenticOrchestrator:
     """Coordinates LLM reasoning with tool use.
 
-    The orchestrator manages the main agentic reasoning loop:
-    1. Generate next step using the model
-    2. Parse output for tool calls
-    3. Execute tools if needed
-    4. Update conversation history
-    5. Repeat until finished or max turns reached
+    Matches multi-agent-tools behavior exactly:
+    - Initial prompt: single user message (instruction + user_prompt merged, no system role)
+    - Flat growing prompt across turns
+    - Answer extracted from full accumulated output (full_output), not just last turn
+    - Extraction mode passed from dataset context
     """
 
     def __init__(
@@ -75,7 +90,8 @@ class AgenticOrchestrator:
         max_turns: int = 15,
         tool_limits: Optional[Dict[str, int]] = None,
         use_thinking: bool = False,
-        cache_manager=None,  # Optional: persist cache after each URL fetch (for parallel runs)
+        cache_manager=None,
+        extract_mode: str = 'gen',  # 'gen', 'qa', or 'choose' — mirrors old dataset mode routing
     ):
         self.model = model_provider
         self.tools = tool_registry
@@ -83,9 +99,11 @@ class AgenticOrchestrator:
         self.max_turns = max_turns
         self.tool_limits = tool_limits or {"web_search": 10}
         self.use_thinking = use_thinking and model_provider.config.supports_thinking
+        self.extract_mode = extract_mode
 
         logger.info(f"Orchestrator initialized with {len(self.tools)} tools")
         logger.info(f"Thinking mode: {'enabled' if self.use_thinking else 'disabled'}")
+        logger.info(f"Extract mode: {self.extract_mode}")
 
     # ------------------------------------------------------------------ #
     # Public interface                                                     #
@@ -98,14 +116,24 @@ class AgenticOrchestrator:
         system_prompt: str,
         attachments: Optional[List[str]] = None,
     ) -> ExecutionState:
-        """Execute agentic reasoning loop for a single question."""
+        """Execute agentic reasoning loop for a single question.
+
+        Args:
+            question: Pre-formatted user content (instruction already merged in by caller).
+                      Mirrors old: instruction + get_task_instruction_openqa(question)
+            question_id: Unique question identifier.
+            system_prompt: Ignored — kept for API compatibility. Content should already
+                           be merged into the `question` parameter by the caller.
+            attachments: Optional file paths for inspector tools.
+        """
         state = ExecutionState(
             question_id=question_id,
             question=question,
-            messages=self._build_initial_messages(question, system_prompt, attachments),
+            messages=self._build_initial_messages(question, attachments),
             attachments=attachments,
         )
 
+        state.prompt = self.model.apply_chat_template(state.messages, use_thinking=self.use_thinking)
         self._init_context_manager(state)
         logger.info(f"Starting execution for question {question_id}")
 
@@ -114,8 +142,7 @@ class AgenticOrchestrator:
             logger.info(f"Turn {state.turn}/{self.max_turns}")
 
             try:
-                prompt = self.model.apply_chat_template(state.messages, use_thinking=self.use_thinking)
-                gen_result = self.model.generate([prompt])[0]
+                gen_result = self.model.generate([state.prompt])[0]
                 state.current_output = gen_result.text
             except Exception as e:
                 logger.exception("Generation error")
@@ -129,19 +156,32 @@ class AgenticOrchestrator:
                 state.add_message("assistant", gen_result.text)
                 clean_output = strip_thinking_tags(tool_result.output or "")
                 state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
+                append_text = _format_tool_response(clean_output)
+                state.prompt += gen_result.text
+                state.prompt += append_text
+                # Accumulate full output (mirrors old seq['output'])
+                state.full_output += gen_result.text
+                state.full_output += append_text
                 state.tool_calls.append(tool_call)
                 state.increment_tool_count(tool_call["name"])
                 logger.info(f"Tool '{tool_call['name']}' executed. Success: {tool_result.success}")
             else:
                 state.add_message("assistant", gen_result.text)
+                state.prompt += gen_result.text
+                # Accumulate last generation (no tool response)
+                state.full_output += gen_result.text
                 state.finished = True
-                state.answer = extract_answer(gen_result.text)
+                # Extract from FULL conversation output (mirrors old seq['output'])
+                state.answer = extract_answer(state.full_output, mode=self.extract_mode)
                 logger.info(f"Execution finished. Answer: {state.answer}")
+                self._log_qa_pair(state)
 
         if not state.finished:
             logger.warning(f"Max turns ({self.max_turns}) reached without finishing")
             state.metadata["max_turns_reached"] = True
-            state.answer = extract_answer(state.current_output)
+            # Extract from full output (mirrors old seq['output'])
+            state.answer = extract_answer(state.full_output, mode=self.extract_mode)
+            self._log_qa_pair(state)
 
         return state
 
@@ -155,9 +195,11 @@ class AgenticOrchestrator:
     ) -> List[ExecutionState]:
         """Execute agentic reasoning for a batch of questions (batched generation).
 
-        At each turn all unfinished states are generated together in a single
-        model.generate() call.  LLM-backed tool sub-agents (web_search,
-        code_generator) are also batched within each turn.
+        Args:
+            questions: Pre-formatted user content per question (instruction already merged).
+            question_ids: Unique identifiers.
+            system_prompts: Ignored — kept for API compatibility.
+            attachments: Optional file paths for inspector tools.
         """
         if not (len(questions) == len(question_ids) == len(system_prompts)):
             raise ValueError("questions, question_ids, system_prompts must have the same length")
@@ -170,13 +212,14 @@ class AgenticOrchestrator:
             ExecutionState(
                 question_id=qid,
                 question=q,
-                messages=self._build_initial_messages(q, sp, att),
+                messages=self._build_initial_messages(q, att),
                 attachments=att,
             )
-            for q, qid, sp, att in zip(questions, question_ids, system_prompts, resolved_attachments)
+            for q, qid, att in zip(questions, question_ids, resolved_attachments)
         ]
 
         for s in states:
+            s.prompt = self.model.apply_chat_template(s.messages, use_thinking=self.use_thinking)
             self._init_context_manager(s)
 
         logger.info(f"Starting batched execution for {len(states)} questions")
@@ -191,8 +234,9 @@ class AgenticOrchestrator:
             if not s.finished:
                 logger.warning(f"Max turns ({self.max_turns}) reached for question {s.question_id}")
                 s.metadata["max_turns_reached"] = True
-                s.answer = extract_answer(s.current_output)
+                s.answer = extract_answer(s.full_output, mode=self.extract_mode)
                 s.finished = True
+                self._log_qa_pair(s)
 
         return states
 
@@ -211,10 +255,7 @@ class AgenticOrchestrator:
         for s in active:
             s.turn += 1
 
-        prompts = [
-            self.model.apply_chat_template(s.messages, use_thinking=self.use_thinking)
-            for s in active
-        ]
+        prompts = [s.prompt for s in active]
 
         try:
             gen_results = self.model.generate(prompts)
@@ -235,11 +276,16 @@ class AgenticOrchestrator:
 
             if tool_call:
                 s.add_message("assistant", gen_result.text)
+                s.prompt += gen_result.text
+                s.full_output += gen_result.text
                 self._classify_tool_call(s, tool_call, gen_result.text, web_jobs, code_jobs, immediate_results)
             else:
                 s.add_message("assistant", gen_result.text)
+                s.prompt += gen_result.text
+                s.full_output += gen_result.text
                 s.finished = True
-                s.answer = extract_answer(gen_result.text)
+                s.answer = extract_answer(s.full_output, mode=self.extract_mode)
+                self._log_qa_pair(s)
 
         self._apply_immediate_results(immediate_results)
         if web_jobs:
@@ -261,8 +307,6 @@ class AgenticOrchestrator:
         tool = self.tools.get(tool_name)
         args = tool_call.get("arguments") or {}
 
-        # Index reasoning into the context manager graph before tool execution.
-        # Handles web_search, code_generator, and context_manager (mirrors MAT).
         self._index_reasoning_in_context_manager(output_text, tool_name, state)
 
         if tool and tool_name == "web_search" and not getattr(tool, "direct_mode", True):
@@ -334,6 +378,9 @@ class AgenticOrchestrator:
         for item in results:
             clean_output = strip_thinking_tags(item.result.output or "")
             item.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
+            append_text = _format_tool_response(clean_output)
+            item.state.prompt += append_text
+            item.state.full_output += append_text
             item.state.tool_calls.append(item.tool_call)
             item.state.increment_tool_count(item.tool_call["name"])
 
@@ -398,6 +445,9 @@ class AgenticOrchestrator:
             text = strip_thinking_tags(out.text)
             analysis_cache[job.query] = text
             job.state.add_message("tool", f"<tool_response>\n{text}\n</tool_response>")
+            append_text = _format_tool_response(text)
+            job.state.prompt += append_text
+            job.state.full_output += append_text
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
 
@@ -430,6 +480,9 @@ class AgenticOrchestrator:
                 tr = ToolResult(success=False, output="", metadata={}, error=str(exc))
             clean_output = strip_thinking_tags(tr.output or "")
             job.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
+            append_text = _format_tool_response(clean_output)
+            job.state.prompt += append_text
+            job.state.full_output += append_text
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
 
@@ -439,19 +492,22 @@ class AgenticOrchestrator:
 
     def _build_initial_messages(
         self,
-        question: str,
-        system_prompt: str,
+        user_content: str,
         attachments: Optional[List[str]] = None,
     ) -> List[Dict[str, str]]:
-        """Build the initial [system, user] message pair."""
-        user_content = question
+        """Build the initial message list as a single user message.
+
+        Matches old multi-agent-tools behavior: everything (instruction + question)
+        goes into the user role, no system role. The caller (run_experiment.py) is
+        responsible for combining instruction + user_prompt before passing here.
+        """
+        content = user_content
         for att_path in (attachments or []):
             if att_path:
-                user_content += self._format_attachment_note(att_path)
+                content += self._format_attachment_note(att_path)
 
         return [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
+            {"role": "user", "content": content},
         ]
 
     def _format_attachment_note(self, att_path: str) -> str:
@@ -510,11 +566,7 @@ class AgenticOrchestrator:
         state: ExecutionState,
         arguments: Dict[str, Any],
     ) -> Optional[str]:
-        """Inject `full_file_path` for file-inspector tools.
-
-        Returns an error message string if the required attachment is missing,
-        or None on success.
-        """
+        """Inject `full_file_path` for file-inspector tools."""
         if tool_name == "image_inspector":
             path = self._get_first_attachment_with_exts(state, _IMAGE_EXTS)
             if not path:
@@ -553,7 +605,7 @@ class AgenticOrchestrator:
     # ------------------------------------------------------------------ #
 
     def _init_context_manager(self, state: ExecutionState) -> None:
-        """Set the active question context on the context manager tool (both modes)."""
+        """Set the active question context on the context manager tool."""
         tool = self.tools.get("context_manager")
         if tool is not None:
             tool.set_current_question(state.question_id)
@@ -561,12 +613,7 @@ class AgenticOrchestrator:
     def _index_reasoning_in_context_manager(
         self, output_text: str, tool_name: str, state: ExecutionState
     ) -> None:
-        """Index pre-tool reasoning into the context manager graph (non-direct mode).
-
-        Mirrors MAT: reasoning produced before web_search, code_generator, and
-        context_manager calls is inserted into the GraphRAG knowledge base so the
-        context_manager query has richer context to draw from.
-        """
+        """Index pre-tool reasoning into the context manager graph."""
         if tool_name not in _CONTEXT_MANAGER_INDEXED_TOOLS:
             return
         tool = self.tools.get("context_manager")
@@ -580,6 +627,15 @@ class AgenticOrchestrator:
     # ------------------------------------------------------------------ #
     # Utility                                                             #
     # ------------------------------------------------------------------ #
+
+    def _log_qa_pair(self, state: ExecutionState) -> None:
+        """Log the question/answer pair once an answer has been finalised."""
+        logger.info(
+            "Q/A pair [id=%s]\nQ: %s\nA: %s",
+            state.question_id,
+            state.question,
+            state.answer,
+        )
 
     @staticmethod
     def _get_analysis_cache(tool: Any) -> Dict[str, str]:

@@ -1,17 +1,16 @@
 """Dataset evaluators and metrics."""
 
 from .metrics import (
-    exact_match,
-    normalized_match,
-    contains_match,
-    numeric_match,
-    token_f1,
+    normalize_answer,
+    strip_latex_wrappers,
+    is_math_answer,
     evaluate_with_math_verify,
     evaluate_answer,
     evaluate_gaia,
     evaluate_gpqa,
     evaluate_math,
     evaluate_qa,
+    evaluate_hle,
 )
 from .gaia_scorer import (
     question_scorer,
@@ -24,17 +23,16 @@ from .gaia_scorer import (
 )
 
 __all__ = [
-    "exact_match",
-    "normalized_match",
-    "contains_match",
-    "numeric_match",
-    "token_f1",
+    "normalize_answer",
+    "strip_latex_wrappers",
+    "is_math_answer",
     "evaluate_with_math_verify",
     "evaluate_answer",
     "evaluate_gaia",
     "evaluate_gpqa",
     "evaluate_math",
     "evaluate_qa",
+    "evaluate_hle",
     "question_scorer",
     "normalize_str",
     "normalize_number_str",

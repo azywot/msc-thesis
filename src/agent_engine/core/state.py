@@ -35,7 +35,9 @@ class ExecutionState:
 
     # Conversation state
     messages: List[Dict[str, str]] = field(default_factory=list)
+    prompt: str = ""  # flat growing prompt string (old-style: apply_chat_template once, then append)
     current_output: str = ""
+    full_output: str = ""  # accumulated model outputs + tool responses (mirrors old seq['output'])
 
     # Execution tracking
     turn: int = 0
@@ -95,7 +97,9 @@ class ExecutionState:
             "question_id": self.question_id,
             "question": self.question,
             "messages": self.messages,
+            "prompt": self.prompt,
             "current_output": self.current_output,
+            "full_output": self.full_output,
             "turn": self.turn,
             "finished": self.finished,
             "answer": self.answer,
@@ -115,4 +119,7 @@ class ExecutionState:
         Returns:
             ExecutionState instance
         """
-        return cls(**data)
+        # Drop unknown keys for forward-compat; provide defaults for new fields.
+        known = set(cls.__dataclass_fields__.keys())
+        filtered = {k: v for k, v in data.items() if k in known}
+        return cls(**filtered)

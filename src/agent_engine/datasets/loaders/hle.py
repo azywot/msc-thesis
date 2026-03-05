@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from ..base import BaseDataset, DatasetExample, DatasetRegistry
-from ..evaluators.metrics import evaluate_qa
+from ..evaluators.metrics import evaluate_hle
 from ...utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -118,8 +118,8 @@ class HLEDataset(BaseDataset):
         ground_truth: str,
         metadata: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Evaluate HLE prediction using unified QA metrics."""
-        result = evaluate_qa(prediction, ground_truth)
+        """Evaluate HLE prediction using 'gen' mode (same as old)."""
+        result = evaluate_hle(prediction, ground_truth)
         # Treat HLE's category as the "level" field for stratified metrics.
         result["level"] = metadata.get("level", metadata.get("category", "unknown"))
         return result

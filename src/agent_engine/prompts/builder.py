@@ -1,7 +1,17 @@
 """Prompt builder for constructing prompts from YAML templates.
 
-This module provides a clean way to build prompts from templates,
-separating prompt content from code.
+Matches multi-agent-tools/scripts/prompts.py and prompt_manager.py behavior exactly:
+- System prompt = instruction (tools + example + reminders)
+- User prompt  = dataset-specific task wrapper (mirrors get_task_instruction_*())
+- Callers merge instruction + user_prompt into a single user message (no system role)
+
+Dataset → template routing:
+  gaia, hle                              → gaia.yaml   (singleqa)
+  nq, triviaqa                           → gaia.yaml   (singleqa)
+  hotpotqa, musique, bamboogle, 2wiki    → multiqa.yaml
+  math500, aime, amc                     → math.yaml
+  gpqa                                   → gpqa.yaml
+  everything else                        → base.yaml   (fallback)
 """
 
 import json
@@ -14,17 +24,42 @@ from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Single-QA datasets (use gaia/singleqa template)
+_SINGLEQA_DATASETS = frozenset({"gaia", "hle", "nq", "triviaqa"})
+
+# Multi-hop QA datasets
+_MULTIQA_DATASETS = frozenset({"hotpotqa", "musique", "bamboogle", "2wiki", "2wikimultihopqa"})
+
+# Math datasets
+_MATH_DATASETS = frozenset({"math500", "aime", "amc"})
+
+# Extract-mode mapping: mirrors old evaluate_predictions() mode parameter
+DATASET_EXTRACT_MODES: Dict[str, str] = {
+    # 'gen' mode: GAIA, HLE, math
+    "gaia": "gen",
+    "hle": "gen",
+    "math500": "gen",
+    "aime": "gen",
+    "amc": "gen",
+    # 'choose' mode: GPQA
+    "gpqa": "choose",
+    "medmcqa": "choose",
+    "pubhealth": "choose",
+    # 'qa' mode: open QA datasets
+    "nq": "qa",
+    "triviaqa": "qa",
+    "hotpotqa": "qa",
+    "musique": "qa",
+    "bamboogle": "qa",
+    "2wiki": "qa",
+    "2wikimultihopqa": "qa",
+}
+
 
 class PromptBuilder:
     """Builds prompts from YAML templates."""
 
     def __init__(self, template_dir: Optional[Path] = None):
-        """Initialize prompt builder.
-
-        Args:
-            template_dir: Directory containing YAML templates
-                         (defaults to templates/ subdirectory)
-        """
         if template_dir is None:
             template_dir = Path(__file__).parent / "templates"
 
@@ -32,17 +67,7 @@ class PromptBuilder:
         self._templates: Dict[str, Dict[str, Any]] = {}
 
     def load_template(self, name: str) -> Dict[str, Any]:
-        """Load a template from YAML file.
-
-        Args:
-            name: Template name (without .yaml extension)
-
-        Returns:
-            Template dictionary
-
-        Raises:
-            FileNotFoundError: If template file not found
-        """
+        """Load a template from YAML file."""
         if name in self._templates:
             return self._templates[name]
 
@@ -56,8 +81,26 @@ class PromptBuilder:
 
         self._templates[name] = template
         logger.debug(f"Loaded template: {name}")
-
         return template
+
+    def _resolve_template_name(self, dataset_name: str) -> str:
+        """Map dataset name to template file name.
+
+        Mirrors old prompt_manager.py routing:
+          nq/triviaqa/gaia/hle   → gaia   (singleqa)
+          hotpotqa/musique/…     → multiqa
+          math500/aime/amc       → math
+          gpqa                   → gpqa
+          else                   → base
+        """
+        dn = dataset_name.lower()
+        if dn in _SINGLEQA_DATASETS:
+            return "gaia"
+        if dn in _MULTIQA_DATASETS:
+            return "multiqa"
+        if dn in _MATH_DATASETS:
+            return "math"
+        return dn  # will fall back to base if file not found
 
     def build_system_prompt(
         self,
@@ -66,19 +109,17 @@ class PromptBuilder:
         max_search_limit: int = 10,
         direct_tool_call: bool = True
     ) -> str:
-        """Build system prompt with tools and instructions."""
-        try:
-            # GAIA and HLE share the same single‑QA prompt template.
-            template_name = dataset_name
-            if dataset_name.lower() in ("gaia", "hle"):
-                template_name = "gaia"
+        """Build instruction text (system prompt portion) with tools and examples.
 
+        Section order mirrors MAT: base_instruction → tools → example → final_instructions
+        """
+        template_name = self._resolve_template_name(dataset_name)
+        try:
             template = self.load_template(template_name)
         except FileNotFoundError:
-            logger.warning(f"Template '{dataset_name}' not found, using base template")
+            logger.warning(f"Template '{template_name}' not found, using base template")
             template = self.load_template("base")
 
-        # Section order mirrors MAT: base_instruction → tools → example → final_instructions
         sections = []
 
         if "base_instruction" in template:
@@ -95,6 +136,43 @@ class PromptBuilder:
             sections.append(template["final_instructions"].strip())
 
         return "\n\n".join(sections)
+
+    def build_user_prompt(self, dataset_name: str, question: str) -> str:
+        """Build the per-question user-role text.
+
+        Mirrors old get_task_instruction_openqa() / _math() / _multi_choice().
+        This is concatenated with build_system_prompt() output by the caller to
+        form a single user message (no system role).
+        """
+        dn = dataset_name.lower()
+
+        if dn == "gpqa" or dn == "medmcqa":
+            # Mirrors get_task_instruction_multi_choice() (non-qwq, non-llama branch)
+            return (
+                'Answer the following multiple choice question. You should think step by step to solve it.\n\n'
+                'Provide your final choice in the format \\boxed{YOUR_CHOICE} where YOUR_CHOICE is one of A, B, C, or D.\n\n'
+                f'Question:\n{question}\n\n'
+            )
+
+        if dn in _MATH_DATASETS:
+            # Mirrors get_task_instruction_math() (non-qwq branch)
+            return (
+                'Please answer the following math question. You should think step by step to solve it.\n\n'
+                'Provide your final answer in the format \\boxed{YOUR_ANSWER}.\n\n'
+                f'Question:\n{question}\n\n'
+            )
+
+        # All other datasets (gaia, hle, nq, triviaqa, hotpotqa, musique, bamboogle, 2wiki, …)
+        # Mirrors get_task_instruction_openqa() (non-qwq branch)
+        return (
+            'Please answer the following question. You should think step by step to solve it.\n\n'
+            'Provide your final answer in the format \\boxed{YOUR_ANSWER}.\n\n'
+            f'Question:\n{question}\n\n'
+        )
+
+    def get_extract_mode(self, dataset_name: str) -> str:
+        """Return the extract_answer mode for a dataset. Mirrors old mode routing."""
+        return DATASET_EXTRACT_MODES.get(dataset_name.lower(), "gen")
 
     def _format_tool_schemas(
         self,
@@ -138,22 +216,11 @@ class PromptBuilder:
         tool_schemas: List[Dict[str, Any]],
         direct_tool_call: bool
     ) -> str:
-        """Select and format appropriate example based on tools and mode.
-
-        Args:
-            template: Template dictionary
-            tool_schemas: List of enabled tool schemas
-            direct_tool_call: Whether using direct mode (True) or sub-agent mode (False)
-
-        Returns:
-            Formatted example text or empty string if no example
-        """
-        # Determine enabled tools
+        """Select and format appropriate example based on tools and mode."""
         enabled_tools = {schema.get("function", {}).get("name", "") for schema in tool_schemas}
         has_search = "web_search" in enabled_tools
         has_code = "code_generator" in enabled_tools
 
-        # Select appropriate example key
         example_key = None
         if has_search and has_code:
             example_key = "example_search_code_direct" if direct_tool_call else "example_search_code_subagent"

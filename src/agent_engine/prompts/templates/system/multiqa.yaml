@@ -1,0 +1,83 @@
+# Multi-hop QA Dataset System Prompt Template
+# For HotpotQA, MuSiQue, Bamboogle, 2WikiMultihopQA
+# Matches multi-agent-tools/scripts/prompts.py:get_multiqa_search_o1_instruction_qwen3()
+
+base_instruction: |
+  You are a reasoning assistant with tools for multi-step question answering.
+
+# Tool descriptions and examples are added dynamically by PromptBuilder
+
+final_instructions: |
+  Remember:
+  - Break complex questions into sub-questions
+  - Use multiple tool calls when needed to gather all required information
+  - Provide your final answer in the format \boxed{YOUR_ANSWER}
+
+# Examples for different tool combinations (added dynamically based on enabled tools)
+
+# Example for web_search + code_generator (direct mode) — uses multi-step search example
+example_search_code_direct:
+  question: "Alice David is the voice of Lara Croft in a video game developed by which company?"
+  steps:
+    - step: 1
+      reasoning: "I need to find which video game Alice David voiced Lara Croft in."
+      tool_call: '{"name": "web_search", "arguments": {"query": "Alice David Lara Croft voice actor video game"}}'
+      tool_response: "Alice David is the French voice actress for Lara Croft in the Tomb Raider video game series reboot starting with Tomb Raider (2013)."
+    - step: 2
+      reasoning: "Now I need to find who developed Tomb Raider (2013)."
+      tool_call: '{"name": "web_search", "arguments": {"query": "Tomb Raider 2013 developer company"}}'
+      tool_response: "Tomb Raider (2013) was developed by Crystal Dynamics and published by Square Enix."
+    - step: final
+      answer: "The video game was developed by \\boxed{Crystal Dynamics}"
+
+# Example for web_search + code_generator (sub-agent mode)
+example_search_code_subagent:
+  question: "Alice David is the voice of Lara Croft in a video game developed by which company?"
+  steps:
+    - step: 1
+      reasoning: "I need to find which video game Alice David voiced Lara Croft in."
+      tool_call: '{"name": "web_search", "arguments": {"query": "Alice David Lara Croft voice actor video game"}}'
+      tool_response: "Alice David is the French voice actress for Lara Croft in the Tomb Raider video game series reboot starting with Tomb Raider (2013)."
+    - step: 2
+      reasoning: "Now I need to find who developed Tomb Raider (2013)."
+      tool_call: '{"name": "web_search", "arguments": {"query": "Tomb Raider 2013 developer company"}}'
+      tool_response: "Tomb Raider (2013) was developed by Crystal Dynamics and published by Square Enix."
+    - step: final
+      answer: "The video game was developed by \\boxed{Crystal Dynamics}"
+
+# Example for web_search only
+example_search_only:
+  question: "Alice David is the voice of Lara Croft in a video game developed by which company?"
+  steps:
+    - step: 1
+      reasoning: "I need to find which video game Alice David voiced Lara Croft in."
+      tool_call: '{"name": "web_search", "arguments": {"query": "Alice David Lara Croft voice actor video game"}}'
+      tool_response: "Alice David is the French voice actress for Lara Croft in the Tomb Raider video game series reboot starting with Tomb Raider (2013)."
+    - step: 2
+      reasoning: "Now I need to find who developed Tomb Raider (2013)."
+      tool_call: '{"name": "web_search", "arguments": {"query": "Tomb Raider 2013 developer company"}}'
+      tool_response: "Tomb Raider (2013) was developed by Crystal Dynamics and published by Square Enix."
+    - step: final
+      answer: "The video game was developed by \\boxed{Crystal Dynamics}"
+
+# Example for code_generator only (direct mode)
+example_code_direct:
+  question: "Calculate the sum of the first 10 prime numbers."
+  steps:
+    - step: 1
+      reasoning: "I need to find the first 10 prime numbers and calculate their sum."
+      tool_call: '{"name": "code_generator", "arguments": {"code": "def is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True\n\nprimes = []\nx = 2\nwhile len(primes) < 10:\n    if is_prime(x):\n        primes.append(x)\n    x += 1\n\nprint(f\"First 10 primes: {primes}\")\nprint(f\"Sum: {sum(primes)}\")\n"}}'
+      tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
+    - step: final
+      answer: "The sum of the first 10 prime numbers is \\boxed{129}."
+
+# Example for code_generator only (sub-agent mode)
+example_code_subagent:
+  question: "Calculate the sum of the first 10 prime numbers."
+  steps:
+    - step: 1
+      reasoning: "I need to find the first 10 prime numbers and calculate their sum."
+      tool_call: '{"name": "code_generator", "arguments": {"task": "1. Generate the first 10 prime numbers\n2. Calculate their sum\n3. Print both the primes and the sum"}}'
+      tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
+    - step: final
+      answer: "The sum of the first 10 prime numbers is \\boxed{129}."
