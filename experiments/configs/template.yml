@@ -139,7 +139,7 @@ tools:
   direct_tool_call: false
   web_tool_provider: "serper"  # "serper" or "tavily"
   max_search_limit: 10
-  top_k_results: 5
+  top_k_results: 10
   max_doc_len: 3000
 
 # ------------------------------------------------------------------------------

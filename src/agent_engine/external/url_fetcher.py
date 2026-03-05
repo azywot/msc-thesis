@@ -4,12 +4,14 @@ This module provides functions to fetch and extract text content from URLs,
 with support for concurrent fetching to optimize performance.
 """
 
+import string
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
+from nltk.tokenize import sent_tokenize
 
 from ..utils.logging import get_logger
 
@@ -154,37 +156,67 @@ def fetch_page_content(
     return results
 
 
+def _remove_punctuation(text: str) -> str:
+    """Remove punctuation from text."""
+    return text.translate(str.maketrans("", "", string.punctuation))
+
+
+def _f1_score(true_set: set, pred_set: set) -> float:
+    """Calculate F1 score between two sets of words."""
+    intersection = len(true_set.intersection(pred_set))
+    if not intersection:
+        return 0.0
+    precision = intersection / float(len(pred_set))
+    recall = intersection / float(len(true_set))
+    return 2 * (precision * recall) / (precision + recall)
+
+
 def extract_snippet_with_context(
     full_text: str,
     snippet: str,
-    context_chars: int = 3000
-) -> tuple[bool, str]:
-    """Extract snippet location from full text and return surrounding context.
-    
+    context_chars: int = 2500
+) -> Tuple[bool, str]:
+    """Extract the sentence that best matches the snippet and its context.
+
+    Mirrors multi-agent-tools/scripts/tools/bing_search.py:
+    sentence-level F1 matching via sent_tokenize, context window around best sentence.
+
     Args:
         full_text: Full document text
         snippet: Snippet to search for
-        context_chars: Number of characters of context to include
-        
+        context_chars: Characters of context before and after the best sentence
+
     Returns:
         Tuple of (success: bool, extracted_context: str)
     """
-    if not snippet or not full_text:
-        return False, full_text[:context_chars * 2] if full_text else ""
-    
-    # Clean snippet for matching
-    snippet_clean = snippet.lower().replace('<b>', '').replace('</b>', '').strip()
-    full_text_lower = full_text.lower()
-    
-    # Try to find snippet
-    pos = full_text_lower.find(snippet_clean[:100])  # Use first 100 chars for matching
-    
-    if pos != -1:
-        # Found snippet, extract context around it
-        start = max(0, pos - context_chars)
-        end = min(len(full_text), pos + len(snippet_clean) + context_chars)
-        context = full_text[start:end]
-        return True, context
-    else:
-        # Snippet not found, return beginning of document
-        return False, full_text[:context_chars * 2]
+    try:
+        full_text = full_text[:50000]
+
+        snippet = snippet.lower()
+        snippet = _remove_punctuation(snippet)
+        snippet_words = set(snippet.split())
+
+        best_sentence = None
+        best_f1 = 0.2
+
+        sentences = sent_tokenize(full_text)
+
+        for sentence in sentences:
+            key_sentence = sentence.lower()
+            key_sentence = _remove_punctuation(key_sentence)
+            sentence_words = set(key_sentence.split())
+            f1 = _f1_score(snippet_words, sentence_words)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_sentence = sentence
+
+        if best_sentence:
+            para_start = full_text.find(best_sentence)
+            para_end = para_start + len(best_sentence)
+            start_index = max(0, para_start - context_chars)
+            end_index = min(len(full_text), para_end + context_chars)
+            return True, full_text[start_index:end_index]
+        else:
+            return False, full_text[:context_chars * 2]
+    except Exception as e:
+        return False, f"Failed to extract snippet context due to {str(e)}"
