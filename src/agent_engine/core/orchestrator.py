@@ -10,18 +10,37 @@ from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 
 from ..models.base import BaseModelProvider
 from ..utils.logging import get_logger
-from ..utils.parsing import extract_answer, parse_qwen3_tool_call, strip_thinking_tags
+from ..utils.parsing import extract_answer, parse_tool_call, strip_thinking_tags
 from .state import ExecutionState
 from .tool import ToolRegistry, ToolResult
 
 logger = get_logger(__name__)
 
+
+def _accumulate_usage(state: "ExecutionState", usage: Optional[Dict[str, int]]) -> None:
+    """Accumulate token counts into state.metadata['token_usage'].
+
+    Called after every LLM generation: orchestrator turns, batched web/code
+    sub-agents, and any tool returning ToolResult.usage (text_inspector,
+    image_inspector, web_search in single-run). The final state carries
+    cumulative prompt/completion/total tokens across all models used.
+    """
+    if not usage:
+        return
+    tu = state.metadata.setdefault(
+        "token_usage",
+        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    )
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        tu[key] = tu.get(key, 0) + int(usage.get(key, 0))
+
+
 # Tools whose pre-call reasoning is indexed into the context manager graph.
 # Mirrors MAT: reasoning before search, code, and context_manager calls is inserted.
 _CONTEXT_MANAGER_INDEXED_TOOLS = frozenset({"web_search", "code_generator", "context_manager"})
 
-_IMAGE_EXTS = frozenset[str]({".jpg", ".jpeg", ".png"})
-_TEXT_EXTS = frozenset[str]({
+_IMAGE_EXTS: frozenset = frozenset({".jpg", ".jpeg", ".png"})
+_TEXT_EXTS: frozenset = frozenset({
     ".txt", ".md", ".log", ".json", ".jsonl", ".xml",
     ".csv", ".tsv", ".yaml", ".yml", ".docx", ".xlsx",
     ".jsonld", ".parquet", ".pdf", ".pdb", ".pptx", ".py",
@@ -117,16 +136,17 @@ class AgenticOrchestrator:
                 prompt = self.model.apply_chat_template(state.messages, use_thinking=self.use_thinking)
                 gen_result = self.model.generate([prompt])[0]
                 state.current_output = gen_result.text
-                state.accumulate_usage(gen_result.usage)
+                _accumulate_usage(state, gen_result.usage)
             except Exception as e:
                 logger.exception("Generation error")
                 state.metadata["error"] = str(e)
                 break
 
-            tool_call = parse_qwen3_tool_call(gen_result.text)
+            tool_call = parse_tool_call(gen_result.text)
             if tool_call:
                 self._index_reasoning_in_context_manager(gen_result.text, tool_call["name"], state)
                 tool_result = self._execute_tool(tool_call, state)
+                _accumulate_usage(state, tool_result.usage)
                 state.add_message("assistant", gen_result.text)
                 clean_output = strip_thinking_tags(tool_result.output or "")
                 state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
@@ -232,8 +252,8 @@ class AgenticOrchestrator:
 
         for s, gen_result in zip(active, gen_results):
             s.current_output = gen_result.text
-            s.accumulate_usage(gen_result.usage)
-            tool_call = parse_qwen3_tool_call(gen_result.text)
+            _accumulate_usage(s, gen_result.usage)
+            tool_call = parse_tool_call(gen_result.text)
 
             if tool_call:
                 s.add_message("assistant", gen_result.text)
@@ -334,6 +354,7 @@ class AgenticOrchestrator:
     def _apply_immediate_results(self, results: List[_ImmediateResult]) -> None:
         """Commit tool responses and update usage tracking for immediate results."""
         for item in results:
+            _accumulate_usage(item.state, item.result.usage)
             clean_output = strip_thinking_tags(item.result.output or "")
             item.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
             item.state.tool_calls.append(item.tool_call)
@@ -397,12 +418,12 @@ class AgenticOrchestrator:
         gen_outputs = provider.generate(prompts) if provider else []
 
         for job, out in zip(jobs, gen_outputs):
+            _accumulate_usage(job.state, out.usage)
             text = strip_thinking_tags(out.text)
             analysis_cache[job.query] = text
             job.state.add_message("tool", f"<tool_response>\n{text}\n</tool_response>")
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
-            job.state.accumulate_usage(out.usage)
 
     # ------------------------------------------------------------------ #
     # Batched code generation                                             #
@@ -424,6 +445,7 @@ class AgenticOrchestrator:
         gen_outputs = provider.generate([job.prompt for job in jobs]) if provider else []
 
         for job, out in zip(jobs, gen_outputs):
+            _accumulate_usage(job.state, out.usage)
             try:
                 text = strip_thinking_tags(out.text)
                 code = job.tool.extract_code_from_llm_response(text)
@@ -435,7 +457,6 @@ class AgenticOrchestrator:
             job.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
-            job.state.accumulate_usage(out.usage)
 
     # ------------------------------------------------------------------ #
     # Message construction                                                #

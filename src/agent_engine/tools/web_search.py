@@ -10,7 +10,7 @@ Supports two modes:
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..core.tool import BaseTool, ToolResult
 from ..utils.logging import get_logger
@@ -170,11 +170,15 @@ class WebSearchTool(BaseTool):
             #         logger.warning(f"Failed to write temp_search_direct.txt: {e}")
             # ######### TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
 
-            output = formatted if self.direct_mode else self._analyze_with_llm(query, formatted)
+            if self.direct_mode:
+                output, usage = formatted, None
+            else:
+                output, usage = self._analyze_with_llm(query, formatted)
             return ToolResult(
                 success=True,
                 output=output,
                 metadata={"cached": True, "query": query, "mode": "direct" if self.direct_mode else "sub-agent"},
+                usage=usage,
             )
 
         # Cache miss: fetch from search provider, fetch page content, then format/analyse.
@@ -230,11 +234,12 @@ class WebSearchTool(BaseTool):
                     metadata={"cached": False, "num_results": len(results), "query": query, "mode": "direct"},
                 )
 
-            output = self._analyze_with_llm(query, formatted_results)
+            output, usage = self._analyze_with_llm(query, formatted_results)
             return ToolResult(
                 success=True,
                 output=output,
                 metadata={"cached": False, "num_results": len(results), "query": query, "mode": "sub-agent"},
+                usage=usage,
             )
 
         except Exception as e:
@@ -293,7 +298,7 @@ class WebSearchTool(BaseTool):
             logger.error(f"URL fetch error: {e}", exc_info=True)
             return False
 
-    def _analyze_with_llm(self, query: str, search_results: str) -> str:
+    def _analyze_with_llm(self, query: str, search_results: str) -> Tuple[str, Optional[Dict[str, int]]]:
         """Use LLM to analyze search results (sub-agent mode).
 
         Args:
@@ -301,14 +306,12 @@ class WebSearchTool(BaseTool):
             search_results: Formatted search results
 
         Returns:
-            LLM-analyzed summary of search results
+            Tuple of (LLM-analyzed summary, token usage dict or None)
         """
         prompt = self.build_analysis_prompt(query, search_results)
-
         result = self.model_provider.generate([prompt])[0]
-
         output = strip_thinking_tags(result.text)
-        return output
+        return output, result.usage
 
     def build_analysis_prompt(self, query: str, formatted_results: str) -> str:
         """Build the sub-agent prompt for web-page analysis.

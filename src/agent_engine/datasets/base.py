@@ -4,6 +4,7 @@ This module defines the core abstractions for working with different datasets
 in a unified way, with automatic registration support.
 """
 
+import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,7 +118,12 @@ class BaseDataset(ABC):
         return iter(self._examples)
 
     def get_subset(self, num: int) -> List[DatasetExample]:
-        """Get a subset of examples.
+        """Get a subset of examples by random sampling (reproducible if seed set before call).
+
+        When num is positive and less than the dataset size, examples are chosen
+        randomly (shuffle indices then take first num, sorted to preserve dataset order).
+        This matches multi-agent-tools behaviour. Call set_seed() before get_subset()
+        for reproducibility.
 
         Args:
             num: Number of examples to get (-1 for all)
@@ -127,8 +133,16 @@ class BaseDataset(ABC):
         """
         self.load_if_needed()
         if num < 0 or num >= len(self._examples):
-            return self._examples
-        return self._examples[:num]
+            return list(self._examples)
+        indices = list(range(len(self._examples)))
+        random.shuffle(indices)
+        selected_indices = sorted(indices[:num])  # Sort to maintain original dataset order
+        result = [self._examples[i] for i in selected_indices]
+        logger.info(
+            "Randomly sampled %d examples from %d total (ensure set_seed() was called for reproducibility)",
+            num, len(self._examples),
+        )
+        return result
 
 
 class DatasetRegistry:

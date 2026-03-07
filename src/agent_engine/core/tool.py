@@ -18,11 +18,13 @@ class ToolResult:
         output: Formatted output text to return to the model
         metadata: Additional information (cached, num_results, etc.)
         error: Error message if execution failed
+        usage: Optional token usage from LLM calls (prompt_tokens, completion_tokens, total_tokens)
     """
     success: bool
     output: str
     metadata: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
+    usage: Optional[Dict[str, int]] = None
 
 
 class BaseTool(ABC):

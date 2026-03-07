@@ -52,13 +52,6 @@ class ExecutionState:
         'image_inspector': 0,
     })
 
-    # Token usage accumulated across all orchestrator generation calls
-    token_usage: Dict[str, int] = field(default_factory=lambda: {
-        'prompt_tokens': 0,
-        'completion_tokens': 0,
-        'total_tokens': 0,
-    })
-
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -92,15 +85,6 @@ class ExecutionState:
         """
         return self.tool_counts.get(tool_name, 0)
 
-    def accumulate_usage(self, usage: Dict[str, int]) -> None:
-        """Add token counts from a single generation call to the running totals.
-
-        Args:
-            usage: Dict with prompt_tokens, completion_tokens, total_tokens
-        """
-        for key in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
-            self.token_usage[key] = self.token_usage.get(key, 0) + int(usage.get(key, 0))
-
     def to_dict(self) -> Dict[str, Any]:
         """Convert state to dictionary for serialization.
 
@@ -117,7 +101,6 @@ class ExecutionState:
             "answer": self.answer,
             "tool_calls": self.tool_calls,
             "tool_counts": self.tool_counts,
-            "token_usage": self.token_usage,
             "metadata": self.metadata,
             "attachments": self.attachments,
         }

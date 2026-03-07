@@ -9,10 +9,10 @@ import re
 from typing import Any, Dict, Optional
 
 
-def parse_qwen3_tool_call(text: str) -> Optional[Dict[str, Any]]:
-    """Parse Qwen3 tool call from model output.
+def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
+    """Parse tool call from model output.
 
-    Qwen3 tool calls are in the format:
+    Tool calls are in the format:
     <tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>
 
     Args:

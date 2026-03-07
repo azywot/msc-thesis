@@ -20,18 +20,23 @@ from typing import Any
 
 
 class CacheManager:
-    def __init__(self, cache_dir: str = './cache', web_tool_provider: str = 'serper'):
+    def __init__(
+        self,
+        cache_dir: str = './cache',
+        web_tool_provider: str = 'serper',
+        dataset_name: str = 'default',
+    ):
         self.cache_dir = cache_dir
         self.web_tool_provider = web_tool_provider
+        self.dataset_name = dataset_name
 
-        # Create provider-specific cache directory
-        provider_cache_dir = os.path.join(cache_dir, web_tool_provider)
-        self.provider_cache_dir = provider_cache_dir
+        # Web tool cache: cache_dir/provider/dataset_name
+        self.provider_cache_dir = os.path.join(cache_dir, web_tool_provider, dataset_name)
 
-        self.search_cache_path = os.path.join(provider_cache_dir, 'search_cache.json')
-        self.url_cache_path = os.path.join(provider_cache_dir, 'url_cache.json')
+        self.search_cache_path = os.path.join(self.provider_cache_dir, 'search_cache.json')
+        self.url_cache_path = os.path.join(self.provider_cache_dir, 'url_cache.json')
         # Single lock for both files to avoid deadlocks and cross-file races.
-        self._lock_path = os.path.join(provider_cache_dir, '.cache.lock')
+        self._lock_path = os.path.join(self.provider_cache_dir, '.cache.lock')
         self._initialize_cache()
 
     def _initialize_cache(self) -> None:

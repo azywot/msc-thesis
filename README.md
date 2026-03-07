@@ -302,10 +302,10 @@ Enabled via `tools.enabled_tools` in the config:
 The `web_search` tool supports two providers via `web_tool_provider` config:
 
 - **Serper** (default): Traditional search API that returns URLs. The tool fetches and caches full page content.
-  - Cache structure: `./cache/serper/search_cache.json` and `./cache/serper/url_cache.json`
+  - Cache structure: `./cache/serper/<dataset_name>/search_cache.json` and `./cache/serper/<dataset_name>/url_cache.json`
 
 - **Tavily**: AI-native search engine designed for LLMs. Returns pre-cleaned, structured content with no URL fetching needed.
-  - Cache structure: `./cache/tavily/search_cache.json` (no URL cache needed)
+  - Cache structure: `./cache/tavily/<dataset_name>/search_cache.json` (no URL cache needed)
   - Faster and more efficient for AI agents
 
 ---

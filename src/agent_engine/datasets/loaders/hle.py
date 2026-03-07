@@ -105,11 +105,6 @@ class HLEDataset(BaseDataset):
 
         logger.info(f"Loaded {len(examples)} HLE examples")
 
-        # Apply subset if specified at runtime (independent of any on-disk subset)
-        if self.config.subset_num > 0 and self.config.subset_num < len(examples):
-            examples = examples[: self.config.subset_num]
-            logger.info(f"Using subset of {len(examples)} examples")
-
         return examples
 
     def evaluate(

@@ -81,3 +81,5 @@ wandb/
 
 src/agent_engine/prompts/notes
 experiments/archive
+out/configs_benchmarks_qwen4b
+out/configs_benchmarks_qwen8b

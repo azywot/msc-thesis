@@ -61,7 +61,7 @@ def setup_model_provider(model_config, api_keys: Dict[str, str], model_cache: Op
     if model_cache is not None and cache_key in model_cache:
         if model_config.family not in (ModelFamily.GPT4, ModelFamily.CLAUDE):
             cached_provider = model_cache[cache_key]
-            logger.info(f"♻️  Reusing cached model instance for: {model_config.name} (role: {model_config.role})")
+            logger.info("♻️ Reusing cached model instance for: %s (role: %s)", model_config.name, model_config.role)
             return cached_provider
     
     # Lazy imports so this script can run with only API deps installed.
@@ -84,7 +84,14 @@ def setup_model_provider(model_config, api_keys: Dict[str, str], model_cache: Op
     return provider
 
 
-def setup_tools(config, cache_manager, api_keys: Dict[str, str], model_providers: Dict[str, Any] = None, orchestrator_model=None, context_manager_storage_path: Optional[Path] = None) -> ToolRegistry:
+def setup_tools(
+    config,
+    cache_manager,
+    api_keys: Dict[str, str],
+    model_providers: Optional[Dict[str, Any]] = None,
+    orchestrator_model=None,
+    context_manager_storage_path: Optional[Path] = None,
+) -> ToolRegistry:
     """Set up tools based on configuration.
 
     Args:
@@ -218,8 +225,15 @@ def run_experiment(args):
         "anthropic": os.getenv("ANTHROPIC_API_KEY"),
     }
 
-    logger.info(f"Initializing cache at: {config.cache_dir}/{config.tools.web_tool_provider}")
-    cache_manager = CacheManager(config.cache_dir, web_tool_provider=config.tools.web_tool_provider)
+    _provider = config.tools.web_tool_provider
+    _dataset = config.dataset.name
+    _cache_root = f"{config.cache_dir}/{_provider}/{_dataset}"
+    logger.info("Initializing web cache at: %s  (provider: %s, dataset: %s)", _cache_root, _provider, _dataset)
+    cache_manager = CacheManager(
+        config.cache_dir,
+        web_tool_provider=_provider,
+        dataset_name=_dataset,
+    )
 
     logger.info(f"Loading dataset: {config.dataset.name}")
     dataset = DatasetRegistry.get(config.dataset)
@@ -348,6 +362,7 @@ def run_experiment(args):
                     ground_truth=ex.answer,
                     metadata=ex.metadata,
                 )
+                token_usage = state.metadata.get("token_usage", {})
                 results.append({
                     "question_id": ex.question_id,
                     "question": ex.question,
@@ -355,20 +370,19 @@ def run_experiment(args):
                     "ground_truth": ex.answer,
                     "correct": bool(eval_result.get("correct", False)),
                     "evaluation": eval_result,
-                    "messages": state.messages,
+                    "output_text": _state_to_output_text(state),
                     "tool_calls": _collect_tool_call_records(state),
                     "turns": state.turn,
                     "tool_counts": state.tool_counts,
-                    "token_usage": state.token_usage,
+                    "token_usage": token_usage,
                     "metadata": ex.metadata,
                 })
-                tu = state.token_usage
                 logger.info(
                     "Q%s tokens — prompt: %d  completion: %d  total: %d",
                     ex.question_id,
-                    tu["prompt_tokens"],
-                    tu["completion_tokens"],
-                    tu["total_tokens"],
+                    token_usage.get("prompt_tokens", 0),
+                    token_usage.get("completion_tokens", 0),
+                    token_usage.get("total_tokens", 0),
                 )
 
             # Flush intermediate raw results every 10 examples
@@ -449,6 +463,16 @@ def _write_json(path: Path, data: Any) -> None:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def _state_to_output_text(state: ExecutionState) -> str:
+    """Flatten state messages into a single string of assistant + tool content."""
+    parts: List[str] = []
+    for msg in state.messages:
+        if msg.get("role") in ("assistant", "tool"):
+            content = msg.get("content") or ""
+            if content:
+                parts.append(content)
+    return "\n".join(parts).strip()
+
 
 def _collect_tool_call_records(state: ExecutionState) -> List[Dict[str, Any]]:
     """Return a list of tool call records with name, arguments, and response text.
@@ -501,7 +525,7 @@ def _short_id() -> str:
 
 def _config_to_dict(config) -> Dict[str, Any]:
     """Serialise config to a dict, stripping sensitive fields."""
-    _SENSITIVE = {"wandb_project", "use_wandb", "openai_api_key", "anthropic_api_key", "serper_api_key"}
+    _SENSITIVE = {"openai_api_key", "anthropic_api_key", "serper_api_key"}
 
     def _model_cfg(m) -> Dict[str, Any]:
         if m is None:
@@ -524,6 +548,8 @@ def _config_to_dict(config) -> Dict[str, Any]:
         "name": config.name,
         "description": getattr(config, "description", "") or "",
         "seed": config.seed,
+        "use_wandb": getattr(config, "use_wandb", False),
+        "wandb_project": getattr(config, "wandb_project", None),
         "thinking_mode": getattr(config.thinking_mode, "value", str(config.thinking_mode)),
         "max_turns": getattr(config, "max_turns", None),
         "batch_size": getattr(config, "batch_size", -1),
@@ -574,24 +600,25 @@ def _compute_metrics(
     """Aggregate per-example results into overall + per-level metrics.
 
     Structure:
-        overall:    accuracy, em, f1, num_correct
+        overall:    accuracy, em, f1, num_correct, token_usage
         tool_usage: per-tool total counts (overall)
-        per_level:  (for stratified datasets) same scores + tool_usage per level
+        per_level:  (for stratified datasets) same scores + tool_usage + token_usage per level
     """
     _STRATIFIED = {"gaia", "math500", "aime", "amc", "hle"}
 
-    # Per-level accumulators: level -> list of (accuracy, em, f1, tool_counts)
     per_level_rows: Dict[str, List[Dict]] = {}
 
     all_gaia: List[float] = []
     all_em: List[float] = []
     all_f1: List[float] = []
     all_tools: Dict[str, int] = {}
+    all_token_usage: Dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     for idx, example in enumerate(examples):
         r = results[idx] if idx < len(results) else {}
         evaluation = r.get("evaluation") or {}
         tc = r.get("tool_counts") or {}
+        tu = r.get("token_usage") or {}
 
         gs = float(evaluation.get("accuracy", 0.0))
         em = float(evaluation.get("em", float(evaluation.get("correct", gs > 0))))
@@ -602,10 +629,12 @@ def _compute_metrics(
         all_f1.append(f1)
         for tool, count in tc.items():
             all_tools[tool] = all_tools.get(tool, 0) + int(count or 0)
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            all_token_usage[key] = all_token_usage.get(key, 0) + int(tu.get(key, 0))
 
         if dataset_name in _STRATIFIED:
             lk = _level_key(example, dataset_name)
-            per_level_rows.setdefault(lk, []).append({"gs": gs, "em": em, "f1": f1, "tc": tc})
+            per_level_rows.setdefault(lk, []).append({"gs": gs, "em": em, "f1": f1, "tc": tc, "tu": tu})
 
     total = len(examples)
 
@@ -615,9 +644,12 @@ def _compute_metrics(
             return {"accuracy": 0.0, "em": 0.0, "f1": 0.0, "num_correct": "0 of 0"}
         n_correct = sum(1 for r in rows if r["gs"] > 0)
         level_tools: Dict[str, int] = {}
+        level_tokens: Dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         for row in rows:
             for tool, count in row["tc"].items():
                 level_tools[tool] = level_tools.get(tool, 0) + int(count or 0)
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                level_tokens[key] = level_tokens.get(key, 0) + int((row.get("tu") or {}).get(key, 0))
         result: Dict[str, Any] = {
             "accuracy": sum(r["gs"] for r in rows) / n,
             "em":         sum(r["em"] for r in rows) / n,
@@ -626,6 +658,8 @@ def _compute_metrics(
         }
         if level_tools:
             result["tool_usage"] = level_tools
+        if any(level_tokens.values()):
+            result["token_usage"] = level_tokens
         return result
 
     n_correct_overall = sum(1 for g in all_gaia if g > 0)
@@ -635,6 +669,8 @@ def _compute_metrics(
         "f1":         sum(all_f1) / total if total else 0.0,
         "num_correct": f"{n_correct_overall} of {total}",
     }
+    if any(all_token_usage.values()):
+        overall["token_usage"] = all_token_usage
 
     metrics: Dict[str, Any] = {"overall": overall}
     if all_tools:

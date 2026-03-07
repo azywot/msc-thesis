@@ -17,13 +17,8 @@ logger = get_logger(__name__)
 def _load_qa_jsonl(data_path: Path, dataset_name: str, subset_num: int = -1) -> List[DatasetExample]:
     """Common loader for QA datasets in JSONL format.
 
-    Args:
-        data_path: Path to JSONL file
-        dataset_name: Name of the dataset
-        subset_num: Number of examples to load (-1 for all)
-
-    Returns:
-        List of DatasetExample objects
+    Subset selection is done by BaseDataset.get_subset() (random sampling);
+    subset_num is accepted for API compatibility but not used here.
     """
     if not data_path.exists():
         raise FileNotFoundError(f"{dataset_name} dataset not found at: {data_path}")
@@ -55,10 +50,6 @@ def _load_qa_jsonl(data_path: Path, dataset_name: str, subset_num: int = -1) -> 
                 continue
 
     logger.info(f"Loaded {len(examples)} {dataset_name} examples")
-
-    if subset_num > 0:
-        examples = examples[:subset_num]
-        logger.info(f"Using subset of {len(examples)} examples")
 
     return examples
 
