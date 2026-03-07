@@ -270,17 +270,16 @@ class VLLMProvider(BaseModelProvider):
     def _render_messages(self, msgs: List[Dict[str, Any]], use_thinking: bool) -> str:
         """Apply the tokenizer chat template to a messages list.
 
-        Passes ``thinking=True`` for models that natively support extended
-        thinking output (determined by ``config.supports_thinking``), so adding
-        a new thinking-capable family only requires updating ``_THINKING_FAMILIES``
-        in ``base.py`` rather than touching generation logic here.
+        For Qwen3 and other thinking-capable models, passes ``enable_thinking``
+        (the variable name expected by the Qwen chat template). When False, the
+        template inserts an empty <think></think> block so the model skips reasoning.
         """
         if use_thinking and self.config.supports_thinking:
             return self.tokenizer.apply_chat_template(
-                msgs, tokenize=False, add_generation_prompt=True, thinking=True,
+                msgs, tokenize=False, add_generation_prompt=True, enable_thinking=True,
             )
         return self.tokenizer.apply_chat_template(
-            msgs, tokenize=False, add_generation_prompt=True, thinking=False,
+            msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False,
         )
 
     def _make_result(self, output: Any, messages: Optional[List[Dict[str, Any]]]) -> GenerationResult:
