@@ -17,8 +17,8 @@ if TYPE_CHECKING:
     from ..core.state import ExecutionState
 
 
-# Markers for tool-related content (keep these steps when truncating).
-# MAT uses BEGIN_SEARCH_QUERY/BEGIN_SEARCH_RESULT; msc-thesis uses tool_call/tool_response.
+# Markers indicating tool-related steps to preserve during truncation.
+# here we use the XML tags emitted around every tool call and response.
 _DEFAULT_TOOL_MARKERS = ("<tool_call>", "<tool_response>")
 
 
@@ -52,19 +52,22 @@ def extract_reasoning_context(
 ) -> str:
     """Extract a truncated reasoning context for tool sub-agents.
 
-    Mirrors MAT's extract_reasoning_context. With mind_map, queries GraphRAG
-    for a summary. Without mind_map, truncates to: first step, last 4 steps,
-    and steps containing tool markers (e.g. <tool_call>, <tool_response>).
+    Mirrors MAT's extract_reasoning_context. When *mind_map* (a GraphRAG instance)
+    is provided and reasoning is long enough (>= 100 chars), queries it for a
+    summary instead of truncating. Otherwise truncates to: first step, last 4
+    steps, and any steps containing tool markers (e.g. ``<tool_call>``,
+    ``<tool_response>``). Elided middle steps are replaced by ``...``.
 
     Args:
         all_reasoning_steps: List of reasoning lines/steps (e.g. from
-            get_accumulated_output_from_state split by newlines)
-        mind_map: Optional GraphRAG/mind_map for summarization (not used if None)
+            get_accumulated_output_from_state split by newlines).
+        mind_map: Optional GraphRAG instance for summarization when reasoning
+            is long. Pass the context manager's graph when available.
         tool_markers: Markers that indicate tool-related steps to keep.
-            Defaults to <tool_call> and <tool_response>.
+            Defaults to ``<tool_call>`` and ``<tool_response>``.
 
     Returns:
-        Truncated context string for sub-agent prompts
+        Truncated or summarized context string suitable for sub-agent prompts.
     """
     markers = tool_markers or _DEFAULT_TOOL_MARKERS
 
@@ -84,7 +87,7 @@ def extract_reasoning_context(
         except Exception:
             pass
 
-    # Non-mind_map: truncation
+    # Build numbered steps then truncate.
     truncated = ""
     for i, step in enumerate(meaningful):
         truncated += f"Step {i + 1}: {step}\n\n"
@@ -115,14 +118,19 @@ def get_reasoning_context_for_state(
     state: "ExecutionState",
     mind_map=None,
 ) -> str:
-    """Convenience: extract reasoning context from an ExecutionState.
+    """Extract reasoning context from an ExecutionState.
+
+    Convenience wrapper around :func:`get_accumulated_output_from_state` and
+    :func:`extract_reasoning_context`. Pass *mind_map* (e.g. the context
+    manager's GraphRAG instance) when available for summarization of long
+    reasoning chains.
 
     Args:
-        state: Current execution state
-        mind_map: Optional GraphRAG for summarization
+        state: Current execution state.
+        mind_map: Optional GraphRAG instance for summarization.
 
     Returns:
-        Truncated reasoning context string
+        Truncated or summarized reasoning context string for sub-agent prompts.
     """
     output = get_accumulated_output_from_state(state)
     if not output.strip():

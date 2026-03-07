@@ -10,76 +10,69 @@ from typing import Any, Dict, Optional
 
 
 def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
-    """Parse tool call from model output.
+    """Parse the last tool call from model output.
 
-    Tool calls are in the format:
-    <tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>
+    Extracts JSON from ``<tool_call>…</tool_call>`` tags.  When multiple tags
+    are present (shouldn't happen in practice) the last one is used.
 
     Args:
-        text: Model output text
+        text: Raw model output text.
 
     Returns:
-        Dictionary with 'name' and 'arguments' keys, or None if no tool call found
+        Dict with ``"name"`` and ``"arguments"`` keys, or ``None`` if no valid
+        tool call was found.
     """
-    # Look for <tool_call>...</tool_call> pattern
     pattern = r'<tool_call>(.*?)</tool_call>'
     matches = re.findall(pattern, text, re.DOTALL)
 
     if not matches:
         return None
 
-    # Parse the JSON inside the tool_call tags
-    tool_call_json = matches[-1].strip()  # Take the last tool call if multiple
+    tool_call_json = matches[-1].strip()
 
     try:
         tool_call = json.loads(tool_call_json)
         if isinstance(tool_call, dict) and "name" in tool_call:
-            # Ensure arguments exist
             if "arguments" not in tool_call:
                 tool_call["arguments"] = {}
             return tool_call
     except json.JSONDecodeError:
-        # Invalid JSON in tool call
         return None
 
     return None
 
 
 def extract_answer(text: str) -> Optional[str]:
-    """Extract final answer from model output.
+    """Extract the final answer from model output.
 
-    Looks for patterns like:
-    - "\\boxed{answer}" (LaTeX format from multi-agent-tools)
-    - "Final Answer: <answer>"
-    - "Answer: <answer>"
-    - "The answer is <answer>"
+    Tries the following patterns in order of priority:
+
+    1. ``\\boxed{answer}`` — LaTeX format used by math reasoning models.
+    2. ``Final Answer: <answer>``
+    3. ``Answer: <answer>``
+    4. ``The answer is <answer>``
 
     Args:
-        text: Model output text
+        text: Model output text.
 
     Returns:
-        Extracted answer string or None if not found
+        Extracted answer string, or ``None`` if no pattern matched.
     """
-    # Pattern 0: LaTeX boxed format (priority - matches multi-agent-tools)
-    # Look for \boxed{answer} or \\boxed{answer}
     boxed_pattern = r'\\+boxed\{([^}]+)\}'
     match = re.search(boxed_pattern, text, re.IGNORECASE)
     if match:
         return match.group(1).strip()
 
-    # Pattern 1: "Final Answer: <answer>"
     pattern1 = r'Final Answer:\s*(.+?)(?:\n|$)'
     match = re.search(pattern1, text, re.IGNORECASE)
     if match:
         return match.group(1).strip()
 
-    # Pattern 2: "Answer: <answer>"
     pattern2 = r'(?<!Final )Answer:\s*(.+?)(?:\n|$)'
     match = re.search(pattern2, text, re.IGNORECASE)
     if match:
         return match.group(1).strip()
 
-    # Pattern 3: "The answer is <answer>"
     pattern3 = r'The answer is[:\s]+(.+?)(?:\n|$)'
     match = re.search(pattern3, text, re.IGNORECASE)
     if match:

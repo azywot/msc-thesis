@@ -20,12 +20,40 @@ from typing import Any
 
 
 class CacheManager:
+    """Thread-safe, process-safe cache for web search results and fetched URL content.
+
+    Uses a single ``fcntl`` lock file to serialize cross-process writes and
+    atomic ``os.replace()`` for every JSON write, so concurrent readers always
+    see a complete, consistent file.
+
+    Cache layout on disk::
+
+        <cache_dir>/<provider>/<dataset_name>/
+            search_cache.json   – query → list[dict] (Serper/Tavily raw results)
+            url_cache.json      – url   → str (full page text, Serper only)
+            .cache.lock         – empty sentinel for fcntl locking
+
+    Attributes:
+        search_cache: In-memory search results cache (query → list[dict]).
+        url_cache: In-memory URL content cache (url → str).
+    """
+
     def __init__(
         self,
         cache_dir: str = './cache',
         web_tool_provider: str = 'serper',
         dataset_name: str = 'default',
     ):
+        """Initialize and load existing caches from disk.
+
+        Args:
+            cache_dir: Root cache directory.
+            web_tool_provider: Search provider name (``"serper"`` or ``"tavily"``).
+                               Used to namespace cache files so provider caches
+                               don't collide.
+            dataset_name: Dataset identifier for further namespacing within the
+                          provider directory (e.g. ``"gaia_validation"``).
+        """
         self.cache_dir = cache_dir
         self.web_tool_provider = web_tool_provider
         self.dataset_name = dataset_name

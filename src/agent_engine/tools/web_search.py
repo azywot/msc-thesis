@@ -9,7 +9,6 @@ Supports two modes:
 """
 
 import json
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..core.tool import BaseTool, ToolResult
@@ -146,30 +145,6 @@ class WebSearchTool(BaseTool):
                     self.cache_manager.save_url_cache()
             formatted = self._format_results(cached_results, query)
 
-            # ############ TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
-            # # Write to temp file for direct mode (sub-agent writes in _analyze_with_llm)
-            # if self.direct_mode:
-            #     try:
-            #         with open("temp_search_direct.txt", "a", encoding="utf-8") as f:
-            #             f.write("=" * 80 + "\n")
-            #             f.write("WEB SEARCH DIRECT MODE - ACTUAL RUNTIME DATA (CACHED)\n")
-            #             f.write("=" * 80 + "\n\n")
-            #             f.write(f"Query: {query}\n")
-            #             f.write(f"Provider: {self.provider}\n")
-            #             f.write(f"Number of results: {len(cached_results)}\n")
-            #             f.write(f"Cached: True\n")
-            #             f.write(f"Timestamp: {__import__('datetime').datetime.now().isoformat()}\n\n")
-            #             f.write("=" * 80 + "\n")
-            #             f.write("FORMATTED RESULTS SENT TO ORCHESTRATOR:\n")
-            #             f.write("=" * 80 + "\n\n")
-            #             f.write(formatted)
-            #             f.write("\n\n" + "=" * 80 + "\n")
-            #             f.write("(This text goes directly to the orchestrator as the tool output)\n")
-            #             f.write("=" * 80 + "\n")
-            #     except Exception as e:
-            #         logger.warning(f"Failed to write temp_search_direct.txt: {e}")
-            # ######### TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
-
             if self.direct_mode:
                 output, usage = formatted, None
             else:
@@ -206,28 +181,6 @@ class WebSearchTool(BaseTool):
             formatted_results = self._format_results(results, query)
 
             if self.direct_mode:
-                # ############ TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
-                # # Write direct mode output to temp file for inspection
-                # try:
-                #     with open("temp_search_direct.txt", "a", encoding="utf-8") as f:
-                #         f.write("=" * 80 + "\n")
-                #         f.write("WEB SEARCH DIRECT MODE - ACTUAL RUNTIME DATA\n")
-                #         f.write("=" * 80 + "\n\n")
-                #         f.write(f"Query: {query}\n")
-                #         f.write(f"Provider: {self.provider}\n")
-                #         f.write(f"Number of results: {len(results)}\n")
-                #         f.write(f"Timestamp: {__import__('datetime').datetime.now().isoformat()}\n\n")
-                #         f.write("=" * 80 + "\n")
-                #         f.write("FORMATTED RESULTS SENT TO ORCHESTRATOR:\n")
-                #         f.write("=" * 80 + "\n\n")
-                #         f.write(formatted_results)
-                #         f.write("\n\n" + "=" * 80 + "\n")
-                #         f.write("(This text goes directly to the orchestrator as the tool output)\n")
-                #         f.write("=" * 80 + "\n")
-                # except Exception as e:
-                #     logger.warning(f"Failed to write temp_search_direct.txt: {e}")
-                #     ############ TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
-
                 return ToolResult(
                     success=True,
                     output=formatted_results,
@@ -371,28 +324,6 @@ Now you should analyze each web page and find helpful information based on the c
 
         prompt_messages = [{"role": "user", "content": instruction}]
         prompt = self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
-
-        # ########## TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
-        # # Write prompt to temp file for inspection (supports both single and batched modes)
-        # try:
-        #     debug_path = Path("temp_search_subagent.txt")
-        #     with debug_path.open("a", encoding="utf-8") as f:
-        #         f.write("=" * 80 + "\n")
-        #         f.write("WEB SEARCH SUB-AGENT MODE - ACTUAL RUNTIME DATA\n")
-        #         f.write("=" * 80 + "\n\n")
-        #         f.write(f"Query: {query}\n")
-        #         f.write(f"Provider: {self.provider}\n")
-        #         f.write(f"Timestamp: {__import__('datetime').datetime.now().isoformat()}\n\n")
-        #         f.write("=" * 80 + "\n")
-        #         f.write("FULL PROMPT SENT TO SUB-AGENT LLM:\n")
-        #         f.write("=" * 80 + "\n\n")
-        #         f.write(prompt)
-        #         f.write("\n\n" + "=" * 80 + "\n")
-        #         f.write("(Output will be generated by the LLM and returned to orchestrator)\n")
-        #         f.write("=" * 80 + "\n\n")
-        # except Exception as e:
-        #     logger.warning(f"Failed to write temp_search_subagent.txt: {e}")
-        # ########### TO BE REMOVED IN PRODUCTION - DEBUGGING ONLY ##########
 
         return prompt
 

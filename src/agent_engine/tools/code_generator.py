@@ -187,8 +187,12 @@ class CodeGeneratorTool(BaseTool):
         return self.extract_code_from_llm_response(output)
 
     def execute_code(self, code: Optional[str]) -> ToolResult:
-        """Execute a concrete Python code string (shared by direct + sub-agent)."""
-        # Validate code
+        """Execute a concrete Python code string (shared by direct + sub-agent).
+
+        Temp files written to ``self.temp_dir`` are intentionally kept on disk
+        for post-hoc debugging. Remove them manually after a run if disk space
+        is a concern.
+        """
         if not code or not code.strip():
             return ToolResult(
                 success=False,
@@ -197,10 +201,8 @@ class CodeGeneratorTool(BaseTool):
                 error="Empty code provided",
             )
 
-        # Normalize code
         code = code.strip("\ufeff \t\r\n")
 
-        # Syntax check
         try:
             ast.parse(code)
         except SyntaxError as exc:
@@ -212,11 +214,9 @@ class CodeGeneratorTool(BaseTool):
                 error=f"Invalid Python syntax: {exc}",
             )
 
-        # Generate unique run ID
         run_id = os.getenv("SLURM_JOB_ID", f"{os.getpid()}_{int(time.time())}")
         temp_file_path = os.path.join(self.temp_dir, f"temp_code_{run_id}.py")
 
-        # Write code to file
         try:
             with open(temp_file_path, "w") as f:
                 f.write(code)
@@ -229,12 +229,9 @@ class CodeGeneratorTool(BaseTool):
                 error=f"Failed to write code: {e}",
             )
 
-        # Log for traceability
         logger.info("Code written to: %s", temp_file_path)
         code_preview = code if len(code) <= 3000 else code[:3000] + "\n... [truncated]"
         logger.info("Generated code:\n%s", code_preview)
-
-        # Execute code
         try:
             process = subprocess.Popen(
                 ["python", temp_file_path],
@@ -248,15 +245,8 @@ class CodeGeneratorTool(BaseTool):
             try:
                 stdout, stderr = process.communicate(timeout=self.timeout_seconds)
 
-                # Trim output
                 stdout = self._trim_output(stdout)
                 stderr = self._trim_output(stderr)
-
-                # Clean up temp file
-                # try:
-                #     os.remove(temp_file_path)
-                # except Exception:
-                #     pass
 
                 if process.returncode == 0:
                     logger.info("Code executed successfully")
@@ -300,11 +290,6 @@ class CodeGeneratorTool(BaseTool):
                 except Exception:
                     pass
 
-                # try:
-                #     os.remove(temp_file_path)
-                # except Exception:
-                #     pass
-
                 return ToolResult(
                     success=False,
                     output="",
@@ -314,11 +299,6 @@ class CodeGeneratorTool(BaseTool):
 
         except Exception as e:
             logger.error(f"Code execution error: {e}", exc_info=True)
-            # try:
-            #     os.remove(temp_file_path)
-            # except Exception:
-            #     pass
-
             return ToolResult(
                 success=False,
                 output="",

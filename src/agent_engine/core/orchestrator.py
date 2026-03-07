@@ -98,8 +98,21 @@ class AgenticOrchestrator:
         max_turns: int = 15,
         tool_limits: Optional[Dict[str, int]] = None,
         use_thinking: bool = False,
-        cache_manager=None,  # Optional: persist cache after each URL fetch (for parallel runs)
+        cache_manager=None,
     ):
+        """Initialize the orchestrator.
+
+        Args:
+            model_provider: Orchestrator LLM used for reasoning and tool-call generation.
+            tool_registry: Registered tools the orchestrator may invoke.
+            max_turns: Maximum reasoning turns before forcing an answer.
+            tool_limits: Per-tool call limits, e.g. ``{"web_search": 10}``.
+                         Tools not listed here have no limit.
+            use_thinking: Whether the orchestrator should emit ``<think>`` output.
+                          Has no effect if the model doesn't support thinking.
+            cache_manager: Optional :class:`~agent_engine.caching.CacheManager`
+                           for atomic cache persistence during parallel runs.
+        """
         self.model = model_provider
         self.tools = tool_registry
         self.cache_manager = cache_manager
@@ -121,7 +134,20 @@ class AgenticOrchestrator:
         system_prompt: str,
         attachments: Optional[List[str]] = None,
     ) -> ExecutionState:
-        """Execute agentic reasoning loop for a single question."""
+        """Execute the agentic reasoning loop for a single question.
+
+        Args:
+            question: The question text to answer.
+            question_id: Unique identifier for the question (used for context
+                         manager namespacing and logging).
+            system_prompt: Fully-formatted system prompt (tool schemas included).
+            attachments: Optional list of file paths attached to the question
+                         (e.g. an image or CSV file).
+
+        Returns:
+            :class:`~agent_engine.core.state.ExecutionState` populated with the
+            final answer, full message history, and tool usage stats.
+        """
         state = ExecutionState(
             question_id=question_id,
             question=question,
@@ -178,11 +204,24 @@ class AgenticOrchestrator:
         system_prompts: Sequence[str],
         attachments: Optional[Sequence[Optional[List[str]]]] = None,
     ) -> List[ExecutionState]:
-        """Execute agentic reasoning for a batch of questions (batched generation).
+        """Execute agentic reasoning for a batch of questions.
 
-        At each turn all unfinished states are generated together in a single
-        model.generate() call.  LLM-backed tool sub-agents (web_search,
-        code_generator) are also batched within each turn.
+        All unfinished states are advanced by one turn in a single
+        ``model.generate()`` call.  LLM-backed tool sub-agents
+        (``web_search``, ``code_generator``) are also batched within each turn,
+        amortizing per-call overhead across all active questions.
+
+        Args:
+            questions: Question texts (must be the same length as *question_ids*
+                       and *system_prompts*).
+            question_ids: Unique identifiers matching each question.
+            system_prompts: Pre-built system prompts matching each question.
+            attachments: Optional per-question attachment file paths.
+                         ``None`` or a list of ``None`` values means no attachments.
+
+        Returns:
+            List of :class:`~agent_engine.core.state.ExecutionState` instances in
+            the same order as *questions*.
         """
         if not (len(questions) == len(question_ids) == len(system_prompts)):
             raise ValueError("questions, question_ids, system_prompts must have the same length")
@@ -350,7 +389,8 @@ class AgenticOrchestrator:
             return
 
         try:
-            ctx = get_reasoning_context_for_state(state)
+            mind_map = self._get_mind_map_for_state(state)
+            ctx = get_reasoning_context_for_state(state, mind_map=mind_map)
             att_ctx = get_attachment_context_for_code(state)
             full_ctx = (ctx + "\n\n" + att_ctx).strip() if att_ctx else ctx
             prompt = tool.build_task_prompt(task, context=full_ctx)
@@ -422,7 +462,9 @@ class AgenticOrchestrator:
             job.tool.build_analysis_prompt(
                 job.query,
                 job.tool._format_results(job.payload.get("results", []), job.query),
-                prev_reasoning=get_reasoning_context_for_state(job.state),
+                prev_reasoning=get_reasoning_context_for_state(
+                    job.state, mind_map=self._get_mind_map_for_state(job.state)
+                ),
             )
             for job in jobs
         ]
@@ -555,9 +597,11 @@ class AgenticOrchestrator:
         if getattr(tool, "direct_mode", True):
             return
         if tool_name == "web_search" and hasattr(tool, "build_analysis_prompt"):
-            arguments["prev_reasoning"] = get_reasoning_context_for_state(state)
+            mind_map = self._get_mind_map_for_state(state)
+            arguments["prev_reasoning"] = get_reasoning_context_for_state(state, mind_map=mind_map)
         elif tool_name == "code_generator" and hasattr(tool, "build_task_prompt"):
-            ctx = get_reasoning_context_for_state(state)
+            mind_map = self._get_mind_map_for_state(state)
+            ctx = get_reasoning_context_for_state(state, mind_map=mind_map)
             att_ctx = get_attachment_context_for_code(state)
             arguments["context"] = (ctx + "\n\n" + att_ctx).strip() if att_ctx else ctx
 
@@ -637,6 +681,17 @@ class AgenticOrchestrator:
     # ------------------------------------------------------------------ #
     # Utility                                                             #
     # ------------------------------------------------------------------ #
+
+    def _get_mind_map_for_state(self, state: ExecutionState):
+        """Return the context manager's GraphRAG for this question if available.
+
+        Used by :func:`get_reasoning_context_for_state` for summarization of
+        long reasoning chains when the context manager uses GraphRAG.
+        """
+        ctx_tool = self.tools.get("context_manager")
+        if not ctx_tool or not getattr(ctx_tool, "use_graphrag", False):
+            return None
+        return getattr(ctx_tool, "graphrag_instances", {}).get(state.question_id)
 
     @staticmethod
     def _get_analysis_cache(tool: Any) -> Dict[str, str]:

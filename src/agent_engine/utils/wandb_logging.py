@@ -34,7 +34,37 @@ def log_results_wandb(
     config_summary: Optional[Dict[str, Any]] = None,
     config_path: Optional[str] = None,
 ) -> None:
-    """Log a single W&B row with final metrics + tool usage."""
+    """Log experiment results as a single row to a W&B table.
+
+    Supports two ``tool_stats`` shapes emitted by different code paths:
+
+    * **Nested** — ``tool_stats["overall"]["search_total"]`` (from
+      ``run_experiment.py`` when saving per-level stats).
+    * **Flat** — ``tool_stats["web_search"]`` (from the ``metrics["tool_usage"]``
+      dict written directly to ``metrics.json``).
+
+    Args:
+        project: W&B project name.
+        run_name: Display name for this run.
+        dataset_name: Name of the evaluated dataset (e.g. ``"gaia"``).
+        dataset_split: Dataset split used (e.g. ``"validation"``).
+        subset_num: Number of examples evaluated (``None`` = full split).
+        model_name: Orchestrator model identifier.
+        mode: Experiment mode string (e.g. ``"subagent"``).
+        thinking_mode: :class:`ThinkingMode` value as a string.
+        direct_tool_call: Whether tools were called directly (no sub-agent LLM).
+        enable_search_tool: Whether ``web_search`` was enabled.
+        enable_code_tool: Whether ``code_generator`` was enabled.
+        context_manager: Whether ``context_manager`` was enabled.
+        enable_text_inspector_tool: Whether ``text_inspector`` was enabled.
+        enable_image_inspector_tool: Whether ``image_inspector`` was enabled.
+        final_metrics: Metrics dict with ``"overall"`` and ``"per_level"`` keys.
+        tool_stats: Tool usage counts (see two-format note above).
+        metrics_path: Local path to ``metrics.json`` (for display only).
+        config_summary: Subset of :class:`ExperimentConfig` fields to store in
+                        the W&B run config.
+        config_path: Path to ``config.json`` to upload as a file artifact.
+    """
     if not final_metrics:
         return
 

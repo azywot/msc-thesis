@@ -50,7 +50,7 @@ def export_all_prompts(output_path: Path):
 
     # Export tool schemas
     tools = [
-        ("web_search", WebSearchTool(serper_api_key="dummy", search_cache={})),
+        ("web_search", WebSearchTool(api_key="dummy", search_cache={})),
         ("code_generator", CodeGeneratorTool()),
         ("context_manager", ContextManagerTool()),
         ("text_inspector", TextInspectorTool()),
