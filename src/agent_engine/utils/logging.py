@@ -63,3 +63,23 @@ def get_logger(name: str) -> logging.Logger:
         Logger instance
     """
     return logging.getLogger(f'agent_engine.{name}')
+
+
+def format_messages_as_chat(messages: list) -> str:
+    """Format a messages list for logging.
+
+    Shows each message as a numbered entry with its role label so all roles
+    (system, user, assistant, tool) are clearly visible in logs.
+
+    Args:
+        messages: List of {"role": ..., "content": ...} dicts
+
+    Returns:
+        Human-readable string with one block per message
+    """
+    parts = []
+    for i, m in enumerate(messages):
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        parts.append(f"[{i}] {role}:\n{content}")
+    return "\n---\n".join(parts)

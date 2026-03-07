@@ -117,6 +117,7 @@ class AgenticOrchestrator:
                 prompt = self.model.apply_chat_template(state.messages, use_thinking=self.use_thinking)
                 gen_result = self.model.generate([prompt])[0]
                 state.current_output = gen_result.text
+                state.accumulate_usage(gen_result.usage)
             except Exception as e:
                 logger.exception("Generation error")
                 state.metadata["error"] = str(e)
@@ -231,6 +232,7 @@ class AgenticOrchestrator:
 
         for s, gen_result in zip(active, gen_results):
             s.current_output = gen_result.text
+            s.accumulate_usage(gen_result.usage)
             tool_call = parse_qwen3_tool_call(gen_result.text)
 
             if tool_call:
@@ -400,6 +402,7 @@ class AgenticOrchestrator:
             job.state.add_message("tool", f"<tool_response>\n{text}\n</tool_response>")
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
+            job.state.accumulate_usage(out.usage)
 
     # ------------------------------------------------------------------ #
     # Batched code generation                                             #
@@ -432,6 +435,7 @@ class AgenticOrchestrator:
             job.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
+            job.state.accumulate_usage(out.usage)
 
     # ------------------------------------------------------------------ #
     # Message construction                                                #

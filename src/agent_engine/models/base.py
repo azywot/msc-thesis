@@ -71,6 +71,7 @@ class GenerationResult:
     finish_reason: str
     usage: Dict[str, int] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    messages: Optional[List[Dict[str, Any]]] = None  # input messages that produced this result
 
 
 class BaseModelProvider(ABC):

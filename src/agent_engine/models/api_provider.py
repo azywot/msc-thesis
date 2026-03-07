@@ -3,6 +3,7 @@
 This module provides implementations for cloud-based model APIs.
 """
 
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List
@@ -11,7 +12,7 @@ from openai import OpenAI
 from anthropic import Anthropic
 
 from .base import BaseModelProvider, GenerationResult, ModelConfig
-from ..utils.logging import get_logger
+from ..utils.logging import get_logger, format_messages_as_chat
 
 logger = get_logger(__name__)
 
@@ -69,14 +70,35 @@ class OpenAIProvider(BaseModelProvider):
         """Generate a single completion (helper for batching).
 
         Args:
-            prompt: Single prompt string
+            prompt: Single prompt string or JSON-encoded messages list
 
         Returns:
             List with single GenerationResult
         """
+        raw_messages = None
+        try:
+            payload = json.loads(prompt)
+            if isinstance(payload, dict) and "messages" in payload:
+                raw_messages = payload["messages"]
+            elif isinstance(payload, list):
+                raw_messages = payload
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        if raw_messages is not None:
+            # Map "tool" -> "user" (OpenAI native tool role is for function-calling)
+            messages = [
+                {**m, "role": "user"} if m.get("role") == "tool" else m
+                for m in raw_messages
+            ]
+        else:
+            messages = [{"role": "user", "content": prompt}]
+
+        logger.debug("OpenAI request:\n%s", format_messages_as_chat(messages))
+
         response = self.client.chat.completions.create(
             model=self.config.path_or_id,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=self.config.temperature,
             top_p=self.config.top_p,
             max_tokens=self.config.max_tokens,
@@ -94,7 +116,8 @@ class OpenAIProvider(BaseModelProvider):
             metadata={
                 "model": response.model,
                 "role": self.config.role,
-            }
+            },
+            messages=raw_messages,
         )
         return [result]
 
@@ -103,23 +126,16 @@ class OpenAIProvider(BaseModelProvider):
         messages: List[Dict[str, str]],
         use_thinking: bool = False
     ) -> str:
-        """Apply chat template (OpenAI handles this internally).
-
-        For OpenAI, we return the last message content as the template
-        is applied by the API itself.
+        """Serialize the full conversation for the OpenAI API.
 
         Args:
             messages: List of message dicts
             use_thinking: Ignored for OpenAI
 
         Returns:
-            Last message content
+            JSON-encoded messages list (deserialized in _generate_single)
         """
-        # For OpenAI, we typically send the full conversation
-        # For compatibility, return the last user message
-        if messages:
-            return messages[-1].get("content", "")
-        return ""
+        return json.dumps(messages, ensure_ascii=False)
 
     def cleanup(self):
         """Cleanup (no-op for API providers)."""
@@ -179,18 +195,50 @@ class AnthropicProvider(BaseModelProvider):
         """Generate a single completion (helper for batching).
 
         Args:
-            prompt: Single prompt string
+            prompt: Single prompt string or JSON-encoded messages list
 
         Returns:
             List with single GenerationResult
         """
-        response = self.client.messages.create(
+        raw_messages = None
+        system = None
+        try:
+            payload = json.loads(prompt)
+            if isinstance(payload, dict) and "messages" in payload:
+                raw_messages = payload["messages"]
+            elif isinstance(payload, list):
+                raw_messages = payload
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        if raw_messages is not None:
+            # Anthropic requires: system as top-level param, no "tool" role.
+            messages = []
+            for m in raw_messages:
+                role = m.get("role")
+                if role == "system":
+                    system = m.get("content", "")
+                elif role == "tool":
+                    messages.append({"role": "user", "content": m.get("content", "")})
+                else:
+                    messages.append(m)
+        else:
+            messages = [{"role": "user", "content": prompt}]
+
+        log_messages = ([{"role": "system", "content": system}] if system else []) + messages
+        logger.debug("Anthropic request:\n%s", format_messages_as_chat(log_messages))
+
+        kwargs = dict(
             model=self.config.path_or_id,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=self.config.temperature,
             top_p=self.config.top_p,
             max_tokens=self.config.max_tokens,
         )
+        if system:
+            kwargs["system"] = system
+
+        response = self.client.messages.create(**kwargs)
 
         result = GenerationResult(
             text=response.content[0].text,
@@ -203,7 +251,8 @@ class AnthropicProvider(BaseModelProvider):
             metadata={
                 "model": response.model,
                 "role": self.config.role,
-            }
+            },
+            messages=raw_messages,
         )
         return [result]
 
@@ -212,18 +261,16 @@ class AnthropicProvider(BaseModelProvider):
         messages: List[Dict[str, str]],
         use_thinking: bool = False
     ) -> str:
-        """Apply chat template (Anthropic handles this internally).
+        """Serialize the full conversation for the Anthropic API.
 
         Args:
             messages: List of message dicts
             use_thinking: Ignored for Anthropic
 
         Returns:
-            Last message content
+            JSON-encoded messages list (deserialized in _generate_single)
         """
-        if messages:
-            return messages[-1].get("content", "")
-        return ""
+        return json.dumps(messages, ensure_ascii=False)
 
     def cleanup(self):
         """Cleanup (no-op for API providers)."""

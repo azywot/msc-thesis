@@ -227,7 +227,7 @@ def _mc_correct(prediction: str, ground_truth: str, choices: List[str]) -> bool:
     if len(pred_norm) == 1 and pred_norm in 'ABCDE':
         pred_letter = pred_norm
     else:
-        m = re.search(r'[(]?([A-E])[).:)]?', pred_norm)
+        m = re.search(r'\b([A-E])\b', pred_norm)
         if m:
             pred_letter = m.group(1)
 

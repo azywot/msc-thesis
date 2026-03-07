@@ -355,12 +355,21 @@ def run_experiment(args):
                     "ground_truth": ex.answer,
                     "correct": bool(eval_result.get("correct", False)),
                     "evaluation": eval_result,
-                    "output_text": _state_to_output_text(state),
+                    "messages": state.messages,
                     "tool_calls": _collect_tool_call_records(state),
                     "turns": state.turn,
                     "tool_counts": state.tool_counts,
+                    "token_usage": state.token_usage,
                     "metadata": ex.metadata,
                 })
+                tu = state.token_usage
+                logger.info(
+                    "Q%s tokens — prompt: %d  completion: %d  total: %d",
+                    ex.question_id,
+                    tu["prompt_tokens"],
+                    tu["completion_tokens"],
+                    tu["total_tokens"],
+                )
 
             # Flush intermediate raw results every 10 examples
             if (base_idx + len(batch)) % 10 == 0:
@@ -439,16 +448,6 @@ def _write_json(path: Path, data: Any) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-
-def _state_to_output_text(state: ExecutionState) -> str:
-    """Flatten state messages into a single string of assistant + tool content."""
-    parts: List[str] = []
-    for msg in state.messages:
-        if msg.get("role") in ("assistant", "tool"):
-            content = msg.get("content") or ""
-            if content:
-                parts.append(content)
-    return "\n".join(parts).strip()
 
 
 def _collect_tool_call_records(state: ExecutionState) -> List[Dict[str, Any]]:
