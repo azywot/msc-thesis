@@ -11,6 +11,10 @@ from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 from ..models.base import BaseModelProvider
 from ..utils.logging import get_logger
 from ..utils.parsing import extract_answer, parse_tool_call, strip_thinking_tags
+from ..utils.reasoning_context import (
+    get_reasoning_context_for_state,
+    get_attachment_context_for_code,
+)
 from .state import ExecutionState
 from .tool import ToolRegistry, ToolResult
 
@@ -346,7 +350,10 @@ class AgenticOrchestrator:
             return
 
         try:
-            prompt = tool.build_task_prompt(task)
+            ctx = get_reasoning_context_for_state(state)
+            att_ctx = get_attachment_context_for_code(state)
+            full_ctx = (ctx + "\n\n" + att_ctx).strip() if att_ctx else ctx
+            prompt = tool.build_task_prompt(task, context=full_ctx)
             code_jobs.append(_CodeJob(state, tool_call, tool, prompt))
         except Exception as exc:
             immediate_results.append(_ImmediateResult(state, tool_call, ToolResult(success=False, output="", metadata={}, error=str(exc))))
@@ -412,7 +419,11 @@ class AgenticOrchestrator:
         analysis_cache = self._get_analysis_cache(jobs[0].tool)
 
         prompts = [
-            job.tool.build_analysis_prompt(job.query, job.tool._format_results(job.payload.get("results", []), job.query))
+            job.tool.build_analysis_prompt(
+                job.query,
+                job.tool._format_results(job.payload.get("results", []), job.query),
+                prev_reasoning=get_reasoning_context_for_state(job.state),
+            )
             for job in jobs
         ]
         gen_outputs = provider.generate(prompts) if provider else []
@@ -523,11 +534,32 @@ class AgenticOrchestrator:
             if inject_error:
                 return ToolResult(success=False, output="", metadata={}, error=inject_error)
 
+            self._inject_reasoning_context(tool_name, state, arguments)
+
             logger.info("Tool call: %s, %s", tool_name, arguments)
             return tool.execute(**arguments)
         except Exception as e:
             logger.exception("Tool execution error")
             return ToolResult(success=False, output="", metadata={}, error=str(e))
+
+    def _inject_reasoning_context(
+        self,
+        tool_name: str,
+        state: ExecutionState,
+        arguments: Dict[str, Any],
+    ) -> None:
+        """Inject previous reasoning context for web_search and code_generator (sub-agent only)."""
+        tool = self.tools.get(tool_name)
+        if tool is None:
+            return
+        if getattr(tool, "direct_mode", True):
+            return
+        if tool_name == "web_search" and hasattr(tool, "build_analysis_prompt"):
+            arguments["prev_reasoning"] = get_reasoning_context_for_state(state)
+        elif tool_name == "code_generator" and hasattr(tool, "build_task_prompt"):
+            ctx = get_reasoning_context_for_state(state)
+            att_ctx = get_attachment_context_for_code(state)
+            arguments["context"] = (ctx + "\n\n" + att_ctx).strip() if att_ctx else ctx
 
     def _inject_attachment_path(
         self,

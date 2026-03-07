@@ -114,12 +114,13 @@ class CodeGeneratorTool(BaseTool):
                 }
             }
 
-    def execute(self, code: str = None, task: str = None) -> ToolResult:
+    def execute(self, code: str = None, task: str = None, context: str = "") -> ToolResult:
         """Execute Python code (direct) or generate then execute (sub-agent).
 
         Args:
             code: Python code string to execute (direct mode)
             task: Task description for code generation (sub-agent mode)
+            context: Previous reasoning for sub-agent mode
 
         Returns:
             ToolResult with execution output or error
@@ -134,7 +135,7 @@ class CodeGeneratorTool(BaseTool):
                     metadata={},
                     error="Task description required for sub-agent mode",
                 )
-            code = self.generate_code(task)
+            code = self.generate_code(task, context)
             if not code:
                 return ToolResult(
                     success=False,
@@ -145,15 +146,17 @@ class CodeGeneratorTool(BaseTool):
 
         return self.execute_code(code)
 
-    def build_task_prompt(self, task: str) -> str:
+    def build_task_prompt(self, task: str, context: str = "") -> str:
         """Build the sub-agent LLM prompt for code generation.
 
         This is used by both single and batched sub-agent execution.
+        context: Previous reasoning and optional attachment info (MAT-style).
         """
+        context_block = f"Context:\n\n{context}\n\n" if context else ""
         prompt = (
             "You are a code generator. Generate ONLY executable Python code, with NO explanations, "
             "NO comments about what the code does, and NO additional text.\n\n"
-            f"Context: \n\nProblem: {task}\n\n"
+            f"{context_block}Problem: {task}\n\n"
             "Requirements:\n"
             "- Output ONLY the Python code\n"
             "- The code must be executable as a standalone script\n"
@@ -169,14 +172,15 @@ class CodeGeneratorTool(BaseTool):
         """Extract Python code from the LLM response (robust to markdown fences)."""
         return self._extract_code_from_response(response_text)
 
-    def generate_code(self, task: str) -> str:
+    def generate_code(self, task: str, context: str = "") -> str:
         """Generate Python code from a task (sub-agent mode).
 
         In batched mode, the orchestrator should call `build_task_prompt(...)`,
         batch `model_provider.generate(prompts)`, then call
         `extract_code_from_llm_response(...)`.
+        context: Previous reasoning.
         """
-        prompt = self.build_task_prompt(task)
+        prompt = self.build_task_prompt(task, context)
         result = self.model_provider.generate([prompt])[0]
 
         output = strip_thinking_tags(result.text)

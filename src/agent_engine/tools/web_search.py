@@ -114,7 +114,7 @@ class WebSearchTool(BaseTool):
             }
         }
 
-    def execute(self, query: str) -> ToolResult:
+    def execute(self, query: str, prev_reasoning: str = "") -> ToolResult:
         """Execute web search.
 
         Flow:
@@ -173,7 +173,7 @@ class WebSearchTool(BaseTool):
             if self.direct_mode:
                 output, usage = formatted, None
             else:
-                output, usage = self._analyze_with_llm(query, formatted)
+                output, usage = self._analyze_with_llm(query, formatted, prev_reasoning)
             return ToolResult(
                 success=True,
                 output=output,
@@ -234,7 +234,7 @@ class WebSearchTool(BaseTool):
                     metadata={"cached": False, "num_results": len(results), "query": query, "mode": "direct"},
                 )
 
-            output, usage = self._analyze_with_llm(query, formatted_results)
+            output, usage = self._analyze_with_llm(query, formatted_results, prev_reasoning)
             return ToolResult(
                 success=True,
                 output=output,
@@ -298,27 +298,38 @@ class WebSearchTool(BaseTool):
             logger.error(f"URL fetch error: {e}", exc_info=True)
             return False
 
-    def _analyze_with_llm(self, query: str, search_results: str) -> Tuple[str, Optional[Dict[str, int]]]:
+    def _analyze_with_llm(
+        self,
+        query: str,
+        search_results: str,
+        prev_reasoning: str = "",
+    ) -> Tuple[str, Optional[Dict[str, int]]]:
         """Use LLM to analyze search results (sub-agent mode).
 
         Args:
             query: Original search query
             search_results: Formatted search results
+            prev_reasoning: Previous reasoning steps (MAT-style context)
 
         Returns:
             Tuple of (LLM-analyzed summary, token usage dict or None)
         """
-        prompt = self.build_analysis_prompt(query, search_results)
+        prompt = self.build_analysis_prompt(query, search_results, prev_reasoning)
         result = self.model_provider.generate([prompt])[0]
         output = strip_thinking_tags(result.text)
         return output, result.usage
 
-    def build_analysis_prompt(self, query: str, formatted_results: str) -> str:
+    def build_analysis_prompt(
+        self,
+        query: str,
+        formatted_results: str,
+        prev_reasoning: str = "",
+    ) -> str:
         """Build the sub-agent prompt for web-page analysis.
 
         Mirrors the multi-agent-tools get_webpage_to_reasonchain_instruction prompt.
+        prev_reasoning is extracted from state by the orchestrator (MAT-style).
         """
-        prev_reasoning = ""
         instruction = f"""**Task Instruction:**
 
 You are tasked with reading and analyzing web pages based on the following inputs: **Previous Reasoning Steps**, **Current Search Query**, and **Searched Web Pages**. Your objective is to extract relevant and helpful information for **Current Search Query** from the **Searched Web Pages** and seamlessly integrate this information into the **Previous Reasoning Steps** to continue reasoning for the original question.
