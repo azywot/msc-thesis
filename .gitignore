@@ -45,7 +45,8 @@ htmlcov/
 *.ipynb
 
 # Data and models
-data/
+data/*
+!data/static
 cache/
 *.pt
 *.pth

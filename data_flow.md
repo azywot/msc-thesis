@@ -32,6 +32,8 @@ orchestrator.
 
 ## 1. High-level picture
 
+![Data flow overview](data/static/data_flow_overview.png)
+
 ### Batch path (experiments)
 
 ```
