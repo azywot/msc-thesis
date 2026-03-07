@@ -1,6 +1,6 @@
 # HLE Direct Mode — single orchestrator model, tools execute without sub-agent LLMs
 
-name: "hle_qwen3_direct"
+name: "hle_qwen3_direct_test"
 description: "HLE with direct tool execution using Qwen3-4B (no sub-agents)"
 
 slurm:
@@ -35,7 +35,7 @@ dataset:
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/hle_direct_mode"
+output_dir: "./experiments/results/hle_qwen3_direct_test"
 use_wandb: false
 wandb_project: "msc-thesis"
 

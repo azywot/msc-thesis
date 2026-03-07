@@ -97,11 +97,6 @@ class GAIADataset(BaseDataset):
 
         logger.info(f"Loaded {len(examples)} GAIA examples")
 
-        # Apply subset if specified
-        if self.config.subset_num > 0:
-            examples = examples[:self.config.subset_num]
-            logger.info(f"Using subset of {len(examples)} examples")
-
         return examples
 
     def evaluate(

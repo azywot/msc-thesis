@@ -143,11 +143,15 @@ def build_tools(
 
     for name in enabled_tools:
         if name == "web_search":
-            serper_key = os.getenv("SERPER_API_KEY")
-            if not serper_key:
-                raise RuntimeError("SERPER_API_KEY env var is required for web_search")
+            provider = config.tools.web_tool_provider
+            # Get the appropriate API key based on provider
+            api_key = os.getenv(f"{provider.upper()}_API_KEY")
+            if not api_key:
+                raise RuntimeError(f"{provider.upper()}_API_KEY env var is required when web_tool_provider='{provider}'")
+
             tools.register(WebSearchTool(
-                serper_api_key=serper_key,
+                api_key=api_key,
+                provider=provider,
                 search_cache=cache_manager.search_cache,
                 url_cache=cache_manager.url_cache,
                 top_k=config.tools.top_k_results,

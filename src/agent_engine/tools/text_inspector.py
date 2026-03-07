@@ -233,7 +233,7 @@ class TextInspectorTool(BaseTool):
                 )
             else:
                 # Non-direct mode with question: use LLM analysis
-                analysis = self._analyze_with_llm(content, question)
+                analysis, usage = self._analyze_with_llm(content, question)
 
                 return ToolResult(
                     success=True,
@@ -246,7 +246,8 @@ class TextInspectorTool(BaseTool):
                         "truncated": truncated,
                         "mode": "sub-agent",
                         "question": question
-                    }
+                    },
+                    usage=usage,
                 )
 
         except Exception as e:
@@ -259,7 +260,7 @@ class TextInspectorTool(BaseTool):
                 error=msg,
             )
 
-    def _analyze_with_llm(self, file_content: str, question: str) -> str:
+    def _analyze_with_llm(self, file_content: str, question: str) -> tuple[str, Optional[Dict[str, int]]]:
         """Use LLM to analyze file content and answer question (sub-agent mode).
 
         Args:
@@ -267,12 +268,11 @@ class TextInspectorTool(BaseTool):
             question: Question about the file
 
         Returns:
-            LLM analysis/answer
+            Tuple of (analysis text, token usage dict or None)
         """
         if not self.model_provider:
-            return "[Note] No text-inspector model configured; cannot analyze the file."
+            return "[Note] No text-inspector model configured; cannot analyze the file.", None
 
-        # Build prompt with chat template
         system_prompt = (
             "You are given the content of a plain-text file attached to the user's question. "
             "Answer the question using only the file content. If the file does not contain the answer, say so."
@@ -288,7 +288,7 @@ class TextInspectorTool(BaseTool):
         result = self.model_provider.generate([prompt])[0]
 
         output = strip_thinking_tags(result.text)
-        return output
+        return output, result.usage
 
     def _read_plain_text(self, path: Path) -> str:
         """Read plain text file."""

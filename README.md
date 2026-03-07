@@ -29,7 +29,7 @@ msc-thesis/
 │   ├── tools/                 # web_search, code_generator, context_manager, inspectors
 │   ├── datasets/              # loaders + evaluators + metrics
 │   ├── prompts/               # prompt templates + builders
-│   ├── external/              # Serper + URL fetching utilities
+│   ├── external/              # Serper, Tavily + URL fetching utilities
 │   ├── caching/               # cache manager(s)
 │   └── utils/                 # parsing/logging helpers
 │
@@ -103,10 +103,11 @@ cp .env.example .env
 nano .env
 ```
 
-Minimum required:
+Web search (one required based on `web_tool_provider` in config, default is Serper):
 
 ```bash
-SERPER_API_KEY=your_serper_key_here
+SERPER_API_KEY=your_serper_key_here  # For web_tool_provider: "serper"
+TAVILY_API_KEY=your_tavily_key_here  # For web_tool_provider: "tavily"
 ```
 
 Optional:
@@ -154,8 +155,10 @@ Optional overrides (via `sbatch --export=ALL,...`): `ENV_NAME`, `PROJECT_DIR`, `
 ### Locally
 
 ```bash
-# Set required key
-export SERPER_API_KEY="..."
+# Set required key (Serper or Tavily, depending on config)
+export SERPER_API_KEY="..."  # If using web_tool_provider: "serper"
+# OR
+export TAVILY_API_KEY="..."  # If using web_tool_provider: "tavily"
 
 # Run with a config file
 python scripts/run_experiment.py --config experiments/configs/gaia/baseline.yaml
@@ -217,7 +220,7 @@ python examples/example_context_manager.py   # web_search + context_manager (Gra
 Prerequisites:
 
 ```bash
-export SERPER_API_KEY="<your-key>"
+export SERPER_API_KEY="<your-key>"  # Or TAVILY_API_KEY, depending on config
 export HF_HOME="/path/to/hf_cache"   # must contain Qwen/Qwen3-4B
 ```
 
@@ -288,11 +291,22 @@ Enabled via `tools.enabled_tools` in the config:
 
 | Tool | Description |
 |---|---|
-| `web_search` | Serper API search + URL fetching; optional LLM-based result analysis in sub-agent mode |
+| `web_search` | Serper or Tavily API search; provider set via `web_tool_provider` config. **Serper**: fetches and caches full page content. **Tavily**: uses pre-cleaned, structured content directly (no URL fetching). Optional LLM-based result analysis in sub-agent mode. |
 | `code_generator` | Execute Python in a subprocess; LLM generates the code in sub-agent mode |
 | `context_manager` | Persistent per-question memory with optional GraphRAG indexing |
 | `text_inspector` | Read and optionally analyse text files (PDF, DOCX, XLSX, CSV, …) |
 | `image_inspector` | Vision-language analysis of images; requires a VLM in the config |
+
+### Web Search Providers
+
+The `web_search` tool supports two providers via `web_tool_provider` config:
+
+- **Serper** (default): Traditional search API that returns URLs. The tool fetches and caches full page content.
+  - Cache structure: `./cache/serper/<dataset_name>/search_cache.json` and `./cache/serper/<dataset_name>/url_cache.json`
+
+- **Tavily**: AI-native search engine designed for LLMs. Returns pre-cleaned, structured content with no URL fetching needed.
+  - Cache structure: `./cache/tavily/<dataset_name>/search_cache.json` (no URL cache needed)
+  - Faster and more efficient for AI agents
 
 ---
 

@@ -114,12 +114,13 @@ class CodeGeneratorTool(BaseTool):
                 }
             }
 
-    def execute(self, code: str = None, task: str = None) -> ToolResult:
+    def execute(self, code: str = None, task: str = None, context: str = "") -> ToolResult:
         """Execute Python code (direct) or generate then execute (sub-agent).
 
         Args:
             code: Python code string to execute (direct mode)
             task: Task description for code generation (sub-agent mode)
+            context: Previous reasoning for sub-agent mode
 
         Returns:
             ToolResult with execution output or error
@@ -134,7 +135,7 @@ class CodeGeneratorTool(BaseTool):
                     metadata={},
                     error="Task description required for sub-agent mode",
                 )
-            code = self.generate_code(task)
+            code = self.generate_code(task, context)
             if not code:
                 return ToolResult(
                     success=False,
@@ -145,15 +146,17 @@ class CodeGeneratorTool(BaseTool):
 
         return self.execute_code(code)
 
-    def build_task_prompt(self, task: str) -> str:
+    def build_task_prompt(self, task: str, context: str = "") -> str:
         """Build the sub-agent LLM prompt for code generation.
 
         This is used by both single and batched sub-agent execution.
+        context: Previous reasoning and optional attachment info (MAT-style).
         """
+        context_block = f"Context:\n\n{context}\n\n" if context else ""
         prompt = (
             "You are a code generator. Generate ONLY executable Python code, with NO explanations, "
             "NO comments about what the code does, and NO additional text.\n\n"
-            f"Context: \n\nProblem: {task}\n\n"
+            f"{context_block}Problem: {task}\n\n"
             "Requirements:\n"
             "- Output ONLY the Python code\n"
             "- The code must be executable as a standalone script\n"
@@ -169,22 +172,27 @@ class CodeGeneratorTool(BaseTool):
         """Extract Python code from the LLM response (robust to markdown fences)."""
         return self._extract_code_from_response(response_text)
 
-    def generate_code(self, task: str) -> str:
+    def generate_code(self, task: str, context: str = "") -> str:
         """Generate Python code from a task (sub-agent mode).
 
         In batched mode, the orchestrator should call `build_task_prompt(...)`,
         batch `model_provider.generate(prompts)`, then call
         `extract_code_from_llm_response(...)`.
+        context: Previous reasoning.
         """
-        prompt = self.build_task_prompt(task)
+        prompt = self.build_task_prompt(task, context)
         result = self.model_provider.generate([prompt])[0]
 
         output = strip_thinking_tags(result.text)
         return self.extract_code_from_llm_response(output)
 
     def execute_code(self, code: Optional[str]) -> ToolResult:
-        """Execute a concrete Python code string (shared by direct + sub-agent)."""
-        # Validate code
+        """Execute a concrete Python code string (shared by direct + sub-agent).
+
+        Temp files written to ``self.temp_dir`` are intentionally kept on disk
+        for post-hoc debugging. Remove them manually after a run if disk space
+        is a concern.
+        """
         if not code or not code.strip():
             return ToolResult(
                 success=False,
@@ -193,10 +201,8 @@ class CodeGeneratorTool(BaseTool):
                 error="Empty code provided",
             )
 
-        # Normalize code
         code = code.strip("\ufeff \t\r\n")
 
-        # Syntax check
         try:
             ast.parse(code)
         except SyntaxError as exc:
@@ -208,11 +214,9 @@ class CodeGeneratorTool(BaseTool):
                 error=f"Invalid Python syntax: {exc}",
             )
 
-        # Generate unique run ID
         run_id = os.getenv("SLURM_JOB_ID", f"{os.getpid()}_{int(time.time())}")
         temp_file_path = os.path.join(self.temp_dir, f"temp_code_{run_id}.py")
 
-        # Write code to file
         try:
             with open(temp_file_path, "w") as f:
                 f.write(code)
@@ -225,12 +229,9 @@ class CodeGeneratorTool(BaseTool):
                 error=f"Failed to write code: {e}",
             )
 
-        # Log for traceability
         logger.info("Code written to: %s", temp_file_path)
         code_preview = code if len(code) <= 3000 else code[:3000] + "\n... [truncated]"
         logger.info("Generated code:\n%s", code_preview)
-
-        # Execute code
         try:
             process = subprocess.Popen(
                 ["python", temp_file_path],
@@ -244,15 +245,8 @@ class CodeGeneratorTool(BaseTool):
             try:
                 stdout, stderr = process.communicate(timeout=self.timeout_seconds)
 
-                # Trim output
                 stdout = self._trim_output(stdout)
                 stderr = self._trim_output(stderr)
-
-                # Clean up temp file
-                # try:
-                #     os.remove(temp_file_path)
-                # except Exception:
-                #     pass
 
                 if process.returncode == 0:
                     logger.info("Code executed successfully")
@@ -296,11 +290,6 @@ class CodeGeneratorTool(BaseTool):
                 except Exception:
                     pass
 
-                # try:
-                #     os.remove(temp_file_path)
-                # except Exception:
-                #     pass
-
                 return ToolResult(
                     success=False,
                     output="",
@@ -310,11 +299,6 @@ class CodeGeneratorTool(BaseTool):
 
         except Exception as e:
             logger.error(f"Code execution error: {e}", exc_info=True)
-            # try:
-            #     os.remove(temp_file_path)
-            # except Exception:
-            #     pass
-
             return ToolResult(
                 success=False,
                 output="",

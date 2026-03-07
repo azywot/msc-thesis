@@ -31,8 +31,12 @@ def generate_job(config_path: Path, output_path: Path = None, project_dir: Path 
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # SLURM stdout goes to out/experiments/<experiment_name>/
-    slurm_output_dir = f"out/experiments/{config.name}"
+    # SLURM stdout goes to out/experiments/<benchmark>/<config_suffix>/ (matches output_dir structure)
+    if "_" in config.name:
+        benchmark, suffix = config.name.split("_", 1)
+        slurm_output_dir = f"out/experiments/{benchmark}/{suffix}"
+    else:
+        slurm_output_dir = f"out/experiments/{config.name}"
     (project_dir / slurm_output_dir).mkdir(parents=True, exist_ok=True)
 
     template_dir = Path(__file__).parent.parent / "templates"

@@ -56,9 +56,6 @@ class MATH500Dataset(BaseDataset):
 
         logger.info(f"Loaded {len(examples)} MATH500 examples")
 
-        if self.config.subset_num > 0:
-            examples = examples[:self.config.subset_num]
-
         return examples
 
     def evaluate(
@@ -109,9 +106,6 @@ class AIMEDataset(BaseDataset):
 
         logger.info(f"Loaded {len(examples)} AIME examples")
 
-        if self.config.subset_num > 0:
-            examples = examples[:self.config.subset_num]
-
         return examples
 
     def evaluate(
@@ -161,9 +155,6 @@ class AMCDataset(BaseDataset):
                     continue
 
         logger.info(f"Loaded {len(examples)} AMC examples")
-
-        if self.config.subset_num > 0:
-            examples = examples[:self.config.subset_num]
 
         return examples
 

@@ -5,7 +5,7 @@ Only enabled in non-direct mode (requires VLM).
 """
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from PIL import Image
 
@@ -130,11 +130,8 @@ class ImageInspectorTool(BaseTool):
             )
 
         try:
-            # Load and convert image to RGB
             image = self._load_image_rgb(path)
-
-            # Analyze with VLM
-            analysis = self._analyze_with_vlm(image, question)
+            analysis, usage = self._analyze_with_vlm(image, question)
 
             return ToolResult(
                 success=True,
@@ -146,7 +143,8 @@ class ImageInspectorTool(BaseTool):
                     "image_size": image.size,
                     "image_mode": image.mode,
                     "question": question
-                }
+                },
+                usage=usage,
             )
 
         except Exception as e:
@@ -179,7 +177,7 @@ class ImageInspectorTool(BaseTool):
         except Exception as e:
             raise ValueError(f"Failed to load/convert image: {e}")
 
-    def _analyze_with_vlm(self, image: Image.Image, question: str) -> str:
+    def _analyze_with_vlm(self, image: Image.Image, question: str) -> Tuple[str, Optional[Dict[str, int]]]:
         """Use vision-language model to analyze image and answer question.
 
         Args:
@@ -187,19 +185,17 @@ class ImageInspectorTool(BaseTool):
             question: Question about the image
 
         Returns:
-            VLM analysis/answer
+            Tuple of (VLM analysis/answer, token usage dict or None)
         """
         if not self.model_provider:
-            return "[Note] No image-inspector model configured; cannot analyze the image."
+            return "[Note] No image-inspector model configured; cannot analyze the image.", None
 
-        # Build prompt with chat template
         system_prompt = (
             "You are given an image attached to the user's question. "
             "Answer the question using only the image content. "
             "If the image does not contain enough information, say so."
         )
 
-        # Multimodal chat format (image + text)
         prompt_messages = [
             {"role": "system", "content": system_prompt},
             {
@@ -214,7 +210,6 @@ class ImageInspectorTool(BaseTool):
         try:
             prompt = self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
 
-            # vLLM multimodal generation: pass prompt + multi_modal_data dict
             result = self.model_provider.generate([
                 {
                     "prompt": prompt,
@@ -223,7 +218,7 @@ class ImageInspectorTool(BaseTool):
             ])[0]
 
             output = strip_thinking_tags(result.text)
-            return output
+            return output, result.usage
 
         except Exception as e:
             logger.error(f"VLM generation failed: {e}", exc_info=True)

@@ -214,30 +214,6 @@ class ContextManagerGraphRAG:
         """Retrieve from graph using local mode."""
         return self.query(query, mode="local")
 
-    def process_community_report(self, json_path: Optional[str] = None) -> str:
-        """Read and process community report JSON."""
-        if json_path is None:
-            json_path = self.working_dir / "kv_store_community_reports.json"
-        else:
-            json_path = Path(json_path)
-
-        if not json_path.exists():
-            return "No community reports available yet."
-
-        with open(json_path, "r") as f:
-            data = json.load(f)
-
-        all_reports = []
-        for community_id, community in data.items():
-            report_string = community.get("report_string", "")
-            if report_string:
-                all_reports.append(f"Snippet {community_id}:\n{report_string}\n")
-
-        if not all_reports:
-            return "No community reports available."
-
-        return "\n".join(all_reports)
-
     def __call__(self, query: str) -> str:
         """Callable interface for graph retrieval."""
         return self.graph_retrieval(query)

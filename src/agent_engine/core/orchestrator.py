@@ -10,18 +10,41 @@ from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 
 from ..models.base import BaseModelProvider
 from ..utils.logging import get_logger
-from ..utils.parsing import extract_answer, parse_qwen3_tool_call, strip_thinking_tags
+from ..utils.parsing import extract_answer, parse_tool_call, strip_thinking_tags
+from ..utils.reasoning_context import (
+    get_reasoning_context_for_state,
+    get_attachment_context_for_code,
+)
 from .state import ExecutionState
 from .tool import ToolRegistry, ToolResult
 
 logger = get_logger(__name__)
 
+
+def _accumulate_usage(state: "ExecutionState", usage: Optional[Dict[str, int]]) -> None:
+    """Accumulate token counts into state.metadata['token_usage'].
+
+    Called after every LLM generation: orchestrator turns, batched web/code
+    sub-agents, and any tool returning ToolResult.usage (text_inspector,
+    image_inspector, web_search in single-run). The final state carries
+    cumulative prompt/completion/total tokens across all models used.
+    """
+    if not usage:
+        return
+    tu = state.metadata.setdefault(
+        "token_usage",
+        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    )
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        tu[key] = tu.get(key, 0) + int(usage.get(key, 0))
+
+
 # Tools whose pre-call reasoning is indexed into the context manager graph.
 # Mirrors MAT: reasoning before search, code, and context_manager calls is inserted.
 _CONTEXT_MANAGER_INDEXED_TOOLS = frozenset({"web_search", "code_generator", "context_manager"})
 
-_IMAGE_EXTS = frozenset[str]({".jpg", ".jpeg", ".png"})
-_TEXT_EXTS = frozenset[str]({
+_IMAGE_EXTS: frozenset = frozenset({".jpg", ".jpeg", ".png"})
+_TEXT_EXTS: frozenset = frozenset({
     ".txt", ".md", ".log", ".json", ".jsonl", ".xml",
     ".csv", ".tsv", ".yaml", ".yml", ".docx", ".xlsx",
     ".jsonld", ".parquet", ".pdf", ".pdb", ".pptx", ".py",
@@ -75,8 +98,21 @@ class AgenticOrchestrator:
         max_turns: int = 15,
         tool_limits: Optional[Dict[str, int]] = None,
         use_thinking: bool = False,
-        cache_manager=None,  # Optional: persist cache after each URL fetch (for parallel runs)
+        cache_manager=None,
     ):
+        """Initialize the orchestrator.
+
+        Args:
+            model_provider: Orchestrator LLM used for reasoning and tool-call generation.
+            tool_registry: Registered tools the orchestrator may invoke.
+            max_turns: Maximum reasoning turns before forcing an answer.
+            tool_limits: Per-tool call limits, e.g. ``{"web_search": 10}``.
+                         Tools not listed here have no limit.
+            use_thinking: Whether the orchestrator should emit ``<think>`` output.
+                          Has no effect if the model doesn't support thinking.
+            cache_manager: Optional :class:`~agent_engine.caching.CacheManager`
+                           for atomic cache persistence during parallel runs.
+        """
         self.model = model_provider
         self.tools = tool_registry
         self.cache_manager = cache_manager
@@ -98,7 +134,20 @@ class AgenticOrchestrator:
         system_prompt: str,
         attachments: Optional[List[str]] = None,
     ) -> ExecutionState:
-        """Execute agentic reasoning loop for a single question."""
+        """Execute the agentic reasoning loop for a single question.
+
+        Args:
+            question: The question text to answer.
+            question_id: Unique identifier for the question (used for context
+                         manager namespacing and logging).
+            system_prompt: Fully-formatted system prompt (tool schemas included).
+            attachments: Optional list of file paths attached to the question
+                         (e.g. an image or CSV file).
+
+        Returns:
+            :class:`~agent_engine.core.state.ExecutionState` populated with the
+            final answer, full message history, and tool usage stats.
+        """
         state = ExecutionState(
             question_id=question_id,
             question=question,
@@ -117,15 +166,17 @@ class AgenticOrchestrator:
                 prompt = self.model.apply_chat_template(state.messages, use_thinking=self.use_thinking)
                 gen_result = self.model.generate([prompt])[0]
                 state.current_output = gen_result.text
+                _accumulate_usage(state, gen_result.usage)
             except Exception as e:
                 logger.exception("Generation error")
                 state.metadata["error"] = str(e)
                 break
 
-            tool_call = parse_qwen3_tool_call(gen_result.text)
+            tool_call = parse_tool_call(gen_result.text)
             if tool_call:
                 self._index_reasoning_in_context_manager(gen_result.text, tool_call["name"], state)
                 tool_result = self._execute_tool(tool_call, state)
+                _accumulate_usage(state, tool_result.usage)
                 state.add_message("assistant", gen_result.text)
                 clean_output = strip_thinking_tags(tool_result.output or "")
                 state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
@@ -153,11 +204,24 @@ class AgenticOrchestrator:
         system_prompts: Sequence[str],
         attachments: Optional[Sequence[Optional[List[str]]]] = None,
     ) -> List[ExecutionState]:
-        """Execute agentic reasoning for a batch of questions (batched generation).
+        """Execute agentic reasoning for a batch of questions.
 
-        At each turn all unfinished states are generated together in a single
-        model.generate() call.  LLM-backed tool sub-agents (web_search,
-        code_generator) are also batched within each turn.
+        All unfinished states are advanced by one turn in a single
+        ``model.generate()`` call.  LLM-backed tool sub-agents
+        (``web_search``, ``code_generator``) are also batched within each turn,
+        amortizing per-call overhead across all active questions.
+
+        Args:
+            questions: Question texts (must be the same length as *question_ids*
+                       and *system_prompts*).
+            question_ids: Unique identifiers matching each question.
+            system_prompts: Pre-built system prompts matching each question.
+            attachments: Optional per-question attachment file paths.
+                         ``None`` or a list of ``None`` values means no attachments.
+
+        Returns:
+            List of :class:`~agent_engine.core.state.ExecutionState` instances in
+            the same order as *questions*.
         """
         if not (len(questions) == len(question_ids) == len(system_prompts)):
             raise ValueError("questions, question_ids, system_prompts must have the same length")
@@ -231,7 +295,8 @@ class AgenticOrchestrator:
 
         for s, gen_result in zip(active, gen_results):
             s.current_output = gen_result.text
-            tool_call = parse_qwen3_tool_call(gen_result.text)
+            _accumulate_usage(s, gen_result.usage)
+            tool_call = parse_tool_call(gen_result.text)
 
             if tool_call:
                 s.add_message("assistant", gen_result.text)
@@ -324,7 +389,11 @@ class AgenticOrchestrator:
             return
 
         try:
-            prompt = tool.build_task_prompt(task)
+            mind_map = self._get_mind_map_for_state(state)
+            ctx = get_reasoning_context_for_state(state, mind_map=mind_map)
+            att_ctx = get_attachment_context_for_code(state)
+            full_ctx = (ctx + "\n\n" + att_ctx).strip() if att_ctx else ctx
+            prompt = tool.build_task_prompt(task, context=full_ctx)
             code_jobs.append(_CodeJob(state, tool_call, tool, prompt))
         except Exception as exc:
             immediate_results.append(_ImmediateResult(state, tool_call, ToolResult(success=False, output="", metadata={}, error=str(exc))))
@@ -332,6 +401,7 @@ class AgenticOrchestrator:
     def _apply_immediate_results(self, results: List[_ImmediateResult]) -> None:
         """Commit tool responses and update usage tracking for immediate results."""
         for item in results:
+            _accumulate_usage(item.state, item.result.usage)
             clean_output = strip_thinking_tags(item.result.output or "")
             item.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
             item.state.tool_calls.append(item.tool_call)
@@ -389,12 +459,19 @@ class AgenticOrchestrator:
         analysis_cache = self._get_analysis_cache(jobs[0].tool)
 
         prompts = [
-            job.tool.build_analysis_prompt(job.query, job.tool._format_results(job.payload.get("results", []), job.query))
+            job.tool.build_analysis_prompt(
+                job.query,
+                job.tool._format_results(job.payload.get("results", []), job.query),
+                prev_reasoning=get_reasoning_context_for_state(
+                    job.state, mind_map=self._get_mind_map_for_state(job.state)
+                ),
+            )
             for job in jobs
         ]
         gen_outputs = provider.generate(prompts) if provider else []
 
         for job, out in zip(jobs, gen_outputs):
+            _accumulate_usage(job.state, out.usage)
             text = strip_thinking_tags(out.text)
             analysis_cache[job.query] = text
             job.state.add_message("tool", f"<tool_response>\n{text}\n</tool_response>")
@@ -421,6 +498,7 @@ class AgenticOrchestrator:
         gen_outputs = provider.generate([job.prompt for job in jobs]) if provider else []
 
         for job, out in zip(jobs, gen_outputs):
+            _accumulate_usage(job.state, out.usage)
             try:
                 text = strip_thinking_tags(out.text)
                 code = job.tool.extract_code_from_llm_response(text)
@@ -498,11 +576,34 @@ class AgenticOrchestrator:
             if inject_error:
                 return ToolResult(success=False, output="", metadata={}, error=inject_error)
 
+            self._inject_reasoning_context(tool_name, state, arguments)
+
             logger.info("Tool call: %s, %s", tool_name, arguments)
             return tool.execute(**arguments)
         except Exception as e:
             logger.exception("Tool execution error")
             return ToolResult(success=False, output="", metadata={}, error=str(e))
+
+    def _inject_reasoning_context(
+        self,
+        tool_name: str,
+        state: ExecutionState,
+        arguments: Dict[str, Any],
+    ) -> None:
+        """Inject previous reasoning context for web_search and code_generator (sub-agent only)."""
+        tool = self.tools.get(tool_name)
+        if tool is None:
+            return
+        if getattr(tool, "direct_mode", True):
+            return
+        if tool_name == "web_search" and hasattr(tool, "build_analysis_prompt"):
+            mind_map = self._get_mind_map_for_state(state)
+            arguments["prev_reasoning"] = get_reasoning_context_for_state(state, mind_map=mind_map)
+        elif tool_name == "code_generator" and hasattr(tool, "build_task_prompt"):
+            mind_map = self._get_mind_map_for_state(state)
+            ctx = get_reasoning_context_for_state(state, mind_map=mind_map)
+            att_ctx = get_attachment_context_for_code(state)
+            arguments["context"] = (ctx + "\n\n" + att_ctx).strip() if att_ctx else ctx
 
     def _inject_attachment_path(
         self,
@@ -580,6 +681,17 @@ class AgenticOrchestrator:
     # ------------------------------------------------------------------ #
     # Utility                                                             #
     # ------------------------------------------------------------------ #
+
+    def _get_mind_map_for_state(self, state: ExecutionState):
+        """Return the context manager's GraphRAG for this question if available.
+
+        Used by :func:`get_reasoning_context_for_state` for summarization of
+        long reasoning chains when the context manager uses GraphRAG.
+        """
+        ctx_tool = self.tools.get("context_manager")
+        if not ctx_tool or not getattr(ctx_tool, "use_graphrag", False):
+            return None
+        return getattr(ctx_tool, "graphrag_instances", {}).get(state.question_id)
 
     @staticmethod
     def _get_analysis_cache(tool: Any) -> Dict[str, str]:

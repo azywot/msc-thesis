@@ -20,16 +20,56 @@ from typing import Any
 
 
 class CacheManager:
-    def __init__(self, cache_dir: str = './cache'):
+    """Thread-safe, process-safe cache for web search results and fetched URL content.
+
+    Uses a single ``fcntl`` lock file to serialize cross-process writes and
+    atomic ``os.replace()`` for every JSON write, so concurrent readers always
+    see a complete, consistent file.
+
+    Cache layout on disk::
+
+        <cache_dir>/<provider>/<dataset_name>/
+            search_cache.json   – query → list[dict] (Serper/Tavily raw results)
+            url_cache.json      – url   → str (full page text, Serper only)
+            .cache.lock         – empty sentinel for fcntl locking
+
+    Attributes:
+        search_cache: In-memory search results cache (query → list[dict]).
+        url_cache: In-memory URL content cache (url → str).
+    """
+
+    def __init__(
+        self,
+        cache_dir: str = './cache',
+        web_tool_provider: str = 'serper',
+        dataset_name: str = 'default',
+    ):
+        """Initialize and load existing caches from disk.
+
+        Args:
+            cache_dir: Root cache directory.
+            web_tool_provider: Search provider name (``"serper"`` or ``"tavily"``).
+                               Used to namespace cache files so provider caches
+                               don't collide.
+            dataset_name: Dataset identifier for further namespacing within the
+                          provider directory (e.g. ``"gaia_validation"``).
+        """
         self.cache_dir = cache_dir
-        self.search_cache_path = os.path.join(cache_dir, 'search_cache.json')
-        self.url_cache_path = os.path.join(cache_dir, 'url_cache.json')
+        self.web_tool_provider = web_tool_provider
+        self.dataset_name = dataset_name
+
+        # Web tool cache: cache_dir/provider/dataset_name
+        self.provider_cache_dir = os.path.join(cache_dir, web_tool_provider, dataset_name)
+
+        self.search_cache_path = os.path.join(self.provider_cache_dir, 'search_cache.json')
+        self.url_cache_path = os.path.join(self.provider_cache_dir, 'url_cache.json')
         # Single lock for both files to avoid deadlocks and cross-file races.
-        self._lock_path = os.path.join(cache_dir, '.cache.lock')
+        self._lock_path = os.path.join(self.provider_cache_dir, '.cache.lock')
         self._initialize_cache()
 
     def _initialize_cache(self) -> None:
         os.makedirs(self.cache_dir, exist_ok=True)
+        os.makedirs(self.provider_cache_dir, exist_ok=True)
         # Ensure lock file exists.
         try:
             open(self._lock_path, 'a', encoding='utf-8').close()

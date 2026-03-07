@@ -1,5 +1,6 @@
 """vLLM model provider for local inference with tensor parallelism."""
 
+import json
 import os
 import torch
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -8,7 +9,7 @@ from vllm import LLM, SamplingParams
 
 from .base import BaseModelProvider, GenerationResult, ModelConfig, ModelFamily
 from .llm_shared import get_llm_lock
-from ..utils.logging import get_logger
+from ..utils.logging import get_logger, format_messages_as_chat
 
 logger = get_logger(__name__)
 
@@ -83,7 +84,6 @@ class VLLMProvider(BaseModelProvider):
         if config.gpu_ids:
             return len(config.gpu_ids)
         try:
-            import torch
             n = torch.cuda.device_count()
             # Use all GPUs only when utilization is high (or still unresolved); else single-GPU
             if n > 1 and (config.gpu_memory_utilization is None or config.gpu_memory_utilization >= 0.95):
@@ -115,6 +115,23 @@ class VLLMProvider(BaseModelProvider):
         self, prompts: List[Dict[str, Any]]
     ) -> List[GenerationResult]:
         """Generate for VLM multimodal (image + text) inputs."""
+        # apply_chat_template returns JSON; render each prompt string here.
+        rendered_prompts = []
+        decoded_messages_list: List[Optional[List[Dict[str, Any]]]] = []
+        for p in prompts:
+            raw_prompt = p.get("prompt", "")
+            msgs = None
+            try:
+                payload = json.loads(raw_prompt)
+                if isinstance(payload, dict) and "messages" in payload:
+                    msgs = payload["messages"]
+                    use_thinking = payload.get("use_thinking", False)
+                    raw_prompt = self._render_messages(msgs, use_thinking)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            rendered_prompts.append({**p, "prompt": raw_prompt})
+            decoded_messages_list.append(msgs)
+
         safe_max_tokens = min(self.config.max_tokens, 2048)
         sampling_params = SamplingParams(
             max_tokens=safe_max_tokens,
@@ -127,25 +144,14 @@ class VLLMProvider(BaseModelProvider):
 
         with self._lock:
             outputs = self.llm.generate(
-                prompts,
+                rendered_prompts,
                 sampling_params=sampling_params,
             )
 
-        results = []
-        for output in outputs:
-            results.append(
-                GenerationResult(
-                    text=output.outputs[0].text,
-                    finish_reason=output.outputs[0].finish_reason,
-                    usage={
-                        "prompt_tokens": len(output.prompt_token_ids),
-                        "completion_tokens": len(output.outputs[0].token_ids),
-                        "total_tokens": len(output.prompt_token_ids) + len(output.outputs[0].token_ids),
-                    },
-                    metadata={"model": self.config.name, "role": self.config.role},
-                )
-            )
-        return results
+        return [
+            self._make_result(output, decoded_messages_list[i])
+            for i, output in enumerate(outputs)
+        ]
 
     def _generate_text(self, prompts: List[str]) -> List[GenerationResult]:
         """Generate for text-only prompts."""
@@ -160,7 +166,7 @@ class VLLMProvider(BaseModelProvider):
                     "Could not determine max_model_len from vLLM engine; using %s",
                     max_model_len,
                 )
-        except Exception as e:
+        except Exception:
             max_model_len = self.config.max_model_len or 32768
             logger.exception(
                 "Error getting max_model_len from vLLM engine; using %s",
@@ -169,8 +175,35 @@ class VLLMProvider(BaseModelProvider):
 
         sampling_params_list = []
         valid_prompts = []
+        decoded_messages: List[Optional[List[Dict[str, Any]]]] = []
+
         for idx, prompt in enumerate(prompts):
-            prompt_tokens = len(self.tokenizer.encode(prompt, add_special_tokens=False))
+            # Decode JSON payload from apply_chat_template; fall back to plain string.
+            msgs: Optional[List[Dict[str, Any]]] = None
+            use_thinking = False
+            try:
+                payload = json.loads(prompt)
+                if isinstance(payload, dict) and "messages" in payload:
+                    msgs = payload["messages"]
+                    use_thinking = payload.get("use_thinking", False)
+                elif isinstance(payload, list):
+                    msgs = payload
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            decoded_messages.append(msgs)
+
+            # Apply the tokenizer chat template to get the rendered string.
+            if msgs is not None:
+                rendered = self._render_messages(msgs, use_thinking)
+                logger.debug(
+                    "vLLM request (prompt %d/%d):\n%s",
+                    idx + 1, len(prompts), format_messages_as_chat(msgs),
+                )
+            else:
+                rendered = prompt  # plain string passed directly (backward compat)
+
+            prompt_tokens = len(self.tokenizer.encode(rendered, add_special_tokens=False))
             available_tokens = max_model_len - prompt_tokens
             safe_max_tokens = min(self.config.max_tokens, max(512, available_tokens))
 
@@ -181,9 +214,9 @@ class VLLMProvider(BaseModelProvider):
                     prompt_tokens,
                 )
                 target_length = max_model_len - 1024
-                tokens = self.tokenizer.encode(prompt, add_special_tokens=False)
+                tokens = self.tokenizer.encode(rendered, add_special_tokens=False)
                 truncated_tokens = tokens[-target_length:]
-                prompt = self.tokenizer.decode(truncated_tokens)
+                rendered = self.tokenizer.decode(truncated_tokens)
                 safe_max_tokens = 1024
                 logger.info(
                     "Truncated prompt %s to %s tokens.",
@@ -191,7 +224,7 @@ class VLLMProvider(BaseModelProvider):
                     len(truncated_tokens),
                 )
 
-            valid_prompts.append(prompt)
+            valid_prompts.append(rendered)
             # Pause generation after a tool call
             stop_kwargs: Dict[str, Any] = {}
             if self.config.role == "orchestrator":
@@ -210,49 +243,58 @@ class VLLMProvider(BaseModelProvider):
         with self._lock:  # shared instance may be used from multiple threads
             outputs = self.llm.generate(valid_prompts, sampling_params=sampling_params_list)
 
-        results = []
-        for output in outputs:
-            result = GenerationResult(
-                text=output.outputs[0].text,
-                finish_reason=output.outputs[0].finish_reason,
-                usage={
-                    "prompt_tokens": len(output.prompt_token_ids),
-                    "completion_tokens": len(output.outputs[0].token_ids),
-                    "total_tokens": len(output.prompt_token_ids) + len(output.outputs[0].token_ids),
-                },
-                metadata={
-                    "model": self.config.name,
-                    "role": self.config.role,
-                }
-            )
-            results.append(result)
-
-        return results
+        return [
+            self._make_result(output, decoded_messages[i])
+            for i, output in enumerate(outputs)
+        ]
 
     def apply_chat_template(
         self,
         messages: List[Dict[str, str]],
         use_thinking: bool = False
     ) -> str:
-        """Apply model-specific chat template."""
-        if use_thinking and self.config.family == ModelFamily.QWEN3:
-            return self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                thinking=True,
-            )
-        return self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+        """Serialize messages for generate().
+
+        Returns a JSON-encoded payload so generate() has access to the raw
+        messages list (for logging and result attachment). The tokenizer
+        template is applied inside _generate_text.
+        """
+        return json.dumps({"messages": messages, "use_thinking": use_thinking}, ensure_ascii=False)
 
     def cleanup(self):
         """Release GPU memory."""
         if hasattr(self, 'llm'):
             del self.llm
             self.llm = None
+
+    def _render_messages(self, msgs: List[Dict[str, Any]], use_thinking: bool) -> str:
+        """Apply the tokenizer chat template to a messages list.
+
+        For Qwen3 and other thinking-capable models, passes ``enable_thinking``
+        (the variable name expected by the Qwen chat template). When False, the
+        template inserts an empty <think></think> block so the model skips reasoning.
+        """
+        if use_thinking and self.config.supports_thinking:
+            return self.tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True, enable_thinking=True,
+            )
+        return self.tokenizer.apply_chat_template(
+            msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False,
+        )
+
+    def _make_result(self, output: Any, messages: Optional[List[Dict[str, Any]]]) -> GenerationResult:
+        """Build a GenerationResult from a single vLLM output object."""
+        return GenerationResult(
+            text=output.outputs[0].text,
+            finish_reason=output.outputs[0].finish_reason,
+            usage={
+                "prompt_tokens": len(output.prompt_token_ids),
+                "completion_tokens": len(output.outputs[0].token_ids),
+                "total_tokens": len(output.prompt_token_ids) + len(output.outputs[0].token_ids),
+            },
+            metadata={"model": self.config.name, "role": self.config.role},
+            messages=messages,
+        )
 
 
 def resolve_gpu_assignments(config) -> Dict[str, Tuple[float, Optional[List[int]]]]:
@@ -274,7 +316,7 @@ def resolve_gpu_assignments(config) -> Dict[str, Tuple[float, Optional[List[int]
     orch_cfg = config.get_model("orchestrator")
 
     # Collect distinct local model paths preserving load order.
-    seen: set = set[Any]()
+    seen: set = set()
     ordered_paths: List[str] = []
 
     def _add(path: str) -> None:

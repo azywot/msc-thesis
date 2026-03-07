@@ -40,7 +40,11 @@ def main():
     config = load_experiment_config(DEFAULT_CONFIG)
     set_seed(config.seed)
 
-    cache_manager = CacheManager(config.cache_dir)
+    cache_manager = CacheManager(
+        config.cache_dir,
+        web_tool_provider=config.tools.web_tool_provider,
+        dataset_name=config.dataset.name,
+    )
     enabled = ["web_search"]
     orchestrator_model, providers, _ = build_model_providers(config, required_roles=enabled)
     tools = build_tools(config, cache_manager, providers, enabled_tools=enabled)
