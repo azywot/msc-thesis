@@ -69,9 +69,12 @@ class PromptBuilder:
         """Build system prompt with tools and instructions."""
         try:
             # GAIA and HLE share the same single‑QA prompt template.
+            # AIME, MATH500, AMC share the math template.
             template_name = dataset_name
             if dataset_name.lower() in ("gaia", "hle"):
                 template_name = "gaia"
+            elif dataset_name.lower() in ("aime", "math500", "amc"):
+                template_name = "math"
 
             template = self.load_template(template_name)
         except FileNotFoundError:

@@ -90,12 +90,12 @@ class AIMEDataset(BaseDataset):
                     data = json.loads(line)
 
                     example = DatasetExample(
-                        question_id=idx,
+                        question_id=data.get('ID', idx),
                         question=data['Question'],
                         answer=data['Answer'],
                         metadata={
-                            'year': data.get('year', 'unknown'),
-                            'problem_number': data.get('problem_number', idx),
+                            'year': data.get('Year', data.get('year', 'unknown')),
+                            'problem_id': data.get('ID', idx),
                         }
                     )
                     examples.append(example)
