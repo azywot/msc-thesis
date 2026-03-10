@@ -1,7 +1,7 @@
 # GAIA — Qwen3-8B, sub-agent tools, sub-agents thinking only
 
-name: "gaia_qwen8B_subagent_tools_subagents"
-description: "GAIA all_validation with Qwen3-8B, sub-agent tools, sub-agents thinking only"
+name: "no_img_no_mm_gaia_qwen8B_subagent_tools_subagents"
+description: "[NO image_inspector, NO mindmap] GAIA all_validation with Qwen3-8B, sub-agent tools, sub-agents thinking only"
 
 slurm:
   partition: "gpu_h100"
@@ -36,6 +36,6 @@ thinking_mode: "SUBAGENTS_ONLY"
 
 output_dir: "./experiments/results/1_milestone_no_img_no_mindmap/gaia/qwen8B_subagent_tools_subagents"
 use_wandb: true
-wandb_project: "benchmarks-no-img-no-mindmap"
+wandb_project: "benchmarks"
 
 cache_dir: "./cache"

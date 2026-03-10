@@ -1,7 +1,7 @@
 # HLE — Qwen3-32B, no tools, no thinking
 
-name: "hle_qwen32B_no_tools_none"
-description: "HLE subset_200 with Qwen3-32B, no tools, thinking disabled"
+name: "no_img_no_mm_hle_qwen32B_no_tools_none"
+description: "[NO image_inspector, NO mindmap] HLE subset_200 with Qwen3-32B, no tools, thinking disabled"
 
 slurm:
   partition: "gpu_h100"
@@ -34,6 +34,6 @@ thinking_mode: "NO"
 
 output_dir: "./experiments/results/1_milestone_no_img_no_mindmap/hle/qwen32B_no_tools_none"
 use_wandb: true
-wandb_project: "benchmarks-no-img-no-mindmap"
+wandb_project: "benchmarks"
 
 cache_dir: "./cache"

@@ -1,7 +1,7 @@
 # HLE — Qwen3-8B, no tools, orchestrator thinking
 
-name: "hle_qwen8B_no_tools_orchestrator"
-description: "HLE subset_200 with Qwen3-8B, no tools, orchestrator thinking"
+name: "no_img_no_mm_hle_qwen8B_no_tools_orchestrator"
+description: "[NO image_inspector, NO mindmap] HLE subset_200 with Qwen3-8B, no tools, orchestrator thinking"
 
 slurm:
   partition: "gpu_h100"
@@ -33,6 +33,6 @@ thinking_mode: "ORCHESTRATOR_ONLY"
 
 output_dir: "./experiments/results/1_milestone_no_img_no_mindmap/hle/qwen8B_no_tools_orchestrator"
 use_wandb: true
-wandb_project: "benchmarks-no-img-no-mindmap"
+wandb_project: "benchmarks"
 
 cache_dir: "./cache"
