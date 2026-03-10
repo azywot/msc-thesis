@@ -261,3 +261,32 @@ def evaluate_gpqa(prediction: str, ground_truth: str, choices: List[str]) -> Dic
 
 def evaluate_qa(prediction: str, ground_truth: str) -> Dict[str, Any]:
     return evaluate_answer(prediction, ground_truth)
+
+
+def evaluate_musique(
+    prediction: str,
+    ground_truth: str,
+    answer_aliases: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Evaluate MuSiQue prediction with support for answer aliases.
+
+    A prediction is considered correct if it matches either the canonical
+    ground-truth answer or any of the aliases (after normalisation).
+    """
+    # First, evaluate against the canonical answer using the unified logic.
+    base_result = evaluate_answer(prediction, ground_truth)
+    if base_result.get("correct", False):
+        return base_result
+
+    aliases = answer_aliases or []
+    for alias in aliases:
+        if not alias:
+            continue
+        # Reuse the full evaluation machinery for each alias so that
+        # normalisation, GAIA scoring, and Math-Verify behave consistently.
+        alias_result = evaluate_answer(prediction, alias)
+        if alias_result.get("correct", False):
+            return alias_result
+
+    # No alias matched; fall back to the canonical evaluation result.
+    return base_result

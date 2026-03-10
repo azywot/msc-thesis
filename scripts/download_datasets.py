@@ -347,17 +347,30 @@ def download_hotpot_qa(output_dir: str, token: str | None, subset: int = 0, seed
 
 
 def download_musique(output_dir: str, token: str | None, subset: int = 0, seed: int = 0):
+    """Download MuSiQue validation subset (answerable questions only).
+
+    Source: bdsaglam/musique
+    Split:  validation
+    Filter: answerable == True
+    """
     print("Downloading MuSiQue …")
     data = []
     try:
-        ds = load_dataset("dgslibisey/MuSiQue", split="validation", download_config=_download_cfg(token))
+        # bdsaglam/musique schema (validation split):
+        # id, question, answer, answer_aliases, answerable, ...
+        ds = load_dataset("bdsaglam/musique", split="validation", download_config=_download_cfg(token))
         for ex in ds:
+            if not ex.get("answerable", False):
+                continue
             question = ex.get("question")
             answer = ex.get("answer")
             data.append({
                 "ID": ex.get("id"),
                 "Question": question,
                 "Answer": answer,
+                # Preserve aliases for possible future use/debugging.
+                "answer_aliases": ex.get("answer_aliases"),
+                "answerable": ex.get("answerable"),
                 "input_output": json.dumps({"inputs": [question], "outputs": [answer]}),
             })
     except Exception as e:

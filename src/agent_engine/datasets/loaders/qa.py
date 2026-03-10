@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from ..base import BaseDataset, DatasetExample, DatasetRegistry
-from ..evaluators.metrics import evaluate_qa
+from ..evaluators.metrics import evaluate_qa, evaluate_musique
 from ...utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -35,13 +35,18 @@ def _load_qa_jsonl(data_path: Path, dataset_name: str, subset_num: int = -1) -> 
                 question = data.get('Question') or data.get('question') or data.get('input', '')
                 answer = data.get('Answer') or data.get('answer') or data.get('output', '')
 
+                metadata: Dict[str, Any] = {
+                    "dataset": dataset_name,
+                }
+                # Propagate answer aliases when present (e.g., MuSiQue).
+                if "answer_aliases" in data:
+                    metadata["answer_aliases"] = data.get("answer_aliases")
+
                 example = DatasetExample(
                     question_id=idx,
                     question=question,
                     answer=answer,
-                    metadata={
-                        'dataset': dataset_name,
-                    }
+                    metadata=metadata,
                 )
                 examples.append(example)
 
@@ -127,7 +132,8 @@ class MusiqueDataset(BaseDataset):
         metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Evaluate MuSiQue prediction."""
-        return evaluate_qa(prediction, ground_truth)
+        aliases = metadata.get("answer_aliases") or []
+        return evaluate_musique(prediction, ground_truth, aliases)
 
 
 @DatasetRegistry.register("bamboogle")

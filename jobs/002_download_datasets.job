@@ -145,18 +145,15 @@ echo "=========================================="
 echo "Downloading QA Datasets"
 echo "=========================================="
 
-# # FOR NOW, WE ARE NOT DOWNLOADING QA DATASETS
-# # Download QA datasets
-# QA_DATASETS=("natural_questions" "trivia_qa" "hotpot_qa" "musique" "bamboogle" "2wiki")
-# for dataset in "${QA_DATASETS[@]}"; do
-#     echo ""
-#     echo "Downloading ${dataset}..."
-#     python scripts/download_datasets.py \
-#         --dataset "$dataset" \
-#         --output-dir "$DATA_DIR" || {
-#             echo "Warning: Failed to download ${dataset}"
-#         }
-# done
+echo ""
+echo "Downloading MuSiQue (answerable subset, validation, 200 examples)…"
+python scripts/download_datasets.py \
+    --dataset musique \
+    --split validation \
+    --subset 200 \
+    --output-dir "$DATA_DIR" || {
+        echo "Warning: Failed to download MuSiQue"
+    }
 
 echo ""
 echo "=========================================="
