@@ -1,0 +1,42 @@
+# GAIA — Qwen3-32B, direct tool call, no thinking
+
+name: "gaia_qwen32B_direct_tools_none"
+description: "GAIA all_validation with Qwen3-32B, direct tools, thinking disabled"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "16:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "Qwen3-32B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"
+    role: "orchestrator"
+    tensor_parallel_size: 2  # 64 heads; TP must divide 64.
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+  direct_tool_call: true
+
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "NO"
+
+output_dir: "./experiments/results/1_milestone_no_img_no_mindmap/gaia/qwen32B_direct_tools_none"
+use_wandb: true
+wandb_project: "benchmarks-no-img-no-mindmap"
+
+cache_dir: "./cache"
