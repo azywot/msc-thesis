@@ -666,7 +666,7 @@ of all `assistant` and `tool` messages (excluding `system` and `user`).
 | code_generator    | Qwen3-4B (shared)        | No       | Generates Python code             |
 | text_inspector    | Qwen3-4B (shared)        | No       | Reads/answers about text files    |
 | context_manager   | Qwen3-4B (shared)        | No       | GraphRAG entity extraction        |
-| image_inspector   | Qwen2.5-VL-3B-Instruct   | No       | Multimodal VLM                    |
+| image_inspector   | Qwen/Qwen3-VL-4B-Instruct   | No       | Multimodal VLM                    |
 
 Model instances sharing the same `path_or_id` are reused (single vLLM engine
 for all Qwen3-4B roles). GPU assignment is computed by

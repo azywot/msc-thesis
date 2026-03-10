@@ -108,9 +108,9 @@ models:
     repetition_penalty: 1.05
 
   image_inspector:
-    name: "Qwen2.5-VL-3B-Instruct"
+    name: "Qwen/Qwen3-VL-4B-Instruct"
     family: "qwen3"                          # Uses Qwen chat-template logic
-    path_or_id: "Qwen/Qwen2.5-VL-3B-Instruct"
+    path_or_id: "Qwen/Qwen3-VL-4B-Instruct"
     role: "image_inspector"
     max_model_len: 32768
     max_tokens: 4096

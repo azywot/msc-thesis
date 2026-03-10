@@ -1,14 +1,14 @@
-# GAIA Sub-Agent Mode — Qwen3-4B for all text roles, Qwen2.5-VL-3B for images
+# MuSiQue Sub-Agent Mode — Qwen3-4B for all text roles
 
-name: "gaia_qwen3_subagent"
-description: "GAIA with sub-agent mode using Qwen3-4B for orchestrator and tool agents (text + vision)"
+name: "musique_qwen3_subagent"
+description: "MuSiQue with sub-agent mode using Qwen3-4B for orchestrator and tool agents"
 
 slurm:
   partition: "gpu_h100"
-  num_gpus: 2
+  num_gpus: 1
   ntasks: 1
   cpus_per_task: 8
-  time: "14:00:00"
+  time: "08:00:00"
   conda_env: "agent_engine"
 
 models:
@@ -21,32 +21,25 @@ models:
   # web_search, code_generator, text_inspector, context_manager are omitted —
   # they share Qwen3-4B with the orchestrator and will reuse its cached instance.
 
-  image_inspector:
-    name: "Qwen/Qwen3-VL-4B-Instruct"
-    family: "qwen3"                          # Uses Qwen chat-template logic
-    path_or_id: "Qwen/Qwen3-VL-4B-Instruct"
-    role: "image_inspector"
-
 tools:
   enabled_tools:
     - web_search
     - code_generator
-    - text_inspector
-    - image_inspector
     - context_manager
   direct_tool_call: false
 
 dataset:
-  name: "gaia"
-  split: "all_validation"
+  name: "musique"
+  split: "validation"
   data_dir: "./data"
   subset_num: -1  # -1 for all
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/gaia_qwen3_subagent"
+output_dir: "./experiments/results/musique_qwen3_subagent"
 use_wandb: true
 wandb_project: "msc-thesis-benchmarks"
 
 cache_dir: "./cache"
+

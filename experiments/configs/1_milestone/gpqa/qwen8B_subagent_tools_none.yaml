@@ -18,18 +18,11 @@ models:
     path_or_id: "Qwen/Qwen3-8B"
     role: "orchestrator"
 
-  image_inspector:
-    name: "Qwen3-VL-8B-Instruct"
-    family: "qwen3"
-    path_or_id: "Qwen/Qwen3-VL-8B-Instruct"
-    role: "image_inspector"
-
 tools:
   enabled_tools:
     - web_search
     - code_generator
     - text_inspector
-    - image_inspector
     - context_manager
   direct_tool_call: false
 
