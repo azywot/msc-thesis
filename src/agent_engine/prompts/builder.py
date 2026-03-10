@@ -68,10 +68,10 @@ class PromptBuilder:
     ) -> str:
         """Build system prompt with tools and instructions."""
         try:
-            # GAIA and HLE share the same single‑QA prompt template.
+            # GAIA, HLE, and MuSiQue share the same single‑QA prompt template.
             # AIME, MATH500, AMC share the math template.
             template_name = dataset_name
-            if dataset_name.lower() in ("gaia", "hle"):
+            if dataset_name.lower() in ("gaia", "hle", "musique"):
                 template_name = "gaia"
             elif dataset_name.lower() in ("aime", "math500", "amc"):
                 template_name = "math"

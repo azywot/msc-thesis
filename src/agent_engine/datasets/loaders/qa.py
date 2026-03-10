@@ -122,7 +122,11 @@ class MusiqueDataset(BaseDataset):
 
     def load(self) -> List[DatasetExample]:
         """Load MuSiQue dataset."""
-        data_path = self.config.data_dir / "QA_Datasets" / "musique.jsonl"
+        # The MuSiQue data is stored under a dedicated directory with a
+        # pre-sampled validation subset file.
+        # Expected layout (for DATA_DIR=/.../data):
+        #   DATA_DIR/MuSiQue/validation_subset_200.jsonl
+        data_path = self.config.data_dir / "MuSiQue" / "validation_subset_200.jsonl"
         return _load_qa_jsonl(data_path, "MuSiQue", self.config.subset_num)
 
     def evaluate(
