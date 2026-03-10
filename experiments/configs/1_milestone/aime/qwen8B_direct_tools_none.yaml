@@ -22,7 +22,6 @@ tools:
   enabled_tools:
     - web_search
     - code_generator
-    - text_inspector
     - context_manager
   direct_tool_call: true
 
