@@ -6,9 +6,10 @@ in a unified way, with automatic registration support.
 
 import random
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
+
+from pydantic import BaseModel
 
 from ..config.schema import DatasetConfig
 from ..utils.logging import get_logger
@@ -16,8 +17,7 @@ from ..utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-@dataclass
-class DatasetExample:
+class DatasetExample(BaseModel):
     """Single dataset example.
 
     Attributes:
@@ -29,7 +29,7 @@ class DatasetExample:
     question_id: int
     question: str
     answer: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = {}
 
     def get_attachments(self) -> List[str]:
         """Get list of file attachments.
