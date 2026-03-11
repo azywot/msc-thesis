@@ -640,16 +640,28 @@ class AgenticOrchestrator:
         The model analyzes each question without calling tools. The output is
         stored in ``state.query_analysis``. If the model produces a tool call
         or final answer, those are handled as edge cases.
+
         """
-        planning_suffix = (
-            "\n\nBefore using any tools, analyze this query to determine the approach needed.\n"
-            "Instructions:\n"
-            "1. Identify the main objectives in the query.\n"
-            "2. List the necessary skills and tools.\n"
-            "3. For each tool, explain how it helps address the query.\n"
-            "4. Note any additional considerations.\n\n"
-            "Be brief and precise. Do NOT call any tools yet."
-        )
+        if len(self.tools) == 0:
+            # NOTE: double check if it should look like this, or if we should just omit the query analysis step entirely when no tools are available
+            planning_suffix = (
+                "\n\nBefore answering, analyze this query to determine the approach needed.\n"
+                "Instructions:\n"
+                "1. Identify the main objectives in the query.\n"
+                "2. Break down the problem into sub-tasks.\n"
+                "3. Consider what knowledge or reasoning steps are required.\n"
+                "Be brief and precise. Do NOT provide the final answer yet."
+            )
+        else:
+            planning_suffix = (
+                "\n\nBefore using any tools, analyze this query to determine the approach needed.\n"
+                "Instructions:\n"
+                "1. Identify the main objectives in the query.\n"
+                "2. List the necessary skills and tools.\n"
+                "3. For each tool, explain how it helps address the query.\n"
+                "4. Note any additional considerations.\n\n"
+                "Be brief and precise. Do NOT call any tools yet."
+            )
 
         prompts = []
         for s in states:

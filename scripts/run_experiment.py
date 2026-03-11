@@ -9,7 +9,6 @@ import json
 import os
 import sys
 import logging
-import re
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
