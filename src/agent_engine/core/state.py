@@ -52,6 +52,10 @@ class ExecutionState:
         'image_inspector': 0,
     })
 
+    # Structured memory (AgentFlow-inspired)
+    query_analysis: str = ""
+    action_history: List[Dict[str, str]] = field(default_factory=list)
+
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -101,6 +105,8 @@ class ExecutionState:
             "answer": self.answer,
             "tool_calls": self.tool_calls,
             "tool_counts": self.tool_counts,
+            "query_analysis": self.query_analysis,
+            "action_history": self.action_history,
             "metadata": self.metadata,
             "attachments": self.attachments,
         }

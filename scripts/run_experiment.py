@@ -394,6 +394,8 @@ def run_experiment(args):
                     "turns": state.turn,
                     "tool_counts": state.tool_counts,
                     "token_usage": token_usage,
+                    "query_analysis": state.query_analysis,
+                    "action_history": state.action_history,
                     "metadata": ex.metadata,
                 })
                 logger.info(

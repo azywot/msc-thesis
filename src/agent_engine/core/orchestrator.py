@@ -4,6 +4,7 @@ This module implements the main reasoning loop that coordinates LLM generation
 with tool execution.
 """
 
+import json
 import os
 import re
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence
@@ -11,10 +12,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 from ..models.base import BaseModelProvider
 from ..utils.logging import get_logger
 from ..utils.parsing import extract_answer, parse_tool_call, strip_thinking_tags
-from ..utils.reasoning_context import (
-    get_reasoning_context_for_state,
-    get_attachment_context_for_code,
-)
+from ..utils.reasoning_context import get_attachment_context_for_code
 from .state import ExecutionState
 from .tool import ToolRegistry, ToolResult
 
@@ -158,12 +156,16 @@ class AgenticOrchestrator:
         self._init_mind_map(state)
         logger.info(f"Starting execution for question {question_id}")
 
+        # Turn 0: Planning (does not count toward turn budget)
+        self._run_planning_turn([state])
+
         while state.turn < self.max_turns and not state.finished:
             state.turn += 1
             logger.info(f"Turn {state.turn}/{self.max_turns}")
 
             try:
-                prompt = self.model.apply_chat_template(state.messages, use_thinking=self.use_thinking)
+                memory_prompt = self._build_memory_prompt(state, system_prompt)
+                prompt = self.model.apply_chat_template(memory_prompt, use_thinking=self.use_thinking)
                 gen_result = self.model.generate([prompt])[0]
                 state.current_output = gen_result.text
                 _accumulate_usage(state, gen_result.usage)
@@ -180,6 +182,12 @@ class AgenticOrchestrator:
                 state.add_message("assistant", gen_result.text)
                 clean_output = strip_thinking_tags(tool_result.output or "")
                 state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
+                state.action_history.append({
+                    "tool_name": tool_call["name"],
+                    "sub_goal": self._extract_sub_goal(gen_result.text),
+                    "command": json.dumps(tool_call.get("arguments") or {}),
+                    "result": clean_output,
+                })
                 state.tool_calls.append(tool_call)
                 state.increment_tool_count(tool_call["name"])
                 logger.info(f"Tool '{tool_call['name']}' executed. Success: {tool_result.success}")
@@ -245,6 +253,9 @@ class AgenticOrchestrator:
 
         logger.info(f"Starting batched execution for {len(states)} questions")
 
+        # Turn 0: Planning (single batched call, does not count toward turn budget)
+        self._run_planning_turn(states)
+
         while True:
             active = [s for s in states if not s.finished and s.turn < self.max_turns]
             if not active:
@@ -275,8 +286,12 @@ class AgenticOrchestrator:
         for s in active:
             s.turn += 1
 
+        system_prompt = active[0].messages[0]["content"]
         prompts = [
-            self.model.apply_chat_template(s.messages, use_thinking=self.use_thinking)
+            self.model.apply_chat_template(
+                self._build_memory_prompt(s, system_prompt),
+                use_thinking=self.use_thinking,
+            )
             for s in active
         ]
 
@@ -389,11 +404,8 @@ class AgenticOrchestrator:
             return
 
         try:
-            mind_map = self._get_mind_map_for_state(state)
-            ctx = get_reasoning_context_for_state(state, mind_map=mind_map)
             att_ctx = get_attachment_context_for_code(state)
-            full_ctx = (ctx + "\n\n" + att_ctx).strip() if att_ctx else ctx
-            prompt = tool.build_task_prompt(task, context=full_ctx)
+            prompt = tool.build_task_prompt(task, context=att_ctx)
             code_jobs.append(_CodeJob(state, tool_call, tool, prompt))
         except Exception as exc:
             immediate_results.append(_ImmediateResult(state, tool_call, ToolResult(success=False, output="", metadata={}, error=str(exc))))
@@ -404,6 +416,12 @@ class AgenticOrchestrator:
             _accumulate_usage(item.state, item.result.usage)
             clean_output = strip_thinking_tags(item.result.output or "")
             item.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
+            item.state.action_history.append({
+                "tool_name": item.tool_call["name"],
+                "sub_goal": self._extract_sub_goal(item.state.current_output),
+                "command": json.dumps(item.tool_call.get("arguments") or {}),
+                "result": clean_output,
+            })
             item.state.tool_calls.append(item.tool_call)
             item.state.increment_tool_count(item.tool_call["name"])
 
@@ -462,9 +480,6 @@ class AgenticOrchestrator:
             job.tool.build_analysis_prompt(
                 job.query,
                 job.tool._format_results(job.payload.get("results", []), job.query),
-                prev_reasoning=get_reasoning_context_for_state(
-                    job.state, mind_map=self._get_mind_map_for_state(job.state)
-                ),
             )
             for job in jobs
         ]
@@ -475,6 +490,12 @@ class AgenticOrchestrator:
             text = strip_thinking_tags(out.text)
             analysis_cache[job.query] = text
             job.state.add_message("tool", f"<tool_response>\n{text}\n</tool_response>")
+            job.state.action_history.append({
+                "tool_name": job.tool_call["name"],
+                "sub_goal": self._extract_sub_goal(job.state.current_output),
+                "command": json.dumps(job.tool_call.get("arguments") or {}),
+                "result": text,
+            })
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
 
@@ -508,6 +529,12 @@ class AgenticOrchestrator:
                 tr = ToolResult(success=False, output="", metadata={}, error=str(exc))
             clean_output = strip_thinking_tags(tr.output or "")
             job.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
+            job.state.action_history.append({
+                "tool_name": job.tool_call["name"],
+                "sub_goal": self._extract_sub_goal(job.state.current_output),
+                "command": json.dumps(job.tool_call.get("arguments") or {}),
+                "result": clean_output,
+            })
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
 
@@ -554,6 +581,122 @@ class AgenticOrchestrator:
         return "\n".join(lines) + "\n"
 
     # ------------------------------------------------------------------ #
+    # Structured memory (AgentFlow-inspired)                              #
+    # ------------------------------------------------------------------ #
+
+    def _build_memory_prompt(
+        self, state: ExecutionState, system_prompt: str
+    ) -> List[Dict[str, str]]:
+        """Build a fresh [system, user] prompt with structured memory.
+
+        Mirrors AgentFlow's planner prompt: the model receives the original
+        query, a query analysis, and a structured record of previous steps
+        instead of the full growing conversation.
+        """
+        # Reconstruct original user content from messages[1]
+        user_content = state.messages[1]["content"] if len(state.messages) > 1 else state.question
+
+        parts = [user_content]
+
+        if state.query_analysis:
+            parts.append(f"\n**Query Analysis:**\n{state.query_analysis}")
+
+        if state.action_history:
+            parts.append(f"\n**Previous Steps:**\n{self._format_action_history(state.action_history)}")
+
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "\n".join(parts)},
+        ]
+
+    @staticmethod
+    def _format_action_history(action_history: List[Dict[str, str]]) -> str:
+        """Format action history into AgentFlow-style ``Action Step N`` blocks."""
+        lines = []
+        for i, action in enumerate(action_history, 1):
+            lines.append(f"Action Step {i}:")
+            lines.append(f"  - Tool: {action.get('tool_name', 'unknown')}")
+            lines.append(f"  - Sub-goal: {action.get('sub_goal', '')}")
+            lines.append(f"  - Command: {action.get('command', '')}")
+            lines.append(f"  - Result: {action.get('result', '')}")
+            lines.append("")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _extract_sub_goal(output_text: str) -> str:
+        """Extract the reasoning sub-goal from assistant output.
+
+        Strips <think> and <tool_call> blocks, returning the remaining text
+        truncated to 500 chars.
+        """
+        text = strip_thinking_tags(output_text)
+        text = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.DOTALL)
+        text = text.strip()
+        return text[:500] if len(text) > 500 else text
+
+    def _run_planning_turn(self, states: List[ExecutionState]) -> None:
+        """Execute Turn 0 (planning) for all states in a single batched call.
+
+        The model analyzes each question without calling tools. The output is
+        stored in ``state.query_analysis``. If the model produces a tool call
+        or final answer, those are handled as edge cases.
+        """
+        planning_suffix = (
+            "\n\nBefore using any tools, analyze this query to determine the approach needed.\n"
+            "Instructions:\n"
+            "1. Identify the main objectives in the query.\n"
+            "2. List the necessary skills and tools.\n"
+            "3. For each tool, explain how it helps address the query.\n"
+            "4. Note any additional considerations.\n\n"
+            "Be brief and precise. Do NOT call any tools yet."
+        )
+
+        prompts = []
+        for s in states:
+            planning_messages = list(s.messages)  # shallow copy
+            planning_messages[-1] = {
+                "role": planning_messages[-1]["role"],
+                "content": planning_messages[-1]["content"] + planning_suffix,
+            }
+            prompts.append(
+                self.model.apply_chat_template(planning_messages, use_thinking=self.use_thinking)
+            )
+
+        try:
+            gen_results = self.model.generate(prompts)
+        except Exception as e:
+            logger.exception("Planning turn generation error")
+            for s in states:
+                s.metadata["planning_error"] = str(e)
+            return
+
+        for s, gen_result in zip(states, gen_results):
+            _accumulate_usage(s, gen_result.usage)
+            text = gen_result.text
+
+            # Edge case: model produced a tool call — use text before it as analysis
+            tool_call = parse_tool_call(text)
+            if tool_call:
+                analysis = self._extract_sub_goal(text)
+                s.query_analysis = analysis
+                logger.info(
+                    "Planning turn for Q%s produced tool call (discarded); analysis: %.100s...",
+                    s.question_id, analysis,
+                )
+            # Edge case: model produced a final answer
+            elif "\\boxed{" in text or "\\boxed " in text:
+                s.query_analysis = strip_thinking_tags(text)
+                s.finished = True
+                s.answer = extract_answer(text)
+                logger.info("Planning turn for Q%s produced final answer: %s", s.question_id, s.answer)
+            else:
+                s.query_analysis = strip_thinking_tags(text)
+                logger.info("Planning turn for Q%s complete: %.100s...", s.question_id, s.query_analysis)
+
+            # Log planning output to messages for debugging
+            s.add_message("assistant", text)
+
+    # ------------------------------------------------------------------ #
     # Tool execution                                                      #
     # ------------------------------------------------------------------ #
 
@@ -576,34 +719,11 @@ class AgenticOrchestrator:
             if inject_error:
                 return ToolResult(success=False, output="", metadata={}, error=inject_error)
 
-            self._inject_reasoning_context(tool_name, state, arguments)
-
             logger.info("Tool call: %s, %s", tool_name, arguments)
             return tool.execute(**arguments)
         except Exception as e:
             logger.exception("Tool execution error")
             return ToolResult(success=False, output="", metadata={}, error=str(e))
-
-    def _inject_reasoning_context(
-        self,
-        tool_name: str,
-        state: ExecutionState,
-        arguments: Dict[str, Any],
-    ) -> None:
-        """Inject previous reasoning context for web_search and code_generator (sub-agent only)."""
-        tool = self.tools.get(tool_name)
-        if tool is None:
-            return
-        if getattr(tool, "direct_mode", True):
-            return
-        if tool_name == "web_search" and hasattr(tool, "build_analysis_prompt"):
-            mind_map = self._get_mind_map_for_state(state)
-            arguments["prev_reasoning"] = get_reasoning_context_for_state(state, mind_map=mind_map)
-        elif tool_name == "code_generator" and hasattr(tool, "build_task_prompt"):
-            mind_map = self._get_mind_map_for_state(state)
-            ctx = get_reasoning_context_for_state(state, mind_map=mind_map)
-            att_ctx = get_attachment_context_for_code(state)
-            arguments["context"] = (ctx + "\n\n" + att_ctx).strip() if att_ctx else ctx
 
     def _inject_attachment_path(
         self,
@@ -683,11 +803,7 @@ class AgenticOrchestrator:
     # ------------------------------------------------------------------ #
 
     def _get_mind_map_for_state(self, state: ExecutionState):
-        """Return the mind map's GraphRAG for this question if available.
-
-        Used by :func:`get_reasoning_context_for_state` for summarization of
-        long reasoning chains when the mind map uses GraphRAG.
-        """
+        """Return the mind map's GraphRAG for this question if available."""
         ctx_tool = self.tools.get("mind_map")
         if not ctx_tool or not getattr(ctx_tool, "use_graphrag", False):
             return None
