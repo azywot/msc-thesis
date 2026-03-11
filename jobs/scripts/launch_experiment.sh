@@ -24,7 +24,7 @@ if [ -f ".env" ]; then
 fi
 
 # Project dir and conda env (from env / .env)
-PROJECT_DIR="${PROJECT_DIR:-$HOME/thesis/msc-thesis}"
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
 ENV_NAME="${ENV_NAME:-agent_engine}"
 
 # If we're not in a Slurm job already, load the same modules we use in job scripts.
