@@ -85,7 +85,7 @@ For HPC/Conda, follow the [cluster setup](#hpc--cluster-setup) section below.
 ## HPC / Cluster setup
 
 Run these four steps once on Snellius (SURF) before launching any experiment. <br>
-All commands assume `$HOME/thesis/msc-thesis/` as the working directory.
+All commands assume `$HOME/azywot/msc-thesis/` as the working directory.
 
 ### 1. Build the conda environment
 

@@ -27,7 +27,7 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/ma
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
 # Set project directory
-PROJECT_DIR="${PROJECT_DIR:-$HOME/thesis/msc-thesis}"
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
 cd "$PROJECT_DIR" || exit 1
 
 echo "Project directory: $PROJECT_DIR"

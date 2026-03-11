@@ -23,16 +23,6 @@ module load CUDA/12.8.0
 module load cuDNN/9.10.1.4-CUDA-12.8.0
 
 # Set project directory
-PROJECT_DIR="${PROJECT_DIR:-$HOME/thesis/msc-thesis}"
-cd "$PROJECT_DIR" || exit 1
-
-echo "Project directory: $PROJECT_DIR"
-
-# Activate environment
-ENV_NAME="${ENV_NAME:-agent_engine}"
-echo "Activating environment: $ENV_NAME"
-source activate "$ENV_NAME"
-echo ""
 
 # Load environment variables from .env if it exists
 if [ -f ".env" ]; then
@@ -44,6 +34,18 @@ if [ -f ".env" ]; then
 else
     echo "Warning: .env file not found"
 fi
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+
+echo "Project directory: $PROJECT_DIR"
+
+# Activate environment
+ENV_NAME="${ENV_NAME:-agent_engine}"
+echo "Activating environment: $ENV_NAME"
+source activate "$ENV_NAME"
+echo ""
+
 
 # Set data directory (use scratch-shared for HPC)
 DATA_DIR="${DATA_DIR:-/scratch-shared/$USER/data}"
