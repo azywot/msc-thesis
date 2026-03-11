@@ -20,7 +20,7 @@ orchestrator.
 10. [Sub-agent: code_generator](#10-sub-agent-code_generator)
 11. [Sub-agent: text_inspector](#11-sub-agent-text_inspector)
 12. [Sub-agent: image_inspector](#12-sub-agent-image_inspector)
-13. [Tool: context_manager](#13-tool-context_manager)
+13. [Tool: mind_map](#13-tool-mind_map)
 14. [Message accumulation across turns](#14-message-accumulation-across-turns)
 15. [Token usage tracking](#15-token-usage-tracking)
 16. [Results stored in raw_results.json](#16-results-stored-in-raw_resultsjson)
@@ -59,7 +59,7 @@ run_experiment.py
        │           │     └─ _run_code_generation_batch: LLM.generate(task_prompt) → execute_code()
        │           ├─ text_inspector  → _execute_tool (immediate)
        │           ├─ image_inspector  → _execute_tool (immediate)
-       │           └─ context_manager  → _execute_tool (immediate)
+       │           └─ mind_map  → _execute_tool (immediate)
        └─ extract_answer(state.current_output)
 ```
 
@@ -239,7 +239,7 @@ while state.turn < max_turns and not state.finished:
 
     if tool_call:
         state.add_message("assistant", gen_result.text)
-        _index_reasoning_in_context_manager(gen_result.text, tool_call["name"], state)
+        _index_reasoning_in_mind_map(gen_result.text, tool_call["name"], state)
         tool_result = _execute_tool(tool_call, state)
         state.add_message("tool", "<tool_response>\n{output}\n</tool_response>")
         state.tool_calls.append(tool_call)
@@ -319,7 +319,7 @@ See [§19. Reasoning context module](#19-reasoning-context-module).
 |-----------------|------------------------------------|-------------------------|
 | web_search      | sub-agent mode, has build_analysis_prompt | _schedule_web_job → _flush_web_batch |
 | code_generator  | sub-agent mode, has build_task_prompt     | _schedule_code_job → _flush_code_batch |
-| context_manager| always                             | _execute_tool (immediate) |
+| mind_map| always                             | _execute_tool (immediate) |
 | text_inspector  | always                             | _execute_tool (immediate) |
 | image_inspector | always                             | _execute_tool (immediate) |
 
@@ -517,12 +517,12 @@ to vLLM.
 
 ---
 
-## 13. Tool: `context_manager`
+## 13. Tool: `mind_map`
 
 **Non-direct mode (sub-agent)**:
 
 - Pre-tool reasoning from the orchestrator is indexed into a GraphRAG knowledge
-  base before each `web_search`, `code_generator`, or `context_manager` call.
+  base before each `web_search`, `code_generator`, or `mind_map` call.
 - Tool call arguments: `{"query": str}`.
 - Returns `ToolResult.output` = retrieved context passages (up to 2000 chars).
 - No LLM call inside the tool itself; GraphRAG handles retrieval.
@@ -531,12 +531,12 @@ to vLLM.
 
 ### How reasoning gets into the knowledge base (non-direct mode)
 
-Before executing any `web_search`, `code_generator`, or `context_manager` call,
-the orchestrator calls `_index_reasoning_in_context_manager`. It strips the
+Before executing any `web_search`, `code_generator`, or `mind_map` call,
+the orchestrator calls `_index_reasoning_in_mind_map`. It strips the
 `<tool_call>…</tool_call>` block from the model output and feeds the remaining
-reasoning text into `ContextManagerTool.add_entry(reasoning, question_id)`.
+reasoning text into `MindMapTool.add_entry(reasoning, question_id)`.
 This means the GraphRAG graph is built incrementally from the model's own chain
-of thought, so a later `context_manager` query can retrieve conclusions reached
+of thought, so a later `mind_map` query can retrieve conclusions reached
 in earlier turns.
 
 ---
@@ -588,7 +588,7 @@ the already-present `metadata` field of `ExecutionState`.
 | `run()` — single-turn loop | Each orchestrator turn (prompt + completion) |
 | `run()` — tool execution | Any tool that returns `ToolResult(usage=...)` (web_search, text_inspector, image_inspector in single-run) |
 | `_process_batch_turn()` — batched loop | All orchestrator turns in a batch |
-| `_apply_immediate_results()` | Tools returning `ToolResult.usage` (text_inspector, image_inspector, context_manager, web_search in direct/single path) |
+| `_apply_immediate_results()` | Tools returning `ToolResult.usage` (text_inspector, image_inspector, mind_map, web_search in direct/single path) |
 | `_run_web_analysis_batch()` | Web-search sub-agent LLM analysis call |
 | `_run_code_generation_batch()` | Code-generator sub-agent LLM call |
 
@@ -665,7 +665,7 @@ of all `assistant` and `tool` messages (excluding `system` and `user`).
 | web_search        | Qwen3-4B (shared)        | No       | Analyzes fetched pages            |
 | code_generator    | Qwen3-4B (shared)        | No       | Generates Python code             |
 | text_inspector    | Qwen3-4B (shared)        | No       | Reads/answers about text files    |
-| context_manager   | Qwen3-4B (shared)        | No       | GraphRAG entity extraction        |
+| mind_map   | Qwen3-4B (shared)        | No       | GraphRAG entity extraction        |
 | image_inspector   | Qwen/Qwen3-VL-4B-Instruct   | No       | Multimodal VLM                    |
 
 Model instances sharing the same `path_or_id` are reused (single vLLM engine

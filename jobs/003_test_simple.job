@@ -90,7 +90,7 @@ run_example() {
 run_example "example_code_generator.py" "python examples/example_code_generator.py"
 run_example "example_text_inspector.py" "python examples/example_text_inspector.py"
 run_example "example_image_inspector.py" "python examples/example_image_inspector.py"
-run_example "example_context_manager.py" "python examples/example_context_manager.py"
+run_example "example_mind_map.py" "python examples/example_mind_map.py"
 run_example "example_web_search.py" "python examples/example_web_search.py"
 
 EXIT_CODE=0

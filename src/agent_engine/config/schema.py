@@ -33,7 +33,7 @@ class ToolsConfig:
 
     Attributes:
         enabled_tools: Names of tools to register. Valid values are
-            ``"web_search"``, ``"code_generator"``, ``"context_manager"``,
+            ``"web_search"``, ``"code_generator"``, ``"mind_map"``,
             ``"text_inspector"``, and ``"image_inspector"``.
         direct_tool_call: When ``True`` the orchestrator calls tools directly
             (no sub-agent LLM). When ``False`` each tool spins up its own

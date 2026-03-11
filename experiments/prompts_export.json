@@ -323,10 +323,10 @@
         }
       }
     },
-    "context_manager": {
+    "mind_map": {
       "type": "function",
       "function": {
-        "name": "context_manager",
+        "name": "mind_map",
         "description": "Persistent notes for this question. Use op='write' to save key facts/decisions, and op='read' to retrieve them later (optionally by query).",
         "parameters": {
           "type": "object",

@@ -16,7 +16,7 @@ from agent_engine.prompts import PromptBuilder
 from agent_engine.tools import (
     WebSearchTool,
     CodeGeneratorTool,
-    ContextManagerTool,
+    MindMapTool,
     TextInspectorTool,
     ImageInspectorTool,
 )
@@ -52,7 +52,7 @@ def export_all_prompts(output_path: Path):
     tools = [
         ("web_search", WebSearchTool(api_key="dummy", search_cache={})),
         ("code_generator", CodeGeneratorTool()),
-        ("context_manager", ContextManagerTool()),
+        ("mind_map", MindMapTool()),
         ("text_inspector", TextInspectorTool()),
         ("image_inspector", ImageInspectorTool(model_provider=None)),
     ]

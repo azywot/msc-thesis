@@ -160,9 +160,9 @@ class BaseModelProvider(ABC):
         pass
 
     def __enter__(self):
-        """Context manager entry."""
+        """Mind map entry."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - cleanup resources."""
+        """Mind map exit - cleanup resources."""
         self.cleanup()

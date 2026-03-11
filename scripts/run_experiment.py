@@ -28,7 +28,7 @@ from agent_engine.utils.wandb_logging import log_results_wandb
 from agent_engine.tools import (
     WebSearchTool,
     CodeGeneratorTool,
-    ContextManagerTool,
+    MindMapTool,
     TextInspectorTool,
     ImageInspectorTool,
 )
@@ -102,7 +102,7 @@ def setup_tools(
     api_keys: Dict[str, str],
     model_providers: Optional[Dict[str, Any]] = None,
     orchestrator_model=None,
-    context_manager_storage_path: Optional[Path] = None,
+    mind_map_storage_path: Optional[Path] = None,
 ) -> ToolRegistry:
     """Set up tools based on configuration.
 
@@ -111,9 +111,9 @@ def setup_tools(
         cache_manager: Cache manager instance
         api_keys: Dictionary of API keys
         model_providers: Dictionary of model providers for sub-agent mode (optional)
-        context_manager_storage_path: Optional run-specific path for context_manager cache
-            (e.g. cache_dir/context_manager/gaia/all_validation/2026-02-22_123abc).
-            If None, falls back to config.cache_dir / "context_manager".
+        mind_map_storage_path: Optional run-specific path for mind_map cache
+            (e.g. cache_dir/mind_map/gaia/all_validation/2026-02-22_123abc).
+            If None, falls back to config.cache_dir / "mind_map".
 
     Returns:
         ToolRegistry with registered tools
@@ -154,20 +154,20 @@ def setup_tools(
                 model_provider=coding_model,
                 use_thinking=use_subagent_thinking
             ))
-        elif tool_name == "context_manager":
+        elif tool_name == "mind_map":
             # In sub-agent mode, GraphRAG runs with a local model — no OpenAI key needed (mirrors MAT).
-            # Use run-specific path when provided (mirrors results: cache/context_manager/{dataset}/{split}/{date}_{job_id})
-            if context_manager_storage_path is not None:
-                context_manager_storage_path.mkdir(parents=True, exist_ok=True)
-                storage_path = str(context_manager_storage_path)
+            # Use run-specific path when provided (mirrors results: cache/mind_map/{dataset}/{split}/{date}_{job_id})
+            if mind_map_storage_path is not None:
+                mind_map_storage_path.mkdir(parents=True, exist_ok=True)
+                storage_path = str(mind_map_storage_path)
             else:
-                storage_path = str(config.cache_dir / "context_manager")
-            context_manager_model = model_providers.get("context_manager") if not direct_mode else None
-            tools.register(ContextManagerTool(
+                storage_path = str(config.cache_dir / "mind_map")
+            mind_map_model = model_providers.get("mind_map") if not direct_mode else None
+            tools.register(MindMapTool(
                 direct_mode=direct_mode,
                 storage_path=storage_path,
                 use_graphrag=True,
-                model_provider=context_manager_model,
+                model_provider=mind_map_model,
                 use_thinking=use_subagent_thinking,
             ))
         elif tool_name == "text_inspector":
@@ -210,9 +210,9 @@ def run_experiment(args):
     output_dir.mkdir(parents=True, exist_ok=True)
     run_dir, date_str, job_id = _make_run_dir(output_dir, config.dataset.split)
 
-    # Context manager cache path mirrors results: cache/context_manager/{dataset}/{split}/{date}_{job_id}
-    context_manager_storage = (
-        Path(config.cache_dir) / "context_manager" / config.dataset.name / config.dataset.split / f"{date_str}_{job_id}"
+    # Mind map cache path mirrors results: cache/mind_map/{dataset}/{split}/{date}_{job_id}
+    mind_map_storage = (
+        Path(config.cache_dir) / "mind_map" / config.dataset.name / config.dataset.split / f"{date_str}_{job_id}"
     )
 
     logger = setup_logging(log_file=run_dir / "experiment.log")
@@ -312,7 +312,7 @@ def run_experiment(args):
     tools = setup_tools(
         config, cache_manager, api_keys, model_providers,
         orchestrator_model=orchestrator_model,
-        context_manager_storage_path=context_manager_storage,
+        mind_map_storage_path=mind_map_storage,
     )
 
     # Initialize prompt builder
@@ -454,7 +454,7 @@ def run_experiment(args):
                     direct_tool_call=bool(config.tools.direct_tool_call),
                     enable_search_tool=("web_search" in enabled),
                     enable_code_tool=("code_generator" in enabled),
-                    context_manager=("context_manager" in enabled),
+                    mind_map=("mind_map" in enabled),
                     enable_text_inspector_tool=("text_inspector" in enabled),
                     enable_image_inspector_tool=("image_inspector" in enabled),
                     final_metrics=metrics,
@@ -587,7 +587,7 @@ def _config_to_dict(config) -> Dict[str, Any]:
         },
         "models": {},
     }
-    for role in ("orchestrator", "web_search", "code_generator", "text_inspector", "context_manager", "image_inspector"):
+    for role in ("orchestrator", "web_search", "code_generator", "text_inspector", "mind_map", "image_inspector"):
         if config.has_model(role):
             d["models"][role] = _model_cfg(config.get_model(role))
 

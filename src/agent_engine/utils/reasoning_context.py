@@ -62,7 +62,7 @@ def extract_reasoning_context(
         all_reasoning_steps: List of reasoning lines/steps (e.g. from
             get_accumulated_output_from_state split by newlines).
         mind_map: Optional GraphRAG instance for summarization when reasoning
-            is long. Pass the context manager's graph when available.
+            is long. Pass the mind map's graph when available.
         tool_markers: Markers that indicate tool-related steps to keep.
             Defaults to ``<tool_call>`` and ``<tool_response>``.
 

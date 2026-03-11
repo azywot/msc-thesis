@@ -18,7 +18,7 @@ models:
     path_or_id: "Qwen/Qwen3-4B"
     role: "orchestrator"
 
-  # web_search, code_generator, text_inspector, context_manager are omitted —
+  # web_search, code_generator, text_inspector, mind_map are omitted —
   # they share Qwen3-4B with the orchestrator and will reuse its cached instance.
 
   image_inspector:
@@ -33,7 +33,7 @@ tools:
     - code_generator
     - text_inspector
     - image_inspector
-    - context_manager
+    - mind_map
   direct_tool_call: false
 
 dataset:
