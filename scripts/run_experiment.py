@@ -389,8 +389,7 @@ def run_experiment(args):
                     "ground_truth": ex.answer,
                     "correct": bool(eval_result.get("correct", False)),
                     "evaluation": eval_result,
-                    "output_text": _state_to_output_text(state),
-                    "tool_calls": _collect_tool_call_records(state),
+                    "output_messages": _collect_output_messages(state),
                     "turns": state.turn,
                     "tool_counts": state.tool_counts,
                     "token_usage": token_usage,
@@ -484,49 +483,18 @@ def _write_json(path: Path, data: Any) -> None:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def _state_to_output_text(state: ExecutionState) -> str:
-    """Flatten state messages into a single string of assistant + tool content."""
-    parts: List[str] = []
-    for msg in state.messages:
-        if msg.get("role") in ("assistant", "tool"):
-            content = msg.get("content") or ""
-            if content:
-                parts.append(content)
-    return "\n".join(parts).strip()
+def _collect_output_messages(state: ExecutionState) -> List[Dict[str, str]]:
+    """Return the orchestrator message history (assistant + tool messages).
 
-
-def _collect_tool_call_records(state: ExecutionState) -> List[Dict[str, Any]]:
-    """Return a list of tool call records with name, arguments, and response text.
-
-    Each record has the form:
-        {
-            "name": "<tool_name>",
-            "arguments": {...},
-            "response": "<tool_response text without XML wrapper>",
-        }
+    Skips the initial system and user messages (indices 0 and 1) since those
+    are already captured by ``question``, ``query_analysis``, and the config.
     """
-    records: List[Dict[str, Any]] = []
-    tool_msgs = [m for m in state.messages if m.get("role") == "tool"]
-
-    for call, msg in zip(state.tool_calls, tool_msgs):
-        raw_content = (msg.get("content") or "").strip()
-        # Strip <tool_response> wrapper if present
-        m = re.search(
-            r"<tool_response>\s*(.*?)\s*</tool_response>",
-            raw_content,
-            flags=re.DOTALL,
-        )
-        response = m.group(1).strip() if m else raw_content
-
-        records.append(
-            {
-                "name": call.get("name"),
-                "arguments": call.get("arguments") or {},
-                "response": response,
-            }
-        )
-
-    return records
+    msgs: List[Dict[str, str]] = []
+    for msg in state.messages[2:]:
+        role = msg.get("role", "")
+        if role in ("assistant", "tool"):
+            msgs.append({"role": role, "content": msg.get("content", "")})
+    return msgs
 
 
 def _make_run_dir(output_dir: Path, split: str) -> Tuple[Path, str, str]:
