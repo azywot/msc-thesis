@@ -168,6 +168,8 @@ def _config_to_dict(config: ExperimentConfig) -> Dict[str, Any]:
             model_dict["tensor_parallel_size"] = model_config.tensor_parallel_size
         if model_config.gpu_memory_utilization is not None:
             model_dict["gpu_memory_utilization"] = model_config.gpu_memory_utilization
+        if model_config.backend != "vllm":
+            model_dict["backend"] = model_config.backend
         data["models"][role] = model_dict
 
     if config.dataset:

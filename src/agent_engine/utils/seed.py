@@ -21,25 +21,28 @@ def set_seed(seed: int):
     Args:
         seed: Random seed value
     """
-    import numpy as np
-    import torch
-
     # Python random
     random.seed(seed)
 
-    # NumPy
-    np.random.seed(seed)
+    # NumPy (optional)
+    try:
+        import numpy as np
+        np.random.seed(seed)
+    except ImportError:
+        pass
 
-    # PyTorch
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    # PyTorch (optional — not available in MLX-only environments)
+    try:
+        import torch
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    except ImportError:
+        pass
 
     # Environment variable
     os.environ['PYTHONHASHSEED'] = str(seed)
-
-    # Make PyTorch deterministic (may impact performance)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
 
 def get_seed_from_env(default: int = 0) -> int:

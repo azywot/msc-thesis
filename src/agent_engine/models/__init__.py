@@ -25,6 +25,11 @@ except Exception:  # pragma: no cover
     OpenAIProvider = None  # type: ignore
     AnthropicProvider = None  # type: ignore
 
+try:
+    from .mlx_provider import MLXProvider
+except Exception:  # pragma: no cover
+    MLXProvider = None  # type: ignore
+
 __all__ = [
     "BaseModelProvider",
     "GenerationResult",
@@ -34,5 +39,6 @@ __all__ = [
     "resolve_gpu_assignments",
     "OpenAIProvider",
     "AnthropicProvider",
+    "MLXProvider",
     "get_llm_lock",
 ]

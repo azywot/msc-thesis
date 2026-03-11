@@ -311,7 +311,11 @@ def resolve_gpu_assignments(config) -> Dict[str, Tuple[float, Optional[List[int]
         num_gpus = 1
 
     def _is_local(cfg) -> bool:
-        return cfg is not None and cfg.family not in _API_FAMILIES
+        return (
+            cfg is not None
+            and cfg.family not in _API_FAMILIES
+            and getattr(cfg, "backend", "vllm") == "vllm"
+        )
 
     orch_cfg = config.get_model("orchestrator")
 

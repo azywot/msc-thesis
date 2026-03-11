@@ -1,0 +1,55 @@
+################################################################################
+# Local MacBook run — Qwen3-4B MLX (Apple Silicon)
+#
+# Usage:
+#   uv pip install -e '.[mlx]'
+#   python scripts/run_experiment.py --config experiments/configs/local/qwen3_4b_gaia.yaml
+################################################################################
+
+name: "local_qwen3_4b_gaia"
+description: "Local test with Qwen3-4B-MLX on GAIA (Apple Silicon)"
+
+# No SLURM for local runs
+slurm:
+  num_gpus: 0
+
+models:
+  orchestrator:
+    name: "Qwen3-4B-MLX"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-4B-MLX-8bit"
+    role: "orchestrator"
+    backend: "mlx"
+    max_model_len: 32768
+    max_tokens: 4096
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    repetition_penalty: 1.05
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+  direct_tool_call: true
+  web_tool_provider: "serper"
+  max_search_limit: 5
+  top_k_results: 5
+  max_doc_len: 3000
+
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: 10
+
+max_turns: 10
+batch_size: 1  # MLX generates sequentially
+seed: 0
+
+thinking_mode: "ORCHESTRATOR_ONLY"
+
+output_dir: "./experiments/results/local_qwen3_4b_gaia"
+use_wandb: true
+wandb_project: "msc-thesis-test-local-run"
+cache_dir: "./cache"

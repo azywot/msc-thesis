@@ -14,6 +14,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -65,22 +68,31 @@ def setup_model_provider(model_config, api_keys: Dict[str, str], model_cache: Op
             return cached_provider
     
     # Lazy imports so this script can run with only API deps installed.
-    if model_config.family in [ModelFamily.GPT4]:
+    backend = getattr(model_config, "backend", "vllm")
+
+    if backend == "openai" or model_config.family in [ModelFamily.GPT4]:
         from agent_engine.models.api_provider import OpenAIProvider
         provider = OpenAIProvider(model_config, api_key=api_keys.get("openai"))
-    elif model_config.family == ModelFamily.CLAUDE:
+    elif backend == "anthropic" or model_config.family == ModelFamily.CLAUDE:
         from agent_engine.models.api_provider import AnthropicProvider
         provider = AnthropicProvider(model_config, api_key=api_keys.get("anthropic"))
+    elif backend == "mlx":
+        from agent_engine.models.mlx_provider import MLXProvider
+        provider = MLXProvider(model_config)
+
+        if model_cache is not None:
+            model_cache[cache_key] = provider
+            logger.info(f"💾 Cached MLX model instance: {cache_key}")
     else:
         # Local vLLM model - cache these to avoid duplicate loading
         from agent_engine.models.vllm_provider import VLLMProvider
         provider = VLLMProvider(model_config)
-        
+
         # Cache local model instances for reuse
         if model_cache is not None:
             model_cache[cache_key] = provider
             logger.info(f"💾 Cached model instance: {cache_key}")
-    
+
     return provider
 
 
@@ -244,7 +256,14 @@ def run_experiment(args):
 
     # Resolve GPU assignments before loading any model so utilization and GPU pinning
     # are set automatically (mirrors multi-agent-tools behaviour).
+    # Skip entirely when all models use the MLX backend (no GPU management needed).
+    _all_mlx = all(
+        getattr(cfg, "backend", "vllm") == "mlx"
+        for cfg in config.models.values()
+    )
     try:
+        if _all_mlx:
+            raise RuntimeError("skip — all models use MLX backend")
         from agent_engine.models.vllm_provider import resolve_gpu_assignments
         gpu_assignments = resolve_gpu_assignments(config)
 
@@ -530,11 +549,12 @@ def _config_to_dict(config) -> Dict[str, Any]:
     def _model_cfg(m) -> Dict[str, Any]:
         if m is None:
             return {}
-        return {
+        d = {
             "name": m.name,
             "family": m.family.value if hasattr(m.family, "value") else str(m.family),
             "path_or_id": m.path_or_id,
             "role": m.role,
+            "backend": getattr(m, "backend", "vllm"),
             "max_model_len": m.max_model_len,
             "max_tokens": m.max_tokens,
             "temperature": m.temperature,
@@ -543,6 +563,7 @@ def _config_to_dict(config) -> Dict[str, Any]:
             "repetition_penalty": m.repetition_penalty,
             "supports_thinking": m.supports_thinking,
         }
+        return d
 
     d: Dict[str, Any] = {
         "name": config.name,

@@ -25,7 +25,7 @@ msc-thesis/
 ├── src/agent_engine/          # Main Python package
 │   ├── config/                # YAML schema + loader
 │   ├── core/                  # Orchestrator + tool-calling loop
-│   ├── models/                # vLLM + API providers + locking/reuse
+│   ├── models/                # vLLM + MLX + API providers + locking/reuse
 │   ├── tools/                 # web_search, code_generator, context_manager, inspectors
 │   ├── datasets/              # loaders + evaluators + metrics
 │   ├── prompts/               # prompt templates + builders
@@ -41,6 +41,7 @@ msc-thesis/
 │
 ├── experiments/
 │   ├── configs/               # Experiment YAMLs (by dataset)
+│   │   └── local/             # MacBook/MLX configs (Qwen3-0.6B, 4B)
 │   └── results/               # Default output root
 │
 ├── jobs/                      # SLURM job scripts + HPC tooling
@@ -152,7 +153,58 @@ Optional overrides (via `sbatch --export=ALL,...`): `ENV_NAME`, `PROJECT_DIR`, `
 
 ## Running experiments
 
-### Locally
+### Locally (Apple Silicon — MLX)
+
+Run small quantised models on a MacBook using the MLX backend. No GPU/CUDA required.
+
+#### 1. Install MLX dependencies
+
+```bash
+uv venv
+source .venv/bin/activate
+uv pip install -e '.[mlx]'
+```
+
+#### 2. Set API keys in `.env`
+
+```bash
+cp .env.example .env
+# Edit .env and fill in at minimum:
+SERPER_API_KEY=...   # or TAVILY_API_KEY if using tavily
+WANDB_API_KEY=...    # optional, if use_wandb: true
+HF_TOKEN=...         # required for gated datasets (GAIA, GPQA, HLE)
+```
+
+#### 3. Download datasets
+
+```bash
+HF_HUB_DISABLE_XET_TRANSFER=1 python scripts/download_datasets.py \
+    --dataset gaia --level all --split validation --output-dir ./data
+```
+
+#### 4. Run
+
+```bash
+# Qwen3-0.6B (fastest, least RAM)
+python scripts/run_experiment.py --config experiments/configs/local/qwen3_0.6b_gaia.yaml
+
+# Qwen3-4B (better quality)
+python scripts/run_experiment.py --config experiments/configs/local/qwen3_4b_gaia.yaml
+```
+
+Pre-built local configs are in `experiments/configs/local/`. Key differences from cluster configs:
+
+| Option | Local (MLX) | Cluster (vLLM) |
+|---|---|---|
+| `backend` | `mlx` | `vllm` (default) |
+| `batch_size` | `1`–`5` (RAM-limited) | `-1` (all at once) |
+| SLURM fields | ignored | used by job scripts |
+
+> **Batching:** set `batch_size: N` (e.g. `3`) to process N questions in parallel on Apple Silicon's integrated GPU. Higher values use more RAM — start small and increase as needed.
+
+---
+
+### Locally (GPU — vLLM)
 
 ```bash
 # Set required key (Serper or Tavily, depending on config)

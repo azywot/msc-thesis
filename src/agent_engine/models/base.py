@@ -81,6 +81,8 @@ class ModelConfig:
 
     seed: int = 0
 
+    backend: str = "vllm"  # "vllm", "mlx", "openai", "anthropic"
+
     def __post_init__(self):
         if isinstance(self.family, str):
             self.family = ModelFamily(self.family)
