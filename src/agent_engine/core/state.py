@@ -52,21 +52,15 @@ class ExecutionState(BaseModel):
         'image_inspector': 0,
     }
 
+    # Output message history (assistant + tool turns, excluding system/user)
+    output_messages: List[Dict[str, str]] = []
+
     # Structured memory (AgentFlow-inspired)
     query_analysis: str = ""
     action_history: List[Dict[str, str]] = []
 
     # Metadata
     metadata: Dict[str, Any] = {}
-
-    def add_message(self, role: str, content: str):
-        """Add a message to the conversation history.
-
-        Args:
-            role: Message role (user, assistant, tool)
-            content: Message content
-        """
-        self.messages.append({"role": role, "content": content})
 
     def increment_tool_count(self, tool_name: str):
         """Increment the usage count for a tool.

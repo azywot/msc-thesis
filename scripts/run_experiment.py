@@ -390,7 +390,7 @@ def run_experiment(args):
                     "evaluation": eval_result,
                     "query_analysis": state.query_analysis,
                     "action_history": state.action_history,
-                    "output_messages": _collect_output_messages(state),
+                    "output_messages": state.output_messages,
                     "turns": state.turn,
                     "tool_counts": state.tool_counts,
                     "token_usage": token_usage,
@@ -481,19 +481,6 @@ def _write_json(path: Path, data: Any) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-
-def _collect_output_messages(state: ExecutionState) -> List[Dict[str, str]]:
-    """Return the orchestrator message history (assistant + tool messages).
-
-    Skips the initial system and user messages (indices 0 and 1) since those
-    are already captured by ``question``, ``query_analysis``, and the config.
-    """
-    msgs: List[Dict[str, str]] = []
-    for msg in state.messages[2:]:
-        role = msg.get("role", "")
-        if role in ("assistant", "tool"):
-            msgs.append({"role": role, "content": msg.get("content", "")})
-    return msgs
 
 
 def _make_run_dir(output_dir: Path, split: str) -> Tuple[Path, str, str]:

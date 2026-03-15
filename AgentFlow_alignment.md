@@ -89,7 +89,7 @@ Formatted by `_format_action_history()` into:
 Action Step 1:
   - Tool: web_search
   - Sub-goal: Search for the capital of France
-  - Command: {"query": "capital of France"}
+  - Command: {"name": "web_search", "arguments": {"query": "capital of France"}}
   - Result: Paris is the capital...
 ```
 
@@ -167,6 +167,177 @@ Instructions:
 ```
 
 Same content: query, query analysis, previous steps. Tool information lives in the system prompt instead of repeated in the user message.
+
+## Memory Evolution (Turn-by-Turn)
+
+The memory has two components that live on `ExecutionState`:
+- `state.query_analysis` — set **once** in the planning turn, never mutated again
+- `state.action_history` — a list that **grows by one entry per tool call**
+
+`state.messages` also grows each turn but is **not fed back to the model** after the planning turn — `_build_memory_prompt` reads only `messages[1]` (the original user question) and ignores all subsequent messages. The full `messages` list exists for debugging/logging only.
+
+---
+
+### State at initialisation (`run` or `run_batch`)
+
+```
+state.messages = [
+    {"role": "system",    "content": system_prompt},
+    {"role": "user",      "content": question [+ attachment notes]}
+]
+state.query_analysis = ""
+state.action_history = []
+```
+
+---
+
+### After `_run_planning_turn` (Turn 0, not counted toward max_turns)
+
+Prompt sent to model:
+```
+[system: system_prompt]
+[user:   question + planning_suffix]
+```
+
+The planning suffix is NOT saved into `state.messages[1]`; it is added to a shallow copy only.
+
+Model output is stored as:
+```python
+state.query_analysis = strip_thinking_tags(planning_output)  # full planning text
+state.messages.append({"role": "assistant", "content": planning_output})  # for debug
+```
+
+State after:
+```
+state.messages       = [system, user(original), assistant(planning)]
+state.query_analysis = "To solve this, we need to:\n1. ..."
+state.action_history = []
+```
+
+---
+
+### Memory prompt for Turn 1 (no previous steps yet)
+
+`_build_memory_prompt` constructs a **fresh 2-message list** from scratch:
+
+```
+[system: system_prompt]
+[user:
+  <original question>
+
+  **Query Analysis:**
+  To solve this, we need to:
+  1. ...
+]
+```
+
+Model calls a tool (e.g. `web_search`). After execution, the orchestrator appends:
+```python
+state.messages.append({"role": "assistant", "content": gen_result.text})
+state.messages.append({"role": "tool",      "content": "<tool_response>\n...\n</tool_response>"})
+state.action_history.append({
+    "tool_name": "web_search",
+    "sub_goal":  "<text before <tool_call> tag, stripped of <think>, max 500 chars>",
+    "command":   '{"query": "Moon perigee distance Wikipedia"}',
+    "result":    "<tool_response text, stripped of <think> tags>"
+})
+```
+
+State after Turn 1:
+```
+state.messages       = [system, user, assistant(t1), tool(t1)]
+state.query_analysis = "To solve this..."          # unchanged
+state.action_history = [step_1_dict]               # length 1
+```
+
+---
+
+### Memory prompt for Turn 2 (one previous step)
+
+```
+[system: system_prompt]
+[user:
+  <original question>
+
+  **Query Analysis:**
+  To solve this, we need to:
+  1. ...
+
+  **Previous Steps:**
+  Action Step 1:
+    - Tool: web_search
+    - Sub-goal: I'll search for the minimum perigee value from Wikipedia.
+    - Command: {"name": "web_search", "arguments": {"query": "Moon perigee distance Wikipedia"}}
+    - Result: ...search result text...
+
+]
+```
+
+Model calls `code_generator`. After execution, appended to history:
+```python
+state.action_history.append({
+    "tool_name": "code_generator",
+    "sub_goal":  "Now I'll compute the time using the 356400 km minimum perigee.",
+    "command":   '{"code": "def calculate_time():\\n    ...\\nprint(result)"}',
+    "result":    "17000"
+})
+```
+
+State after Turn 2:
+```
+state.messages       = [system, user, assistant(t1), tool(t1), assistant(t2), tool(t2)]
+state.query_analysis = "To solve this..."          # unchanged
+state.action_history = [step_1_dict, step_2_dict]  # length 2
+```
+
+---
+
+### Memory prompt for Turn 3 (two previous steps)
+
+```
+[system: system_prompt]
+[user:
+  <original question>
+
+  **Query Analysis:**
+  ...
+
+  **Previous Steps:**
+  Action Step 1:
+    - Tool: web_search
+    - Sub-goal: ...
+    - Command: {"name": "web_search", "arguments": {"query": "Moon perigee distance Wikipedia"}}
+    - Result: ...
+
+  Action Step 2:
+    - Tool: code_generator
+    - Sub-goal: Now I'll compute the time using the 356400 km minimum perigee.
+    - Command: {"name": "code_generator", "arguments": {"code": "def calculate_time():\n    ..."}}
+    - Result: 17000
+
+]
+```
+
+If the model produces no `<tool_call>`, execution ends:
+```python
+state.finished = True
+state.answer   = extract_answer(gen_result.text)  # looks for \boxed{}, "Final Answer:", etc.
+```
+
+---
+
+### Summary: what grows vs. what is rebuilt
+
+| Component | Grows? | Fed to model? |
+|---|---|---|
+| `state.messages` | Yes, +2 per turn (assistant + tool) | Only `messages[1]` (original question) |
+| `state.query_analysis` | No (set once at Turn 0) | Yes, every turn |
+| `state.action_history` | Yes, +1 per tool call | Yes, every turn (full list) |
+| Memory prompt | No (rebuilt fresh each turn from the above) | Yes |
+
+The memory prompt is always a **2-message conversation** `[system, user]`, never longer. The full growing `state.messages` chain is never replayed to the model.
+
+---
 
 ## Files Changed
 

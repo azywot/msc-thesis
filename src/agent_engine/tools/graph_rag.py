@@ -66,6 +66,16 @@ try:
         return use_community_reports
 
     _nano_op._find_most_related_community_from_entities = _patched_find_most_related_community_from_entities
+
+    # Monkey-patch: fix TypeError when text_chunks_db.get_by_id returns None for some chunks
+    # Filter items with data=None before truncate (avoids 'NoneType' not subscriptable)
+    _orig_truncate = _nano_op.truncate_list_by_token_size
+
+    def _patched_truncate(list_data, key, max_token_size):
+        filtered = [x for x in list_data if "data" not in x or x.get("data") is not None]
+        return _orig_truncate(filtered, key, max_token_size)
+
+    _nano_op.truncate_list_by_token_size = _patched_truncate
 except ImportError:
     GRAPHRAG_AVAILABLE = False
     GraphRAG = None

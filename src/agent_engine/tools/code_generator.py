@@ -52,6 +52,7 @@ class CodeGeneratorTool(BaseTool):
         self.model_provider = model_provider
         self.use_thinking = use_thinking
         self.direct_mode = model_provider is None
+        self._exec_counter = 0
 
         # Create temp directory
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -212,8 +213,11 @@ class CodeGeneratorTool(BaseTool):
                 error=f"Invalid Python syntax: {exc}",
             )
 
-        run_id = os.getenv("SLURM_JOB_ID", f"{os.getpid()}_{int(time.time())}")
-        temp_file_path = os.path.join(self.temp_dir, f"temp_code_{run_id}.py")
+        self._exec_counter += 1
+        slurm_id = os.getenv("SLURM_JOB_ID", f"pid_{os.getpid()}")
+        job_dir = os.path.join(self.temp_dir, slurm_id)
+        os.makedirs(job_dir, exist_ok=True)
+        temp_file_path = os.path.join(job_dir, f"temp_{self._exec_counter}.py")
 
         try:
             with open(temp_file_path, "w") as f:

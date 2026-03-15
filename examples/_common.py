@@ -245,7 +245,8 @@ def save_result(output_dir: Path, state, config) -> Path:
     # Full execution trace (messages + tool_calls) for debugging.
     trace_path = output_dir / "trace.json"
     with open(trace_path, "w", encoding="utf-8") as f:
-        json.dump(state.to_dict(), f, indent=2, ensure_ascii=False)
+        state_dict = state.model_dump() if hasattr(state, "model_dump") else state.dict()
+        json.dump(state_dict, f, indent=2, ensure_ascii=False)
     return path
 
 

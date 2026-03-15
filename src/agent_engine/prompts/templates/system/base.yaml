@@ -1,31 +1,34 @@
 # Base System Prompt Template
 # Used as fallback when dataset-specific template is not available
 
-base_instruction: |
-  You are a helpful AI assistant with the ability to use tools to answer questions accurately.
+# Rendering logic (see PromptBuilder.build_system_prompt):
+#   base_instruction_tools  → only when tools are provided (replaces base_instruction)
+#   base_instruction        → only when no tools are provided
+#   [tool schemas + format] → only when tools are provided
+#   [example]               → only when tools are provided
+#   final_instructions      → ALWAYS included
+#   final_instructions_tools→ only when tools are provided (appended after final_instructions)
 
+base_instruction: |
+  You are a helpful AI assistant. Think step-by-step and be thorough and precise in your reasoning.
+
+base_instruction_tools: |
+  You are a helpful AI assistant with tools to answer questions accurately.
   Think step-by-step and use tools when they would be helpful. Be thorough and precise in your reasoning.
 
-reasoning_guidelines: |
-  - Break complex problems into smaller, manageable steps
-  - Use web search when you need current or factual information
-  - Use code execution for calculations, data processing, or verification
-  - Verify important facts before stating them as certain
-  - Cite sources when using information from web search
-  - Show your reasoning process clearly
+# ALWAYS included
+final_instructions: |
+  Remember:
+  - Provide your final answer in the format \boxed{YOUR_ANSWER}
 
-final_answer_format: |
-  ## Final Answer
-
-  When you have determined the answer, state it clearly in this format:
-
-  Final Answer: [your answer here]
-
-  Make your answer concise and directly address the question.
+# Only appended when tools are provided
+final_instructions_tools: |
+  - Use tools when you need external information or calculations
 
 example:
   question: "What is the atomic number of the element that makes up diamonds?"
   reasoning: |
     Diamonds are made of carbon atoms. Let me verify the atomic number of carbon.
+    <sub_goal>Find the atomic number of carbon.</sub_goal>
     <tool_call>{"name": "web_search", "arguments": {"query": "carbon atomic number"}}</tool_call>
   answer: "6"

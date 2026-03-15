@@ -179,22 +179,22 @@ class AgenticOrchestrator:
                 self._index_reasoning_in_mind_map(gen_result.text, tool_call["name"], state)
                 tool_result = self._execute_tool(tool_call, state)
                 _accumulate_usage(state, tool_result.usage)
-                state.add_message("assistant", gen_result.text)
                 clean_output = strip_thinking_tags(tool_result.output or "")
-                state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
                 state.action_history.append({
                     "tool_name": tool_call["name"],
                     "sub_goal": self._extract_sub_goal(gen_result.text),
-                    "command": json.dumps(tool_call.get("arguments") or {}),
+                    "command": json.dumps(tool_call),
                     "result": clean_output,
                 })
+                state.output_messages.append({"role": "assistant", "content": gen_result.text})
+                state.output_messages.append({"role": "tool", "tool_name": tool_call["name"], "content": clean_output})
                 state.tool_calls.append(tool_call)
                 state.increment_tool_count(tool_call["name"])
                 logger.info(f"Tool '{tool_call['name']}' executed. Success: {tool_result.success}")
             else:
-                state.add_message("assistant", gen_result.text)
                 state.finished = True
                 state.answer = extract_answer(gen_result.text)
+                state.output_messages.append({"role": "assistant", "content": gen_result.text})
                 logger.info(f"Execution finished. Answer: {state.answer}")
 
         if not state.finished:
@@ -314,12 +314,11 @@ class AgenticOrchestrator:
             tool_call = parse_tool_call(gen_result.text)
 
             if tool_call:
-                s.add_message("assistant", gen_result.text)
                 self._classify_tool_call(s, tool_call, gen_result.text, web_jobs, code_jobs, immediate_results)
             else:
-                s.add_message("assistant", gen_result.text)
                 s.finished = True
                 s.answer = extract_answer(gen_result.text)
+                s.output_messages.append({"role": "assistant", "content": gen_result.text})
 
         self._apply_immediate_results(immediate_results)
         if web_jobs:
@@ -415,13 +414,14 @@ class AgenticOrchestrator:
         for item in results:
             _accumulate_usage(item.state, item.result.usage)
             clean_output = strip_thinking_tags(item.result.output or "")
-            item.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
             item.state.action_history.append({
                 "tool_name": item.tool_call["name"],
                 "sub_goal": self._extract_sub_goal(item.state.current_output),
-                "command": json.dumps(item.tool_call.get("arguments") or {}),
+                "command": json.dumps(item.tool_call),
                 "result": clean_output,
             })
+            item.state.output_messages.append({"role": "assistant", "content": item.state.current_output})
+            item.state.output_messages.append({"role": "tool", "tool_name": item.tool_call["name"], "content": clean_output})
             item.state.tool_calls.append(item.tool_call)
             item.state.increment_tool_count(item.tool_call["name"])
 
@@ -489,13 +489,14 @@ class AgenticOrchestrator:
             _accumulate_usage(job.state, out.usage)
             text = strip_thinking_tags(out.text)
             analysis_cache[job.query] = text
-            job.state.add_message("tool", f"<tool_response>\n{text}\n</tool_response>")
             job.state.action_history.append({
                 "tool_name": job.tool_call["name"],
                 "sub_goal": self._extract_sub_goal(job.state.current_output),
-                "command": json.dumps(job.tool_call.get("arguments") or {}),
+                "command": json.dumps(job.tool_call),
                 "result": text,
             })
+            job.state.output_messages.append({"role": "assistant", "content": job.state.current_output})
+            job.state.output_messages.append({"role": "tool", "tool_name": job.tool_call["name"], "content": text})
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
 
@@ -528,13 +529,14 @@ class AgenticOrchestrator:
             except Exception as exc:
                 tr = ToolResult(success=False, output="", metadata={}, error=str(exc))
             clean_output = strip_thinking_tags(tr.output or "")
-            job.state.add_message("tool", f"<tool_response>\n{clean_output}\n</tool_response>")
             job.state.action_history.append({
                 "tool_name": job.tool_call["name"],
                 "sub_goal": self._extract_sub_goal(job.state.current_output),
-                "command": json.dumps(job.tool_call.get("arguments") or {}),
+                "command": json.dumps(job.tool_call),
                 "result": clean_output,
             })
+            job.state.output_messages.append({"role": "assistant", "content": job.state.current_output})
+            job.state.output_messages.append({"role": "tool", "tool_name": job.tool_call["name"], "content": clean_output})
             job.state.tool_calls.append(job.tool_call)
             job.state.increment_tool_count(job.tool_call["name"])
 
@@ -624,15 +626,16 @@ class AgenticOrchestrator:
 
     @staticmethod
     def _extract_sub_goal(output_text: str) -> str:
-        """Extract the reasoning sub-goal from assistant output.
+        """Extract the explicit sub-goal from assistant output (AF-aligned).
 
-        Strips <think> and <tool_call> blocks, returning the remaining text
-        truncated to 500 chars.
+        Parses the <sub_goal>...</sub_goal> tag that the model is instructed
+        to emit before every <tool_call>. Returns an empty string if absent.
         """
-        text = strip_thinking_tags(output_text)
-        text = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.DOTALL)
-        text = text.strip()
-        return text[:500] if len(text) > 500 else text
+        match = re.search(r"<sub_goal>(.*?)</sub_goal>", output_text, re.DOTALL)
+        if match:
+            sub_goal = match.group(1).strip()
+            return sub_goal[:500] if len(sub_goal) > 500 else sub_goal
+        return ""
 
     def _run_planning_turn(self, states: List[ExecutionState]) -> None:
         """Execute Turn 0 (planning) for all states in a single batched call.
@@ -689,7 +692,8 @@ class AgenticOrchestrator:
             # Edge case: model produced a tool call — use text before it as analysis
             tool_call = parse_tool_call(text)
             if tool_call:
-                analysis = self._extract_sub_goal(text)
+                before_tool = text.split("<tool_call>")[0].strip()
+                analysis = strip_thinking_tags(before_tool) if before_tool else strip_thinking_tags(text)
                 s.query_analysis = analysis
                 logger.info(
                     "Planning turn for Q%s produced tool call (discarded); analysis: %.100s...",
@@ -705,8 +709,6 @@ class AgenticOrchestrator:
                 s.query_analysis = strip_thinking_tags(text)
                 logger.info("Planning turn for Q%s complete: %.100s...", s.question_id, s.query_analysis)
 
-            # Log planning output to messages for debugging
-            s.add_message("assistant", text)
 
     # ------------------------------------------------------------------ #
     # Tool execution                                                      #

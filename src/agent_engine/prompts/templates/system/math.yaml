@@ -2,17 +2,32 @@
 # For MATH500, AIME, AMC and other math datasets
 # Matches multi-agent-tools/scripts/prompts.py:get_math_search_o1_instruction_qwen3()
 
+# Rendering logic (see PromptBuilder.build_system_prompt):
+#   base_instruction_tools  → only when tools are provided (replaces base_instruction)
+#   base_instruction        → only when no tools are provided
+#   [tool schemas + format] → only when tools are provided
+#   [example]               → only when tools are provided
+#   final_instructions      → ALWAYS included
+#   final_instructions_tools→ only when tools are provided (appended after final_instructions)
+
 base_instruction: |
+  You are a mathematical reasoning assistant. Solve problems accurately.
+
+base_instruction_tools: |
   You are a mathematical reasoning assistant with tools to help solve problems accurately.
 
 # Tool descriptions and examples are added dynamically by PromptBuilder
 
+# ALWAYS included
 final_instructions: |
   Remember:
-  - Use tools for calculations to ensure accuracy
   - Verify numerical results when possible
   - Provide your final answer in the format \boxed{YOUR_ANSWER}
   - The user expects accuracy above all else
+
+# Only appended when tools are provided
+final_instructions_tools: |
+  - Use tools for calculations to ensure accuracy
 
 # Examples for different tool combinations (added dynamically based on enabled tools)
 
@@ -22,10 +37,12 @@ example_search_code_direct:
   steps:
     - step: 1
       reasoning: "I need to verify the atomic number of Oxygen."
+      sub_goal: "Search for the atomic number of Oxygen."
       tool_call: '{"name": "web_search", "arguments": {"query": "atomic number of Oxygen"}}'
       tool_response: "The atomic number of Oxygen is 8."
     - step: 2
       reasoning: "Now I need to calculate the sum of the first 10 primes and multiply by 8."
+      sub_goal: "Compute the sum of the first 10 prime numbers and multiply by 8."
       tool_call: '{"name": "code_generator", "arguments": {"code": "def is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True\n\nprimes = []\nx = 2\nwhile len(primes) < 10:\n    if is_prime(x):\n        primes.append(x)\n    x += 1\n\ns = sum(primes)\nresult = s * 8\nprint(f\"First 10 primes: {primes}\")\nprint(f\"Sum: {s}\")\nprint(f\"Result: {result}\")\n"}}'
       tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
     - step: final
@@ -37,10 +54,12 @@ example_search_code_subagent:
   steps:
     - step: 1
       reasoning: "I need to verify the atomic number of Oxygen."
+      sub_goal: "Search for the atomic number of Oxygen."
       tool_call: '{"name": "web_search", "arguments": {"query": "atomic number of Oxygen"}}'
       tool_response: "The atomic number of Oxygen is 8."
     - step: 2
       reasoning: "Now I need to calculate the sum of the first 10 primes and multiply by 8."
+      sub_goal: "Compute the sum of the first 10 prime numbers and multiply by 8."
       tool_call: '{"name": "code_generator", "arguments": {"task": "1. Generate the first 10 prime numbers\n2. Sum them up\n3. Multiply the sum by 8\n4. Print the result"}}'
       tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
     - step: final
@@ -52,6 +71,7 @@ example_search_only:
   steps:
     - step: 1
       reasoning: "I need to search for information about the first Nobel Prize in Physics."
+      sub_goal: "Find the winner of the first Nobel Prize in Physics."
       tool_call: '{"name": "web_search", "arguments": {"query": "first Nobel Prize in Physics winner 1901"}}'
       tool_response: "The first Nobel Prize in Physics was awarded in 1901 to Wilhelm Conrad Röntgen for his discovery of X-rays."
     - step: final
@@ -63,6 +83,7 @@ example_code_direct:
   steps:
     - step: 1
       reasoning: "I need to find the first 10 prime numbers and calculate their sum."
+      sub_goal: "Generate the first 10 prime numbers and compute their sum."
       tool_call: '{"name": "code_generator", "arguments": {"code": "def is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True\n\nprimes = []\nx = 2\nwhile len(primes) < 10:\n    if is_prime(x):\n        primes.append(x)\n    x += 1\n\nprint(primes)\nprint(sum(primes))\n"}}'
       tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
     - step: final
@@ -74,6 +95,7 @@ example_code_subagent:
   steps:
     - step: 1
       reasoning: "I need to find the first 10 prime numbers and calculate their sum."
+      sub_goal: "Generate the first 10 prime numbers and compute their sum."
       tool_call: '{"name": "code_generator", "arguments": {"task": "Generate the first 10 prime numbers, sum them, and print both the list and the sum"}}'
       tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
     - step: final

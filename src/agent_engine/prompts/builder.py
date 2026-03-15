@@ -84,7 +84,9 @@ class PromptBuilder:
         # Section order mirrors MAT: base_instruction → tools → example → final_instructions
         sections = []
 
-        if "base_instruction" in template:
+        if tool_schemas and "base_instruction_tools" in template:
+            sections.append(template["base_instruction_tools"].strip())
+        elif "base_instruction" in template:
             sections.append(template["base_instruction"].strip())
 
         if tool_schemas:
@@ -96,6 +98,9 @@ class PromptBuilder:
 
         if "final_instructions" in template:
             sections.append(template["final_instructions"].strip())
+
+        if tool_schemas and "final_instructions_tools" in template:
+            sections.append(template["final_instructions_tools"].strip())
 
         return "\n\n".join(sections)
 
@@ -124,8 +129,10 @@ class PromptBuilder:
             "You may call one or more functions to assist with the user query.\n\n"
             "You are provided with function signatures within <tools></tools> XML tags:\n"
             f"<tools>\n{tools_json}\n</tools>\n\n"
-            "For each function call, return a json object with function name and arguments "
-            "within <tool_call></tool_call> XML tags:\n"
+            "For each function call, first state your specific sub-goal for this step "
+            "within <sub_goal></sub_goal> tags, then return the function call within "
+            "<tool_call></tool_call> XML tags:\n"
+            "<sub_goal>A specific, actionable goal for this step</sub_goal>\n"
             "<tool_call>\n"
             '{{"name": <function-name>, "arguments": <args-json-object>}}\n'
             "</tool_call>\n\n"
@@ -188,6 +195,10 @@ class PromptBuilder:
                 reasoning = step_data.get("reasoning", "")
                 if reasoning:
                     lines.append(f"**Step {step_num}:** {reasoning}")
+                    lines.append("")
+
+                if "sub_goal" in step_data:
+                    lines.append(f"<sub_goal>{step_data['sub_goal']}</sub_goal>")
                     lines.append("")
 
                 if "tool_call" in step_data:
