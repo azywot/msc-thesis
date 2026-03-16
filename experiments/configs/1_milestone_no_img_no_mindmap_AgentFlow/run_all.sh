@@ -1,9 +1,9 @@
 #!/bin/bash
-# Run all 1_milestone_no_img_no_mindmap experiments (GAIA, HLE, GPQA, AIME, MuSiQue).
+# Run all 1_milestone_no_img_no_mindmap_AgentFlow experiments (GAIA, HLE, GPQA, AIME, MuSiQue).
 #
 # Usage (from project root):
-#   ./experiments/configs/1_milestone_no_img_no_mindmap/run_all.sh           # Submit all to SLURM
-#   ./experiments/configs/1_milestone_no_img_no_mindmap/run_all.sh --local   # Run all locally
+#   ./experiments/configs/1_milestone_no_img_no_mindmap_AgentFlow/run_all.sh           # Submit all to SLURM
+#   ./experiments/configs/1_milestone_no_img_no_mindmap_AgentFlow/run_all.sh --local   # Run all locally
 
 set -e
 
@@ -22,4 +22,4 @@ for folder in gaia hle gpqa aime musique; do
 done
 
 echo ""
-echo "All 1_milestone_no_img_no_mindmap experiment batches submitted."
+echo "All 1_milestone_no_img_no_mindmap_AgentFlow experiment batches submitted."

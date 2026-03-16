@@ -25,7 +25,6 @@ tools:
   enabled_tools:
     - web_search
     - code_generator
-    - mind_map
   direct_tool_call: false
 
 dataset:
