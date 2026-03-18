@@ -1,0 +1,41 @@
+# Test config — Phi-4-mini-instruct (3.8B)
+
+name: "test_phi4_mini_instruct"
+description: "Test run: Phi-4-mini-instruct, direct tools, no thinking, 5 GAIA questions"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 1
+  ntasks: 1
+  cpus_per_task: 8
+  time: "02:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "Phi-4-mini-instruct"
+    family: "phi4"
+    path_or_id: "microsoft/Phi-4-mini-instruct"
+    role: "orchestrator"
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+  direct_tool_call: true
+
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: 5
+
+seed: 0
+thinking_mode: "NO"
+
+output_dir: "./experiments/results/phi4/phi4_mini_instruct_test"
+use_wandb: true
+wandb_project: "add-model-families"
+
+cache_dir: "./cache"

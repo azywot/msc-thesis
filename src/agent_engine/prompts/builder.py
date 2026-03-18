@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from ..models.base import ModelFamily, _DEEPSEEK_FAMILIES
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -63,10 +64,18 @@ class PromptBuilder:
         self,
         dataset_name: str,
         tool_schemas: List[Dict[str, Any]],
-        max_search_limit: int = 10,
-        direct_tool_call: bool = True
+        direct_tool_call: bool = True,
+        model_family: Optional[ModelFamily] = None,
     ) -> str:
-        """Build system prompt with tools and instructions."""
+        """Build system prompt with tools and instructions.
+
+        Args:
+            dataset_name: Name of the dataset (determines template selection).
+            tool_schemas: List of tool schema dicts.
+            direct_tool_call: Whether tools run in direct (orchestrator-inline) mode.
+            model_family: Model family — controls tool-call tag format in prompts.
+                          ``None`` defaults to Qwen3-style tags.
+        """
         try:
             # GAIA, HLE, and MuSiQue share the same single‑QA prompt template.
             # AIME, MATH500, AMC share the math template.
@@ -90,9 +99,9 @@ class PromptBuilder:
             sections.append(template["base_instruction"].strip())
 
         if tool_schemas:
-            sections.append(self._format_tool_schemas(tool_schemas, max_search_limit, direct_tool_call))
+            sections.append(self._format_tool_schemas(tool_schemas, direct_tool_call, model_family))
 
-        example_text = self._select_and_format_example(template, tool_schemas, direct_tool_call)
+        example_text = self._select_and_format_example(template, tool_schemas, direct_tool_call, model_family)
         if example_text:
             sections.append(example_text)
 
@@ -104,25 +113,40 @@ class PromptBuilder:
 
         return "\n\n".join(sections)
 
+    @staticmethod
+    def _get_family_tags(
+        model_family: Optional[ModelFamily],
+    ) -> tuple:
+        """Return (tc_open, tc_close, tr_open, tr_close) for the given model family."""
+        if model_family is not None and model_family in _DEEPSEEK_FAMILIES:
+            return "```json\n", "\n```", "Tool result:\n", ""
+        if model_family == ModelFamily.PHI4:
+            return "<|tool_call|>\n", "\n<|/tool_call|>", "<tool_response>", "</tool_response>"
+        # Qwen family + default
+        return "<tool_call>\n", "\n</tool_call>", "<tool_response>", "</tool_response>"
+
     def _format_tool_schemas(
         self,
         schemas: List[Dict[str, Any]],
-        max_search_limit: int,
         direct_tool_call: bool = False,
+        model_family: Optional[ModelFamily] = None,
     ) -> str:
-        """Format tool schemas using the Qwen3 XML <tools> format (matches MAT)."""
+        """Format tool schemas with family-aware tool-call tag format."""
         if not schemas:
             return ""
 
         tools_json = "\n".join(json.dumps(schema, indent=2) for schema in schemas)
+        tc_open, tc_close, tr_open, tr_close = self._get_family_tags(model_family)
 
         direct_mode_rule = ""
         if direct_tool_call:
             direct_mode_rule = (
                 "\n"
-                "After every <tool_response>...</tool_response>, "
-                "write at least one sentence of reasoning before making another <tool_call>.\n"
+                "After every tool result, "
+                "write at least one sentence of reasoning before making another tool call.\n"
             )
+
+        tr_hint = f" in {tr_open}...{tr_close} tags" if tr_close else ""
 
         return (
             "# Tools\n\n"
@@ -130,15 +154,14 @@ class PromptBuilder:
             "You are provided with function signatures within <tools></tools> XML tags:\n"
             f"<tools>\n{tools_json}\n</tools>\n\n"
             "For each function call, first state your specific sub-goal for this step "
-            "within <sub_goal></sub_goal> tags, then return the function call within "
-            "<tool_call></tool_call> XML tags:\n"
+            "within <sub_goal></sub_goal> tags, then return the function call as follows:\n"
             "<sub_goal>A specific, actionable goal for this step</sub_goal>\n"
-            "<tool_call>\n"
+            f"{tc_open}"
             '{{"name": <function-name>, "arguments": <args-json-object>}}\n'
-            "</tool_call>\n\n"
+            f"{tc_close}\n\n"
             "Important: You may call tools zero, one, or multiple times as needed. "
             "Only call a tool when it would help answer the question. "
-            "After receiving tool results in <tool_response></tool_response> tags, "
+            f"After receiving tool results{tr_hint}, "
             f"continue your reasoning with the new information.{direct_mode_rule}"
         )
 
@@ -146,7 +169,8 @@ class PromptBuilder:
         self,
         template: Dict[str, Any],
         tool_schemas: List[Dict[str, Any]],
-        direct_tool_call: bool
+        direct_tool_call: bool,
+        model_family: Optional[ModelFamily] = None,
     ) -> str:
         """Select and format appropriate example based on tools and mode.
 
@@ -154,6 +178,7 @@ class PromptBuilder:
             template: Template dictionary
             tool_schemas: List of enabled tool schemas
             direct_tool_call: Whether using direct mode (True) or sub-agent mode (False)
+            model_family: Model family for tag style selection.
 
         Returns:
             Formatted example text or empty string if no example
@@ -181,6 +206,11 @@ class PromptBuilder:
         if not example or "question" not in example or "steps" not in example:
             return ""
 
+        tc_open, tc_close, tr_open, tr_close = self._get_family_tags(model_family)
+        # Strip newlines from tags for inline example formatting
+        tc_open, tc_close = tc_open.strip(), tc_close.strip()
+        tr_open, tr_close = tr_open.strip(), tr_close.strip()
+
         lines = ["### EXAMPLE", ""]
         lines.append(f'Question: "{example["question"]}"')
         lines.append("")
@@ -202,15 +232,16 @@ class PromptBuilder:
                     lines.append("")
 
                 if "tool_call" in step_data:
-                    lines.append("<tool_call>")
+                    lines.append(tc_open)
                     lines.append(step_data["tool_call"])
-                    lines.append("</tool_call>")
+                    lines.append(tc_close)
                     lines.append("")
 
                 if "tool_response" in step_data:
-                    lines.append("<tool_response>")
+                    lines.append(tr_open)
                     lines.append(step_data["tool_response"])
-                    lines.append("</tool_response>")
+                    if tr_close:
+                        lines.append(tr_close)
                     lines.append("")
 
         return "\n".join(lines)

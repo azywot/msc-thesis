@@ -11,7 +11,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 
 from ..models.base import BaseModelProvider
 from ..utils.logging import get_logger
-from ..utils.parsing import extract_answer, parse_tool_call, strip_thinking_tags
+from ..utils.parsing import extract_answer, parse_tool_call, strip_thinking_tags, strip_tool_calls, TOOL_CALL_START
 from ..utils.reasoning_context import get_attachment_context_for_code
 from .state import ExecutionState
 from .tool import ToolRegistry, ToolResult
@@ -632,8 +632,9 @@ class AgenticOrchestrator:
         to emit before every <tool_call>. If multiple sub_goals exist, takes
         the last one before the tool call. Returns an empty string if absent.
         """
-        # Only consider text before the first <tool_call>
-        before_tool_call = output_text.split("<tool_call>")[0]
+        # Only consider text before the first tool call (any format)
+        m = TOOL_CALL_START.search(output_text)
+        before_tool_call = output_text[:m.start()] if m else output_text
         matches = list(re.finditer(r"<sub_goal>(.*?)</sub_goal>", before_tool_call, re.DOTALL))
         if matches:
             sub_goal = matches[-1].group(1).strip()
@@ -695,7 +696,8 @@ class AgenticOrchestrator:
             # Edge case: model produced a tool call — use text before it as analysis
             tool_call = parse_tool_call(text)
             if tool_call:
-                before_tool = text.split("<tool_call>")[0].strip()
+                m_tc = TOOL_CALL_START.search(text)
+                before_tool = text[:m_tc.start()].strip() if m_tc else text.strip()
                 analysis = strip_thinking_tags(before_tool) if before_tool else strip_thinking_tags(text)
                 s.query_analysis = analysis
                 logger.info(
@@ -811,7 +813,7 @@ class AgenticOrchestrator:
         if tool is None or getattr(tool, "direct_mode", True):
             return
         tool.set_current_question(state.question_id)
-        reasoning = re.sub(r"<tool_call>.*?</tool_call>", "", output_text, flags=re.DOTALL).strip()
+        reasoning = strip_tool_calls(output_text)
         if reasoning:
             tool.add_entry(reasoning, state.question_id)
 

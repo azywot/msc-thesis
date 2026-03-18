@@ -1,7 +1,13 @@
-"""Parsing utilities for Qwen3 tool calls and answers.
+"""Parsing utilities for tool calls and answers.
 
 This module provides utilities to parse tool calls from model outputs and
-extract final answers from responses.
+extract final answers from responses.  It supports multiple tool-call formats
+used by different model families:
+
+1. ``<tool_call>…</tool_call>`` — Qwen3 / Qwen2.5 / QwQ
+2. ``<|tool_call|>…<|/tool_call|>`` — Phi-4-mini
+3. Markdown code blocks (`` ```json … ``` ``) — DeepSeek fallback
+4. Bare JSON ``{"name": …, "arguments": …}`` — last-resort fallback
 """
 
 import json
@@ -9,11 +15,73 @@ import re
 from typing import Any, Dict, Optional
 
 
+# ── Compiled regexes for tool-call detection ──────────────────────────────
+
+# Format 1: Qwen3-style XML tags
+_RE_QWEN_TAG = re.compile(r'<tool_call>(.*?)</tool_call>', re.DOTALL)
+
+# Format 2: Phi-4 pipe-style tags
+_RE_PHI4_TAG = re.compile(r'<\|tool_call\|>(.*?)<\|/tool_call\|>', re.DOTALL)
+
+# Format 3: Markdown code blocks
+_RE_CODE_BLOCK = re.compile(r'```(?:json)?\s*\n?(.*?)```', re.DOTALL)
+
+# Format 4: Bare JSON — match {"name": "...", ...} not inside tags/blocks
+_RE_BARE_JSON = re.compile(
+    r'\{["\']name["\']\s*:\s*["\'][^"\']+["\']\s*,\s*["\']arguments["\']\s*:\s*\{.*?\}\s*\}',
+    re.DOTALL,
+)
+
+# Matches the *opening* of any tool-call format (used by orchestrator to split).
+TOOL_CALL_START = re.compile(
+    r'<tool_call>'
+    r'|<\|tool_call\|>'
+    r'|```(?:json)?\s*\n?\s*\{["\']name["\']',
+    re.DOTALL,
+)
+
+# ── Stripping regexes (for strip_tool_calls) ─────────────────────────────
+
+_STRIP_PATTERNS = [
+    re.compile(r'<tool_call>.*?</tool_call>', re.DOTALL),
+    re.compile(r'<\|tool_call\|>.*?<\|/tool_call\|>', re.DOTALL),
+    re.compile(r'```(?:json)?\s*\n?\s*\{["\']name["\'].*?```', re.DOTALL),
+]
+
+
+def _try_parse_tool_json(raw: str) -> Optional[Dict[str, Any]]:
+    """Try to parse a JSON string as a tool call dict with 'name' key."""
+    try:
+        obj = json.loads(raw.strip())
+        if isinstance(obj, dict) and "name" in obj:
+            if "arguments" not in obj:
+                obj["arguments"] = {}
+            return obj
+    except json.JSONDecodeError:
+        pass
+    return None
+
+
+def _find_bare_json_tool_call(text: str) -> Optional[Dict[str, Any]]:
+    """Scan for a bare JSON tool call not wrapped in any tags or code blocks."""
+    for m in reversed(list(_RE_BARE_JSON.finditer(text))):
+        result = _try_parse_tool_json(m.group(0))
+        if result is not None:
+            return result
+    return None
+
+
 def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
     """Parse the last tool call from model output.
 
-    Extracts JSON from ``<tool_call>…</tool_call>`` tags.  When multiple tags
-    are present (shouldn't happen in practice) the last one is used.
+    Tries the following formats in priority order:
+
+    1. ``<tool_call>…</tool_call>`` XML tags (Qwen3 / Qwen2.5 / QwQ).
+    2. ``<|tool_call|>…<|/tool_call|>`` pipe-style tags (Phi-4-mini).
+    3. Markdown JSON code blocks (`` ```json … ``` ``) — DeepSeek fallback.
+    4. Bare JSON ``{"name": …, "arguments": …}`` — last-resort fallback.
+
+    When multiple matches exist within a format, the last one is used.
 
     Args:
         text: Raw model output text.
@@ -22,24 +90,52 @@ def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
         Dict with ``"name"`` and ``"arguments"`` keys, or ``None`` if no valid
         tool call was found.
     """
-    pattern = r'<tool_call>(.*?)</tool_call>'
-    matches = re.findall(pattern, text, re.DOTALL)
+    # 1. Canonical <tool_call> tags (Qwen3 family)
+    tag_matches = _RE_QWEN_TAG.findall(text)
+    if tag_matches:
+        result = _try_parse_tool_json(tag_matches[-1])
+        if result is not None:
+            return result
 
-    if not matches:
-        return None
+    # 2. Phi-4 pipe-style tags
+    phi_matches = _RE_PHI4_TAG.findall(text)
+    if phi_matches:
+        result = _try_parse_tool_json(phi_matches[-1])
+        if result is not None:
+            return result
 
-    tool_call_json = matches[-1].strip()
+    # 3. Markdown code blocks (```json ... ``` or ``` ... ```)
+    code_matches = _RE_CODE_BLOCK.findall(text)
+    for block in reversed(code_matches):
+        result = _try_parse_tool_json(block)
+        if result is not None:
+            return result
 
-    try:
-        tool_call = json.loads(tool_call_json)
-        if isinstance(tool_call, dict) and "name" in tool_call:
-            if "arguments" not in tool_call:
-                tool_call["arguments"] = {}
-            return tool_call
-    except json.JSONDecodeError:
-        return None
+    # 4. Bare JSON — last resort
+    result = _find_bare_json_tool_call(text)
+    if result is not None:
+        return result
 
     return None
+
+
+def strip_tool_calls(text: str) -> str:
+    """Remove tool call blocks in ALL recognised formats from *text*.
+
+    Handles Qwen3 XML tags, Phi-4 pipe tags, and markdown code blocks that
+    contain a tool-call JSON (i.e. a dict with a ``"name"`` key).
+
+    Args:
+        text: Text potentially containing tool call blocks.
+
+    Returns:
+        Text with tool call blocks removed and extra whitespace cleaned up.
+    """
+    if not text:
+        return text
+    for pattern in _STRIP_PATTERNS:
+        text = pattern.sub("", text)
+    return text.strip()
 
 
 def extract_answer(text: str) -> Optional[str]:

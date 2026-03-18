@@ -225,10 +225,17 @@ class VLLMProvider(BaseModelProvider):
                 )
 
             valid_prompts.append(rendered)
-            # Pause generation after a tool call
+            # Pause generation after a tool call (family-aware stop sequences)
             stop_kwargs: Dict[str, Any] = {}
             if self.config.role == "orchestrator":
-                stop_kwargs = {"stop": ["</tool_call>"], "include_stop_str_in_output": True}
+                if self.config.family in _DEEPSEEK_FAMILIES:
+                    # DeepSeek: try prompt-instructed </tool_call> AND native token
+                    stop_seqs = ["</tool_call>", "<｜tool▁calls▁end｜>"]
+                elif self.config.family == ModelFamily.PHI4:
+                    stop_seqs = ["<|/tool_call|>"]
+                else:  # Qwen3, Qwen2.5, QwQ, default
+                    stop_seqs = ["</tool_call>"]
+                stop_kwargs = {"stop": stop_seqs, "include_stop_str_in_output": True}
             params = SamplingParams(
                 max_tokens=safe_max_tokens,
                 temperature=self.config.temperature,
@@ -267,13 +274,17 @@ class VLLMProvider(BaseModelProvider):
             del self.llm
             self.llm = None
 
+    # Families whose tokenizer chat template accepts ``enable_thinking``.
+    _ENABLE_THINKING_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ, ModelFamily.QWEN2_5})
+
     def _render_messages(self, msgs: List[Dict[str, Any]], use_thinking: bool) -> str:
         """Apply the tokenizer chat template to a messages list.
 
-        DeepSeek templates do not accept ``enable_thinking``; thinking is
-        controlled by manually closing the ``<think>`` block when suppression
-        is desired.  Qwen3/QWQ templates use the native ``enable_thinking``
-        kwarg.
+        - **Qwen3 / QWQ / Qwen2.5**: use the native ``enable_thinking`` kwarg.
+        - **DeepSeek**: manually close the ``<think>`` block (template does
+          not accept ``enable_thinking``).
+        - **All others** (Phi-4, Llama3, Mistral, …): plain
+          ``apply_chat_template`` without ``enable_thinking``.
         """
         if self.config.family in _DEEPSEEK_FAMILIES:
             rendered = self.tokenizer.apply_chat_template(
@@ -285,18 +296,22 @@ class VLLMProvider(BaseModelProvider):
                 if not rendered.endswith("<think>\n"):
                     rendered += "<think>\n"
             else:
-                # Suppress thinking: close the <think> block the template may have opened.
                 if rendered.endswith("<think>\n"):
                     rendered += "</think>\n\n"
                 else:
                     rendered += "<think>\n</think>\n\n"
             return rendered
 
-        # Qwen3 / QWQ: use the native enable_thinking parameter.
-        thinking_flag = use_thinking and self.config.supports_thinking
+        if self.config.family in self._ENABLE_THINKING_FAMILIES:
+            thinking_flag = use_thinking and self.config.supports_thinking
+            return self.tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True,
+                enable_thinking=thinking_flag,
+            )
+
+        # Phi-4, Llama3, Mistral, etc. — no enable_thinking support.
         return self.tokenizer.apply_chat_template(
             msgs, tokenize=False, add_generation_prompt=True,
-            enable_thinking=thinking_flag,
         )
 
     def _make_result(self, output: Any, messages: Optional[List[Dict[str, Any]]]) -> GenerationResult:

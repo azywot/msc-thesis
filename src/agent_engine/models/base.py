@@ -24,12 +24,16 @@ class ModelFamily(Enum):
     MISTRAL = "mistral"
     DEEPSEEK_R1 = "deepseek_r1"            # DeepSeek-R1-Distill-Qwen-{7,14,32}B (Jan 2025, Qwen2.5 backbone)
     DEEPSEEK_R1_0528 = "deepseek_r1_0528"  # DeepSeek-R1-0528-Qwen3-8B (May 2025, Qwen3 backbone)
+    PHI4 = "phi4"
     GPT4 = "gpt4"
     CLAUDE = "claude"
 
 
 # Convenience group for all DeepSeek subfamily entries.
 _DEEPSEEK_FAMILIES = frozenset({ModelFamily.DEEPSEEK_R1, ModelFamily.DEEPSEEK_R1_0528})
+
+# Convenience group for all Qwen-derived families (use Qwen3-style tool call tags).
+_QWEN_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWEN2_5, ModelFamily.QWQ})
 
 # Families whose models natively support extended <think> output.
 _THINKING_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ}) | _DEEPSEEK_FAMILIES

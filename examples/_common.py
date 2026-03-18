@@ -215,7 +215,6 @@ def build_system_prompt(config, tools: ToolRegistry) -> str:
     return PromptBuilder().build_system_prompt(
         dataset_name="gaia",
         tool_schemas=tools.get_all_schemas(),
-        max_search_limit=config.tools.max_search_limit,
         direct_tool_call=False,
     )
 
