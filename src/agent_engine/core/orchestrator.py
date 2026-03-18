@@ -629,11 +629,14 @@ class AgenticOrchestrator:
         """Extract the explicit sub-goal from assistant output (AF-aligned).
 
         Parses the <sub_goal>...</sub_goal> tag that the model is instructed
-        to emit before every <tool_call>. Returns an empty string if absent.
+        to emit before every <tool_call>. If multiple sub_goals exist, takes
+        the last one before the tool call. Returns an empty string if absent.
         """
-        match = re.search(r"<sub_goal>(.*?)</sub_goal>", output_text, re.DOTALL)
-        if match:
-            sub_goal = match.group(1).strip()
+        # Only consider text before the first <tool_call>
+        before_tool_call = output_text.split("<tool_call>")[0]
+        matches = list(re.finditer(r"<sub_goal>(.*?)</sub_goal>", before_tool_call, re.DOTALL))
+        if matches:
+            sub_goal = matches[-1].group(1).strip()
             return sub_goal[:500] if len(sub_goal) > 500 else sub_goal
         return ""
 
