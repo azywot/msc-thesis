@@ -12,9 +12,10 @@ CoSMAS is a configuration-driven multi-agent research framework for investigatin
 4. [Running experiments](#running-experiments)
 5. [Examples](#examples)
 6. [Configuration reference](#configuration-reference)
-7. [Tools](#tools)
-8. [Datasets](#datasets)
-9. [Outputs](#outputs)
+7. [Model families](#model-families)
+8. [Tools](#tools)
+9. [Datasets](#datasets)
+10. [Outputs](#outputs)
 
 ---
 
@@ -240,6 +241,9 @@ experiments/configs/
 │   ├── baseline.yaml        # Full GAIA validation run
 │   ├── test_direct.yaml     # Quick test — direct tool mode
 │   └── test_subagent.yaml   # Quick test — sub-agent mode
+├── deepseek/                # DeepSeek-R1 and R1-0528 configs (direct + sub-agent)
+├── phi4/                    # Phi-4-mini-instruct and Phi-4-mini-reasoning configs
+├── local/                   # MLX configs for Apple Silicon (Qwen3-0.6B, 4B)
 └── template.yml             # Annotated template for new configs
 ```
 
@@ -334,6 +338,120 @@ See `experiments/configs/template.yml` for a fully annotated version. Schema and
 | `batch_size` (config) | integer | Questions per batch (-1 = all; 1 = no batching) |
 
 If multiple roles share the same `path_or_id`, the runner reuses the loaded vLLM instance and serialises access with per-model locks — no duplicate GPU memory.
+
+---
+
+## Model families
+
+The framework tracks model families through the `ModelFamily` enum in `src/agent_engine/models/base.py`. The family value controls generation defaults, thinking-mode handling, tool-call tag format, and vLLM chat-template rendering. Set it via the `family` key in any model block of a YAML config.
+
+### Supported families
+
+| Family key | Example models | Thinking support | Backend |
+|---|---|---|---|
+| `qwen3` | Qwen/Qwen3-{0.6B,1.7B,4B,8B,14B,32B} | Yes (auto) | vLLM, MLX |
+| `qwen2.5` | Qwen/Qwen2.5-{7B,14B,32B}-Instruct | No | vLLM, MLX |
+| `qwq` | Qwen/QwQ-32B | Yes (auto) | vLLM |
+| `deepseek_r1` | deepseek-ai/DeepSeek-R1-Distill-Qwen-{7B,14B,32B} | Yes (auto) | vLLM |
+| `deepseek_r1_0528` | deepseek-ai/DeepSeek-R1-0528-Qwen3-8B | Yes (auto) | vLLM |
+| `phi4` | microsoft/Phi-4-mini-instruct, microsoft/Phi-4-mini-reasoning | Opt-in (see below) | vLLM |
+| `llama3` | meta-llama/Llama-3.x-… | No | vLLM |
+| `mistral` | mistralai/Mistral-{7B,8B}-Instruct-… | No | vLLM |
+| `gpt4` | gpt-4o, gpt-4o-mini, … | No | API |
+| `claude` | claude-3-5-sonnet-…, claude-3-7-sonnet-… | No | API |
+
+---
+
+### DeepSeek family
+
+Two sub-families are supported, both are reasoning models that produce extended `<think>` chains and have `supports_thinking: true` set automatically.
+
+**`deepseek_r1`** — DeepSeek-R1-Distill-Qwen-{7B, 14B, 32B} (January 2025, Qwen2.5 backbone)
+
+**`deepseek_r1_0528`** — DeepSeek-R1-0528-Qwen3-8B (May 2025, Qwen3 backbone)
+
+Generation defaults (both sub-families):
+
+| Parameter | Value |
+|---|---|
+| `temperature` | 0.6 |
+| `top_p` | 0.95 |
+| `repetition_penalty` | 1.0 |
+| `max_model_len` | 32768 |
+
+Thinking mode: the vLLM provider manually appends `<think>\n` to the rendered prompt to force the model into reasoning mode (or prepends `<think>\n</think>\n\n` to suppress it). This matches the models' native behaviour, where the assistant's first token after the user turn is expected to begin inside a `<think>` block.
+
+**System prompt handling:** per the [DeepSeek-R1 usage recommendations](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B#usage-recommendations), all instructions should be contained within the user turn — no dedicated system prompt. CoSMAS enforces this automatically: `VLLMProvider._merge_system_into_user` merges any leading `system` message into the first `user` message before the chat template is applied, so the orchestrator and prompt builder require no changes.
+
+**Multi-seed evaluation:** the same recommendations advise running multiple tests and averaging results when benchmarking. To replicate this, run the same config with different `seed` values and aggregate the resulting `metrics.json` files:
+
+```yaml
+# in any deepseek config
+models:
+  orchestrator:
+    seed: 42   # change to 0, 1, 42, … for each run
+```
+
+Available experiment configs: `experiments/configs/deepseek/`
+
+---
+
+### Phi-4 family
+
+**`phi4`** — Microsoft Phi-4-mini-instruct and Phi-4-mini-reasoning (3.8 B parameters, 128 K context, released February 2025).
+
+Two models under the same family key:
+
+| Model | HuggingFace ID | Thinking |
+|---|---|---|
+| Phi-4-mini-instruct | `microsoft/Phi-4-mini-instruct` | No |
+| Phi-4-mini-reasoning | `microsoft/Phi-4-mini-reasoning` | Opt-in |
+
+Unlike the DeepSeek and Qwen3 families, Phi-4's thinking capability is **not auto-detected**. For `Phi-4-mini-reasoning` you must set `supports_thinking: true` and `thinking_mode: "ORCHESTRATOR_ONLY"` (or `"ALL"`) explicitly in the YAML:
+
+```yaml
+models:
+  orchestrator:
+    family: "phi4"
+    path_or_id: "microsoft/Phi-4-mini-reasoning"
+    supports_thinking: true   # required — not inferred from family
+
+thinking_mode: "ORCHESTRATOR_ONLY"
+```
+
+Generation defaults: same as the Qwen3 baseline (`temperature: 0.0`, `top_p: 0.8`, `top_k: 20`, `repetition_penalty: 1.1`).
+
+Available experiment configs: `experiments/configs/phi4/`
+
+---
+
+### Tool calling formats
+
+The prompt and parser are both family-aware. Each family has a distinct tag pair used to delimit tool calls in model output. The formats below are what the system prompt instructs the model to produce, and what the parser searches for.
+
+| Family | Tool call tags | Tool result tags |
+|---|---|---|
+| `qwen3`, `qwen2.5`, `qwq` | `<tool_call>…</tool_call>` | `<tool_response>…</tool_response>` |
+| `deepseek_r1`, `deepseek_r1_0528` | ` ```json\n…\n``` ` | `Tool result:\n…` (no closing tag) |
+| `phi4` | `<\|tool_call\|>…<\|/tool_call\|>` | `<tool_response>…</tool_response>` |
+
+The JSON payload inside any tag pair is always:
+
+```json
+{"name": "<function_name>", "arguments": {"param1": "value1", ...}}
+```
+
+**Validation against official sources:**
+
+- **Qwen3 / Qwen2.5 / QwQ**: The `<tool_call>` / `</tool_call>` tags and `<tool_response>` / `</tool_response>` tags are confirmed in the official Qwen3 chat template. Source: [`Qwen/Qwen3-8B` — `tokenizer_config.json`](https://huggingface.co/Qwen/Qwen3-8B/raw/main/tokenizer_config.json) (search for `tool_call`).
+
+- **DeepSeek-R1-Distill** (`deepseek_r1`): The native tokenizer chat template uses `` ```json\n[args]\n``` `` blocks inside `<｜tool▁call▁begin｜…<｜tool▁call▁end｜` native tokens. CoSMAS prompts the model to use the inner JSON-code-block portion directly (a clean subset of the native format), and sets stop sequences to both the prompted `</tool_call>` string and the native `<｜tool▁calls▁end｜>` token as a fallback. Source: [`deepseek-ai/DeepSeek-R1-Distill-Qwen-7B`](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B) (see `chat_template` in the tokenizer metadata).
+
+- **DeepSeek-R1-0528** (`deepseek_r1_0528`): Same `` ```json `` code-block format as the R1-Distill family. Source: [`deepseek-ai/DeepSeek-R1-0528-Qwen3-8B`](https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B) (see `chat_template` in the tokenizer metadata).
+
+- **Phi-4-mini** (`phi4`): `<|tool_call|>` (token ID 200025) and `<|/tool_call|>` (token ID 200026) are confirmed dedicated special tokens in the official tokenizer. The `<|tool_response|>` token (ID 200027) is also present natively; CoSMAS uses `<tool_response>` (without pipes) in the system-prompt instructions since the model is explicitly directed to follow the prompt format. Source: [`microsoft/Phi-4-mini-instruct` — `tokenizer_config.json`](https://huggingface.co/microsoft/Phi-4-mini-instruct/raw/main/tokenizer_config.json) (see token IDs 200025–200027).
+
+The parser (`src/agent_engine/utils/parsing.py`, `parse_tool_call`) tries all formats in priority order — Qwen XML → Phi-4 pipe tags → markdown code blocks → bare JSON — so outputs from any family are handled even if the model deviates from the instructed format.
 
 ---
 

@@ -20,6 +20,7 @@ base_instruction_tools: |
 
 # ALWAYS included
 final_instructions: |
+  Please reason step by step.
   Remember:
   - Verify numerical results when possible
   - Provide your final answer in the format \boxed{YOUR_ANSWER}

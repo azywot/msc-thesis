@@ -277,16 +277,43 @@ class VLLMProvider(BaseModelProvider):
     # Families whose tokenizer chat template accepts ``enable_thinking``.
     _ENABLE_THINKING_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ, ModelFamily.QWEN2_5})
 
+    # NOTE: Only used for DeepSeek-R1
+    @staticmethod
+    def _merge_system_into_user(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge a leading system message into the first user message.
+
+        DeepSeek-R1 usage recommendation: avoid a dedicated system prompt;
+        all instructions should be contained within the user turn.  This
+        helper is called transparently inside ``_render_messages`` for
+        DeepSeek families so no other layer needs to be aware of it.
+
+        If there is no leading system message the list is returned unchanged.
+        If there is a system message but no subsequent user message, the
+        system content is promoted to a standalone user message.
+        Source: https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B#usage-recommendations 
+        """
+        if not msgs or msgs[0].get("role") != "system":
+            return msgs
+        system_content = msgs[0]["content"]
+        result = list(msgs[1:])
+        for i, msg in enumerate(result):
+            if msg.get("role") == "user":
+                result[i] = {**msg, "content": system_content + "\n\n" + msg["content"]}
+                return result
+        return [{"role": "user", "content": system_content}] + result
+
     def _render_messages(self, msgs: List[Dict[str, Any]], use_thinking: bool) -> str:
         """Apply the tokenizer chat template to a messages list.
 
         - **Qwen3 / QWQ / Qwen2.5**: use the native ``enable_thinking`` kwarg.
-        - **DeepSeek**: manually close the ``<think>`` block (template does
-          not accept ``enable_thinking``).
+        - **DeepSeek**: merge system prompt into the user turn (per DeepSeek-R1
+          usage recommendations), then manually inject the ``<think>`` block
+          (template does not accept ``enable_thinking``).
         - **All others** (Phi-4, Llama3, Mistral, …): plain
           ``apply_chat_template`` without ``enable_thinking``.
         """
         if self.config.family in _DEEPSEEK_FAMILIES:
+            msgs = self._merge_system_into_user(msgs)
             rendered = self.tokenizer.apply_chat_template(
                 msgs, tokenize=False, add_generation_prompt=True,
             )
