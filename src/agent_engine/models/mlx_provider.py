@@ -3,7 +3,7 @@
 import json
 from typing import Any, Dict, List, Optional, Union
 
-from .base import BaseModelProvider, GenerationResult, ModelConfig
+from .base import BaseModelProvider, GenerationResult, ModelConfig, _DEEPSEEK_FAMILIES
 from ..utils.logging import get_logger, format_messages_as_chat
 
 logger = get_logger(__name__)
@@ -174,11 +174,24 @@ class MLXProvider(BaseModelProvider):
             self.tokenizer = None
 
     def _render_messages(self, msgs: List[Dict[str, Any]], use_thinking: bool) -> str:
-        """Apply tokenizer chat template, matching VLLMProvider behaviour."""
-        if use_thinking and self.config.supports_thinking:
-            return self.tokenizer.apply_chat_template(
-                msgs, tokenize=False, add_generation_prompt=True, enable_thinking=True,
+        """Apply tokenizer chat template, matching VLLMProvider behaviour.
+
+        DeepSeek templates don't accept ``enable_thinking``; thinking is
+        controlled by manually closing the ``<think>`` block.
+        """
+        if self.config.family in _DEEPSEEK_FAMILIES:
+            rendered = self.tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True,
             )
+            if not (use_thinking and self.config.supports_thinking):
+                if rendered.endswith("<think>\n"):
+                    rendered += "</think>\n\n"
+                else:
+                    rendered += "<think>\n</think>\n\n"
+            return rendered
+
+        thinking_flag = use_thinking and self.config.supports_thinking
         return self.tokenizer.apply_chat_template(
-            msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False,
+            msgs, tokenize=False, add_generation_prompt=True,
+            enable_thinking=thinking_flag,
         )

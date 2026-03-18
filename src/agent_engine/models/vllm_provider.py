@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from vllm import LLM, SamplingParams
 
-from .base import BaseModelProvider, GenerationResult, ModelConfig, ModelFamily
+from .base import BaseModelProvider, GenerationResult, ModelConfig, ModelFamily, _DEEPSEEK_FAMILIES
 from .llm_shared import get_llm_lock
 from ..utils.logging import get_logger, format_messages_as_chat
 
@@ -270,16 +270,28 @@ class VLLMProvider(BaseModelProvider):
     def _render_messages(self, msgs: List[Dict[str, Any]], use_thinking: bool) -> str:
         """Apply the tokenizer chat template to a messages list.
 
-        For Qwen3 and other thinking-capable models, passes ``enable_thinking``
-        (the variable name expected by the Qwen chat template). When False, the
-        template inserts an empty <think></think> block so the model skips reasoning.
+        DeepSeek templates do not accept ``enable_thinking``; thinking is
+        controlled by manually closing the ``<think>`` block when suppression
+        is desired.  Qwen3/QWQ templates use the native ``enable_thinking``
+        kwarg.
         """
-        if use_thinking and self.config.supports_thinking:
-            return self.tokenizer.apply_chat_template(
-                msgs, tokenize=False, add_generation_prompt=True, enable_thinking=True,
+        if self.config.family in _DEEPSEEK_FAMILIES:
+            rendered = self.tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True,
             )
+            if not (use_thinking and self.config.supports_thinking):
+                # Suppress thinking: close the <think> block the template may have opened.
+                if rendered.endswith("<think>\n"):
+                    rendered += "</think>\n\n"
+                else:
+                    rendered += "<think>\n</think>\n\n"
+            return rendered
+
+        # Qwen3 / QWQ: use the native enable_thinking parameter.
+        thinking_flag = use_thinking and self.config.supports_thinking
         return self.tokenizer.apply_chat_template(
-            msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False,
+            msgs, tokenize=False, add_generation_prompt=True,
+            enable_thinking=thinking_flag,
         )
 
     def _make_result(self, output: Any, messages: Optional[List[Dict[str, Any]]]) -> GenerationResult:

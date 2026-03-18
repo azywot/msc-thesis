@@ -1,0 +1,41 @@
+# Test config — DeepSeek-R1-0528-Qwen3-8B (May 2025, Qwen3 backbone)
+
+name: "test_ds_r1_0528_8B"
+description: "Test run: DeepSeek-R1-0528-Qwen3-8B, direct tools, orchestrator thinking, 5 GAIA questions"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 1
+  ntasks: 1
+  cpus_per_task: 8
+  time: "02:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "DeepSeek-R1-0528-Qwen3-8B"
+    family: "deepseek_r1_0528"
+    path_or_id: "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
+    role: "orchestrator"
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+  direct_tool_call: true
+
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: 5
+
+seed: 0
+thinking_mode: "ORCHESTRATOR_ONLY"
+
+output_dir: "./experiments/results/deepseek/ds_r1_0528_8B_test"
+use_wandb: true
+wandb_project: "add-model-families"
+
+cache_dir: "./cache"

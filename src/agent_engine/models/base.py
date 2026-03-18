@@ -14,7 +14,7 @@ from pydantic import BaseModel, field_validator, model_validator
 class ModelFamily(Enum):
     """Supported model families.
 
-    Explicit enumeration used throughout the codebase. 
+    Explicit enumeration used throughout the codebase.
     Add a new entry here when onboarding a new family.
     """
     QWEN3 = "qwen3"
@@ -22,13 +22,45 @@ class ModelFamily(Enum):
     QWQ = "qwq"
     LLAMA3 = "llama3"
     MISTRAL = "mistral"
-    DEEPSEEK = "deepseek"
+    DEEPSEEK_R1 = "deepseek_r1"            # DeepSeek-R1-Distill-Qwen-{7,14,32}B (Jan 2025, Qwen2.5 backbone)
+    DEEPSEEK_R1_0528 = "deepseek_r1_0528"  # DeepSeek-R1-0528-Qwen3-8B (May 2025, Qwen3 backbone)
     GPT4 = "gpt4"
     CLAUDE = "claude"
 
 
+# Convenience group for all DeepSeek subfamily entries.
+_DEEPSEEK_FAMILIES = frozenset({ModelFamily.DEEPSEEK_R1, ModelFamily.DEEPSEEK_R1_0528})
+
 # Families whose models natively support extended <think> output.
-_THINKING_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ, ModelFamily.DEEPSEEK})
+_THINKING_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ}) | _DEEPSEEK_FAMILIES
+
+
+# ----- Generation-parameter defaults -----
+# Base defaults (Qwen3 family — the project's primary model family).
+_BASE_GEN_DEFAULTS: Dict[str, Any] = {
+    "max_model_len": 32768,
+    "max_tokens": 8192,
+    "temperature": 0.0,
+    "top_p": 0.8,
+    "top_k": 20,
+    "repetition_penalty": 1.1,
+}
+
+# Per-family overrides (only keys that differ from _BASE_GEN_DEFAULTS).
+_FAMILY_GEN_DEFAULTS: Dict[ModelFamily, Dict[str, Any]] = {
+    ModelFamily.DEEPSEEK_R1: {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "repetition_penalty": 1.0,
+        "max_model_len": 32768,
+    },
+    ModelFamily.DEEPSEEK_R1_0528: {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "repetition_penalty": 1.0,
+        "max_model_len": 32768,
+    },
+}
 
 
 class ModelConfig(BaseModel):
@@ -47,7 +79,7 @@ class ModelConfig(BaseModel):
               ``"web_search"``, ``"code_generator"``.
         max_model_len: Maximum sequence length (prompt + generation) in tokens.
         max_tokens: Maximum *new* tokens to generate per call.
-        temperature: Sampling temperature.  ``0.0`` = greedy (default, for reproducibility).
+        temperature: Sampling temperature.  ``None`` → resolved from family defaults.
         top_p: Nucleus sampling threshold.
         top_k: Top-K sampling limit.
         repetition_penalty: Penalty applied to repeated tokens (``1.0`` = no penalty).
@@ -68,12 +100,12 @@ class ModelConfig(BaseModel):
     path_or_id: str
     role: str
 
-    max_model_len: int = 32768
-    max_tokens: int = 8192
-    temperature: float = 0.0
-    top_p: float = 0.8
-    top_k: int = 20
-    repetition_penalty: float = 1.1
+    max_model_len: Optional[int] = None
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    repetition_penalty: Optional[float] = None
 
     supports_thinking: Optional[bool] = None
 
@@ -93,7 +125,12 @@ class ModelConfig(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _derive_supports_thinking(self):
+    def _resolve_defaults(self):
+        """Fill ``None`` generation fields from family → base defaults, and derive flags."""
+        family_overrides = _FAMILY_GEN_DEFAULTS.get(self.family, {})
+        for field_name, base_val in _BASE_GEN_DEFAULTS.items():
+            if getattr(self, field_name) is None:
+                setattr(self, field_name, family_overrides.get(field_name, base_val))
         if self.supports_thinking is None:
             self.supports_thinking = self.family in _THINKING_FAMILIES
         return self
