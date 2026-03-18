@@ -113,7 +113,7 @@ class WebSearchTool(BaseTool):
             }
         }
 
-    def execute(self, query: str, prev_reasoning: str = "") -> ToolResult:
+    def execute(self, query: str) -> ToolResult:
         """Execute web search.
 
         Flow:
@@ -148,7 +148,7 @@ class WebSearchTool(BaseTool):
             if self.direct_mode:
                 output, usage = formatted, None
             else:
-                output, usage = self._analyze_with_llm(query, formatted, prev_reasoning)
+                output, usage = self._analyze_with_llm(query, formatted)
             return ToolResult(
                 success=True,
                 output=output,
@@ -187,7 +187,7 @@ class WebSearchTool(BaseTool):
                     metadata={"cached": False, "num_results": len(results), "query": query, "mode": "direct"},
                 )
 
-            output, usage = self._analyze_with_llm(query, formatted_results, prev_reasoning)
+            output, usage = self._analyze_with_llm(query, formatted_results)
             return ToolResult(
                 success=True,
                 output=output,
@@ -255,19 +255,17 @@ class WebSearchTool(BaseTool):
         self,
         query: str,
         search_results: str,
-        prev_reasoning: str = "",
     ) -> Tuple[str, Optional[Dict[str, int]]]:
         """Use LLM to analyze search results (sub-agent mode).
 
         Args:
             query: Original search query
             search_results: Formatted search results
-            prev_reasoning: Previous reasoning steps (MAT-style context)
 
         Returns:
             Tuple of (LLM-analyzed summary, token usage dict or None)
         """
-        prompt = self.build_analysis_prompt(query, search_results, prev_reasoning)
+        prompt = self.build_analysis_prompt(query, search_results)
         result = self.model_provider.generate([prompt])[0]
         output = strip_thinking_tags(result.text)
         return output, result.usage
@@ -276,25 +274,20 @@ class WebSearchTool(BaseTool):
         self,
         query: str,
         formatted_results: str,
-        prev_reasoning: str = "",
     ) -> str:
-        """Build the sub-agent prompt for web-page analysis.
-
-        Mirrors the multi-agent-tools get_webpage_to_reasonchain_instruction prompt.
-        prev_reasoning is extracted from state by the orchestrator (MAT-style).
-        """
+        """Build the sub-agent prompt for web-page analysis."""
         instruction = f"""**Task Instruction:**
 
-You are tasked with reading and analyzing web pages based on the following inputs: **Previous Reasoning Steps**, **Current Search Query**, and **Searched Web Pages**. Your objective is to extract relevant and helpful information for **Current Search Query** from the **Searched Web Pages** and seamlessly integrate this information into the **Previous Reasoning Steps** to continue reasoning for the original question.
+You are tasked with reading and analyzing web pages based on the following inputs: **Current Search Query** and **Searched Web Pages**. Your objective is to extract relevant and helpful information for the **Current Search Query** from the **Searched Web Pages**.
 
 **Guidelines:**
 
 1. **Analyze the Searched Web Pages:**
 - Carefully review the content of each searched web page.
-- Identify factual information that is relevant to the **Current Search Query** and can aid in the reasoning process for the original question.
+- Identify factual information that is relevant to the **Current Search Query**.
 
 2. **Extract Relevant Information:**
-- Select the information from the Searched Web Pages that directly contributes to advancing the **Previous Reasoning Steps**.
+- Select the information from the Searched Web Pages that directly answers or contributes to the **Current Search Query**.
 - Ensure that the extracted information is accurate and relevant.
 
 3. **Output Format:**
@@ -310,16 +303,13 @@ You are tasked with reading and analyzing web pages based on the following input
 No helpful information found.
 
 **Inputs:**
-- **Previous Reasoning Steps:**  
-{prev_reasoning}
-
-- **Current Search Query:**  
+- **Current Search Query:**
 {query}
 
-- **Searched Web Pages:**  
+- **Searched Web Pages:**
 {formatted_results}
 
-Now you should analyze each web page and find helpful information based on the current search query "{query}" and previous reasoning steps.
+Now you should analyze each web page and find helpful information based on the current search query "{query}".
 """
 
         prompt_messages = [{"role": "user", "content": instruction}]

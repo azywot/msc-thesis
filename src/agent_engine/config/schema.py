@@ -1,9 +1,10 @@
 """Configuration schema for agent_engine experiments."""
 
-from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from pydantic import BaseModel, field_validator
 
 from ..models.base import ModelConfig
 
@@ -16,8 +17,7 @@ class ThinkingMode(Enum):
     ALL = "ALL"
 
 
-@dataclass
-class SlurmConfig:
+class SlurmConfig(BaseModel):
     """SLURM job resource configuration."""
     partition: str = "gpu_h100"
     num_gpus: Optional[int] = 1
@@ -27,13 +27,12 @@ class SlurmConfig:
     conda_env: str = "agent_engine"
 
 
-@dataclass
-class ToolsConfig:
+class ToolsConfig(BaseModel):
     """Tool enablement and behaviour configuration.
 
     Attributes:
         enabled_tools: Names of tools to register. Valid values are
-            ``"web_search"``, ``"code_generator"``, ``"context_manager"``,
+            ``"web_search"``, ``"code_generator"``, ``"mind_map"``,
             ``"text_inspector"``, and ``"image_inspector"``.
         direct_tool_call: When ``True`` the orchestrator calls tools directly
             (no sub-agent LLM). When ``False`` each tool spins up its own
@@ -43,7 +42,7 @@ class ToolsConfig:
         top_k_results: Number of search results returned per query.
         max_doc_len: Maximum characters per fetched document snippet.
     """
-    enabled_tools: List[str] = field(default_factory=lambda: ["web_search", "code_generator"])
+    enabled_tools: List[str] = ["web_search", "code_generator"]
     direct_tool_call: bool = True
     web_tool_provider: str = "serper"
     max_search_limit: int = 10
@@ -51,8 +50,7 @@ class ToolsConfig:
     max_doc_len: int = 3000
 
 
-@dataclass
-class DatasetConfig:
+class DatasetConfig(BaseModel):
     """Dataset loading configuration.
 
     Attributes:
@@ -66,19 +64,21 @@ class DatasetConfig:
     data_dir: Path = Path("./data")
     subset_num: int = -1
 
-    def __post_init__(self):
-        if isinstance(self.data_dir, str):
-            self.data_dir = Path(self.data_dir)
+    @field_validator("data_dir", mode="before")
+    @classmethod
+    def _coerce_data_dir(cls, v):
+        if isinstance(v, str):
+            return Path(v)
+        return v
 
 
-@dataclass
-class ExperimentConfig:
+class ExperimentConfig(BaseModel):
     """Complete experiment configuration loaded from a YAML file.
 
     This is the top-level config object populated by
     :func:`~agent_engine.config.loader.load_experiment_config`.  Every field
     maps one-to-one to a YAML key; nested objects (``models``, ``tools``,
-    ``dataset``, ``slurm``) are automatically parsed into their dataclass
+    ``dataset``, ``slurm``) are automatically parsed into their Pydantic
     counterparts.
 
     Attributes:
@@ -104,8 +104,8 @@ class ExperimentConfig:
 
     name: str
     description: str = ""
-    models: Dict[str, ModelConfig] = field(default_factory=dict)
-    tools: ToolsConfig = field(default_factory=ToolsConfig)
+    models: Dict[str, ModelConfig] = {}
+    tools: ToolsConfig = ToolsConfig()
     dataset: Optional[DatasetConfig] = None
     max_turns: int = 15
     batch_size: int = -1
@@ -115,13 +115,14 @@ class ExperimentConfig:
     use_wandb: bool = False
     wandb_project: Optional[str] = None
     cache_dir: Path = Path("./cache")
-    slurm: SlurmConfig = field(default_factory=SlurmConfig)
+    slurm: SlurmConfig = SlurmConfig()
 
-    def __post_init__(self):
-        if isinstance(self.output_dir, str):
-            self.output_dir = Path(self.output_dir)
-        if isinstance(self.cache_dir, str):
-            self.cache_dir = Path(self.cache_dir)
+    @field_validator("output_dir", "cache_dir", mode="before")
+    @classmethod
+    def _coerce_paths(cls, v):
+        if isinstance(v, str):
+            return Path(v)
+        return v
 
     def get_model(self, role: str) -> Optional[ModelConfig]:
         """Return the :class:`ModelConfig` for *role*, or ``None`` if not configured."""

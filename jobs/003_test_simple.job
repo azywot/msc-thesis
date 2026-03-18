@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --partition=gpu_a100
+#SBATCH --partition=gpu_h100
 #SBATCH --gpus=1
 #SBATCH --job-name=TestSimpleExample
 #SBATCH --ntasks=1
@@ -23,7 +23,7 @@ module load CUDA/12.8.0
 module load cuDNN/9.10.1.4-CUDA-12.8.0
 
 # Set project directory
-PROJECT_DIR="${PROJECT_DIR:-$HOME/thesis/msc-thesis}"
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
 cd "$PROJECT_DIR" || exit 1
 
 echo "Project directory: $PROJECT_DIR"
@@ -90,7 +90,7 @@ run_example() {
 run_example "example_code_generator.py" "python examples/example_code_generator.py"
 run_example "example_text_inspector.py" "python examples/example_text_inspector.py"
 run_example "example_image_inspector.py" "python examples/example_image_inspector.py"
-run_example "example_context_manager.py" "python examples/example_context_manager.py"
+run_example "example_mind_map.py" "python examples/example_mind_map.py"
 run_example "example_web_search.py" "python examples/example_web_search.py"
 
 EXIT_CODE=0

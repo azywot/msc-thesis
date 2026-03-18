@@ -1,158 +1,18 @@
-"""Reasoning context extraction for tool sub-agents.
+"""Reasoning context utilities for tool sub-agents.
 
-Provides previous reasoning to web_search and code_generator sub-agents,
-mirroring the multi-agent-tools (MAT) behavior. Context is truncated to
-keep first step, last 4 steps, and tool-related steps.
+After the structured-memory refactor, only the attachment context helper
+remains. Previous functions (get_accumulated_output_from_state,
+extract_reasoning_context, get_reasoning_context_for_state) have been
+removed — the orchestrator now builds compact memory prompts instead.
 """
 
 from __future__ import annotations
 
 import os
-import re
-from typing import TYPE_CHECKING, List, Optional, Sequence
-
-from .parsing import strip_thinking_tags
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..core.state import ExecutionState
-
-
-# Markers indicating tool-related steps to preserve during truncation.
-# here we use the XML tags emitted around every tool call and response.
-_DEFAULT_TOOL_MARKERS = ("<tool_call>", "<tool_response>")
-
-
-def get_accumulated_output_from_state(state: "ExecutionState") -> str:
-    """Build the accumulated output string from conversation messages.
-    Concatenates all assistant and tool messages in order.
-    Strips <think> tags from assistant content so sub-agent context does not include them.
-
-    Args:
-        state: Execution state with messages
-
-    Returns:
-        Concatenated assistant + tool content (no <think> blocks)
-    """
-    parts: List[str] = []
-    for msg in state.messages or []:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        if role in ("assistant", "tool") and content:
-            if role == "assistant":
-                content = strip_thinking_tags(content)
-            if content.strip():
-                parts.append(content)
-    return "\n\n".join(parts)
-
-
-def extract_reasoning_context(
-    all_reasoning_steps: Sequence[str],
-    mind_map=None,
-    tool_markers: Optional[Sequence[str]] = None,
-) -> str:
-    """Extract a truncated reasoning context for tool sub-agents.
-
-    Mirrors MAT's extract_reasoning_context. When *mind_map* (a GraphRAG instance)
-    is provided and reasoning is long enough (>= 100 chars), queries it for a
-    summary instead of truncating. Otherwise truncates to: first step, last 4
-    steps, and any steps containing tool markers (e.g. ``<tool_call>``,
-    ``<tool_response>``). Elided middle steps are replaced by ``...``.
-
-    Args:
-        all_reasoning_steps: List of reasoning lines/steps (e.g. from
-            get_accumulated_output_from_state split by newlines).
-        mind_map: Optional GraphRAG instance for summarization when reasoning
-            is long. Pass the context manager's graph when available.
-        tool_markers: Markers that indicate tool-related steps to keep.
-            Defaults to ``<tool_call>`` and ``<tool_response>``.
-
-    Returns:
-        Truncated or summarized context string suitable for sub-agent prompts.
-    """
-    markers = tool_markers or _DEFAULT_TOOL_MARKERS
-
-    if not all_reasoning_steps:
-        return ""
-
-    meaningful = [s for s in all_reasoning_steps if s and s.strip()]
-    if not meaningful:
-        return ""
-
-    total_len = sum(len(s) for s in meaningful)
-    if mind_map and total_len >= 100:
-        try:
-            summary = _query_mind_map(mind_map)
-            if summary:
-                return summary
-        except Exception:
-            pass
-
-    # Build numbered steps then truncate.
-    truncated = ""
-    for i, step in enumerate(meaningful):
-        truncated += f"Step {i + 1}: {step}\n\n"
-
-    prev_steps = truncated.split("\n\n")
-    prev_steps = [s for s in prev_steps if s.strip()]
-
-    if len(prev_steps) <= 5:
-        return "\n\n".join(prev_steps)
-
-    result_parts = []
-    for i, step in enumerate(prev_steps):
-        keep = (
-            i == 0
-            or i >= len(prev_steps) - 4
-            or any(m in step for m in markers)
-        )
-        if keep:
-            result_parts.append(step)
-        else:
-            if result_parts and result_parts[-1] != "...":
-                result_parts.append("...")
-
-    return "\n\n".join(result_parts).strip("\n")
-
-
-def get_reasoning_context_for_state(
-    state: "ExecutionState",
-    mind_map=None,
-) -> str:
-    """Extract reasoning context from an ExecutionState.
-
-    Convenience wrapper around :func:`get_accumulated_output_from_state` and
-    :func:`extract_reasoning_context`. Pass *mind_map* (e.g. the context
-    manager's GraphRAG instance) when available for summarization of long
-    reasoning chains.
-
-    Args:
-        state: Current execution state.
-        mind_map: Optional GraphRAG instance for summarization.
-
-    Returns:
-        Truncated or summarized reasoning context string for sub-agent prompts.
-    """
-    output = get_accumulated_output_from_state(state)
-    if not output.strip():
-        return ""
-    steps = output.replace("\n\n", "\n").split("\n")
-    return extract_reasoning_context(steps, mind_map=mind_map)
-
-
-def _query_mind_map(mind_map) -> Optional[str]:
-    """Query mind_map/GraphRAG for reasoning summary. Returns None on failure."""
-    try:
-        from nano_graphrag import QueryParam
-        result = mind_map.query(
-            "Summarize the reasoning process, be short and clear. Keep the summary under 500 words.",
-            param=QueryParam(mode="local"),
-        )
-        if result:
-            s = str(result).strip()
-            return s[:2000] + "..." if len(s) > 2000 else s
-    except Exception:
-        pass
-    return None
 
 
 def get_attachment_context_for_code(state: "ExecutionState") -> str:

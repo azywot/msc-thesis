@@ -1,0 +1,36 @@
+# Example: image_inspector — requires a VLM for image analysis.
+# Based on gaia/subagent but minimal for single example run.
+
+name: "example_image_inspector"
+description: "Example config for image_inspector (requires VLM)"
+
+models:
+  orchestrator:
+    name: "Qwen3-8B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-8B"
+    role: "orchestrator"
+
+  image_inspector:
+    name: "Qwen/Qwen3-VL-4B-Instruct"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-VL-4B-Instruct"
+    role: "image_inspector"
+
+tools:
+  enabled_tools:
+    - image_inspector
+  direct_tool_call: false
+
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: 1
+
+seed: 0
+thinking_mode: "ORCHESTRATOR_ONLY"
+max_turns: 15
+
+output_dir: "./experiments/results/examples/image_inspector"
+cache_dir: "./cache"

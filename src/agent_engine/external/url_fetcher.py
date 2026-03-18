@@ -157,7 +157,7 @@ def fetch_page_content(
             except Exception as exc:
                 results[url] = f"Error fetching {url}: {exc}"
                 logger.error(f"Error fetching {url}: {exc}")
-            time.sleep(0.1)  # Simple rate limiting
+            time.sleep(0.5)  # Rate limiting — 1s between fetches to avoid 429s
     
     return results
 

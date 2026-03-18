@@ -23,7 +23,7 @@ tools:
     - web_search
     - code_generator
     - text_inspector
-    - context_manager
+    - mind_map
   direct_tool_call: true
 
 dataset:

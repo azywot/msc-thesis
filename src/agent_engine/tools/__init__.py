@@ -3,21 +3,21 @@
 This module provides various tools for agentic reasoning:
 - Web search
 - Code execution
-- Context manager (memory)
+- Mind map (memory)
 - Text inspection
 - Image inspection
 """
 
 from .web_search import WebSearchTool
 from .code_generator import CodeGeneratorTool
-from .context_manager import ContextManagerTool
+from .mind_map import MindMapTool
 from .text_inspector import TextInspectorTool
 from .image_inspector import ImageInspectorTool
 
 __all__ = [
     "WebSearchTool",
     "CodeGeneratorTool",
-    "ContextManagerTool",
+    "MindMapTool",
     "TextInspectorTool",
     "ImageInspectorTool",
 ]

@@ -18,14 +18,13 @@ models:
     path_or_id: "Qwen/Qwen3-4B"
     role: "orchestrator"
 
-  # web_search, code_generator, text_inspector, context_manager are omitted —
+  # web_search, code_generator, text_inspector, mind_map are omitted —
   # they share Qwen3-4B with the orchestrator and will reuse its cached instance.
 
 tools:
   enabled_tools:
     - web_search
     - code_generator
-    - context_manager
   direct_tool_call: false
 
 dataset:

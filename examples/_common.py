@@ -23,7 +23,7 @@ from agent_engine.prompts import PromptBuilder
 from agent_engine.tools import (
     CodeGeneratorTool,
     ImageInspectorTool,
-    ContextManagerTool,
+    MindMapTool,
     TextInspectorTool,
     WebSearchTool,
 )
@@ -136,7 +136,7 @@ def build_tools(
         cache_manager:    Cache manager (supplies search_cache / url_cache).
         model_providers:  Role → provider dict from build_model_providers().
         enabled_tools:    Subset of tool names to register for this example.
-        orchestrator_model: Optional orchestrator provider for context_manager (GraphRAG needs local model).
+        orchestrator_model: Optional orchestrator provider for mind_map (GraphRAG needs local model).
     """
     tools = ToolRegistry()
     use_thinking = config.use_subagent_thinking()
@@ -184,13 +184,13 @@ def build_tools(
                 use_thinking=use_thinking,
             ))
 
-        elif name == "context_manager":
-            context_manager_model = model_providers.get("context_manager") or orchestrator_model
-            tools.register(ContextManagerTool(
+        elif name == "mind_map":
+            mind_map_model = model_providers.get("mind_map") or orchestrator_model
+            tools.register(MindMapTool(
                 direct_mode=False,  # sub-agent mode
-                storage_path=str(config.cache_dir / "context_manager"),
+                storage_path=str(config.cache_dir / "mind_map"),
                 use_graphrag=True,
-                model_provider=context_manager_model,  # local model for GraphRAG — no OpenAI key
+                model_provider=mind_map_model,  # local model for GraphRAG — no OpenAI key
             ))
 
     return tools
@@ -245,7 +245,8 @@ def save_result(output_dir: Path, state, config) -> Path:
     # Full execution trace (messages + tool_calls) for debugging.
     trace_path = output_dir / "trace.json"
     with open(trace_path, "w", encoding="utf-8") as f:
-        json.dump(state.to_dict(), f, indent=2, ensure_ascii=False)
+        state_dict = state.model_dump() if hasattr(state, "model_dump") else state.dict()
+        json.dump(state_dict, f, indent=2, ensure_ascii=False)
     return path
 
 

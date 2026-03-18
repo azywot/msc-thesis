@@ -95,11 +95,11 @@ models:
     top_k: 20
     repetition_penalty: 1.05
 
-  context_manager:
+  mind_map:
     name: "Qwen3-4B"
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-4B"
-    role: "context_manager"
+    role: "mind_map"
     max_model_len: 32768
     max_tokens: 4096
     temperature: 0.7
@@ -134,7 +134,7 @@ tools:
     - web_search
     - code_generator
     - text_inspector
-    - context_manager
+    - mind_map
     - image_inspector
   direct_tool_call: false
   web_tool_provider: "serper"  # "serper" or "tavily"

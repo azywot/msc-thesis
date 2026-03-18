@@ -1,7 +1,7 @@
-# GAIA Sub-Agent Mode — Qwen3-4B for all text roles, Qwen2.5-VL-3B for images
+# GAIA Sub-Agent Mode — Qwen3-8B for all text roles, Qwen2.5-VL-3B for images
 
 name: "gaia_qwen3_subagent_test"
-description: "GAIA with sub-agent mode using Qwen3-4B for orchestrator and tool agents (text + vision)"
+description: "GAIA with sub-agent mode using Qwen3-8B for orchestrator and tool agents (text + vision)"
 
 slurm:
   partition: "gpu_h100"
@@ -13,27 +13,25 @@ slurm:
 
 models:
   orchestrator:
-    name: "Qwen3-4B"
+    name: "Qwen3-8B"
     family: "qwen3"
-    path_or_id: "Qwen/Qwen3-4B"
+    path_or_id: "Qwen/Qwen3-8B"
     role: "orchestrator"
 
-  # web_search, code_generator, text_inspector, context_manager are omitted —
-  # they share Qwen3-4B with the orchestrator and will reuse its cached instance.
+  # web_search, code_generator, text_inspector, mind_map are omitted —
+  # they share Qwen3-8B with the orchestrator and will reuse its cached instance.
 
-  image_inspector:
-    name: "Qwen/Qwen3-VL-4B-Instruct"
-    family: "qwen3"                          # Uses Qwen chat-template logic
-    path_or_id: "Qwen/Qwen3-VL-4B-Instruct"
-    role: "image_inspector"
+  # image_inspector:
+  #   name: "Qwen/Qwen3-VL-4B-Instruct"
+  #   family: "qwen3"                          # Uses Qwen chat-template logic
+  #   path_or_id: "Qwen/Qwen3-VL-4B-Instruct"
+  #   role: "image_inspector"
 
 tools:
   enabled_tools:
     - web_search
     - code_generator
     - text_inspector
-    - image_inspector
-    - context_manager
   direct_tool_call: false
 
 dataset:

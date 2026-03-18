@@ -5,12 +5,12 @@ providing a clean interface for tool execution and schema generation.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel
 
-@dataclass
-class ToolResult:
+
+class ToolResult(BaseModel):
     """Standardized tool execution result.
 
     Attributes:
@@ -22,7 +22,7 @@ class ToolResult:
     """
     success: bool
     output: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = {}
     error: Optional[str] = None
     usage: Optional[Dict[str, int]] = None
 

@@ -26,7 +26,7 @@ msc-thesis/
 │   ├── config/                # YAML schema + loader
 │   ├── core/                  # Orchestrator + tool-calling loop
 │   ├── models/                # vLLM + MLX + API providers + locking/reuse
-│   ├── tools/                 # web_search, code_generator, context_manager, inspectors
+│   ├── tools/                 # web_search, code_generator, mind_map, inspectors
 │   ├── datasets/              # loaders + evaluators + metrics
 │   ├── prompts/               # prompt templates + builders
 │   ├── external/              # Serper, Tavily + URL fetching utilities
@@ -85,7 +85,7 @@ For HPC/Conda, follow the [cluster setup](#hpc--cluster-setup) section below.
 ## HPC / Cluster setup
 
 Run these four steps once on Snellius (SURF) before launching any experiment. <br>
-All commands assume `$HOME/thesis/msc-thesis/` as the working directory.
+All commands assume `$HOME/azywot/msc-thesis/` as the working directory.
 
 ### 1. Build the conda environment
 
@@ -266,7 +266,7 @@ python examples/example_web_search.py        # web_search
 python examples/example_code_generator.py    # code_generator
 python examples/example_text_inspector.py    # text_inspector (reads fixtures/sample_document.txt)
 python examples/example_image_inspector.py   # image_inspector (generates test PNG automatically)
-python examples/example_context_manager.py   # web_search + context_manager (GraphRAG)
+python examples/example_mind_map.py   # web_search + mind_map (GraphRAG)
 ```
 
 Prerequisites:
@@ -287,7 +287,7 @@ Each script writes its output to `experiments/results/examples/<tool_name>/`:
 | `example_code_generator.py` | `code_generator` |
 | `example_text_inspector.py` | `text_inspector` |
 | `example_image_inspector.py` | `image_inspector` |
-| `example_context_manager.py` | `web_search` + `context_manager` |
+| `example_mind_map.py` | `web_search` + `mind_map` |
 
 ---
 
@@ -345,7 +345,7 @@ Enabled via `tools.enabled_tools` in the config:
 |---|---|
 | `web_search` | Serper or Tavily API search; provider set via `web_tool_provider` config. **Serper**: fetches and caches full page content. **Tavily**: uses pre-cleaned, structured content directly (no URL fetching). Optional LLM-based result analysis in sub-agent mode. |
 | `code_generator` | Execute Python in a subprocess; LLM generates the code in sub-agent mode |
-| `context_manager` | Persistent per-question memory with optional GraphRAG indexing |
+| `mind_map` | Persistent per-question memory with optional GraphRAG indexing |
 | `text_inspector` | Read and optionally analyse text files (PDF, DOCX, XLSX, CSV, …) |
 | `image_inspector` | Vision-language analysis of images; requires a VLM in the config |
 

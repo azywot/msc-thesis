@@ -1,4 +1,4 @@
-"""GraphRAG wrapper for context manager tool.
+"""GraphRAG wrapper for mind map tool.
 
 This module provides a wrapper around nano_graphrag for intelligent
 retrieval in non-direct mode.  It mirrors the local-model configuration
@@ -66,6 +66,16 @@ try:
         return use_community_reports
 
     _nano_op._find_most_related_community_from_entities = _patched_find_most_related_community_from_entities
+
+    # Monkey-patch: fix TypeError when text_chunks_db.get_by_id returns None for some chunks
+    # Filter items with data=None before truncate (avoids 'NoneType' not subscriptable)
+    _orig_truncate = _nano_op.truncate_list_by_token_size
+
+    def _patched_truncate(list_data, key, max_token_size):
+        filtered = [x for x in list_data if "data" not in x or x.get("data") is not None]
+        return _orig_truncate(filtered, key, max_token_size)
+
+    _nano_op.truncate_list_by_token_size = _patched_truncate
 except ImportError:
     GRAPHRAG_AVAILABLE = False
     GraphRAG = None
@@ -79,7 +89,7 @@ except ImportError:
 #
 # nano_graphrag uses embeddings only for the initial vector-store lookup
 # (find nearest entities to the query). With zero embeddings, that lookup
-# is effectively uniform — but for a per-question context manager the graph is
+# is effectively uniform — but for a per-question mind map the graph is
 # tiny (handful of entities), so the real signal comes from graph traversal
 # and LLM synthesis.
 #
@@ -144,11 +154,11 @@ def _make_completion_func(model_provider, use_thinking: bool = False):
 
 
 # ---------------------------------------------------------------------------
-# ContextManagerGraphRAG wrapper
+# MindMapGraphRAG wrapper
 # ---------------------------------------------------------------------------
 
-class ContextManagerGraphRAG:
-    """Wrapper for GraphRAG context manager functionality.
+class MindMapGraphRAG:
+    """Wrapper for GraphRAG mind map functionality.
 
     Configures nano_graphrag to use a local LLM (via model_provider) and
     zero embeddings — matching the multi-agent-tools setup exactly.
@@ -161,7 +171,7 @@ class ContextManagerGraphRAG:
         ini_content: str = "",
         use_thinking: bool = False,
     ):
-        """Initialize GraphRAG context manager.
+        """Initialize GraphRAG mind map.
 
         Args:
             working_dir: Working directory for GraphRAG storage.

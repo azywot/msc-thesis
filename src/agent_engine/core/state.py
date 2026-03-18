@@ -4,15 +4,15 @@ This module defines the state tracking for a single question's execution,
 including conversation history, tool usage, and metadata.
 """
 
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel
 
-@dataclass
-class ExecutionState:
+
+class ExecutionState(BaseModel):
     """Tracks state of a single question execution.
 
-    This dataclass maintains all information about the execution of a single
+    This model maintains all information about the execution of a single
     question, including conversation history, tool usage tracking, and results.
 
     Attributes:
@@ -34,7 +34,7 @@ class ExecutionState:
     attachments: Optional[List[str]] = None
 
     # Conversation state
-    messages: List[Dict[str, str]] = field(default_factory=list)
+    messages: List[Dict[str, str]] = []
     current_output: str = ""
 
     # Execution tracking
@@ -43,26 +43,24 @@ class ExecutionState:
     answer: Optional[str] = None
 
     # Tool usage tracking
-    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
-    tool_counts: Dict[str, int] = field(default_factory=lambda: {
+    tool_calls: List[Dict[str, Any]] = []
+    tool_counts: Dict[str, int] = {
         'web_search': 0,
         'code_generator': 0,
-        'context_manager': 0,
+        'mind_map': 0,
         'text_inspector': 0,
         'image_inspector': 0,
-    })
+    }
+
+    # Output message history (assistant + tool turns, excluding system/user)
+    output_messages: List[Dict[str, str]] = []
+
+    # Structured memory (AgentFlow-inspired)
+    query_analysis: str = ""
+    action_history: List[Dict[str, str]] = []
 
     # Metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    def add_message(self, role: str, content: str):
-        """Add a message to the conversation history.
-
-        Args:
-            role: Message role (user, assistant, tool)
-            content: Message content
-        """
-        self.messages.append({"role": role, "content": content})
+    metadata: Dict[str, Any] = {}
 
     def increment_tool_count(self, tool_name: str):
         """Increment the usage count for a tool.
@@ -84,35 +82,3 @@ class ExecutionState:
             Number of times the tool has been called
         """
         return self.tool_counts.get(tool_name, 0)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert state to dictionary for serialization.
-
-        Returns:
-            Dictionary representation of the state
-        """
-        return {
-            "question_id": self.question_id,
-            "question": self.question,
-            "messages": self.messages,
-            "current_output": self.current_output,
-            "turn": self.turn,
-            "finished": self.finished,
-            "answer": self.answer,
-            "tool_calls": self.tool_calls,
-            "tool_counts": self.tool_counts,
-            "metadata": self.metadata,
-            "attachments": self.attachments,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ExecutionState":
-        """Create ExecutionState from dictionary.
-
-        Args:
-            data: Dictionary with state data
-
-        Returns:
-            ExecutionState instance
-        """
-        return cls(**data)

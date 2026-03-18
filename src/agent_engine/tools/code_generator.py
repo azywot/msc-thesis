@@ -52,6 +52,7 @@ class CodeGeneratorTool(BaseTool):
         self.model_provider = model_provider
         self.use_thinking = use_thinking
         self.direct_mode = model_provider is None
+        self._exec_counter = 0
 
         # Create temp directory
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -114,13 +115,12 @@ class CodeGeneratorTool(BaseTool):
                 }
             }
 
-    def execute(self, code: str = None, task: str = None, context: str = "") -> ToolResult:
+    def execute(self, code: str = None, task: str = None) -> ToolResult:
         """Execute Python code (direct) or generate then execute (sub-agent).
 
         Args:
             code: Python code string to execute (direct mode)
             task: Task description for code generation (sub-agent mode)
-            context: Previous reasoning for sub-agent mode
 
         Returns:
             ToolResult with execution output or error
@@ -135,7 +135,7 @@ class CodeGeneratorTool(BaseTool):
                     metadata={},
                     error="Task description required for sub-agent mode",
                 )
-            code = self.generate_code(task, context)
+            code = self.generate_code(task)
             if not code:
                 return ToolResult(
                     success=False,
@@ -172,15 +172,14 @@ class CodeGeneratorTool(BaseTool):
         """Extract Python code from the LLM response (robust to markdown fences)."""
         return self._extract_code_from_response(response_text)
 
-    def generate_code(self, task: str, context: str = "") -> str:
+    def generate_code(self, task: str) -> str:
         """Generate Python code from a task (sub-agent mode).
 
         In batched mode, the orchestrator should call `build_task_prompt(...)`,
         batch `model_provider.generate(prompts)`, then call
         `extract_code_from_llm_response(...)`.
-        context: Previous reasoning.
         """
-        prompt = self.build_task_prompt(task, context)
+        prompt = self.build_task_prompt(task)
         result = self.model_provider.generate([prompt])[0]
 
         output = strip_thinking_tags(result.text)
@@ -214,8 +213,11 @@ class CodeGeneratorTool(BaseTool):
                 error=f"Invalid Python syntax: {exc}",
             )
 
-        run_id = os.getenv("SLURM_JOB_ID", f"{os.getpid()}_{int(time.time())}")
-        temp_file_path = os.path.join(self.temp_dir, f"temp_code_{run_id}.py")
+        self._exec_counter += 1
+        slurm_id = os.getenv("SLURM_JOB_ID", f"pid_{os.getpid()}")
+        job_dir = os.path.join(self.temp_dir, slurm_id)
+        os.makedirs(job_dir, exist_ok=True)
+        temp_file_path = os.path.join(job_dir, f"temp_{self._exec_counter}.py")
 
         try:
             with open(temp_file_path, "w") as f:

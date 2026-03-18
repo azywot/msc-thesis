@@ -13,20 +13,21 @@ orchestrator.
 3. [Initial messages](#3-initial-messages)
 4. [System prompt format](#4-system-prompt-format)
 5. [Prompt rendering](#5-prompt-rendering-apply_chat_template)
-6. [Orchestrator loop](#6-orchestrator-loop-per-turn)
-7. [Model output format](#7-model-output-format-qwen3)
-8. [Tool call format and injection](#8-tool-call-format-and-injection)
-9. [Sub-agent: web_search](#9-sub-agent-web_search)
-10. [Sub-agent: code_generator](#10-sub-agent-code_generator)
-11. [Sub-agent: text_inspector](#11-sub-agent-text_inspector)
-12. [Sub-agent: image_inspector](#12-sub-agent-image_inspector)
-13. [Tool: context_manager](#13-tool-context_manager)
-14. [Message accumulation across turns](#14-message-accumulation-across-turns)
-15. [Token usage tracking](#15-token-usage-tracking)
-16. [Results stored in raw_results.json](#16-results-stored-in-raw_resultsjson)
-17. [GPU / model assignment summary](#17-gpu--model-assignment-summary)
-18. [Experiment runner flow](#18-experiment-runner-flow)
-19. [Reasoning context module](#19-reasoning-context-module)
+6. [Structured memory and per-turn prompt](#6-structured-memory-and-per-turn-prompt)
+7. [Orchestrator loop](#7-orchestrator-loop-per-turn)
+8. [Model output format (Qwen3)](#8-model-output-format-qwen3)
+9. [Tool call format and injection](#9-tool-call-format-and-injection)
+10. [Sub-agent: web_search](#10-sub-agent-web_search)
+11. [Sub-agent: code_generator](#11-sub-agent-code_generator)
+12. [Sub-agent: text_inspector](#12-sub-agent-text_inspector)
+13. [Sub-agent: image_inspector](#13-sub-agent-image_inspector)
+14. [Tool: mind_map](#14-tool-mind_map)
+15. [state.messages — fixed at two entries](#15-statemessages--fixed-at-two-entries)
+16. [Token usage tracking](#16-token-usage-tracking)
+17. [Results stored in raw_results.json](#17-results-stored-in-raw_resultsjson)
+18. [GPU / model assignment summary](#18-gpu--model-assignment-summary)
+19. [Experiment runner flow](#19-experiment-runner-flow)
+20. [Reasoning context module](#20-reasoning-context-module)
 
 ---
 
@@ -45,34 +46,37 @@ run_experiment.py
   ├─ setup_tools(config, cache_manager, ...)  → ToolRegistry
   ├─ setup_model_provider(...)  → orchestrator model (cached)
   └─ AgenticOrchestrator.run_batch(questions, question_ids, system_prompts, attachments)
-       ├─ [Turn 1..N] _process_batch_turn(active_states)
-       │     ├─ apply_chat_template(state.messages)  →  JSON payload
-       │     ├─ VLLMProvider.generate(prompts)  →  GenerationResult.text
-       │     ├─ parse_tool_call(text)
-       │     └─ _classify_tool_call → dispatch:
-       │           ├─ web_search (sub-agent)  → _schedule_web_job → _flush_web_batch
-       │           │     ├─ search_and_format(query)
-       │           │     ├─ _fetch_urls_for_web_jobs (Serper only)
-       │           │     ├─ _format_results(results)
-       │           │     └─ _run_web_analysis_batch: LLM.generate(analysis_prompt)
-       │           ├─ code_generator (sub-agent)  → _schedule_code_job → _flush_code_batch
-       │           │     └─ _run_code_generation_batch: LLM.generate(task_prompt) → execute_code()
-       │           ├─ text_inspector  → _execute_tool (immediate)
-       │           ├─ image_inspector  → _execute_tool (immediate)
-       │           └─ context_manager  → _execute_tool (immediate)
-       └─ extract_answer(state.current_output)
+       ├─ [Turn 0] _run_planning_turn(states)  → state.query_analysis
+       └─ [Turn 1..N] _process_batch_turn(active_states)
+             ├─ _build_memory_prompt(state)  →  fresh [system, user] with memory
+             ├─ apply_chat_template(memory_prompt)  →  JSON payload
+             ├─ VLLMProvider.generate(prompts)  →  GenerationResult.text
+             ├─ parse_tool_call(text)
+             └─ _classify_tool_call → dispatch:
+                   ├─ web_search (sub-agent)  → _schedule_web_job → _flush_web_batch
+                   │     ├─ search_and_format(query)
+                   │     ├─ _fetch_urls_for_web_jobs (Serper only)
+                   │     ├─ _format_results(results)
+                   │     └─ _run_web_analysis_batch: LLM.generate(analysis_prompt)
+                   ├─ code_generator (sub-agent)  → _schedule_code_job → _flush_code_batch
+                   │     └─ _run_code_generation_batch: LLM.generate(task_prompt) → execute_code()
+                   ├─ text_inspector  → _execute_tool (immediate)
+                   ├─ image_inspector  → _execute_tool (immediate)
+                   └─ mind_map  → _execute_tool (immediate)
 ```
 
 ### Single path (examples)
 
 ```
 orchestrator.run(question, question_id, system_prompt, attachments)
+  ├─ [Turn 0] _run_planning_turn([state])  → state.query_analysis
   └─ [Turn 1..N] loop:
-        ├─ apply_chat_template(state.messages) → generate([prompt])
+        ├─ _build_memory_prompt(state)  → fresh [system, user] with memory
+        ├─ apply_chat_template(memory_prompt) → generate([prompt])
         ├─ parse_tool_call(gen_result.text)
         └─ _execute_tool(tool_call, state)  → tool.execute(**arguments)
-              (all tools go through _execute_tool; web_search/code_generator
-               call their own model_provider.generate internally in sub-agent mode)
+              (web_search/code_generator call their own model_provider.generate
+               internally in sub-agent mode)
 ```
 
 ---
@@ -82,14 +86,13 @@ orchestrator.run(question, question_id, system_prompt, attachments)
 `src/agent_engine/core/state.py`
 
 ```python
-@dataclass
-class ExecutionState:
+class ExecutionState(BaseModel):
     question_id: int
     question:    str
-    attachments: Optional[List[str]]   # file paths (prefer absolute) for tools
+    attachments: Optional[List[str]]   # file paths for tools
 
-    # Conversation history — the only mutable part that grows each turn
-    messages: List[Dict[str, str]]     # [{"role": "system"|"user"|"assistant"|"tool", "content": str}]
+    # Initial [system, user] messages — never mutated after construction
+    messages: List[Dict[str, str]]     # always length 2: [system, user]
     current_output: str                # last raw model output (including <think> tags)
 
     # Execution tracking
@@ -101,11 +104,19 @@ class ExecutionState:
     tool_calls:  List[Dict]            # all tool_calls made (name + arguments)
     tool_counts: Dict[str, int]        # per-tool call count
 
+    # Output message history (populated during execution)
+    output_messages: List[Dict]        # alternating assistant/tool turns; final assistant turn appended on finish
+
+    # Structured memory (AgentFlow-aligned)
+    query_analysis: str                # set once by planning turn (Turn 0)
+    action_history: List[Dict]         # grows by one entry per tool call
+
     metadata: Dict[str, Any]           # error, max_turns_reached, token_usage, etc.
 ```
 
-`messages` starts as `[system, user]` and grows by two entries per turn:
-`assistant` (model output) then `tool` (tool response).
+`messages` is initialised to `[system, user]` and **never grows**.
+All evolving state is in `query_analysis` and `action_history`, which are
+injected into a fresh `[system, user]` prompt each turn by `_build_memory_prompt`.
 
 ---
 
@@ -140,34 +151,39 @@ Built by `PromptBuilder.build_system_prompt(dataset_name, tool_schemas, max_sear
 Templates loaded from `src/agent_engine/prompts/templates/system/<name>.yaml`.
 GAIA and HLE share the `gaia` template.
 
-Sections are joined with `\n\n`:
+Sections are joined with `\n\n`. Conditional sections depend on whether
+`tool_schemas` is non-empty:
 
 ```
-<base_instruction>          # from YAML template (gaia / gpqa / hle / base)
+# When tools are provided:
+<base_instruction_tools>        # tool-aware role description
 
 # Tools
-
 You may call one or more functions to assist with the user query.
+<tools>...</tools>
 
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{"type": "function", "function": {"name": "web_search", ...}}
-{"type": "function", "function": {"name": "code_generator", ...}}
-...
-</tools>
-
-For each function call, return a json object with function name and arguments
-within <tool_call></tool_call> XML tags:
+Before each function call, first state your specific sub-goal within
+<sub_goal></sub_goal> tags, then return the function call within
+<tool_call></tool_call> XML tags:
+<sub_goal>A specific, actionable goal for this step</sub_goal>
 <tool_call>
 {"name": <function-name>, "arguments": <args-json-object>}
 </tool_call>
 
-Important: ...
+<example>                       # mode-specific example from YAML
 
-<example>                   # from YAML template (search+code, search-only, etc.)
+<final_instructions>            # ALWAYS included (answer format, etc.)
+<final_instructions_tools>      # only when tools are provided
 
-<final_instructions>        # from YAML template
+# When no tools are provided:
+<base_instruction>              # tool-free role description
+<final_instructions>            # ALWAYS included
 ```
+
+Each YAML template defines both `base_instruction` (no tools) and
+`base_instruction_tools` (with tools), and both `final_instructions` (always)
+and `final_instructions_tools` (tools only). This ensures no tool-referencing
+text leaks into no-tool runs.
 
 ---
 
@@ -199,24 +215,96 @@ then passed to `llm.generate()`.
 
 ---
 
-## 6. Orchestrator loop (per turn)
+## 6. Structured memory and per-turn prompt
+
+The orchestrator uses AgentFlow-style structured memory instead of replaying
+the full conversation history. Every turn, `_build_memory_prompt` constructs a
+**fresh 2-message prompt** from the accumulated memory fields:
+
+```python
+def _build_memory_prompt(state, system_prompt):
+    parts = [state.messages[1]["content"]]   # original question + attachments
+
+    if state.query_analysis:
+        parts.append(f"\n**Query Analysis:**\n{state.query_analysis}")
+
+    if state.action_history:
+        parts.append(f"\n**Previous Steps:**\n{_format_action_history(...)}")
+
+    return [
+        {"role": "system", "content": system_prompt},   # unchanged every turn
+        {"role": "user",   "content": "\n".join(parts)},
+    ]
+```
+
+### Planning turn (Turn 0)
+
+Before the main loop, `_run_planning_turn` runs a single generation with a
+planning suffix appended to the user message (shallow copy only — `messages[1]`
+is not modified):
+
+```
+[system: system_prompt]
+[user:   question + "\n\nBefore using any tools, analyze this query..."]
+```
+
+The model output (thinking stripped) is stored in `state.query_analysis`.
+No tool calls or answers from this turn enter `action_history`.
+
+### Action turns (Turn 1..N)
+
+Each turn the user message contains:
+
+```
+<original question [+ attachment note]>
+
+**Query Analysis:**
+<planning output>
+
+**Previous Steps:**
+Action Step 1:
+  - Tool: web_search
+  - Sub-goal: Search for Kipchoge's marathon world record time.
+  - Command: {"name": "web_search", "arguments": {"query": "Eliud Kipchoge marathon world record"}}
+  - Result: ...search summary...
+
+Action Step 2:
+  - Tool: code_generator
+  - Sub-goal: Compute the time to run 356400 km at Kipchoge's speed.
+  - Command: {"name": "code_generator", "arguments": {"task": "Calculate time in hours..."}}
+  - Result: 17000
+```
+
+### action_history entry structure
+
+```python
+state.action_history.append({
+    "tool_name": str,   # e.g. "web_search"
+    "sub_goal":  str,   # content of <sub_goal>...</sub_goal> tag; "" if absent
+    "command":   str,   # json.dumps(tool_call) — full tool call as in <tool_call>...</tool_call>
+    "result":    str,   # strip_thinking_tags(tool_result.output)
+})
+```
+
+---
+
+## 7. Orchestrator loop (per turn)
 
 ### Batch path (`_process_batch_turn`)
 
 ```
 for each active state s:
     s.turn += 1
-    prompt = apply_chat_template(s.messages, use_thinking)
+    memory_prompt = _build_memory_prompt(s, system_prompt)
+    prompt = apply_chat_template(memory_prompt, use_thinking)
     gen_result = model.generate([prompt])[0]
-    s.current_output = gen_result.text          # may include <think>...</think>
+    s.current_output = gen_result.text
 
     tool_call = parse_tool_call(gen_result.text)
 
     if tool_call:
-        s.add_message("assistant", gen_result.text)
         _classify_tool_call(s, tool_call, gen_result.text, web_jobs, code_jobs, immediate_results)
     else:
-        s.add_message("assistant", gen_result.text)
         s.finished = True
         s.answer = extract_answer(gen_result.text)
 
@@ -231,30 +319,27 @@ _flush_code_batch(code_jobs)
 ```
 while state.turn < max_turns and not state.finished:
     state.turn += 1
-    prompt = apply_chat_template(state.messages, use_thinking)
+    memory_prompt = _build_memory_prompt(state, system_prompt)
+    prompt = apply_chat_template(memory_prompt, use_thinking)
     gen_result = model.generate([prompt])[0]
     state.current_output = gen_result.text
 
     tool_call = parse_tool_call(gen_result.text)
 
     if tool_call:
-        state.add_message("assistant", gen_result.text)
-        _index_reasoning_in_context_manager(gen_result.text, tool_call["name"], state)
+        _index_reasoning_in_mind_map(gen_result.text, tool_call["name"], state)
         tool_result = _execute_tool(tool_call, state)
-        state.add_message("tool", "<tool_response>\n{output}\n</tool_response>")
+        state.action_history.append({...})
         state.tool_calls.append(tool_call)
         state.increment_tool_count(tool_call["name"])
     else:
-        state.add_message("assistant", gen_result.text)
         state.finished = True
         state.answer = extract_answer(gen_result.text)
 ```
 
-Tool results are committed with `strip_thinking_tags` applied to the output.
-
 ---
 
-## 7. Model output format (Qwen3)
+## 8. Model output format (Qwen3)
 
 The model emits one of two patterns per turn:
 
@@ -264,6 +349,8 @@ The model emits one of two patterns per turn:
 [Extended reasoning, stripped before storing to sub-agents and results]
 </think>
 I need to search for ...
+
+<sub_goal>Search for Kipchoge's marathon world record time.</sub_goal>
 <tool_call>
 {"name": "web_search", "arguments": {"query": "..."}}
 </tool_call>
@@ -279,12 +366,13 @@ Based on the search results, the answer is \boxed{42}.
 
 Parsing:
 - `parse_tool_call` extracts the **last** `<tool_call>…</tool_call>` block.
+- `_extract_sub_goal` extracts the `<sub_goal>…</sub_goal>` tag. Returns `""` if absent (no fallback heuristic).
 - `extract_answer` looks for `\boxed{…}`, `Final Answer: …`, `Answer: …`, or `The answer is …`.
-- `strip_thinking_tags` removes `<think>…</think>` before any text is shown to a sub-agent or stored in tool responses.
+- `strip_thinking_tags` removes `<think>…</think>` before any text is shown to a sub-agent or stored in action_history results.
 
 ---
 
-## 8. Tool call format and injection
+## 9. Tool call format and injection
 
 The orchestrator passes to each tool:
 
@@ -292,9 +380,10 @@ The orchestrator passes to each tool:
 tool.execute(**arguments)
 ```
 
-where `arguments` is built from `tool_call["arguments"]` and then modified by two injection steps.
+where `arguments` is built from `tool_call["arguments"]` and then modified by
+one injection step.
 
-### 8.1 Attachment path injection (`_inject_attachment_path`)
+### 9.1 Attachment path injection (`_inject_attachment_path`)
 
 For `image_inspector` and `text_inspector`, the orchestrator injects
 `full_file_path` from `state.attachments` before calling `execute`:
@@ -304,28 +393,23 @@ For `image_inspector` and `text_inspector`, the orchestrator injects
 
 If no matching attachment exists, returns an error and does not call the tool.
 
-### 8.2 Reasoning context injection (`_inject_reasoning_context`)
+### 9.2 Tool routing (batch path)
 
-For `web_search` (sub-agent mode) and `code_generator` (sub-agent mode):
+| Tool            | Condition                                    | Path                                      |
+|-----------------|----------------------------------------------|-------------------------------------------|
+| web_search      | sub-agent mode (`direct_mode=False`)         | `_schedule_web_job` → `_flush_web_batch`  |
+| code_generator  | sub-agent mode (`direct_mode=False`)         | `_schedule_code_job` → `_flush_code_batch`|
+| mind_map        | always                                       | `_execute_tool` (immediate)               |
+| text_inspector  | always                                       | `_execute_tool` (immediate)               |
+| image_inspector | always                                       | `_execute_tool` (immediate)               |
 
-- **web_search**: injects `prev_reasoning` = `get_reasoning_context_for_state(state)`
-- **code_generator**: injects `context` = reasoning context + attachment context (path always when text attachment exists; `<FILE_CONTENT>` when `text_inspector` was called)
-
-See [§19. Reasoning context module](#19-reasoning-context-module).
-
-### 8.3 Tool routing (batch path)
-
-| Tool            | Condition                          | Path                    |
-|-----------------|------------------------------------|-------------------------|
-| web_search      | sub-agent mode, has build_analysis_prompt | _schedule_web_job → _flush_web_batch |
-| code_generator  | sub-agent mode, has build_task_prompt     | _schedule_code_job → _flush_code_batch |
-| context_manager| always                             | _execute_tool (immediate) |
-| text_inspector  | always                             | _execute_tool (immediate) |
-| image_inspector | always                             | _execute_tool (immediate) |
+Sub-agents (web_search, code_generator) operate independently — they do **not**
+receive the orchestrator's reasoning context or action history. The orchestrator
+communicates intent solely via the tool call arguments (`query` / `task`).
 
 ---
 
-## 9. Sub-agent: `web_search`
+## 10. Sub-agent: `web_search`
 
 **Direct mode** (`model_provider=None`): returns formatted results string directly, no LLM call.
 
@@ -342,11 +426,11 @@ TavilyRM.forward(query)  →  [{title, url, content (cleaned text)}, ...]
 Returns payload:
 ```python
 {
-  "results": [...],
+  "results":      [...],
   "urls_to_fetch": ["https://..."],   # Serper only, uncached
   "url_snippets":  {"url": "snippet"},
   "cached": bool,
-  "query": str,
+  "query":  str,
 }
 ```
 
@@ -371,26 +455,22 @@ Produces a string of web page blocks:
 ...
 ```
 
-For Serper, `content` is extracted from the full cached page via
-`extract_snippet_with_context` (F1-based sentence matching, returns
-`context_chars=max_doc_len` chars around the best-matching sentence).
-For Tavily, `content` is the raw Tavily content field.
+For Serper, `content` is extracted via `extract_snippet_with_context`
+(F1-based sentence matching, returns `context_chars=max_doc_len` chars around
+the best-matching sentence). For Tavily, `content` is the raw Tavily field.
 
 ### Step D — sub-agent LLM call
 
-Prompt built by `build_analysis_prompt(query, formatted_results, prev_reasoning)`:
+Prompt built by `build_analysis_prompt(query, formatted_results)`:
 
 ```
 **Task Instruction:**
 
 You are tasked with reading and analyzing web pages based on the following
-inputs: Previous Reasoning Steps, Current Search Query, and Searched Web
-Pages. Your objective is to extract relevant and helpful information ...
+inputs: Current Search Query and Searched Web Pages. Your objective is to
+extract relevant and helpful information ...
 
 **Inputs:**
-- **Previous Reasoning Steps:**
-  <truncated reasoning from state.messages — see §19>
-
 - **Current Search Query:**
   <query>
 
@@ -408,30 +488,22 @@ Output format expected:
 
 [Helpful information extracted from web pages]
 ```
-or
-```
-**Final Information**
-
-No helpful information found.
-```
 
 `<think>…</think>` is stripped from the output before it is returned.
 
 The cleaned text is stored in `analysis_cache[query]` (per-tool in-memory) and
-returned as `ToolResult.output`, which the orchestrator wraps:
-
-```
-<tool_response>
-**Final Information**
-[summary text]
-</tool_response>
-```
+stored in `action_history[i]["result"]`.
 
 ---
 
-## 10. Sub-agent: `code_generator`
+## 11. Sub-agent: `code_generator`
 
-**Direct mode**: `execute(code=...)` — runs the Python code directly, no LLM call.
+**Direct mode**: `execute(code=...)` — runs the Python code string directly, no LLM call.
+
+Temp files: `{temp_dir}/{SLURM_JOB_ID}/temp_{counter}.py`
+(falls back to `{temp_dir}/pid_{pid}/temp_{counter}.py` outside SLURM).
+Counter is per-tool-instance and monotonically increasing, ensuring no
+collision across parallel batch questions.
 
 **Sub-agent mode** (batched path):
 
@@ -441,9 +513,8 @@ Prompt built by `build_task_prompt(task, context)`:
 You are a code generator. Generate ONLY executable Python code, with NO
 explanations, NO comments about what the code does, and NO additional text.
 
-Context:
-<truncated reasoning from state.messages — see §19>
-<optional: [ATTACHED_FILE_PATH] {path} when text attachment exists; <FILE_CONTENT> when text_inspector was called>
+[Context:
+<attachment context — file path and/or file content if text_inspector was called>]
 
 Problem: <task description>
 
@@ -463,12 +534,13 @@ in a sandboxed subprocess with `timeout_seconds=60`. `stdout` + `stderr` is
 returned as `ToolResult.output`.
 
 **Attachment context** (MAT-style): `get_attachment_context_for_code(state)` appends:
-- `[ATTACHED_FILE_PATH] {path}` — always when a text attachment exists (full absolute path via `os.path.abspath`), so the code generator knows where to read the file even if `text_inspector` was not called
+- `[ATTACHED_FILE_PATH] {path}` — always when a text attachment exists, so the
+  code generator knows where to read the file even if `text_inspector` was not called
 - `<FILE_CONTENT>` — only when `text_inspector` was called, with its response (truncated to 4000 chars)
 
 ---
 
-## 11. Sub-agent: `text_inspector`
+## 12. Sub-agent: `text_inspector`
 
 **Direct mode**: returns raw file content (no LLM call).
 
@@ -494,7 +566,7 @@ Supported formats: `.txt`, `.md`, `.log`, `.json`, `.jsonl`, `.xml`, `.csv`,
 
 ---
 
-## 12. Sub-agent: `image_inspector`
+## 13. Sub-agent: `image_inspector`
 
 Always requires a model provider (VLM). Multimodal prompt:
 
@@ -517,12 +589,12 @@ to vLLM.
 
 ---
 
-## 13. Tool: `context_manager`
+## 14. Tool: `mind_map`
 
 **Non-direct mode (sub-agent)**:
 
 - Pre-tool reasoning from the orchestrator is indexed into a GraphRAG knowledge
-  base before each `web_search`, `code_generator`, or `context_manager` call.
+  base before each `web_search`, `code_generator`, or `mind_map` call.
 - Tool call arguments: `{"query": str}`.
 - Returns `ToolResult.output` = retrieved context passages (up to 2000 chars).
 - No LLM call inside the tool itself; GraphRAG handles retrieval.
@@ -531,50 +603,45 @@ to vLLM.
 
 ### How reasoning gets into the knowledge base (non-direct mode)
 
-Before executing any `web_search`, `code_generator`, or `context_manager` call,
-the orchestrator calls `_index_reasoning_in_context_manager`. It strips the
+Before executing any `web_search`, `code_generator`, or `mind_map` call,
+the orchestrator calls `_index_reasoning_in_mind_map`. It strips the
 `<tool_call>…</tool_call>` block from the model output and feeds the remaining
-reasoning text into `ContextManagerTool.add_entry(reasoning, question_id)`.
-This means the GraphRAG graph is built incrementally from the model's own chain
-of thought, so a later `context_manager` query can retrieve conclusions reached
-in earlier turns.
+reasoning text into `MindMapTool.add_entry(reasoning, question_id)`.
 
 ---
 
-## 14. Message accumulation across turns
+## 15. state.messages — fixed at two entries
 
-After turn *k* the messages list looks like:
+`state.messages` is initialised to `[system, user]` and **stays there permanently**.
+No assistant or tool messages are ever appended.
+
+The two entries serve exactly two purposes:
+
+| Entry | Read by | Purpose |
+|---|---|---|
+| `messages[0]["content"]` | `_process_batch_turn` | Extract `system_prompt` for `_build_memory_prompt` |
+| `messages[1]["content"]` | `_build_memory_prompt` | Original user question + attachment notes |
+
+All other per-turn state (model outputs, tool results, reasoning) lives in
+`state.action_history` and `state.current_output`. The full conversation is
+reconstructed from scratch each turn inside `_build_memory_prompt` as a fresh
+`[system, user]` prompt — the model never receives a growing multi-turn history.
+
+`state.output_messages` records the raw assistant and tool messages as they are
+produced (populated by the orchestrator, not reconstructed post-hoc):
 
 ```
 [
-  {"role": "system",    "content": "<system_prompt>"},
-  {"role": "user",      "content": "<question> [+ attachment note]"},
-
-  # Turn 1
-  {"role": "assistant", "content": "<think>...</think>\nI need to search...\n<tool_call>...</tool_call>"},
-  {"role": "tool",      "content": "<tool_response>\n**Final Information**\n...\n</tool_response>"},
-
-  # Turn 2
-  {"role": "assistant", "content": "<think>...</think>\nBased on...\n<tool_call>...</tool_call>"},
-  {"role": "tool",      "content": "<tool_response>\n...code output...\n</tool_response>"},
-
-  # Final turn
-  {"role": "assistant", "content": "<think>...</think>\nThe answer is \\boxed{42}."},
+  {"role": "assistant", "content": <raw gen_result.text including <think> tags>},
+  {"role": "tool", "tool_name": str, "content": <strip_thinking_tags(tool_result.output)>},
+  ...
+  {"role": "assistant", "content": <final answer turn>},
 ]
 ```
 
-Notes:
-- `<think>…</think>` tags **are kept** in `assistant` messages stored in
-  `state.messages` (so subsequent turns can see the full reasoning).
-- `<think>…</think>` tags **are stripped** (`strip_thinking_tags`) from tool
-  responses before they are stored in `tool` messages and before any text is
-  shown to a sub-agent.
-- The full `state.messages` list is what gets passed to `apply_chat_template`
-  for each subsequent turn — the model always sees its full history.
-
 ---
 
-## 15. Token usage tracking
+## 16. Token usage tracking
 
 Token counts are accumulated via `_accumulate_usage(state, gen_result.usage)` in
 `orchestrator.py` after every `model.generate()` call. The function writes into
@@ -588,15 +655,9 @@ the already-present `metadata` field of `ExecutionState`.
 | `run()` — single-turn loop | Each orchestrator turn (prompt + completion) |
 | `run()` — tool execution | Any tool that returns `ToolResult(usage=...)` (web_search, text_inspector, image_inspector in single-run) |
 | `_process_batch_turn()` — batched loop | All orchestrator turns in a batch |
-| `_apply_immediate_results()` | Tools returning `ToolResult.usage` (text_inspector, image_inspector, context_manager, web_search in direct/single path) |
+| `_apply_immediate_results()` | Tools returning `ToolResult.usage` (text_inspector, image_inspector, mind_map, web_search in direct/single path) |
 | `_run_web_analysis_batch()` | Web-search sub-agent LLM analysis call |
 | `_run_code_generation_batch()` | Code-generator sub-agent LLM call |
-
-**ToolResult.usage**: Tools that call `model_provider.generate()` internally
-(text_inspector, image_inspector, web_search in single-run) return
-`ToolResult(..., usage=result.usage)`. The orchestrator accumulates this in
-`_apply_immediate_results()` (batched path) or immediately after `_execute_tool()`
-(single-run path).
 
 ### Accumulator structure
 
@@ -608,74 +669,79 @@ state.metadata["token_usage"] = {
 }
 ```
 
-Counts start at zero for every new question and grow turn by turn.
-
 ### Where token usage is stored and computed
 
 | Location | What is stored | How it is produced |
 |----------|----------------|--------------------|
-| **In-memory (runtime)** | `state.metadata["token_usage"]` | `_accumulate_usage()` adds each `gen_result.usage` (or `ToolResult.usage`) into this dict. One per `ExecutionState` (per question). |
-| **raw_results.json** | `"token_usage": {...}` in each result record | Copied from `state.metadata.get("token_usage", {})` when building the record after each question completes. |
+| **In-memory (runtime)** | `state.metadata["token_usage"]` | `_accumulate_usage()` adds each `gen_result.usage` into this dict. One per `ExecutionState` (per question). |
+| **raw_results.json** | `"token_usage": {...}` in each result record | Copied from `state.metadata.get("token_usage", {})` after each question completes. |
 | **metrics.json** | `overall.token_usage` | Sum of `token_usage` from all result records. Computed in `_compute_metrics()`. |
-| **metrics.json** | `per_level[level].token_usage` | Same sum, but only over results for that level (e.g. GAIA level 2, 3). |
+| **metrics.json** | `per_level[level].token_usage` | Same sum, only over results for that level. |
 
 ---
 
-## 16. Results stored in raw_results.json
+## 17. Results stored in raw_results.json
 
 After processing, each example produces one record:
 
 ```python
 {
-  "question_id":  int,
-  "question":     str,
-  "prediction":   str,             # extracted answer
-  "ground_truth": str,
-  "correct":      bool,
-  "evaluation":   dict,            # dataset-specific eval result
-  "output_text":  str,             # all assistant + tool messages joined by \n
-  "tool_calls":   [                # one record per tool call
+  "question_id":    int,
+  "question":       str,
+  "prediction":     str,             # extracted answer
+  "ground_truth":   str,
+  "correct":        bool,
+  "evaluation":     dict,            # dataset-specific eval result
+  "query_analysis": str,             # planning turn output
+  "action_history": [                # one entry per tool call
     {
-      "name":      str,
-      "arguments": dict,
-      "response":  str,            # content of <tool_response>...</tool_response>
+      "tool_name": str,
+      "sub_goal":  str,              # from <sub_goal> tag; "" if absent
+      "command":   str,              # json.dumps(tool_call["arguments"])
+      "result":    str,              # strip_thinking_tags(tool_result.output)
     }
   ],
-  "turns":       int,
-  "tool_counts": {"web_search": int, ...},
+  "output_messages": [               # raw assistant/tool turns from state.output_messages
+    {"role": "assistant", "content": str},
+    {"role": "tool", "tool_name": str, "content": str},
+    ...
+  ],
+  "turns":          int,
+  "tool_counts":    {"web_search": int, ...},
   "token_usage": {
       "prompt_tokens":     int,
       "completion_tokens": int,
       "total_tokens":      int,
   },
-  "metadata":    dict,             # from dataset example (level, file_name, etc.)
+  "metadata":       dict,            # from dataset example (level, file_name, etc.)
 }
 ```
 
-`output_text` is produced by `_state_to_output_text`: concatenates `.content`
-of all `assistant` and `tool` messages (excluding `system` and `user`).
-
 ---
 
-## 17. GPU / model assignment summary
+## 18. GPU / model assignment summary
 
-| Role              | Model (test config)      | Thinking | Notes                             |
-|-------------------|--------------------------|----------|-----------------------------------|
-| orchestrator      | Qwen3-4B                 | Yes      | Drives the main loop              |
-| web_search        | Qwen3-4B (shared)        | No       | Analyzes fetched pages            |
-| code_generator    | Qwen3-4B (shared)        | No       | Generates Python code             |
-| text_inspector    | Qwen3-4B (shared)        | No       | Reads/answers about text files    |
-| context_manager   | Qwen3-4B (shared)        | No       | GraphRAG entity extraction        |
-| image_inspector   | Qwen/Qwen3-VL-4B-Instruct   | No       | Multimodal VLM                    |
+| Role              | Model (test config)         | Thinking | Notes                          |
+|-------------------|-----------------------------|----------|--------------------------------|
+| orchestrator      | Qwen3-4B                    | Yes      | Drives the main loop           |
+| web_search        | Qwen3-4B (shared)           | No       | Analyzes fetched pages         |
+| code_generator    | Qwen3-4B (shared)           | No       | Generates Python code          |
+| text_inspector    | Qwen3-4B (shared)           | No       | Reads/answers about text files |
+| mind_map          | Qwen3-4B (shared)           | No       | GraphRAG entity extraction     |
+| image_inspector   | Qwen/Qwen3-VL-4B-Instruct   | No       | Multimodal VLM                 |
 
 Model instances sharing the same `path_or_id` are reused (single vLLM engine
 for all Qwen3-4B roles). GPU assignment is computed by
 `resolve_gpu_assignments`: each distinct model path gets its own GPU(s) with
 memory utilization = `0.9 / num_distinct_models_on_same_gpu`.
 
+When no separate model is configured for a tool role, `run_experiment.py`
+falls back to the orchestrator model instance (same vLLM engine, serialised
+via a shared lock).
+
 ---
 
-## 18. Experiment runner flow
+## 19. Experiment runner flow
 
 `scripts/run_experiment.py`
 
@@ -707,46 +773,34 @@ memory utilization = `0.9 / num_distinct_models_on_same_gpu`.
 
 ### Partial flush
 
-Every 10 examples (when `(base_idx + len(batch)) % 10 == 0`), `raw_results.partial.json` is written and `cache_manager.save_caches()` is called.
+Every 10 examples (when `(base_idx + len(batch)) % 10 == 0`), `raw_results.partial.json`
+is written and `cache_manager.save_caches()` is called.
 
 ---
 
-## 19. Reasoning context module
+## 20. Reasoning context module
 
 `src/agent_engine/utils/reasoning_context.py`
 
-Provides previous reasoning to `web_search` and `code_generator` sub-agents (MAT-style).
+Provides attachment context to `code_generator` sub-agents (MAT-style).
+Sub-agents do **not** receive the orchestrator's reasoning history or action
+history — they operate independently on their task/query arguments only.
 
 ### Functions
 
 | Function | Purpose |
 |----------|---------|
-| `get_accumulated_output_from_state(state)` | Concatenate all assistant + tool messages |
-| `extract_reasoning_context(steps, mind_map, tool_markers)` | Truncate or summarize reasoning |
-| `get_reasoning_context_for_state(state, mind_map)` | Convenience: extract from state |
-| `get_attachment_context_for_code(state)` | `[ATTACHED_FILE_PATH] {path}` always when text attachment; `<FILE_CONTENT>` when text_inspector was called (MAT-style) |
-
-### Truncation logic (no mind_map)
-
-1. Build accumulated output from `state.messages` (assistant + tool)
-2. Split by newlines into steps
-3. Keep: first step, last 4 steps, steps containing `<tool_call>` or `<tool_response>`
-4. Replace middle steps with `...`
-
-### Mind map (optional)
-
-If `mind_map` (GraphRAG) is provided and content ≥ 100 chars, query:
-`"Summarize the reasoning process, be short and clear. Keep the summary under 500 words."`
-Result truncated to 2000 chars.
+| `get_attachment_context_for_code(state)` | Build attachment context string for code_generator |
 
 ### Attachment context for code (MAT-style)
 
-- **Path**: always when a text attachment exists (`.txt`, `.md`, `.json`, `.csv`, `.py`, `.yaml`, `.yml`, `.jsonl`, `.xml`, `.log`) — so the code generator knows where to read the file even if `text_inspector` was not called
-- **Format**: `[ATTACHED_FILE_PATH] {path}` (space after bracket, MAT format)
-- **Path resolution**: full absolute path via `os.path.abspath(p)`
-- **Content**: only when `text_inspector` was called — last tool response, truncated to 4000 chars, wrapped in `<FILE_CONTENT>`
+- **Path**: always included when a text attachment exists — so the code
+  generator knows where to read the file even if `text_inspector` was not called
+- **Format**: `[ATTACHED_FILE_PATH] {path}` (full absolute path via `os.path.abspath`)
+- **Content**: only when `text_inspector` was called — last tool response,
+  truncated to 4000 chars, wrapped in `<FILE_CONTENT>`
 
-### Injection points
+### Injection point
 
-- **Single run**: `_inject_reasoning_context` in `_execute_tool` (before `tool.execute(**arguments)`)
-- **Batch run**: `get_reasoning_context_for_state(job.state)` passed to `build_analysis_prompt` / `build_task_prompt` in `_run_web_analysis_batch` and `_schedule_code_job`
+`get_attachment_context_for_code(state)` is called in `_schedule_code_job`
+(batch path) and passed as `context` to `build_task_prompt`.

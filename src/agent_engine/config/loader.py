@@ -35,18 +35,9 @@ def load_experiment_config(path: Path) -> ExperimentConfig:
     if not data:
         raise ValueError(f"Empty config file: {path}")
 
-    # Convert nested configs
+    # Pre-process models: construct ModelConfig instances from dicts
     if "models" in data:
         data["models"] = _load_models(data["models"])
-
-    if "tools" in data:
-        data["tools"] = ToolsConfig(**data["tools"])
-
-    if "dataset" in data:
-        data["dataset"] = DatasetConfig(**data["dataset"])
-
-    if "slurm" in data:
-        data["slurm"] = SlurmConfig(**data["slurm"])
 
     # Convert thinking_mode string to enum
     if "thinking_mode" in data:
@@ -58,7 +49,7 @@ def load_experiment_config(path: Path) -> ExperimentConfig:
         except ValueError:
             raise ValueError(f"Invalid thinking mode: {thinking_str}. Must be one of: NO, ORCHESTRATOR_ONLY, SUBAGENTS_ONLY, ALL")
 
-    config = ExperimentConfig(**data)
+    config = ExperimentConfig.model_validate(data)
 
     # Propagate top-level seed to any model that doesn't declare its own.
     for model_cfg in config.models.values():
@@ -77,19 +68,7 @@ def _load_models(models_data: Dict[str, Any]) -> Dict[str, ModelConfig]:
     Returns:
         Dictionary of role -> ModelConfig
     """
-    models = {}
-    for role, config_data in models_data.items():
-        # Convert family string to enum
-        if "family" in config_data:
-            family_str = config_data["family"]
-            try:
-                config_data["family"] = ModelFamily(family_str)
-            except ValueError:
-                raise ValueError(f"Invalid model family: {family_str}")
-
-        models[role] = ModelConfig(**config_data)
-
-    return models
+    return {role: ModelConfig.model_validate(cfg) for role, cfg in models_data.items()}
 
 
 def save_experiment_config(config: ExperimentConfig, path: Path):
@@ -119,66 +98,25 @@ def _config_to_dict(config: ExperimentConfig) -> Dict[str, Any]:
     Returns:
         Dictionary representation
     """
-    data = {
-        "name": config.name,
-        "description": config.description,
-        "models": {},
-        "tools": {
-            "enabled_tools": config.tools.enabled_tools,
-            "direct_tool_call": config.tools.direct_tool_call,
-            "web_tool_provider": config.tools.web_tool_provider,
-            "max_search_limit": config.tools.max_search_limit,
-            "top_k_results": config.tools.top_k_results,
-            "max_doc_len": config.tools.max_doc_len,
-        },
-        "max_turns": config.max_turns,
-        "batch_size": config.batch_size,
-        "seed": config.seed,
-        "thinking_mode": config.thinking_mode.value,
-        "output_dir": str(config.output_dir),
-        "use_wandb": config.use_wandb,
-        "cache_dir": str(config.cache_dir),
-        "slurm": {
-            "partition": config.slurm.partition,
-            "num_gpus": config.slurm.num_gpus,
-            "ntasks": config.slurm.ntasks,
-            "cpus_per_task": config.slurm.cpus_per_task,
-            "time": config.slurm.time,
-            "conda_env": config.slurm.conda_env,
-        },
-    }
+    data = config.model_dump()
 
-    for role, model_config in config.models.items():
-        model_dict = {
-            "name": model_config.name,
-            "family": model_config.family.value,
-            "path_or_id": model_config.path_or_id,
-            "role": model_config.role,
-            "max_model_len": model_config.max_model_len,
-            "max_tokens": model_config.max_tokens,
-            "temperature": model_config.temperature,
-            "top_p": model_config.top_p,
-            "top_k": model_config.top_k,
-            "repetition_penalty": model_config.repetition_penalty,
-        }
+    # Convert non-JSON-serializable types for YAML
+    data["thinking_mode"] = config.thinking_mode.value
+    data["output_dir"] = str(config.output_dir)
+    data["cache_dir"] = str(config.cache_dir)
+
+    for role in list(data.get("models", {})):
+        mcfg = data["models"][role]
+        mcfg["family"] = config.models[role].family.value
         # Only persist fields that differ from auto-derived defaults.
-        if model_config.gpu_ids is not None:
-            model_dict["gpu_ids"] = model_config.gpu_ids
-        if model_config.tensor_parallel_size is not None:
-            model_dict["tensor_parallel_size"] = model_config.tensor_parallel_size
-        if model_config.gpu_memory_utilization is not None:
-            model_dict["gpu_memory_utilization"] = model_config.gpu_memory_utilization
-        if model_config.backend != "vllm":
-            model_dict["backend"] = model_config.backend
-        data["models"][role] = model_dict
+        for key in ["gpu_ids", "tensor_parallel_size", "gpu_memory_utilization"]:
+            if mcfg.get(key) is None:
+                mcfg.pop(key, None)
+        if mcfg.get("backend") == "vllm":
+            mcfg.pop("backend", None)
 
-    if config.dataset:
-        data["dataset"] = {
-            "name": config.dataset.name,
-            "split": config.dataset.split,
-            "data_dir": str(config.dataset.data_dir),
-            "subset_num": config.dataset.subset_num,
-        }
+    if data.get("dataset"):
+        data["dataset"]["data_dir"] = str(config.dataset.data_dir)
 
     if config.wandb_project:
         data["wandb_project"] = config.wandb_project

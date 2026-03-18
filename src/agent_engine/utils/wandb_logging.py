@@ -25,7 +25,7 @@ def log_results_wandb(
     direct_tool_call: bool,
     enable_search_tool: bool,
     enable_code_tool: bool,
-    context_manager: bool,
+    mind_map: bool,
     enable_text_inspector_tool: bool,
     enable_image_inspector_tool: bool,
     final_metrics: Optional[Dict[str, Any]],
@@ -55,7 +55,7 @@ def log_results_wandb(
         direct_tool_call: Whether tools were called directly (no sub-agent LLM).
         enable_search_tool: Whether ``web_search`` was enabled.
         enable_code_tool: Whether ``code_generator`` was enabled.
-        context_manager: Whether ``context_manager`` was enabled.
+        mind_map: Whether ``mind_map`` was enabled.
         enable_text_inspector_tool: Whether ``text_inspector`` was enabled.
         enable_image_inspector_tool: Whether ``image_inspector`` was enabled.
         final_metrics: Metrics dict with ``"overall"`` and ``"per_level"`` keys.
@@ -119,13 +119,13 @@ def log_results_wandb(
     _TOOL_ALIASES = {
         "search_total": ["search_total", "web_search"],
         "code_total": ["code_total", "code_generator"],
-        "context_manager_total": ["context_manager_total", "context_manager"],
+        "mind_map_total": ["mind_map_total", "mind_map"],
         "text_inspector_total": ["text_inspector_total", "text_inspector"],
         "image_inspector_total": ["image_inspector_total", "image_inspector"],
     }
     search_total = 0
     code_total = 0
-    context_manager_total = 0
+    mind_map_total = 0
     text_inspector_total = 0
     image_inspector_total = 0
     try:
@@ -145,13 +145,13 @@ def log_results_wandb(
         if overall_tools:
             search_total = _get("search_total", _TOOL_ALIASES["search_total"])
             code_total = _get("code_total", _TOOL_ALIASES["code_total"])
-            context_manager_total = _get("context_manager_total", _TOOL_ALIASES["context_manager_total"])
+            mind_map_total = _get("mind_map_total", _TOOL_ALIASES["mind_map_total"])
             text_inspector_total = _get("text_inspector_total", _TOOL_ALIASES["text_inspector_total"])
             image_inspector_total = _get("image_inspector_total", _TOOL_ALIASES["image_inspector_total"])
     except Exception:
         pass
 
-    total_tool_calls = search_total + code_total + context_manager_total + text_inspector_total + image_inspector_total
+    total_tool_calls = search_total + code_total + mind_map_total + text_inspector_total + image_inspector_total
 
     def _present(v: Any) -> bool:
         if v is None:
@@ -170,7 +170,7 @@ def log_results_wandb(
         "direct_tool_call": bool(direct_tool_call),
         "enable_search_tool": bool(enable_search_tool),
         "enable_code_tool": bool(enable_code_tool),
-        "context_manager": bool(context_manager),
+        "mind_map": bool(mind_map),
         "enable_text_inspector_tool": bool(enable_text_inspector_tool),
         "enable_image_inspector_tool": bool(enable_image_inspector_tool),
         "description": description,
@@ -185,7 +185,7 @@ def log_results_wandb(
         "L3_em": float(l3_em) if l3_em is not None else None,
         "tool/search_total": search_total,
         "tool/code_total": code_total,
-        "tool/context_manager_total": context_manager_total,
+        "tool/mind_map_total": mind_map_total,
         "tool/text_inspector_total": text_inspector_total,
         "tool/image_inspector_total": image_inspector_total,
         "tool/total_tool_calls": total_tool_calls,

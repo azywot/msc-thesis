@@ -5,9 +5,10 @@ This module defines the core abstractions for working with different model provi
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class ModelFamily(Enum):
@@ -30,8 +31,7 @@ class ModelFamily(Enum):
 _THINKING_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ, ModelFamily.DEEPSEEK})
 
 
-@dataclass
-class ModelConfig:
+class ModelConfig(BaseModel):
     """Complete model configuration.
 
     All generation parameters, resource management settings, and capability
@@ -52,7 +52,7 @@ class ModelConfig:
         top_k: Top-K sampling limit.
         repetition_penalty: Penalty applied to repeated tokens (``1.0`` = no penalty).
         supports_thinking: Whether the model can produce ``<think>`` output.
-            Derived from *family* in ``__post_init__`` if not set explicitly.
+            Derived from *family* by a model validator if not set explicitly.
         tensor_parallel_size: Number of GPUs to shard the model across.
             ``None`` → auto-detected from ``gpu_ids`` or visible device count.
         gpu_memory_utilization: Fraction of GPU VRAM to reserve for the model
@@ -61,6 +61,8 @@ class ModelConfig:
         gpu_ids: List of specific GPU indices to use.  ``None`` = use all visible.
         seed: Random seed for reproducible generation.
     """
+    model_config = {"arbitrary_types_allowed": True}
+
     name: str
     family: ModelFamily
     path_or_id: str
@@ -83,15 +85,21 @@ class ModelConfig:
 
     backend: str = "vllm"  # "vllm", "mlx", "openai", "anthropic"
 
-    def __post_init__(self):
-        if isinstance(self.family, str):
-            self.family = ModelFamily(self.family)
+    @field_validator("family", mode="before")
+    @classmethod
+    def _coerce_family(cls, v):
+        if isinstance(v, str):
+            return ModelFamily(v)
+        return v
+
+    @model_validator(mode="after")
+    def _derive_supports_thinking(self):
         if self.supports_thinking is None:
             self.supports_thinking = self.family in _THINKING_FAMILIES
+        return self
 
 
-@dataclass
-class GenerationResult:
+class GenerationResult(BaseModel):
     """Standardized result from any model provider.
 
     Attributes:
@@ -105,9 +113,9 @@ class GenerationResult:
     """
     text: str
     finish_reason: str
-    usage: Dict[str, int] = field(default_factory=dict)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    messages: Optional[List[Dict[str, Any]]] = None  # input messages that produced this result
+    usage: Dict[str, int] = {}
+    metadata: Dict[str, Any] = {}
+    messages: Optional[List[Dict[str, Any]]] = None
 
 
 class BaseModelProvider(ABC):
@@ -160,9 +168,9 @@ class BaseModelProvider(ABC):
         pass
 
     def __enter__(self):
-        """Context manager entry."""
+        """Mind map entry."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - cleanup resources."""
+        """Mind map exit - cleanup resources."""
         self.cleanup()
