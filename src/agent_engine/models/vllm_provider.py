@@ -279,7 +279,12 @@ class VLLMProvider(BaseModelProvider):
             rendered = self.tokenizer.apply_chat_template(
                 msgs, tokenize=False, add_generation_prompt=True,
             )
-            if not (use_thinking and self.config.supports_thinking):
+            if use_thinking and self.config.supports_thinking:
+                # Enforce thinking: ensure the prompt ends with <think>\n so
+                # the model cannot bypass reasoning with an empty think block.
+                if not rendered.endswith("<think>\n"):
+                    rendered += "<think>\n"
+            else:
                 # Suppress thinking: close the <think> block the template may have opened.
                 if rendered.endswith("<think>\n"):
                     rendered += "</think>\n\n"
