@@ -45,17 +45,17 @@ DATASETS = {
 # (filename_stem, model_key, direct_tool_call, enabled_tools_key, thinking_mode)
 # enabled_tools_key: "none" → [], "tools" → dataset tools
 VARIANTS = [
-    # 8B — no tools
-    ("qwen8B_no_tools_none",          "8B", True,  "none",  "NO"),
-    ("qwen8B_no_tools_orchestrator",  "8B", True,  "none",  "ORCHESTRATOR_ONLY"),
-    # 8B — direct tools
-    ("qwen8B_direct_tools_none",      "8B", True,  "tools", "NO"),
-    ("qwen8B_direct_tools_orchestrator", "8B", True, "tools", "ORCHESTRATOR_ONLY"),
-    # 8B — sub-agent tools
-    ("qwen8B_subagent_tools_none",        "8B", False, "tools", "NO"),
-    ("qwen8B_subagent_tools_orchestrator","8B", False, "tools", "ORCHESTRATOR_ONLY"),
-    ("qwen8B_subagent_tools_subagents",   "8B", False, "tools", "SUBAGENTS_ONLY"),
-    ("qwen8B_subagent_tools_all",         "8B", False, "tools", "ALL"),
+    # # 8B — no tools
+    # ("qwen8B_no_tools_none",          "8B", True,  "none",  "NO"),
+    # ("qwen8B_no_tools_orchestrator",  "8B", True,  "none",  "ORCHESTRATOR_ONLY"),
+    # # 8B — direct tools
+    # ("qwen8B_direct_tools_none",      "8B", True,  "tools", "NO"),
+    # ("qwen8B_direct_tools_orchestrator", "8B", True, "tools", "ORCHESTRATOR_ONLY"),
+    # # 8B — sub-agent tools
+    # ("qwen8B_subagent_tools_none",        "8B", False, "tools", "NO"),
+    # ("qwen8B_subagent_tools_orchestrator","8B", False, "tools", "ORCHESTRATOR_ONLY"),
+    # ("qwen8B_subagent_tools_subagents",   "8B", False, "tools", "SUBAGENTS_ONLY"),
+    # ("qwen8B_subagent_tools_all",         "8B", False, "tools", "ALL"),
     # 32B — no tools
     ("qwen32B_no_tools_none",         "32B", True,  "none",  "NO"),
     ("qwen32B_no_tools_orchestrator", "32B", True,  "none",  "ORCHESTRATOR_ONLY"),
@@ -171,6 +171,14 @@ cache_dir: "./cache"
 
 
 def main():
+    removed = 0
+    for old_cfg in BASE.glob("*/*.yaml"):
+        old_cfg.unlink()
+        removed += 1
+    for old_cfg in BASE.glob("*/*.yml"):
+        old_cfg.unlink()
+        removed += 1
+
     created = 0
     for dataset in DATASETS:
         dataset_dir = BASE / dataset
@@ -181,7 +189,7 @@ def main():
             path.write_text(content)
             print(f"  wrote {path.relative_to(BASE.parent.parent)}")
             created += 1
-    print(f"\nDone — {created} configs created.")
+    print(f"\nDone — removed {removed} old configs, created {created} configs.")
 
 
 if __name__ == "__main__":
