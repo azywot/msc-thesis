@@ -1,6 +1,6 @@
 # 🌌 Collaborative Small-Agent System (CoSMAS)
 
-CoSMAS is a configuration-driven multi-agent research framework for investigating how small, collaborative language models can be composed to solve complex tasks efficiently. Its primary focus is the design and evaluation of collaboration mechanisms, enabling systematic comparison between single-model baselines and cooperative multi-agent configurations under controlled experimental conditions.
+CoSMAS is a configuration-driven multi-agent research framework for investigating how small, collaborative language models can be composed to solve complex tasks. It supports systematic comparison between single-model baselines and cooperative multi-agent configurations under controlled experimental conditions.
 
 ---
 
@@ -41,7 +41,7 @@ msc-thesis/
 │   └── export_prompts.py      # Dump prompt templates + tool schemas to JSON
 │
 ├── experiments/
-│   ├── configs/               # Experiment YAMLs (by dataset)
+│   ├── configs/               # Experiment YAMLs (by model/dataset)
 │   │   └── local/             # MacBook/MLX configs (Qwen3-0.6B, 4B)
 │   └── results/               # Default output root
 │
@@ -51,8 +51,6 @@ msc-thesis/
 ├── requirements.txt
 └── environment.yml            # Conda env for HPC
 ```
-
-**Common navigation:**
 
 | Goal | Where to look |
 |---|---|
@@ -85,7 +83,7 @@ For HPC/Conda, follow the [cluster setup](#hpc--cluster-setup) section below.
 
 ## HPC / Cluster setup
 
-Run these four steps once on Snellius (SURF) before launching any experiment. <br>
+Run these steps once on Snellius (SURF) before launching any experiment.  
 All commands assume `$HOME/azywot/msc-thesis/` as the working directory.
 
 ### 1. Build the conda environment
@@ -105,19 +103,15 @@ cp .env.example .env
 nano .env
 ```
 
-Web search (one required based on `web_tool_provider` in config, default is Serper):
-
 ```bash
-SERPER_API_KEY=your_serper_key_here  # For web_tool_provider: "serper"
-TAVILY_API_KEY=your_tavily_key_here  # For web_tool_provider: "tavily"
-```
+SERPER_API_KEY=...    # web_tool_provider: "serper" (default)
+TAVILY_API_KEY=...    # web_tool_provider: "tavily"
 
-Optional:
-
-```bash
+# Optional
 OPENAI_API_KEY=...
 ANTHROPIC_API_KEY=...
 WANDB_API_KEY=...
+HF_TOKEN=...          # required for gated datasets (GAIA, GPQA, HLE)
 ```
 
 ### 3. Download datasets
@@ -172,7 +166,7 @@ uv pip install -e '.[mlx]'
 cp .env.example .env
 # Edit .env and fill in at minimum:
 SERPER_API_KEY=...   # or TAVILY_API_KEY if using tavily
-WANDB_API_KEY=...    # optional, if use_wandb: true
+WANDB_API_KEY=...    # optional
 HF_TOKEN=...         # required for gated datasets (GAIA, GPQA, HLE)
 ```
 
@@ -186,10 +180,7 @@ HF_HUB_DISABLE_XET_TRANSFER=1 python scripts/download_datasets.py \
 #### 4. Run
 
 ```bash
-# Qwen3-0.6B (fastest, least RAM)
 python scripts/run_experiment.py --config experiments/configs/local/qwen3_0.6b_gaia.yaml
-
-# Qwen3-4B (better quality)
 python scripts/run_experiment.py --config experiments/configs/local/qwen3_4b_gaia.yaml
 ```
 
@@ -201,19 +192,15 @@ Pre-built local configs are in `experiments/configs/local/`. Key differences fro
 | `batch_size` | `1`–`5` (RAM-limited) | `-1` (all at once) |
 | SLURM fields | ignored | used by job scripts |
 
-> **Batching:** set `batch_size: N` (e.g. `3`) to process N questions in parallel on Apple Silicon's integrated GPU. Higher values use more RAM — start small and increase as needed.
+> **Batching:** set `batch_size: N` to process N questions in parallel. Higher values use more RAM — start small and increase as needed.
 
 ---
 
 ### Locally (GPU — vLLM)
 
 ```bash
-# Set required key (Serper or Tavily, depending on config)
-export SERPER_API_KEY="..."  # If using web_tool_provider: "serper"
-# OR
-export TAVILY_API_KEY="..."  # If using web_tool_provider: "tavily"
+export SERPER_API_KEY="..."
 
-# Run with a config file
 python scripts/run_experiment.py --config experiments/configs/gaia/baseline.yaml
 
 # Override output directory
@@ -232,7 +219,6 @@ python jobs/scripts/generate_job.py experiments/configs/gaia/baseline.yaml
 sbatch jobs/generated/gaia_qwen3_baseline.job
 ```
 
-
 ### Available experiment configs
 
 ```
@@ -241,9 +227,9 @@ experiments/configs/
 │   ├── baseline.yaml        # Full GAIA validation run
 │   ├── test_direct.yaml     # Quick test — direct tool mode
 │   └── test_subagent.yaml   # Quick test — sub-agent mode
-├── deepseek/                # DeepSeek-R1 and R1-0528 configs (direct + sub-agent)
+├── deepseek/                # DeepSeek-R1-Distill and R1-0528 configs
 ├── phi4/                    # Phi-4-mini-instruct and Phi-4-mini-reasoning configs
-├── local/                   # MLX configs for Apple Silicon (Qwen3-0.6B, 4B)
+├── local/                   # MLX configs for Apple Silicon
 └── template.yml             # Annotated template for new configs
 ```
 
@@ -259,39 +245,30 @@ nano experiments/configs/gaia/my_run.yaml
 
 ## Examples
 
-The `examples/` directory contains one script per tool. Each script runs a single
-question chosen to force the model to call the tool under test. They are the
-recommended sanity check before launching a full experiment.
-
-Run from the `msc-thesis/` root:
+The `examples/` directory contains one script per tool. Each runs a single question designed to exercise that tool — recommended sanity check before a full experiment.
 
 ```bash
 python examples/example_web_search.py        # web_search
 python examples/example_code_generator.py    # code_generator
-python examples/example_text_inspector.py    # text_inspector (reads fixtures/sample_document.txt)
-python examples/example_image_inspector.py   # image_inspector (generates test PNG automatically)
-python examples/example_mind_map.py   # web_search + mind_map (GraphRAG)
+python examples/example_text_inspector.py    # text_inspector
+python examples/example_image_inspector.py   # image_inspector
+python examples/example_mind_map.py          # web_search + mind_map (GraphRAG)
 ```
 
 Prerequisites:
 
 ```bash
-export SERPER_API_KEY="<your-key>"  # Or TAVILY_API_KEY, depending on config
+export SERPER_API_KEY="<your-key>"
 export HF_HOME="/path/to/hf_cache"   # must contain Qwen/Qwen3-4B
 ```
 
-Each script writes its output to `experiments/results/examples/<tool_name>/`:
-- `result.json` — question, answer, turns used, tool call counts
-- `trace.json` — full message + tool call history for debugging
-- `example.log` — human-readable execution log
+Each script writes output to `experiments/results/examples/<tool_name>/`:
 
-| Script | Tool tested |
+| File | Contents |
 |---|---|
-| `example_web_search.py` | `web_search` |
-| `example_code_generator.py` | `code_generator` |
-| `example_text_inspector.py` | `text_inspector` |
-| `example_image_inspector.py` | `image_inspector` |
-| `example_mind_map.py` | `web_search` + `mind_map` |
+| `result.json` | question, answer, turns used, tool call counts |
+| `trace.json` | full message + tool call history |
+| `example.log` | human-readable execution log |
 
 ---
 
@@ -333,9 +310,9 @@ See `experiments/configs/template.yml` for a fully annotated version. Schema and
 
 | Option | Values | Description |
 |---|---|---|
-| `tools.direct_tool_call` | `true` / `false` | Direct mode returns raw tool output to the planner; sub-agent mode uses a second LLM to analyse it first |
+| `tools.direct_tool_call` | `true` / `false` | Direct mode returns raw tool output to the planner; sub-agent mode routes it through a second LLM first |
 | `thinking_mode` | `NO` / `ORCHESTRATOR_ONLY` / `SUBAGENTS_ONLY` / `ALL` | Controls which roles emit extended reasoning (requires a thinking-capable model) |
-| `batch_size` (config) | integer | Questions per batch (-1 = all; 1 = no batching) |
+| `batch_size` | integer | Questions per batch (-1 = all at once; 1 = sequential) |
 
 If multiple roles share the same `path_or_id`, the runner reuses the loaded vLLM instance and serialises access with per-model locks — no duplicate GPU memory.
 
@@ -343,18 +320,18 @@ If multiple roles share the same `path_or_id`, the runner reuses the loaded vLLM
 
 ## Model families
 
-The framework tracks model families through the `ModelFamily` enum in `src/agent_engine/models/base.py`. The family value controls generation defaults, thinking-mode handling, tool-call tag format, and vLLM chat-template rendering. Set it via the `family` key in any model block of a YAML config.
+The `ModelFamily` enum (`src/agent_engine/models/base.py`) controls generation defaults, thinking-mode handling, tool-call format, and vLLM chat-template rendering. Set it via the `family` key in any model block of a config.
 
 ### Supported families
 
-| Family key | Example models | Thinking support | Backend |
+| Family key | Example models | Thinking | Backend |
 |---|---|---|---|
-| `qwen3` | Qwen/Qwen3-{0.6B,1.7B,4B,8B,14B,32B} | Yes (auto) | vLLM, MLX |
+| `qwen3` | Qwen/Qwen3-{0.6B,1.7B,4B,8B,14B,32B} | Auto | vLLM, MLX |
 | `qwen2.5` | Qwen/Qwen2.5-{7B,14B,32B}-Instruct | No | vLLM, MLX |
-| `qwq` | Qwen/QwQ-32B | Yes (auto) | vLLM |
-| `deepseek_r1` | deepseek-ai/DeepSeek-R1-Distill-Qwen-{7B,14B,32B} | Yes (auto) | vLLM |
-| `deepseek_r1_0528` | deepseek-ai/DeepSeek-R1-0528-Qwen3-8B | Yes (auto) | vLLM |
-| `phi4` | microsoft/Phi-4-mini-instruct, microsoft/Phi-4-mini-reasoning | Opt-in (see below) | vLLM |
+| `qwq` | Qwen/QwQ-32B | Auto | vLLM |
+| `deepseek_r1` | deepseek-ai/DeepSeek-R1-Distill-Qwen-{7B,14B,32B} | Auto | vLLM |
+| `deepseek_r1_0528` | deepseek-ai/DeepSeek-R1-0528-Qwen3-8B | Auto | vLLM |
+| `phi4` | microsoft/Phi-4-mini-{instruct,reasoning} | Opt-in | vLLM |
 | `llama3` | meta-llama/Llama-3.x-… | No | vLLM |
 | `mistral` | mistralai/Mistral-{7B,8B}-Instruct-… | No | vLLM |
 | `gpt4` | gpt-4o, gpt-4o-mini, … | No | API |
@@ -364,50 +341,50 @@ The framework tracks model families through the `ModelFamily` enum in `src/agent
 
 ### DeepSeek family
 
-Two sub-families are supported, both are reasoning models that produce extended `<think>` chains and have `supports_thinking: true` set automatically.
+Two sub-families are supported. Both are reasoning models with `supports_thinking: true` set automatically. They share the same native tool-call token structure but differ in prompt handling.
 
-**`deepseek_r1`** — DeepSeek-R1-Distill-Qwen-{7B, 14B, 32B} (January 2025, Qwen2.5 backbone)
+#### `deepseek_r1` — DeepSeek-R1-Distill-Qwen-{7B, 14B, 32B}
 
-**`deepseek_r1_0528`** — DeepSeek-R1-0528-Qwen3-8B (May 2025, Qwen3 backbone)
+January 2025 release, Qwen2.5 backbone.
 
-Generation defaults (both sub-families):
+Generation defaults: `temperature: 0.6`, `top_p: 0.95`, `max_model_len: 32768`.
 
-| Parameter | Value |
-|---|---|
-| `temperature` | 0.6 |
-| `top_p` | 0.95 |
-| `repetition_penalty` | 1.0 |
-| `max_model_len` | 32768 |
+**Prompt handling:**
+- **System prompt:** per the [DeepSeek-R1 usage recommendations](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B#usage-recommendations), all instructions should be in the user turn. `VLLMProvider._merge_system_into_user` merges any leading `system` message into the first `user` message automatically before the chat template is applied.
+- **Thinking:** `<think>\n` is appended to the rendered prompt to enforce reasoning (`<think>\n</think>\n\n` to suppress it), matching the template's generation prompt `<｜Assistant｜><think>\n`.
 
-Thinking mode: the vLLM provider manually appends `<think>\n` to the rendered prompt to force the model into reasoning mode (or prepends `<think>\n</think>\n\n` to suppress it). This matches the models' native behaviour, where the assistant's first token after the user turn is expected to begin inside a `<think>` block.
-
-**System prompt handling:** per the [DeepSeek-R1 usage recommendations](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B#usage-recommendations), all instructions should be contained within the user turn — no dedicated system prompt. CoSMAS enforces this automatically: `VLLMProvider._merge_system_into_user` merges any leading `system` message into the first `user` message before the chat template is applied, so the orchestrator and prompt builder require no changes.
-
-**Multi-seed evaluation:** the same recommendations advise running multiple tests and averaging results when benchmarking. To replicate this, run the same config with different `seed` values and aggregate the resulting `metrics.json` files:
+**Multi-seed evaluation:** the usage recommendations advise averaging results across multiple seeds when benchmarking:
 
 ```yaml
-# in any deepseek config
 models:
   orchestrator:
-    seed: 42   # change to 0, 1, 42, … for each run
+    seed: 42   # repeat with seed: 0, 1, 43, … and aggregate metrics.json files
 ```
 
-Available experiment configs: `experiments/configs/deepseek/`
+#### `deepseek_r1_0528` — DeepSeek-R1-0528-Qwen3-8B
+
+May 2025 release, Qwen3 architecture with DeepSeek-R1-0528 tokenizer.
+
+Generation defaults: same as `deepseek_r1`.
+
+**Prompt handling (updated vs R1-Distill):**
+- **System prompt:** fully supported — passed through unchanged to the chat template. No merging into the user turn.
+- **Thinking:** no manual `<think>` injection needed. The model reasons autonomously. Per the [updated usage recommendations](https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B), this model can be run in the same manner as Qwen3-8B.
+
+Available configs: `experiments/configs/deepseek/`
 
 ---
 
 ### Phi-4 family
 
-**`phi4`** — Microsoft Phi-4-mini-instruct and Phi-4-mini-reasoning (3.8 B parameters, 128 K context, released February 2025).
-
-Two models under the same family key:
+**`phi4`** — Microsoft Phi-4-mini-instruct and Phi-4-mini-reasoning (3.8 B parameters, 128 K context, February 2025).
 
 | Model | HuggingFace ID | Thinking |
 |---|---|---|
 | Phi-4-mini-instruct | `microsoft/Phi-4-mini-instruct` | No |
 | Phi-4-mini-reasoning | `microsoft/Phi-4-mini-reasoning` | Opt-in |
 
-Unlike the DeepSeek and Qwen3 families, Phi-4's thinking capability is **not auto-detected**. For `Phi-4-mini-reasoning` you must set `supports_thinking: true` and `thinking_mode: "ORCHESTRATOR_ONLY"` (or `"ALL"`) explicitly in the YAML:
+Unlike DeepSeek and Qwen3, thinking capability is **not auto-detected** for Phi-4. For `Phi-4-mini-reasoning` set `supports_thinking: true` explicitly:
 
 ```yaml
 models:
@@ -419,39 +396,52 @@ models:
 thinking_mode: "ORCHESTRATOR_ONLY"
 ```
 
-Generation defaults: same as the Qwen3 baseline (`temperature: 0.0`, `top_p: 0.8`, `top_k: 20`, `repetition_penalty: 1.1`).
+Generation defaults: `temperature: 0.0`, `top_p: 0.8`, `top_k: 20`, `repetition_penalty: 1.1`.
 
-Available experiment configs: `experiments/configs/phi4/`
+Available configs: `experiments/configs/phi4/`
 
 ---
 
 ### Tool calling formats
 
-The prompt and parser are both family-aware. Each family has a distinct tag pair used to delimit tool calls in model output. The formats below are what the system prompt instructs the model to produce, and what the parser searches for.
+The prompt builder and parser are both family-aware. Each family uses the model's **native chat-template tokens** to delimit tool calls, matching the training distribution exactly.
 
-| Family | Tool call tags | Tool result tags |
+| Family | Tool call format | Tool result format |
 |---|---|---|
-| `qwen3`, `qwen2.5`, `qwq` | `<tool_call>…</tool_call>` | `<tool_response>…</tool_response>` |
-| `deepseek_r1`, `deepseek_r1_0528` | ` ```json\n…\n``` ` | `Tool result:\n…` (no closing tag) |
-| `phi4` | `<\|tool_call\|>…<\|/tool_call\|>` | `<tool_response>…</tool_response>` |
+| `qwen3`, `qwen2.5`, `qwq` | `<tool_call>\n…\n</tool_call>` | `<tool_response>…</tool_response>` |
+| `deepseek_r1`, `deepseek_r1_0528` | `<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>{name}`<br>` ```json`<br>`{arguments}`<br>` ```<｜tool▁call▁end｜><｜tool▁calls▁end｜>` | `<｜tool▁output▁begin｜>…<｜tool▁output▁end｜>` |
+| `phi4` | `<\|tool_call\|>\n…\n<\|/tool_call\|>` | `<tool_response>…</tool_response>` |
 
-The JSON payload inside any tag pair is always:
+**DeepSeek format notes:**
+- Uses the exact native special tokens from both chat templates ([R1-Distill](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B), [R1-0528](https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B)).
+- The JSON body contains **arguments only** — the function name comes from the `<｜tool▁sep｜>` header, not from the JSON. This matches the native template exactly.
+- Stop sequence: `<｜tool▁call▁end｜>` (with `<｜tool▁calls▁end｜>` as fallback).
 
+**JSON format by family:**
+
+For Qwen/Phi-4 families, the JSON body is a wrapper:
 ```json
-{"name": "<function_name>", "arguments": {"param1": "value1", ...}}
+{"name": "function_name", "arguments": {"param": "value"}}
 ```
 
-**Validation against official sources:**
+For DeepSeek families, the JSON body contains arguments only (name is in the header):
+```json
+{"param": "value"}
+```
 
-- **Qwen3 / Qwen2.5 / QwQ**: The `<tool_call>` / `</tool_call>` tags and `<tool_response>` / `</tool_response>` tags are confirmed in the official Qwen3 chat template. Source: [`Qwen/Qwen3-8B` — `tokenizer_config.json`](https://huggingface.co/Qwen/Qwen3-8B/raw/main/tokenizer_config.json) (search for `tool_call`).
+**Validation sources:**
+- Qwen3 `<tool_call>` / `</tool_call>` and `<tool_response>` / `</tool_response>`: [`Qwen/Qwen3-8B` — tokenizer_config.json](https://huggingface.co/Qwen/Qwen3-8B/raw/main/tokenizer_config.json)
+- DeepSeek-R1-Distill native token structure: [`deepseek-ai/DeepSeek-R1-Distill-Qwen-7B`](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B)
+- DeepSeek-R1-0528 native token structure (identical): [`deepseek-ai/DeepSeek-R1-0528-Qwen3-8B`](https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B)
+- Phi-4-mini `<|tool_call|>` (ID 200025) / `<|/tool_call|>` (ID 200026): [`microsoft/Phi-4-mini-instruct` — tokenizer_config.json](https://huggingface.co/microsoft/Phi-4-mini-instruct/raw/main/tokenizer_config.json)
 
-- **DeepSeek-R1-Distill** (`deepseek_r1`): The native tokenizer chat template uses `` ```json\n[args]\n``` `` blocks inside `<｜tool▁call▁begin｜…<｜tool▁call▁end｜` native tokens. CoSMAS prompts the model to use the inner JSON-code-block portion directly (a clean subset of the native format), and sets stop sequences to both the prompted `</tool_call>` string and the native `<｜tool▁calls▁end｜>` token as a fallback. Source: [`deepseek-ai/DeepSeek-R1-Distill-Qwen-7B`](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B) (see `chat_template` in the tokenizer metadata).
+**Parser priority** (`src/agent_engine/utils/parsing.py` — `parse_tool_call`):
 
-- **DeepSeek-R1-0528** (`deepseek_r1_0528`): Same `` ```json `` code-block format as the R1-Distill family. Source: [`deepseek-ai/DeepSeek-R1-0528-Qwen3-8B`](https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B) (see `chat_template` in the tokenizer metadata).
-
-- **Phi-4-mini** (`phi4`): `<|tool_call|>` (token ID 200025) and `<|/tool_call|>` (token ID 200026) are confirmed dedicated special tokens in the official tokenizer. The `<|tool_response|>` token (ID 200027) is also present natively; CoSMAS uses `<tool_response>` (without pipes) in the system-prompt instructions since the model is explicitly directed to follow the prompt format. Source: [`microsoft/Phi-4-mini-instruct` — `tokenizer_config.json`](https://huggingface.co/microsoft/Phi-4-mini-instruct/raw/main/tokenizer_config.json) (see token IDs 200025–200027).
-
-The parser (`src/agent_engine/utils/parsing.py`, `parse_tool_call`) tries all formats in priority order — Qwen XML → Phi-4 pipe tags → markdown code blocks → bare JSON — so outputs from any family are handled even if the model deviates from the instructed format.
+1. Native DeepSeek tokens (`<｜tool▁call▁begin｜>…<｜tool▁call▁end｜>`) — name from header, args from JSON body
+2. Qwen XML tags (`<tool_call>…</tool_call>`)
+3. Phi-4 pipe tags (`<|tool_call|>…<|/tool_call|>`)
+4. Markdown JSON code blocks (` ```json … ``` `) — fallback
+5. Bare JSON `{"name": …, "arguments": …}` — last resort
 
 ---
 
@@ -461,28 +451,24 @@ Enabled via `tools.enabled_tools` in the config:
 
 | Tool | Description |
 |---|---|
-| `web_search` | Serper or Tavily API search; provider set via `web_tool_provider` config. **Serper**: fetches and caches full page content. **Tavily**: uses pre-cleaned, structured content directly (no URL fetching). Optional LLM-based result analysis in sub-agent mode. |
-| `code_generator` | Execute Python in a subprocess; LLM generates the code in sub-agent mode |
+| `web_search` | Serper or Tavily API search; provider set via `web_tool_provider`. **Serper** fetches and caches full page content. **Tavily** returns pre-cleaned, structured content directly. |
+| `code_generator` | Execute Python in a subprocess; LLM generates code in sub-agent mode |
 | `mind_map` | Persistent per-question memory with optional GraphRAG indexing |
-| `text_inspector` | Read and optionally analyse text files (PDF, DOCX, XLSX, CSV, …) |
+| `text_inspector` | Read and analyse text files (PDF, DOCX, XLSX, CSV, …) |
 | `image_inspector` | Vision-language analysis of images; requires a VLM in the config |
 
-### Web Search Providers
+### Web search cache structure
 
-The `web_search` tool supports two providers via `web_tool_provider` config:
-
-- **Serper** (default): Traditional search API that returns URLs. The tool fetches and caches full page content.
-  - Cache structure: `./cache/serper/<dataset_name>/search_cache.json` and `./cache/serper/<dataset_name>/url_cache.json`
-
-- **Tavily**: AI-native search engine designed for LLMs. Returns pre-cleaned, structured content with no URL fetching needed.
-  - Cache structure: `./cache/tavily/<dataset_name>/search_cache.json` (no URL cache needed)
-  - Faster and more efficient for AI agents
+| Provider | Search cache | URL cache |
+|---|---|---|
+| Serper | `./cache/serper/<dataset>/search_cache.json` | `./cache/serper/<dataset>/url_cache.json` |
+| Tavily | `./cache/tavily/<dataset>/search_cache.json` | — (not needed) |
 
 ---
 
 ## Datasets
 
-**Currently supported benchmarks:**
+### Fully supported benchmarks
 
 | Name | Key |
 |---|---|
@@ -490,8 +476,7 @@ The `web_search` tool supports two providers via `web_tool_provider` config:
 | HLE (Humanity's Last Exam) | `hle` |
 | GPQA | `gpqa` |
 
-Additional QA datasets are partially wired via the downloader and can be added
-as full benchmarks by extending the dataset loaders and configs.
+### Partially wired (downloadable, extendable)
 
 | Name | Key |
 |---|---|
@@ -505,23 +490,19 @@ as full benchmarks by extending the dataset loaders and configs.
 | Bamboogle | `bamboogle` |
 | 2WikiMultiHopQA | `2wiki` |
 
-**TODO:** Add more datasets
-
-
-**Download datasets before running:**
+Download before running:
 
 ```bash
 python scripts/download_datasets.py --dataset gaia --split validation
 ```
 
-**Prompt templates note:** GAIA and HLE (and other single-question QA datasets) intentionally share the same system prompt template. In code, dataset names like `hle` are transparently mapped to use the GAIA system prompt.
-This can be found in `src/agent_engine/prompts/builder.py` inside `PromptBuilder.build_system_prompt`, where `dataset_name` values `"gaia"` and `"hle"` both resolve to the `gaia.yaml` system template.
+**Prompt template note:** GAIA, HLE, and other single-question QA datasets share the same system prompt template (`gaia.yaml`). Dataset names like `hle` are transparently mapped in `PromptBuilder.build_system_prompt`.
 
 ---
 
 ## Outputs
 
-Each run creates a timestamped subdirectory under `output_dir/`
+Each run creates a timestamped subdirectory under `output_dir/`  
 (e.g. `all_validation_2026-02-22-22-25-02_<job_id>/`):
 
 | File | Contents |
@@ -529,7 +510,7 @@ Each run creates a timestamped subdirectory under `output_dir/`
 | `raw_results.json` | Per-example results: question, prediction, ground truth, metrics, tool calls |
 | `raw_results.partial.json` | Rolling checkpoint written during the run; deleted on clean completion |
 | `metrics.json` | Aggregate accuracy, EM, F1 |
-| `config.json` | Serialised experiment config for reproducibility |
+| `config.json` | Serialised experiment config |
 | `experiment.log` | Full runner log |
 
 Analyse results:
@@ -543,7 +524,6 @@ python scripts/analyze_results.py experiments/results/<run_dir>/raw_results.json
 To log to W&B: set `use_wandb: true` + `wandb_project: <name>` in the YAML and provide `WANDB_API_KEY`.
 
 ---
-
 
 ### SLURM quick reference
 

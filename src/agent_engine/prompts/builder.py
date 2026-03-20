@@ -117,13 +117,66 @@ class PromptBuilder:
     def _get_family_tags(
         model_family: Optional[ModelFamily],
     ) -> tuple:
-        """Return (tc_open, tc_close, tr_open, tr_close) for the given model family."""
+        """Return (tc_open, tc_close, tr_open, tr_close, tc_body) for the given model family.
+
+        All tags match the model's native chat-template tokens exactly so the
+        model's training distribution is preserved at inference time.
+
+        DeepSeek (R1-Distill and R1-0528) native format from the tokenizer chat
+        templates (both share the same token structure):
+
+          <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>{name}
+          ```json
+          {arguments_json}
+          ```<｜tool▁call▁end｜><｜tool▁calls▁end｜>
+
+        The JSON body contains **only the arguments**, matching the native format.  The parser extracts the function
+        name from the ``<｜tool▁sep｜>`` header.  Stop sequence is
+        ``"<｜tool▁call▁end｜>"``.
+
+        Tool results use the native output tokens:
+          <｜tool▁output▁begin｜>{content}<｜tool▁output▁end｜>
+
+        Sources:
+        - DeepSeek-R1-Distill chat template (``<｜tool▁call▁begin｜>…<｜tool▁call▁end｜>``):
+          https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+        - DeepSeek-R1-0528 chat template (identical token structure):
+          https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
+        - Phi-4-mini ``<|tool_call|>`` / ``<|/tool_call|>`` native tokens
+          (IDs 200025 / 200026):
+          https://huggingface.co/microsoft/Phi-4-mini-instruct/raw/main/tokenizer_config.json
+        - Qwen3 ``<tool_call>`` / ``</tool_call>`` native chat template:
+          https://huggingface.co/Qwen/Qwen3-8B/raw/main/tokenizer_config.json
+        """
         if model_family is not None and model_family in _DEEPSEEK_FAMILIES:
-            return "```json\n", "\n```", "Tool result:\n", ""
+            return (
+                # tc_open: everything up to the start of the JSON body
+                "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>"
+                "function_name\n```json\n",
+                # tc_close: native closing tokens
+                "\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>",
+                # tr_open / tr_close: native output tokens
+                "<｜tool▁output▁begin｜>",
+                "<｜tool▁output▁end｜>",
+                # tc_body: arguments-only JSON (no "name" wrapper — native format)
+                '{"param": "value"}',
+            )
         if model_family == ModelFamily.PHI4:
-            return "<|tool_call|>\n", "\n<|/tool_call|>", "<tool_response>", "</tool_response>"
+            return (
+                "<|tool_call|>\n",
+                "\n<|/tool_call|>",
+                "<tool_response>",
+                "</tool_response>",
+                '{"name": "function_name", "arguments": {"param": "value"}}',
+            )
         # Qwen family + default
-        return "<tool_call>\n", "\n</tool_call>", "<tool_response>", "</tool_response>"
+        return (
+            "<tool_call>\n",
+            "\n</tool_call>",
+            "<tool_response>",
+            "</tool_response>",
+            '{"name": "function_name", "arguments": {"param": "value"}}',
+        )
 
     def _format_tool_schemas(
         self,
@@ -136,7 +189,7 @@ class PromptBuilder:
             return ""
 
         tools_json = "\n".join(json.dumps(schema, indent=2) for schema in schemas)
-        tc_open, tc_close, tr_open, tr_close = self._get_family_tags(model_family)
+        tc_open, tc_close, tr_open, tr_close, tc_body = self._get_family_tags(model_family)
 
         direct_mode_rule = ""
         if direct_tool_call:
@@ -157,7 +210,7 @@ class PromptBuilder:
             "within <sub_goal></sub_goal> tags, then return the function call as follows:\n"
             "<sub_goal>A specific, actionable goal for this step</sub_goal>\n"
             f"{tc_open}"
-            '{{"name": <function-name>, "arguments": <args-json-object>}}\n'
+            f"{tc_body}\n"
             f"{tc_close}\n\n"
             "Important: You may call tools zero, one, or multiple times as needed. "
             "Only call a tool when it would help answer the question. "
@@ -206,10 +259,12 @@ class PromptBuilder:
         if not example or "question" not in example or "steps" not in example:
             return ""
 
-        tc_open, tc_close, tr_open, tr_close = self._get_family_tags(model_family)
-        # Strip newlines from tags for inline example formatting
-        tc_open, tc_close = tc_open.strip(), tc_close.strip()
-        tr_open, tr_close = tr_open.strip(), tr_close.strip()
+        tc_open, tc_close, tr_open, tr_close, _tc_body = self._get_family_tags(model_family)
+        # Strip newlines from tags for inline example formatting (non-DeepSeek only)
+        is_deepseek = model_family is not None and model_family in _DEEPSEEK_FAMILIES
+        if not is_deepseek:
+            tc_open, tc_close = tc_open.strip(), tc_close.strip()
+        tr_open_s, tr_close_s = tr_open.strip(), tr_close.strip()
 
         lines = ["### EXAMPLE", ""]
         lines.append(f'Question: "{example["question"]}"')
@@ -232,16 +287,34 @@ class PromptBuilder:
                     lines.append("")
 
                 if "tool_call" in step_data:
-                    lines.append(tc_open)
-                    lines.append(step_data["tool_call"])
-                    lines.append(tc_close)
+                    if is_deepseek:
+                        # Convert {"name": …, "arguments": …} yaml entry to native tokens.
+                        try:
+                            tc_data = json.loads(step_data["tool_call"])
+                            name = tc_data.get("name", "function_name")
+                            args = tc_data.get("arguments", {})
+                            lines.append(
+                                f"<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function"
+                                f"<｜tool▁sep｜>{name}"
+                            )
+                            lines.append("```json")
+                            lines.append(json.dumps(args))
+                            lines.append("```<｜tool▁call▁end｜><｜tool▁calls▁end｜>")
+                        except (json.JSONDecodeError, AttributeError):
+                            lines.append(tc_open)
+                            lines.append(step_data["tool_call"])
+                            lines.append(tc_close)
+                    else:
+                        lines.append(tc_open)
+                        lines.append(step_data["tool_call"])
+                        lines.append(tc_close)
                     lines.append("")
 
                 if "tool_response" in step_data:
-                    lines.append(tr_open)
+                    lines.append(tr_open_s)
                     lines.append(step_data["tool_response"])
-                    if tr_close:
-                        lines.append(tr_close)
+                    if tr_close_s:
+                        lines.append(tr_close_s)
                     lines.append("")
 
         return "\n".join(lines)

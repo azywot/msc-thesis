@@ -229,8 +229,8 @@ class VLLMProvider(BaseModelProvider):
             stop_kwargs: Dict[str, Any] = {}
             if self.config.role == "orchestrator":
                 if self.config.family in _DEEPSEEK_FAMILIES:
-                    # DeepSeek: try prompt-instructed </tool_call> AND native token
-                    stop_seqs = ["</tool_call>", "<｜tool▁calls▁end｜>"]
+                    # Native DeepSeek stop tokens — fire at the end of each tool call
+                    stop_seqs = ["<｜tool▁call▁end｜>", "<｜tool▁calls▁end｜>"]
                 elif self.config.family == ModelFamily.PHI4:
                     stop_seqs = ["<|/tool_call|>"]
                 else:  # Qwen3, Qwen2.5, QwQ, default
@@ -302,24 +302,57 @@ class VLLMProvider(BaseModelProvider):
                 return result
         return [{"role": "user", "content": system_content}] + result
 
+    # Sentinel emitted by the tokenizer after all tool outputs when
+    # add_generation_prompt=True but is_tool=True (both R1-Distill and R1-0528).
+    _DS_TOOL_OUTPUTS_END = "<｜tool▁outputs▁end｜>"
+
     def _render_messages(self, msgs: List[Dict[str, Any]], use_thinking: bool) -> str:
         """Apply the tokenizer chat template to a messages list.
 
         - **Qwen3 / QWQ / Qwen2.5**: use the native ``enable_thinking`` kwarg.
-        - **DeepSeek**: merge system prompt into the user turn (per DeepSeek-R1
-          usage recommendations), then manually inject the ``<think>`` block
-          (template does not accept ``enable_thinking``).
+        - **DeepSeek-R1-0528** (Qwen3-8B architecture, DeepSeek-R1-0528
+          tokenizer): system prompt is supported; no ``<think>`` injection
+          needed — the model reasons autonomously.  Template embeds
+          ``<｜Assistant｜>`` at the end of every user turn; after tool outputs
+          (``<｜tool▁outputs▁end｜>``) we append ``<｜Assistant｜>`` manually
+          since the template skips the generation prompt in that case.
+          Source: https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
+        - **DeepSeek-R1-Distill**: merge system into user turn (usage rec.),
+          inject ``<think>\\n`` / ``<think>\\n</think>\\n\\n`` to control
+          reasoning.  Template generation prompt: ``<｜Assistant｜><think>\\n``.
+          After tool outputs we append the full generation prompt manually.
+          Source: https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
         - **All others** (Phi-4, Llama3, Mistral, …): plain
           ``apply_chat_template`` without ``enable_thinking``.
         """
+        if self.config.family == ModelFamily.DEEPSEEK_R1_0528:
+            # System prompt supported — pass messages unchanged to the template.
+            # No <think> injection: model reasons without prompting.
+            rendered = self.tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True,
+            )
+            # After tool outputs the template ends with <｜tool▁outputs▁end｜>
+            # and skips the generation prompt — append it manually.
+            if rendered.endswith(self._DS_TOOL_OUTPUTS_END):
+                rendered += "<｜Assistant｜>"
+            return rendered
+
         if self.config.family in _DEEPSEEK_FAMILIES:
+            # R1-Distill: system prompt should be in the user turn.
             msgs = self._merge_system_into_user(msgs)
             rendered = self.tokenizer.apply_chat_template(
                 msgs, tokenize=False, add_generation_prompt=True,
             )
+            # After tool outputs the template ends with <｜tool▁outputs▁end｜>
+            # and skips the generation prompt — append the full prompt manually.
+            if rendered.endswith(self._DS_TOOL_OUTPUTS_END):
+                if use_thinking and self.config.supports_thinking:
+                    rendered += "<｜Assistant｜><think>\n"
+                else:
+                    rendered += "<｜Assistant｜><think>\n</think>\n\n"
+                return rendered
+            # Normal turn: template already appended <｜Assistant｜><think>\n
             if use_thinking and self.config.supports_thinking:
-                # Enforce thinking: ensure the prompt ends with <think>\n so
-                # the model cannot bypass reasoning with an empty think block.
                 if not rendered.endswith("<think>\n"):
                     rendered += "<think>\n"
             else:

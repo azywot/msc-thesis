@@ -183,7 +183,13 @@ class AgenticOrchestrator:
                 state.action_history.append({
                     "tool_name": tool_call["name"],
                     "sub_goal": self._extract_sub_goal(gen_result.text),
-                    "command": json.dumps(tool_call),
+                    # Prefix duplicate-blocked entries so _find_duplicate_result
+                    # never returns the meta-message as if it were a real result.
+                    "command": (
+                        f"[blocked]{json.dumps(tool_call)}"
+                        if tool_result.metadata.get("duplicate")
+                        else json.dumps(tool_call)
+                    ),
                     "result": clean_output,
                 })
                 state.output_messages.append({"role": "assistant", "content": gen_result.text})
@@ -373,6 +379,19 @@ class AgenticOrchestrator:
             immediate_results.append(_ImmediateResult(state, tool_call, tr))
             return
 
+        previous = self._find_duplicate_result(tool_call, state)
+        if previous is not None:
+            msg = (
+                f"You already made this exact web_search call and received the following result:\n"
+                f"{previous}\n\n"
+                "Do not repeat identical tool calls. "
+                "Change your query, use a different tool, or derive your answer from what you already know."
+            )
+            logger.warning("Duplicate tool call blocked: web_search %s", args)
+            tr = ToolResult(success=False, output=msg, metadata={"duplicate": True}, error="")
+            immediate_results.append(_ImmediateResult(state, tool_call, tr))
+            return
+
         analysis_cache = self._get_analysis_cache(tool)
         if query in analysis_cache:
             logger.info("Tool call: %s, %s", tool_call["name"], tool_call.get("arguments", {}))
@@ -402,6 +421,19 @@ class AgenticOrchestrator:
             immediate_results.append(_ImmediateResult(state, tool_call, tr))
             return
 
+        previous = self._find_duplicate_result(tool_call, state)
+        if previous is not None:
+            msg = (
+                f"You already made this exact code_generator call and received the following result:\n"
+                f"{previous}\n\n"
+                "Do not repeat identical tool calls. "
+                "Change your task description, use a different approach, or derive your answer from what you already know."
+            )
+            logger.warning("Duplicate tool call blocked: code_generator %s", args)
+            tr = ToolResult(success=False, output=msg, metadata={"duplicate": True}, error="")
+            immediate_results.append(_ImmediateResult(state, tool_call, tr))
+            return
+
         try:
             att_ctx = get_attachment_context_for_code(state)
             prompt = tool.build_task_prompt(task, context=att_ctx)
@@ -417,7 +449,11 @@ class AgenticOrchestrator:
             item.state.action_history.append({
                 "tool_name": item.tool_call["name"],
                 "sub_goal": self._extract_sub_goal(item.state.current_output),
-                "command": json.dumps(item.tool_call),
+                "command": (
+                    f"[blocked]{json.dumps(item.tool_call)}"
+                    if item.result.metadata.get("duplicate")
+                    else json.dumps(item.tool_call)
+                ),
                 "result": clean_output,
             })
             item.state.output_messages.append({"role": "assistant", "content": item.state.current_output})
@@ -719,6 +755,26 @@ class AgenticOrchestrator:
     # Tool execution                                                      #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _find_duplicate_result(
+        tool_call: Dict[str, Any], state: ExecutionState
+    ) -> Optional[str]:
+        """Return the result of a previous identical tool call, or None if not a duplicate.
+
+        Compares the serialised tool call (name + arguments) against every entry
+        in ``state.action_history`` using sort-key normalised JSON so argument
+        ordering differences do not create false negatives.
+        """
+        needle = json.dumps(tool_call, sort_keys=True)
+        for entry in state.action_history:
+            try:
+                past = json.dumps(json.loads(entry["command"]), sort_keys=True)
+            except (KeyError, json.JSONDecodeError):
+                continue
+            if past == needle:
+                return entry.get("result", "")
+        return None
+
     def _execute_tool(self, tool_call: Dict[str, Any], state: ExecutionState) -> ToolResult:
         """Dispatch a single tool call, injecting attachment paths where needed."""
         tool_name = tool_call["name"]
@@ -731,6 +787,18 @@ class AgenticOrchestrator:
         if not self._check_tool_limit(tool_name, state):
             logger.warning(f"Tool limit exceeded for: {tool_name}")
             return ToolResult(success=False, output=f"Tool usage limit reached for {tool_name}", metadata={}, error="Limit exceeded")
+
+        # NOTE: Duplicate tool call check
+        previous = self._find_duplicate_result(tool_call, state)
+        if previous is not None:
+            msg = (
+                f"You already made this exact {tool_name} call and received the following result:\n"
+                f"{previous}\n\n"
+                "Do not repeat identical tool calls. "
+                "Change your query, use a different tool, or derive your answer from what you already know."
+            )
+            logger.warning("Duplicate tool call blocked: %s %s", tool_name, tool_call.get("arguments"))
+            return ToolResult(success=False, output=msg, metadata={"duplicate": True}, error="")
 
         try:
             arguments = dict(tool_call.get("arguments") or {})
