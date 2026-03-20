@@ -19,7 +19,7 @@ DATASETS = {
         "display": "GPQA",
         "split": "diamond",
         "split_desc": "diamond",
-        "tools": ["web_search", "code_generator", "text_inspector"],
+        "tools": ["web_search", "code_generator"],
     },
     "hle": {
         "display": "HLE",
@@ -31,7 +31,7 @@ DATASETS = {
         "display": "MuSiQue",
         "split": "validation_subset_200",
         "split_desc": "validation_subset_200",
-        "tools": ["web_search", "code_generator", "text_inspector"],
+        "tools": ["web_search", "code_generator"],
     },
     "aime": {
         "display": "AIME",
