@@ -345,6 +345,7 @@ def run_experiment(args):
             tool_limits={'web_search': config.tools.max_search_limit},
             use_thinking=config.use_orchestrator_thinking(),
             cache_manager=cache_manager,
+            baseline=config.baseline,
         )
 
         raw_batch = getattr(config, "batch_size", -1) or -1
@@ -528,6 +529,7 @@ def _config_to_dict(config) -> Dict[str, Any]:
         "use_wandb": getattr(config, "use_wandb", False),
         "wandb_project": getattr(config, "wandb_project", None),
         "thinking_mode": getattr(config.thinking_mode, "value", str(config.thinking_mode)),
+        "baseline": getattr(config, "baseline", False),
         "max_turns": getattr(config, "max_turns", None),
         "batch_size": getattr(config, "batch_size", -1),
         "dataset": {

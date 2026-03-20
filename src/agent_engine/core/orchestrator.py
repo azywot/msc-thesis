@@ -97,6 +97,7 @@ class AgenticOrchestrator:
         tool_limits: Optional[Dict[str, int]] = None,
         use_thinking: bool = False,
         cache_manager=None,
+        baseline: bool = False,
     ):
         """Initialize the orchestrator.
 
@@ -110,6 +111,9 @@ class AgenticOrchestrator:
                           Has no effect if the model doesn't support thinking.
             cache_manager: Optional :class:`~agent_engine.caching.CacheManager`
                            for atomic cache persistence during parallel runs.
+            baseline: When ``True`` the planning turn is skipped and each turn
+                      uses the raw growing conversation (``state.messages``)
+                      instead of the structured AgentFlow memory prompt.
         """
         self.model = model_provider
         self.tools = tool_registry
@@ -117,9 +121,12 @@ class AgenticOrchestrator:
         self.max_turns = max_turns
         self.tool_limits = tool_limits or {"web_search": 10}
         self.use_thinking = use_thinking and model_provider.config.supports_thinking
+        self.baseline = baseline
 
         logger.info(f"Orchestrator initialized with {len(self.tools)} tools")
         logger.info(f"Thinking mode: {'enabled' if self.use_thinking else 'disabled'}")
+        if self.baseline:
+            logger.info("Baseline mode enabled: planning turn skipped, growing conversation used")
 
     # ------------------------------------------------------------------ #
     # Public interface                                                     #
@@ -156,16 +163,17 @@ class AgenticOrchestrator:
         self._init_mind_map(state)
         logger.info(f"Starting execution for question {question_id}")
 
-        # Turn 0: Planning (does not count toward turn budget)
-        self._run_planning_turn([state])
+        # Turn 0: Planning (skipped in baseline mode)
+        if not self.baseline:
+            self._run_planning_turn([state])
 
         while state.turn < self.max_turns and not state.finished:
             state.turn += 1
             logger.info(f"Turn {state.turn}/{self.max_turns}")
 
             try:
-                memory_prompt = self._build_memory_prompt(state, system_prompt)
-                prompt = self.model.apply_chat_template(memory_prompt, use_thinking=self.use_thinking)
+                prompt_msgs = state.messages if self.baseline else self._build_memory_prompt(state, system_prompt)
+                prompt = self.model.apply_chat_template(prompt_msgs, use_thinking=self.use_thinking)
                 gen_result = self.model.generate([prompt])[0]
                 state.current_output = gen_result.text
                 _accumulate_usage(state, gen_result.usage)
@@ -180,16 +188,7 @@ class AgenticOrchestrator:
                 tool_result = self._execute_tool(tool_call, state)
                 _accumulate_usage(state, tool_result.usage)
                 clean_output = strip_thinking_tags(tool_result.output or "")
-                state.action_history.append({
-                    "tool_name": tool_call["name"],
-                    "sub_goal": self._extract_sub_goal(gen_result.text),
-                    "command": json.dumps(tool_call),
-                    "result": clean_output,
-                })
-                state.output_messages.append({"role": "assistant", "content": gen_result.text})
-                state.output_messages.append({"role": "tool", "tool_name": tool_call["name"], "content": clean_output})
-                state.tool_calls.append(tool_call)
-                state.increment_tool_count(tool_call["name"])
+                self._commit_tool_result(state, tool_call, clean_output)
                 logger.info(f"Tool '{tool_call['name']}' executed. Success: {tool_result.success}")
             else:
                 state.finished = True
@@ -253,8 +252,9 @@ class AgenticOrchestrator:
 
         logger.info(f"Starting batched execution for {len(states)} questions")
 
-        # Turn 0: Planning (single batched call, does not count toward turn budget)
-        self._run_planning_turn(states)
+        # Turn 0: Planning (skipped in baseline mode)
+        if not self.baseline:
+            self._run_planning_turn(states)
 
         while True:
             active = [s for s in states if not s.finished and s.turn < self.max_turns]
@@ -289,7 +289,7 @@ class AgenticOrchestrator:
         system_prompt = active[0].messages[0]["content"]
         prompts = [
             self.model.apply_chat_template(
-                self._build_memory_prompt(s, system_prompt),
+                s.messages if self.baseline else self._build_memory_prompt(s, system_prompt),
                 use_thinking=self.use_thinking,
             )
             for s in active
@@ -414,16 +414,7 @@ class AgenticOrchestrator:
         for item in results:
             _accumulate_usage(item.state, item.result.usage)
             clean_output = strip_thinking_tags(item.result.output or "")
-            item.state.action_history.append({
-                "tool_name": item.tool_call["name"],
-                "sub_goal": self._extract_sub_goal(item.state.current_output),
-                "command": json.dumps(item.tool_call),
-                "result": clean_output,
-            })
-            item.state.output_messages.append({"role": "assistant", "content": item.state.current_output})
-            item.state.output_messages.append({"role": "tool", "tool_name": item.tool_call["name"], "content": clean_output})
-            item.state.tool_calls.append(item.tool_call)
-            item.state.increment_tool_count(item.tool_call["name"])
+            self._commit_tool_result(item.state, item.tool_call, clean_output)
 
     # ------------------------------------------------------------------ #
     # Batched web search                                                  #
@@ -489,16 +480,7 @@ class AgenticOrchestrator:
             _accumulate_usage(job.state, out.usage)
             text = strip_thinking_tags(out.text)
             analysis_cache[job.query] = text
-            job.state.action_history.append({
-                "tool_name": job.tool_call["name"],
-                "sub_goal": self._extract_sub_goal(job.state.current_output),
-                "command": json.dumps(job.tool_call),
-                "result": text,
-            })
-            job.state.output_messages.append({"role": "assistant", "content": job.state.current_output})
-            job.state.output_messages.append({"role": "tool", "tool_name": job.tool_call["name"], "content": text})
-            job.state.tool_calls.append(job.tool_call)
-            job.state.increment_tool_count(job.tool_call["name"])
+            self._commit_tool_result(job.state, job.tool_call, text)
 
     # ------------------------------------------------------------------ #
     # Batched code generation                                             #
@@ -529,16 +511,7 @@ class AgenticOrchestrator:
             except Exception as exc:
                 tr = ToolResult(success=False, output="", metadata={}, error=str(exc))
             clean_output = strip_thinking_tags(tr.output or "")
-            job.state.action_history.append({
-                "tool_name": job.tool_call["name"],
-                "sub_goal": self._extract_sub_goal(job.state.current_output),
-                "command": json.dumps(job.tool_call),
-                "result": clean_output,
-            })
-            job.state.output_messages.append({"role": "assistant", "content": job.state.current_output})
-            job.state.output_messages.append({"role": "tool", "tool_name": job.tool_call["name"], "content": clean_output})
-            job.state.tool_calls.append(job.tool_call)
-            job.state.increment_tool_count(job.tool_call["name"])
+            self._commit_tool_result(job.state, job.tool_call, clean_output)
 
     # ------------------------------------------------------------------ #
     # Message construction                                                #
@@ -610,6 +583,35 @@ class AgenticOrchestrator:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": "\n".join(parts)},
         ]
+
+    def _commit_tool_result(
+        self,
+        state: ExecutionState,
+        tool_call: Dict[str, Any],
+        clean_output: str,
+    ) -> None:
+        """Record a tool call result into state.
+
+        Always updates ``action_history``, ``output_messages``, and
+        ``tool_calls`` for bookkeeping.  In baseline mode the same assistant
+        and tool messages are also appended to the live ``state.messages``
+        conversation so subsequent turns see the full history.
+        """
+        current_output = state.current_output
+        if not self.baseline:
+            state.action_history.append({
+                "tool_name": tool_call["name"],
+                "sub_goal": self._extract_sub_goal(current_output),
+                "command": json.dumps(tool_call),
+                "result": clean_output,
+            })
+        state.output_messages.append({"role": "assistant", "content": current_output})
+        state.output_messages.append({"role": "tool", "tool_name": tool_call["name"], "content": clean_output})
+        state.tool_calls.append(tool_call)
+        state.increment_tool_count(tool_call["name"])
+        if self.baseline:
+            state.messages.append({"role": "assistant", "content": current_output})
+            state.messages.append({"role": "tool", "tool_name": tool_call["name"], "content": clean_output})
 
     @staticmethod
     def _format_action_history(action_history: List[Dict[str, str]]) -> str:
