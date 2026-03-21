@@ -11,7 +11,7 @@ For setup instructions, job file descriptions, and how to submit experiments see
 |------|---------|
 | `001_setup.job` | Create conda env + install project |
 | `002_download_datasets.job` | Download benchmark datasets |
-| `003_test_simple.job` | Smoke-test a single example |
+| `003_run_examples.job` | Run simple examples to verify if everything works as expected |
 | `004_export_env.job` | Export conda env YAMLs to `env_exports/` |
 | `005_export_prompts.job` | Export prompt templates + tool schemas to JSON |
 | `submit_job.sh` | Convenience wrapper — generates a job file from a config and submits it |

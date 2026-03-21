@@ -84,7 +84,7 @@ case "$JOB_TYPE" in
         mkdir -p out/test
         sbatch \
             --export=ALL,PROJECT_DIR="$PROJECT_DIR",ENV_NAME="$ENV_NAME" \
-            jobs/003_test_simple.job
+            jobs/003_run_examples.job
         ;;
 
     export)

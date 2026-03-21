@@ -138,7 +138,7 @@ Log: `out/datasets/download_datasets_<job_id>.log`
 ### 4. Verify the setup
 
 ```bash
-sbatch jobs/003_test_simple.job
+sbatch jobs/003_run_examples.job
 ```
 
 Runs a short single-example test using `experiments/configs/datasets/gaia/test_subagent.yaml`.  
@@ -150,7 +150,7 @@ Log: `out/test/example_subagent_<job_id>.log`
 |------|---------|-----|
 | `jobs/001_setup.job` | Create conda env + install project | `out/setup/msc_thesis_env_setup_<job_id>.log` |
 | `jobs/002_download_datasets.job` | Download benchmark datasets | `out/datasets/download_datasets_<job_id>.log` |
-| `jobs/003_test_simple.job` | Smoke-test a single example | `out/test/example_subagent_<job_id>.log` |
+| `jobs/003_run_examples.job` | Smoke-test a single example | `out/test/example_subagent_<job_id>.log` |
 | `jobs/004_export_env.job` | Export conda env YAMLs | `out/export_env/export_env_<job_id>.log` |
 | `jobs/005_export_prompts.job` | Export prompt templates + tool schemas | `out/export_prompts/export_prompts_<job_id>.log` |
 | `jobs/006_create_configs.job` | Regenerate all experiment configs | `out/create_configs/create_configs_<job_id>.log` |
