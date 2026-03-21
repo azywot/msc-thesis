@@ -92,7 +92,7 @@ def main():
     # Use config with VLM for image_inspector
     config_path = Path(__file__).parent.parent / "experiments/configs/examples/image_inspector.yaml"
     if not config_path.exists():
-        config_path = Path(__file__).parent.parent / "experiments/configs/gaia/subagent.yaml"
+        config_path = Path(__file__).parent.parent / "experiments/configs/datasets/gaia/subagent.yaml"
     config = load_experiment_config(config_path)
     if "image_inspector" in str(config_path):
         logger.info("Using image_inspector config with VLM (Qwen3-VL-4B-Instruct)")

@@ -14,7 +14,7 @@
 #   ./submit_job.sh setup
 #   ./submit_job.sh download
 #   ./submit_job.sh test
-#   ./submit_job.sh experiment experiments/configs/gaia/baseline.yaml
+#   ./submit_job.sh experiment experiments/configs/datasets/gaia/baseline.yaml
 
 set -e
 
@@ -46,7 +46,7 @@ show_usage() {
     echo "  $0 download"
     echo "  $0 test"
     echo "  $0 export"
-    echo "  $0 experiment experiments/configs/gaia/baseline.yaml"
+    echo "  $0 experiment experiments/configs/datasets/gaia/baseline.yaml"
     echo ""
     echo "Environment variables (from env or .env):"
     echo "  PROJECT_DIR     - Project directory (default: \$HOME/azywot/msc-thesis)"

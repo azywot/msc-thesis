@@ -10,7 +10,7 @@
 set -euo pipefail
 
 echo "=========================================="
-echo "MSC Thesis — Generate Baseline Configs"
+echo "MSC Thesis — Generate Experiment Configs"
 echo "=========================================="
 echo "Start time: $(date)"
 echo ""
@@ -33,10 +33,10 @@ source activate "$ENV_NAME"
 
 echo ""
 echo "=========================================="
-echo "Generating baseline experiment configs"
+echo "Generating experiment configs (all suites)"
 echo "=========================================="
 
-python experiments/configs/baseline/generate_configs.py
+python experiments/configs/generate_configs.py
 
 echo ""
 echo "Done at: $(date)"

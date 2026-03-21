@@ -3,13 +3,13 @@
 #
 # Usage: ./launch_experiment.sh <config_file>
 #
-# Example: ./launch_experiment.sh experiments/configs/gaia/baseline.yaml
+# Example: ./launch_experiment.sh experiments/configs/datasets/gaia/baseline.yaml
 
 set -e
 
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <config_file>"
-    echo "Example: $0 experiments/configs/gaia/baseline.yaml"
+    echo "Example: $0 experiments/configs/datasets/gaia/baseline.yaml"
     exit 1
 fi
 

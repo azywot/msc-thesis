@@ -319,6 +319,7 @@ class AgenticOrchestrator:
                 s.finished = True
                 s.answer = extract_answer(gen_result.text)
                 s.output_messages.append({"role": "assistant", "content": gen_result.text})
+                logger.info(f"Q{s.question_id} finished. Answer: {s.answer}")
 
         self._apply_immediate_results(immediate_results)
         if web_jobs:

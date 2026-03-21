@@ -31,7 +31,7 @@ from agent_engine.utils import set_seed, setup_logging
 from agent_engine.models.vllm_provider import resolve_gpu_assignments
 
 DEFAULT_CONFIG = (
-    Path(__file__).parent.parent / "experiments/configs/gaia/test_subagent.yaml"
+    Path(__file__).parent.parent / "experiments/configs/datasets/gaia/test_subagent.yaml"
 )
 
 

@@ -12,9 +12,10 @@ CoSMAS is a configuration-driven multi-agent research framework for investigatin
 4. [Running experiments](#running-experiments)
 5. [Examples](#examples)
 6. [Configuration reference](#configuration-reference)
-7. [Tools](#tools)
-8. [Datasets](#datasets)
-9. [Outputs](#outputs)
+7. [Baseline vs. AgentFlow](#baseline-vs-agentflow)
+8. [Tools](#tools)
+9. [Datasets](#datasets)
+10. [Outputs](#outputs)
 
 ---
 
@@ -35,13 +36,19 @@ msc-thesis/
 │
 ├── scripts/
 │   ├── run_experiment.py      # Main runner (requires --config)
-│   ├── analyze_results.py     # Metrics + breakdowns
+│   ├── analyze_results.py     # Metrics + breakdowns (WIP)
 │   ├── download_datasets.py   # Fetch/prepare datasets
 │   └── export_prompts.py      # Dump prompt templates + tool schemas to JSON
 │
 ├── experiments/
-│   ├── configs/               # Experiment YAMLs (by dataset)
-│   │   └── local/             # MacBook/MLX configs (Qwen3-0.6B, 4B)
+│   ├── configs/               # Experiment YAMLs organised by suite
+│   │   ├── generate_configs.py    # Programmatic config generator (all suites)
+│   │   ├── datasets/              # Hand-crafted per-dataset configs (test, dev)
+│   │   │   └── gaia/  gpqa/  hle/  aime/  musique/
+│   │   ├── baseline/              # Baseline suite (32B, no planning/structured memory)
+│   │   ├── 1_milestone_no_img_no_mindmap_AgentFlow/  # AgentFlow suite (8B + 32B)
+│   │   ├── local/             # MacBook/MLX configs (Qwen3-0.6B, 4B)
+│   │   └── template.yml       # Annotated template for new configs
 │   └── results/               # Default output root
 │
 ├── jobs/                      # SLURM job scripts + HPC tooling
@@ -134,7 +141,7 @@ Log: `out/datasets/download_datasets_<job_id>.log`
 sbatch jobs/003_test_simple.job
 ```
 
-Runs a short single-example test using `experiments/configs/gaia/test_subagent.yaml`.  
+Runs a short single-example test using `experiments/configs/datasets/gaia/test_subagent.yaml`.  
 Log: `out/test/example_subagent_<job_id>.log`
 
 ### Job files reference
@@ -146,6 +153,7 @@ Log: `out/test/example_subagent_<job_id>.log`
 | `jobs/003_test_simple.job` | Smoke-test a single example | `out/test/example_subagent_<job_id>.log` |
 | `jobs/004_export_env.job` | Export conda env YAMLs | `out/export_env/export_env_<job_id>.log` |
 | `jobs/005_export_prompts.job` | Export prompt templates + tool schemas | `out/export_prompts/export_prompts_<job_id>.log` |
+| `jobs/006_create_configs.job` | Regenerate all experiment configs | `out/create_configs/create_configs_<job_id>.log` |
 
 Optional overrides (via `sbatch --export=ALL,...`): `ENV_NAME`, `PROJECT_DIR`, `DATA_DIR`.
 
@@ -213,10 +221,10 @@ export SERPER_API_KEY="..."  # If using web_tool_provider: "serper"
 export TAVILY_API_KEY="..."  # If using web_tool_provider: "tavily"
 
 # Run with a config file
-python scripts/run_experiment.py --config experiments/configs/gaia/baseline.yaml
+python scripts/run_experiment.py --config experiments/configs/datasets/gaia/baseline.yaml
 
 # Override output directory
-python scripts/run_experiment.py --config experiments/configs/gaia/baseline.yaml \
+python scripts/run_experiment.py --config experiments/configs/datasets/gaia/baseline.yaml \
     --output-dir ./experiments/results/my_run
 ```
 
@@ -224,32 +232,71 @@ python scripts/run_experiment.py --config experiments/configs/gaia/baseline.yaml
 
 ```bash
 # Convenience wrapper: generates a job file from the config and submits it
-./jobs/submit_job.sh experiment experiments/configs/gaia/baseline.yaml
+./jobs/submit_job.sh experiment experiments/configs/datasets/gaia/baseline.yaml
 
 # Or manually:
-python jobs/scripts/generate_job.py experiments/configs/gaia/baseline.yaml
+python jobs/scripts/generate_job.py experiments/configs/datasets/gaia/baseline.yaml
 sbatch jobs/generated/gaia_qwen3_baseline.job
 ```
 
 
 ### Available experiment configs
 
+Configs are organised into **suites** — self-contained families of experiments sharing the same naming scheme, output root, and model/dataset selection.
+
 ```
 experiments/configs/
-├── gaia/
-│   ├── baseline.yaml        # Full GAIA validation run
-│   ├── test_direct.yaml     # Quick test — direct tool mode
-│   └── test_subagent.yaml   # Quick test — sub-agent mode
-└── template.yml             # Annotated template for new configs
+├── generate_configs.py                         # Unified config generator
+├── datasets/                                   # Hand-crafted per-dataset configs
+│   ├── gaia/   gpqa/   hle/   aime/   musique/ # test_direct, test_subagent, etc.
+├── baseline/                                   # Baseline suite (vanilla LLM + tools)
+│   ├── gaia/   hle/   gpqa/   aime/   musique/ # 4 configs × 5 datasets = 20 files
+│   └── run_all.sh
+├── 1_milestone_no_img_no_mindmap_AgentFlow/    # AgentFlow suite (full system)
+│   ├── gaia/   hle/   gpqa/   aime/   musique/ # 12 configs × 5 datasets = 60 files
+│   └── run_all.sh
+├── local/                                      # MacBook/MLX configs
+└── template.yml                                # Annotated template
 ```
 
-To create a new config:
+#### Generating configs
 
 ```bash
-cp experiments/configs/gaia/baseline.yaml experiments/configs/gaia/my_run.yaml
-nano experiments/configs/gaia/my_run.yaml
-./jobs/submit_job.sh experiment experiments/configs/gaia/my_run.yaml
+# Regenerate all suites (baseline + agentflow)
+python experiments/configs/generate_configs.py
+
+# Regenerate a single suite
+python experiments/configs/generate_configs.py --suite baseline
+python experiments/configs/generate_configs.py --suite agentflow
 ```
+
+Or via SLURM:
+
+```bash
+sbatch jobs/006_create_configs.job
+```
+
+#### Adding or customising a suite
+
+All suite parameters live in the `SUITES` dict at the top of `generate_configs.py`:
+
+```python
+SUITES = {
+    "my_suite": {
+        "description_tag": "[My Suite]",
+        "name_prefix":     "my_prefix",
+        "output_dir_root": "./experiments/results/my_suite",
+        "config_subdir":   "my_suite",       # → experiments/configs/my_suite/
+        "baseline":        False,            # true = skip planning turn
+        "variants":        VARIANTS_32B,     # or VARIANTS_ALL
+        "num_gpus":        2,
+        "wandb_project":   "my-wandb-project",
+        "split_overrides": {},               # per-dataset split overrides
+    },
+}
+```
+
+Re-run the generator after any change to rebuild all YAML files.
 
 ---
 
@@ -332,12 +379,78 @@ See `experiments/configs/template.yml` for a fully annotated version. Schema and
 | `tools.direct_tool_call` | `true` / `false` | Direct mode returns raw tool output to the planner; sub-agent mode uses a second LLM to analyse it first |
 | `thinking_mode` | `NO` / `ORCHESTRATOR_ONLY` / `SUBAGENTS_ONLY` / `ALL` | Controls which roles emit extended reasoning (requires a thinking-capable model) |
 | `batch_size` (config) | integer | Questions per batch (-1 = all; 1 = no batching) |
+| `baseline` | `true` / `false` | When `true`, skips the planning turn and uses a growing conversation instead of structured AgentFlow memory. Used for the vanilla LLM-with-tools comparison. Defaults to `false`. |
 
 If multiple roles share the same `path_or_id`, the runner reuses the loaded vLLM instance and serialises access with per-model locks — no duplicate GPU memory.
 
 ---
 
-## Tools
+## Baseline vs. AgentFlow
+
+The framework supports two execution modes that are compared in the experiments.
+
+### AgentFlow (default, `baseline: false`)
+
+The full system, inspired by the original [AgentFlow](https://arxiv.org/abs/2404.11584) architecture.
+
+**Turn 0 — Planning:** Before any tool use, the model receives the question and is asked to analyse it: identify objectives, list relevant tools, and sketch an approach. The output is stored as `query_analysis`.
+
+**Turns 1–N — Structured memory loop:** Each subsequent turn reconstructs a fresh `[system, user]` prompt from structured state rather than appending to a growing conversation:
+
+```
+<original question>
+
+**Query Analysis:**
+<planning turn output>
+
+**Plan so far (completed sub-goals):**
+  1. <sub-goal from step 1>
+  2. <sub-goal from step 2>
+  ...
+
+**Previous Steps:**
+Action Step 1:
+  - Tool: web_search
+  - Sub-goal: <explicit intermediate goal the model stated>
+  - Command: <tool call JSON>
+  - Result: <tool output>
+...
+```
+
+The model is instructed to emit a `<sub_goal>` tag before every `<tool_call>`, making each intermediate intent explicit and trackable.
+
+**System prompt:** loaded from `*_dataset*.yaml` templates (e.g. `gaia.yaml`, `gpqa.yaml`), which include `reasoning` and `sub_goal` scaffolding in the few-shot examples.
+
+---
+
+### Baseline (`baseline: true`)
+
+A vanilla LLM-with-tools agent — the same model and tools, but without structured memory or planning.
+
+**No planning turn:** `query_analysis` is never generated.
+
+**Growing conversation:** The raw `state.messages` list grows each turn exactly as in a standard chat API interaction — assistant message appended, then tool response appended. The model sees the full message history, not a reconstructed structured prompt.
+
+**No sub-goal bookkeeping:** `action_history` is not populated; the "Plan so far" and "Previous Steps" sections never appear.
+
+**System prompt:** loaded from `*_baseline*.yaml` templates (e.g. `gaia_baseline.yaml`), which omit the `reasoning` and `sub_goal` lines from few-shot examples while keeping the same answer-format instructions and tool usage examples.
+
+---
+
+### What the comparison isolates
+
+| Component | Baseline | AgentFlow |
+|---|---|---|
+| Persona framing | "reasoning assistant" (same) | "reasoning assistant" (same) |
+| Planning turn (query analysis) | ✗ | ✓ |
+| Memory construction per turn | growing raw conversation | reconstructed structured memory |
+| Explicit sub-goal chain | ✗ | ✓ |
+| Few-shot reasoning scaffolding | tool call + result only | reasoning + sub_goal + tool call + result |
+| Extra LLM call per question | 0 | 1 (planning turn) |
+
+Both conditions use the same model weights, tools, answer format (`\boxed{}`), and `max_turns` budget. The only variables are the structural components listed above — they are the system being evaluated, not confounders.
+
+---
 
 Enabled via `tools.enabled_tools` in the config:
 
