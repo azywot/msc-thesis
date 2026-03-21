@@ -231,13 +231,33 @@ python scripts/run_experiment.py --config experiments/configs/datasets/gaia/base
 ### On SLURM
 
 ```bash
-# Convenience wrapper: generates a job file from the config and submits it
+# Single config — generates a job file and submits it
 ./jobs/submit_job.sh experiment experiments/configs/datasets/gaia/baseline.yaml
 
 # Or manually:
 python jobs/scripts/generate_job.py experiments/configs/datasets/gaia/baseline.yaml
 sbatch jobs/generated/gaia_qwen3_baseline.job
 ```
+
+### Batch runs with `run_all_in_folder.sh`
+
+Run all YAML configs found recursively under any folder — submits each as a separate SLURM job by default, or runs them sequentially with `--local`.
+
+```bash
+# Run example
+
+# Run an entire suite
+./experiments/scripts/run_all_in_folder.sh experiments/configs/baseline
+./experiments/scripts/run_all_in_folder.sh experiments/configs/1_milestone_no_img_no_mindmap_AgentFlow
+
+# Run a single dataset within a suite
+./experiments/scripts/run_all_in_folder.sh experiments/configs/baseline/gaia
+
+# Run locally (sequential, no SLURM)
+./experiments/scripts/run_all_in_folder.sh experiments/configs/baseline/gaia --local
+```
+
+The script walks the folder recursively, so it works at any depth and picks up all `.yaml`/`.yml` files.
 
 
 ### Available experiment configs
@@ -391,7 +411,7 @@ The framework supports two execution modes that are compared in the experiments.
 
 ### AgentFlow (default, `baseline: false`)
 
-The full system, inspired by the original [AgentFlow](https://arxiv.org/abs/2404.11584) architecture.
+The full system, inspired by the original [AgentFlow](https://github.com/lupantech/AgentFlow) architecture.
 
 **Turn 0 — Planning:** Before any tool use, the model receives the question and is asked to analyse it: identify objectives, list relevant tools, and sketch an approach. The output is stored as `query_analysis`.
 
@@ -402,11 +422,6 @@ The full system, inspired by the original [AgentFlow](https://arxiv.org/abs/2404
 
 **Query Analysis:**
 <planning turn output>
-
-**Plan so far (completed sub-goals):**
-  1. <sub-goal from step 1>
-  2. <sub-goal from step 2>
-  ...
 
 **Previous Steps:**
 Action Step 1:
@@ -439,7 +454,7 @@ A vanilla LLM-with-tools agent — the same model and tools, but without structu
 
 ### What the comparison isolates
 
-| Component | Baseline | AgentFlow |
+| Component | Baseline | Our framework |
 |---|---|---|
 | Persona framing | "reasoning assistant" (same) | "reasoning assistant" (same) |
 | Planning turn (query analysis) | ✗ | ✓ |
@@ -456,7 +471,7 @@ Enabled via `tools.enabled_tools` in the config:
 
 | Tool | Description |
 |---|---|
-| `web_search` | Serper or Tavily API search; provider set via `web_tool_provider` config. **Serper**: fetches and caches full page content. **Tavily**: uses pre-cleaned, structured content directly (no URL fetching). Optional LLM-based result analysis in sub-agent mode. |
+| `web_search` | Serper (default) or Tavily API search; provider set via `web_tool_provider` config. **Serper**: fetches and caches full page content. **Tavily**: uses pre-cleaned, structured content directly (no URL fetching). Optional LLM-based result analysis in sub-agent mode. |
 | `code_generator` | Execute Python in a subprocess; LLM generates the code in sub-agent mode |
 | `mind_map` | Persistent per-question memory with optional GraphRAG indexing |
 | `text_inspector` | Read and optionally analyse text files (PDF, DOCX, XLSX, CSV, …) |
@@ -471,37 +486,33 @@ The `web_search` tool supports two providers via `web_tool_provider` config:
 
 - **Tavily**: AI-native search engine designed for LLMs. Returns pre-cleaned, structured content with no URL fetching needed.
   - Cache structure: `./cache/tavily/<dataset_name>/search_cache.json` (no URL cache needed)
-  - Faster and more efficient for AI agents
+  - Faster and more efficient for AI agents, though cannot be used for comparison between direct tool calling vs. agentic setup due to proprietary LLM-based results formatting.
 
 ---
 
 ## Datasets
 
-**Currently supported benchmarks:**
+**Benchmarks used in experiments:**
 
-| Name | Key |
-|---|---|
-| GAIA | `gaia` |
-| HLE (Humanity's Last Exam) | `hle` |
-| GPQA | `gpqa` |
+| Name | Key | Split used | Type |
+|---|---|---|---|
+| GAIA | `gaia` | `all_validation` | General QA (multi-step, tool-requiring) |
+| HLE (Humanity's Last Exam) | `hle` | `test_subset_200` | Expert-level single QA |
+| GPQA | `gpqa` | `diamond` | Graduate-level multiple-choice science |
+| AIME | `aime` | `train` | Competition mathematics |
+| MuSiQue | `musique` | `validation_subset_200` | Multi-hop reasoning |
 
-Additional QA datasets are partially wired via the downloader and can be added
-as full benchmarks by extending the dataset loaders and configs.
+**Additional datasets — loaders available, not yet in experiment configs:**
 
 | Name | Key |
 |---|---|
 | MATH500 | `math500` |
-| AIME | `aime` |
 | AMC | `amc` |
 | Natural Questions | `nq` |
 | TriviaQA | `triviaqa` |
 | HotpotQA | `hotpotqa` |
-| MuSiQue | `musique` |
 | Bamboogle | `bamboogle` |
 | 2WikiMultiHopQA | `2wiki` |
-
-**TODO:** Add more datasets
-
 
 **Download datasets before running:**
 
@@ -509,8 +520,7 @@ as full benchmarks by extending the dataset loaders and configs.
 python scripts/download_datasets.py --dataset gaia --split validation
 ```
 
-**Prompt templates note:** GAIA and HLE (and other single-question QA datasets) intentionally share the same system prompt template. In code, dataset names like `hle` are transparently mapped to use the GAIA system prompt.
-This can be found in `src/agent_engine/prompts/builder.py` inside `PromptBuilder.build_system_prompt`, where `dataset_name` values `"gaia"` and `"hle"` both resolve to the `gaia.yaml` system template.
+**Prompt templates:** GAIA, HLE, and MuSiQue share the `gaia.yaml` system prompt template; GPQA uses `gpqa.yaml`; AIME uses `math.yaml`. In baseline mode the corresponding `*_baseline.yaml` templates are loaded instead. The mapping lives in `src/agent_engine/prompts/builder.py` (`PromptBuilder.build_system_prompt`).
 
 ---
 

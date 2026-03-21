@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from _common import (
+    IMAGE_INSPECTOR_CONFIG,
     build_model_providers,
     build_orchestrator,
     build_system_prompt,
@@ -25,7 +26,6 @@ from _common import (
     save_result,
 )
 from agent_engine.caching import CacheManager
-from agent_engine.config import load_experiment_config
 from agent_engine.utils import set_seed, setup_logging
 
 OUTPUT_DIR = Path(__file__).parent.parent / "experiments/results/examples/image_inspector"
@@ -89,13 +89,9 @@ def main():
     _create_test_image(IMAGE_PATH)
     logger.info(f"Test image: {IMAGE_PATH}")
 
-    # Use config with VLM for image_inspector
-    config_path = Path(__file__).parent.parent / "experiments/configs/examples/image_inspector.yaml"
-    if not config_path.exists():
-        config_path = Path(__file__).parent.parent / "experiments/configs/datasets/gaia/subagent.yaml"
-    config = load_experiment_config(config_path)
-    if "image_inspector" in str(config_path):
-        logger.info("Using image_inspector config with VLM (Qwen3-VL-4B-Instruct)")
+    # Use IMAGE_INSPECTOR_CONFIG — Qwen2.5-VL-3B-Instruct for image_inspector role
+    config = IMAGE_INSPECTOR_CONFIG
+    logger.info("Using VLM: Qwen2.5-VL-3B-Instruct for image_inspector")
     set_seed(config.seed)
 
     cache_manager = CacheManager(

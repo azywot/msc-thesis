@@ -23,7 +23,6 @@ from _common import (
     save_result,
 )
 from agent_engine.caching import CacheManager
-from agent_engine.config import load_experiment_config
 from agent_engine.utils import set_seed, setup_logging
 
 OUTPUT_DIR = Path(__file__).parent.parent / "experiments/results/examples/mind_map"
@@ -52,7 +51,7 @@ def main():
     logger = setup_logging(log_file=OUTPUT_DIR / "example.log")
     logger.info("=== Example: mind_map + web_search (sub-agent mode, GraphRAG indexing) ===")
 
-    config = load_experiment_config(DEFAULT_CONFIG)
+    config = DEFAULT_CONFIG
     set_seed(config.seed)
 
     cache_manager = CacheManager(
