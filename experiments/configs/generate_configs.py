@@ -78,6 +78,7 @@ VARIANTS_ALL = [
     ("qwen32B_direct_tools_orchestrator", "32B", True,  "tools", "ORCHESTRATOR_ONLY"),
 ]
 
+VARIANTS_ALL_BASELINE = [v for v in VARIANTS_ALL if v[2] == True]
 VARIANTS_32B = [v for v in VARIANTS_ALL if v[1] == "32B"]
 VARIANTS_8B = [v for v in VARIANTS_ALL if v[1] == "8B"]
 
@@ -102,7 +103,7 @@ SUITES = {
         "output_dir_root": "./experiments/results/NEW_baseline",
         "config_subdir":   "baseline",
         "baseline":        True,
-        "variants":        VARIANTS_32B,
+        "variants":        VARIANTS_ALL_BASELINE,
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
         # Override splits that differ from the defaults above
