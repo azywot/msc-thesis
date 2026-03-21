@@ -1,6 +1,6 @@
 # GAIA — Qwen3-32B, no tools, no thinking
 
-name: "baseline_gaia_qwen32B_no_tools_none"
+name: "NEW_baseline_gaia_qwen32B_no_tools_none"
 description: "[Baseline; NO image_inspector, NO mindmap] GAIA all_validation with Qwen3-32B, no tools, no thinking"
 
 slurm:
@@ -33,7 +33,7 @@ seed: 0
 thinking_mode: "NO"
 baseline: true
 
-output_dir: "./experiments/results/baseline/gaia/qwen32B_no_tools_none"
+output_dir: "./experiments/results/NEW_baseline/gaia/qwen32B_no_tools_none"
 use_wandb: true
 wandb_project: "benchmarks"
 

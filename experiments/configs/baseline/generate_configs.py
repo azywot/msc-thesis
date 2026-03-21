@@ -15,30 +15,30 @@ DATASETS = {
         "split_desc": "all_validation",
         "tools": ["web_search", "code_generator", "text_inspector"],
     },
-    "gpqa": {
-        "display": "GPQA",
-        "split": "diamond",
-        "split_desc": "diamond",
-        "tools": ["web_search", "code_generator"],
-    },
-    "hle": {
-        "display": "HLE",
-        "split": "test_subset_200",
-        "split_desc": "test_subset_200",
-        "tools": ["web_search", "code_generator", "text_inspector"],
-    },
-    "musique": {
-        "display": "MuSiQue",
-        "split": "validation_subset_200",
-        "split_desc": "validation_subset_200",
-        "tools": ["web_search", "code_generator"],
-    },
-    "aime": {
-        "display": "AIME",
-        "split": "train",
-        "split_desc": "train",
-        "tools": ["web_search", "code_generator"],
-    },
+    # "gpqa": {
+    #     "display": "GPQA",
+    #     "split": "diamond",
+    #     "split_desc": "diamond",
+    #     "tools": ["web_search", "code_generator"],
+    # },
+    # "hle": {
+    #     "display": "HLE",
+    #     "split": "test_subset_200",
+    #     "split_desc": "test_subset_200",
+    #     "tools": ["web_search", "code_generator", "text_inspector"],
+    # },
+    # "musique": {
+    #     "display": "MuSiQue",
+    #     "split": "validation_subset_200",
+    #     "split_desc": "validation_subset_200",
+    #     "tools": ["web_search", "code_generator"],
+    # },
+    # "aime": {
+    #     "display": "AIME",
+    #     "split": "train",
+    #     "split_desc": "train",
+    #     "tools": ["web_search", "code_generator"],
+    # },
 }
 
 # ── variant definitions ───────────────────────────────────────────────────────
@@ -127,13 +127,13 @@ def make_config(dataset: str, stem: str, model_key: str, direct: bool,
     think_desc = THINKING_LABELS[thinking]
     comment_line = f"# {ds['display']} — {m['name']}, {tool_desc}, {think_desc}"
 
-    exp_name = f"baseline_{dataset}_{stem}"
+    exp_name = f"NEW_baseline_{dataset}_{stem}"
     description = (
         f"[Baseline; NO image_inspector, NO mindmap] "
         f"{ds['display']} {ds['split_desc']} with {m['name']}, "
         f"{tool_desc}, {think_desc}"
     )
-    output_dir = f"./experiments/results/baseline/{dataset}/{stem}"
+    output_dir = f"./experiments/results/NEW_baseline/{dataset}/{stem}"
 
     return f"""{comment_line}
 

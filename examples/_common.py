@@ -217,6 +217,7 @@ def build_system_prompt(config, tools: ToolRegistry) -> str:
         tool_schemas=tools.get_all_schemas(),
         max_search_limit=config.tools.max_search_limit,
         direct_tool_call=False,
+        baseline=getattr(config, "baseline", False),
     )
 
 

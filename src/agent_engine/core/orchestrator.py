@@ -576,6 +576,14 @@ class AgenticOrchestrator:
         if state.query_analysis:
             parts.append(f"\n**Query Analysis:**\n{state.query_analysis}")
 
+        # # NOTE: idea -> add previous sub goals earlier in the prompt, 
+        # # before the query analysis to give the model more context about the problem at hand.
+        # # Not used for now, but keeping the idea here for future reference.
+        # sub_goals = [a["sub_goal"] for a in state.action_history if a.get("sub_goal")]
+        # if sub_goals:
+        #     chain = "\n".join(f"  {i + 1}. {g}" for i, g in enumerate(sub_goals))
+        #     parts.append(f"\n**Plan so far (completed sub-goals):**\n{chain}")
+
         if state.action_history:
             parts.append(f"\n**Previous Steps:**\n{self._format_action_history(state.action_history)}")
 

@@ -64,22 +64,29 @@ class PromptBuilder:
         dataset_name: str,
         tool_schemas: List[Dict[str, Any]],
         max_search_limit: int = 10,
-        direct_tool_call: bool = True
+        direct_tool_call: bool = True,
+        baseline: bool = False,
     ) -> str:
-        """Build system prompt with tools and instructions."""
+        """Build system prompt with tools and instructions.
+
+        When *baseline* is ``True``, load ``*_baseline`` templates and omit
+        sub-goal / reasoning scaffolding from tool instructions and examples.
+        """
         try:
             # GAIA, HLE, and MuSiQue share the same single‑QA prompt template.
             # AIME, MATH500, AMC share the math template.
             template_name = dataset_name
             if dataset_name.lower() in ("gaia", "hle", "musique"):
-                template_name = "gaia"
+                template_name = "gaia_baseline" if baseline else "gaia"
             elif dataset_name.lower() in ("aime", "math500", "amc"):
-                template_name = "math"
+                template_name = "math_baseline" if baseline else "math"
+            elif dataset_name.lower() == "gpqa":
+                template_name = "gpqa_baseline" if baseline else "gpqa"
 
             template = self.load_template(template_name)
         except FileNotFoundError:
             logger.warning(f"Template '{dataset_name}' not found, using base template")
-            template = self.load_template("base")
+            template = self.load_template("base_baseline" if baseline else "base")
 
         # Section order mirrors MAT: base_instruction → tools → example → final_instructions
         sections = []
@@ -90,9 +97,15 @@ class PromptBuilder:
             sections.append(template["base_instruction"].strip())
 
         if tool_schemas:
-            sections.append(self._format_tool_schemas(tool_schemas, max_search_limit, direct_tool_call))
+            sections.append(
+                self._format_tool_schemas(
+                    tool_schemas, max_search_limit, direct_tool_call, baseline=baseline
+                )
+            )
 
-        example_text = self._select_and_format_example(template, tool_schemas, direct_tool_call)
+        example_text = self._select_and_format_example(
+            template, tool_schemas, direct_tool_call, baseline=baseline
+        )
         if example_text:
             sections.append(example_text)
 
@@ -109,12 +122,30 @@ class PromptBuilder:
         schemas: List[Dict[str, Any]],
         max_search_limit: int,
         direct_tool_call: bool = False,
+        baseline: bool = False,
     ) -> str:
         """Format tool schemas using the Qwen3 XML <tools> format (matches MAT)."""
         if not schemas:
             return ""
 
         tools_json = "\n".join(json.dumps(schema, indent=2) for schema in schemas)
+
+        if baseline:
+            return (
+                "# Tools\n\n"
+                "You may call one or more functions to assist with the user query.\n\n"
+                "You are provided with function signatures within <tools></tools> XML tags:\n"
+                f"<tools>\n{tools_json}\n</tools>\n\n"
+                "When you need a tool, return exactly one function call within "
+                "<tool_call></tool_call> XML tags:\n"
+                "<tool_call>\n"
+                '{{"name": <function-name>, "arguments": <args-json-object>}}\n'
+                "</tool_call>\n\n"
+                "Important: You may call tools zero, one, or multiple times as needed. "
+                "Only call a tool when it would help answer the question. "
+                "After receiving tool results in <tool_response></tool_response> tags, "
+                "continue your reasoning with the new information."
+            )
 
         direct_mode_rule = ""
         if direct_tool_call:
@@ -146,7 +177,8 @@ class PromptBuilder:
         self,
         template: Dict[str, Any],
         tool_schemas: List[Dict[str, Any]],
-        direct_tool_call: bool
+        direct_tool_call: bool,
+        baseline: bool = False,
     ) -> str:
         """Select and format appropriate example based on tools and mode.
 
@@ -174,7 +206,7 @@ class PromptBuilder:
 
         if not example_key or example_key not in template:
             if "example" in template and template["example"]:
-                return self._format_example(template["example"])
+                return self._format_example(template["example"], baseline=baseline)
             return ""
 
         example = template[example_key]
@@ -192,14 +224,15 @@ class PromptBuilder:
                 lines.append(f'**Answer:** {step_data.get("answer", "")}')
                 lines.append("")
             else:
-                reasoning = step_data.get("reasoning", "")
-                if reasoning:
-                    lines.append(f"**Step {step_num}:** {reasoning}")
-                    lines.append("")
+                if not baseline:
+                    reasoning = step_data.get("reasoning", "")
+                    if reasoning:
+                        lines.append(f"**Step {step_num}:** {reasoning}")
+                        lines.append("")
 
-                if "sub_goal" in step_data:
-                    lines.append(f"<sub_goal>{step_data['sub_goal']}</sub_goal>")
-                    lines.append("")
+                    if "sub_goal" in step_data:
+                        lines.append(f"<sub_goal>{step_data['sub_goal']}</sub_goal>")
+                        lines.append("")
 
                 if "tool_call" in step_data:
                     lines.append("<tool_call>")
@@ -215,7 +248,7 @@ class PromptBuilder:
 
         return "\n".join(lines)
 
-    def _format_example(self, example: Dict[str, Any]) -> str:
+    def _format_example(self, example: Dict[str, Any], baseline: bool = False) -> str:
         """Format example from template."""
         lines = ["### EXAMPLE", ""]
 
@@ -223,7 +256,7 @@ class PromptBuilder:
             lines.append(f'**Question:** {example["question"]}')
             lines.append("")
 
-        if "reasoning" in example:
+        if not baseline and "reasoning" in example:
             lines.append(f'**Reasoning:**\n{example["reasoning"]}')
             lines.append("")
 

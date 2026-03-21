@@ -336,6 +336,7 @@ def run_experiment(args):
             tool_schemas=tool_schemas,
             max_search_limit=config.tools.max_search_limit,
             direct_tool_call=config.tools.direct_tool_call,
+            baseline=getattr(config, "baseline", False),
         )
 
         orchestrator = AgenticOrchestrator(
