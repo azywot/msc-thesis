@@ -1,12 +1,13 @@
 #!/bin/bash
-# Run all YAML experiment configs in a given folder.
+# Run all YAML experiment configs in a folder, recursively.
 #
-# Usage:
-#   ./run_all_in_folder.sh <config_folder> [--local]
+# Usage (from project root):
+#   ./experiments/scripts/run_all_in_folder.sh <folder> [--local]
 #
 # Examples:
-#   ./run_all_in_folder.sh experiments/configs/1_milestone/gaia
-#   ./run_all_in_folder.sh experiments/configs/1_milestone/gaia --local
+#   ./experiments/scripts/run_all_in_folder.sh experiments/configs/baseline
+#   ./experiments/scripts/run_all_in_folder.sh experiments/configs/baseline/gaia
+#   ./experiments/scripts/run_all_in_folder.sh experiments/configs/1_milestone_no_img_no_mindmap_AgentFlow --local
 #
 # By default: submits each config to SLURM via launch_experiment.sh
 # With --local: runs each config sequentially with python run_experiment.py
@@ -14,37 +15,35 @@
 set -e
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <config_folder> [--local]"
+    echo "Usage: $0 <folder> [--local]"
     echo ""
-    echo "  config_folder  Path to folder containing YAML configs (e.g. experiments/configs/1_milestone/gaia)"
-    echo "  --local        Run sequentially with python instead of submitting to SLURM"
+    echo "  folder   Path to a folder containing YAML configs (searched recursively)"
+    echo "  --local  Run sequentially with python instead of submitting to SLURM"
     echo ""
     echo "Examples:"
-    echo "  $0 experiments/configs/1_milestone/gaia"
-    echo "  $0 experiments/configs/1_milestone/hle --local"
+    echo "  $0 experiments/configs/baseline"
+    echo "  $0 experiments/configs/baseline/gaia"
+    echo "  $0 experiments/configs/1_milestone_no_img_no_mindmap_AgentFlow --local"
     exit 1
 fi
 
-CONFIG_FOLDER="$1"
-RUN_LOCAL=false
-
-if [ "${2:-}" = "--local" ]; then
-    RUN_LOCAL=true
-fi
-
-# Resolve paths relative to project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CONFIG_DIR="$(cd "$PROJECT_ROOT" && cd "$CONFIG_FOLDER" 2>/dev/null || echo "$CONFIG_FOLDER")"
 
-if [ ! -d "$CONFIG_DIR" ]; then
-    # Try relative to current dir
-    CONFIG_DIR="$(cd "$(dirname "$CONFIG_FOLDER")" && pwd)/$(basename "$CONFIG_FOLDER")"
+# Resolve config folder (accept relative to project root or absolute)
+CONFIG_FOLDER="$1"
+if [[ "$CONFIG_FOLDER" != /* ]]; then
+    CONFIG_FOLDER="$PROJECT_ROOT/$CONFIG_FOLDER"
 fi
 
-if [ ! -d "$CONFIG_DIR" ]; then
-    echo "Error: Config folder not found: $CONFIG_FOLDER"
+if [ ! -d "$CONFIG_FOLDER" ]; then
+    echo "Error: folder not found: $1"
     exit 1
+fi
+
+RUN_LOCAL=false
+if [ "${2:-}" = "--local" ]; then
+    RUN_LOCAL=true
 fi
 
 # Load .env if present
@@ -55,27 +54,26 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
     set +a
 fi
 
-PROJECT_DIR="${PROJECT_DIR:-$PROJECT_ROOT}"
-cd "$PROJECT_DIR" || exit 1
+cd "${PROJECT_DIR:-$PROJECT_ROOT}" || exit 1
 
-shopt -s nullglob
-CONFIGS=("$CONFIG_DIR"/*.yaml "$CONFIG_DIR"/*.yml)
-shopt -u nullglob
+# Collect all YAML files recursively, sorted
+mapfile -t CONFIGS < <(find "$CONFIG_FOLDER" -type f \( -name "*.yaml" -o -name "*.yml" \) | sort)
 
 if [ ${#CONFIGS[@]} -eq 0 ]; then
-    echo "Error: No YAML configs found in $CONFIG_DIR"
+    echo "Error: no YAML configs found under $1"
     exit 1
 fi
 
 echo "========================================"
-echo "Running ${#CONFIGS[@]} experiments from: $CONFIG_DIR"
-echo "Mode: $([ "$RUN_LOCAL" = true ] && echo "local (python)" || echo "SLURM (sbatch)")"
+echo "Folder : $1"
+echo "Configs: ${#CONFIGS[@]}"
+echo "Mode   : $([ "$RUN_LOCAL" = true ] && echo "local (python)" || echo "SLURM (sbatch)")"
 echo "========================================"
 
 for cfg in "${CONFIGS[@]}"; do
     [ -f "$cfg" ] || continue
     echo ""
-    echo ">>> $(basename "$cfg")"
+    echo ">>> ${cfg#$PROJECT_ROOT/}"
     if [ "$RUN_LOCAL" = true ]; then
         python scripts/run_experiment.py --config "$cfg" || {
             echo "Warning: $cfg failed (exit $?)"
@@ -91,5 +89,5 @@ done
 
 echo ""
 echo "========================================"
-echo "Done. $([ "$RUN_LOCAL" = true ] && echo "Check output directories for results." || echo "Monitor jobs with: squeue -u \$USER")"
+echo "Done. $([ "$RUN_LOCAL" = true ] && echo "Check output directories for results." || echo "Monitor with: squeue -u \$USER")"
 echo "========================================"
