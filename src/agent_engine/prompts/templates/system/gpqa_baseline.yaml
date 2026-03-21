@@ -1,0 +1,105 @@
+# Baseline system prompt for GPQA (no sub_goals, no reasoning scaffolding).
+
+base_instruction: |
+  You are a reasoning assistant.
+  The dataset consists of multiple-choice questions with options labeled A, B, C, and D.
+  Always select the single best option.
+
+base_instruction_tools: |
+  You are a reasoning assistant with tools to help answer questions accurately.
+  The dataset consists of multiple-choice questions with options labeled A, B, C, and D.
+  Always select the single best option.
+
+final_instructions: |
+  Remember:
+  - Provide your final answer as the single best option letter (A, B, C, or D) in the format \boxed{A}
+
+final_instructions_tools: |
+  - Use the <tool_call> format shown above when calling tools
+  - Use tool outputs to choose your final option letter (A–D only)
+
+example_search_code_direct:
+  question: |
+    What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?
+
+    Choices:
+    A. 1000
+    B. 1032
+    C. 1100
+    D. 1200
+  steps:
+    - step: 1
+      tool_call: '{"name": "web_search", "arguments": {"query": "atomic number of Oxygen"}}'
+      tool_response: "The atomic number of Oxygen is 8."
+    - step: 2
+      tool_call: '{"name": "code_generator", "arguments": {"code": "def is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True\n\nprimes = []\nx = 2\nwhile len(primes) < 10:\n    if is_prime(x):\n        primes.append(x)\n    x += 1\n\ns = sum(primes)\nresult = s * 8\nprint(f\"First 10 primes: {primes}\")\nprint(f\"Sum: {s}\")\nprint(f\"Result: {result}\")\n"}}'
+      tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
+    - step: final
+      answer: "\\boxed{B}"
+
+example_search_code_subagent:
+  question: |
+    What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?
+
+    Choices:
+    A. 1000
+    B. 1032
+    C. 1100
+    D. 1200
+  steps:
+    - step: 1
+      tool_call: '{"name": "web_search", "arguments": {"query": "atomic number of Oxygen"}}'
+      tool_response: "The atomic number of Oxygen is 8."
+    - step: 2
+      tool_call: '{"name": "code_generator", "arguments": {"task": "Calculate the sum of the first 10 prime numbers, then multiply by 8"}}'
+      tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
+    - step: final
+      answer: "\\boxed{B}"
+
+example_search_only:
+  question: |
+    Who won the first Nobel Prize in Physics?
+
+    Choices:
+    A. Albert Einstein
+    B. Wilhelm Conrad Röntgen
+    C. Marie Curie
+    D. Max Planck
+  steps:
+    - step: 1
+      tool_call: '{"name": "web_search", "arguments": {"query": "first Nobel Prize in Physics winner 1901"}}'
+      tool_response: "The first Nobel Prize in Physics was awarded in 1901 to Wilhelm Conrad Röntgen for his discovery of X-rays."
+    - step: final
+      answer: "\\boxed{B}"
+
+example_code_direct:
+  question: |
+    What is the sum of the first 10 prime numbers?
+
+    Choices:
+    A. 120
+    B. 129
+    C. 130
+    D. 140
+  steps:
+    - step: 1
+      tool_call: '{"name": "code_generator", "arguments": {"code": "def is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True\n\nprimes = []\nx = 2\nwhile len(primes) < 10:\n    if is_prime(x):\n        primes.append(x)\n    x += 1\n\nprint(f\"First 10 primes: {primes}\")\nprint(f\"Sum: {sum(primes)}\")\n"}}'
+      tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
+    - step: final
+      answer: "\\boxed{B}"
+
+example_code_subagent:
+  question: |
+    What is the sum of the first 10 prime numbers?
+
+    Choices:
+    A. 120
+    B. 129
+    C. 130
+    D. 140
+  steps:
+    - step: 1
+      tool_call: '{"name": "code_generator", "arguments": {"task": "1. Generate the first 10 prime numbers\n2. Calculate their sum\n3. Print both the primes and the sum"}}'
+      tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
+    - step: final
+      answer: "\\boxed{B}"

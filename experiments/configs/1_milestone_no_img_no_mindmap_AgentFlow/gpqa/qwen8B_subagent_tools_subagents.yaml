@@ -32,7 +32,6 @@ dataset:
 
 seed: 0
 thinking_mode: "SUBAGENTS_ONLY"
-
 output_dir: "./experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/gpqa/qwen8B_subagent_tools_subagents"
 use_wandb: true
 wandb_project: "benchmarks"

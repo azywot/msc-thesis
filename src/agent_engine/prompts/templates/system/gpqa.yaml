@@ -30,13 +30,21 @@ final_instructions: |
 final_instructions_tools: |
   - Call tools using the <tool_call> format shown above
   - Wait for tool responses before continuing your reasoning
-  - Use the information from tool responses to form your final answer
+  - Use the information from tool responses to choose exactly one option letter (A–D)
+  - Your final line must be only \boxed{A}, \boxed{B}, \boxed{C}, or \boxed{D}
 
 # Examples for different tool combinations (added dynamically based on enabled tools)
 
 # Example for web_search + code_generator (direct mode)
 example_search_code_direct:
-  question: "What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?"
+  question: |
+    What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?
+
+    Choices:
+    A. 1000
+    B. 1032
+    C. 1100
+    D. 1200
   steps:
     - step: 1
       reasoning: "I need to find the atomic number of Oxygen."
@@ -49,11 +57,18 @@ example_search_code_direct:
       tool_call: '{"name": "code_generator", "arguments": {"code": "def is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True\n\nprimes = []\nx = 2\nwhile len(primes) < 10:\n    if is_prime(x):\n        primes.append(x)\n    x += 1\n\ns = sum(primes)\nresult = s * 8\nprint(f\"First 10 primes: {primes}\")\nprint(f\"Sum: {s}\")\nprint(f\"Result: {result}\")\n"}}'
       tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
     - step: final
-      answer: "The sum of the first 10 prime numbers (129) multiplied by the atomic number of Oxygen (8) is \\boxed{1032}."
+      answer: "\\boxed{B}"
 
 # Example for web_search + code_generator (sub-agent mode)
 example_search_code_subagent:
-  question: "What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?"
+  question: |
+    What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?
+
+    Choices:
+    A. 1000
+    B. 1032
+    C. 1100
+    D. 1200
   steps:
     - step: 1
       reasoning: "I need to find the atomic number of Oxygen."
@@ -66,11 +81,18 @@ example_search_code_subagent:
       tool_call: '{"name": "code_generator", "arguments": {"task": "Calculate the sum of the first 10 prime numbers, then multiply by 8"}}'
       tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
     - step: final
-      answer: "The sum of the first 10 prime numbers (129) multiplied by the atomic number of Oxygen (8) is \\boxed{1032}."
+      answer: "\\boxed{B}"
 
 # Example for web_search only
 example_search_only:
-  question: "Who won the first Nobel Prize in Physics?"
+  question: |
+    Who won the first Nobel Prize in Physics?
+
+    Choices:
+    A. Albert Einstein
+    B. Wilhelm Conrad Röntgen
+    C. Marie Curie
+    D. Max Planck
   steps:
     - step: 1
       reasoning: "I need to search for information about the first Nobel Prize in Physics."
@@ -78,11 +100,18 @@ example_search_only:
       tool_call: '{"name": "web_search", "arguments": {"query": "first Nobel Prize in Physics winner 1901"}}'
       tool_response: "The first Nobel Prize in Physics was awarded in 1901 to Wilhelm Conrad Röntgen for his discovery of X-rays."
     - step: final
-      answer: "The winner of the first Nobel Prize in Physics in 1901 was \\boxed{Wilhelm Conrad Röntgen}."
+      answer: "\\boxed{B}"
 
 # Example for code_generator only (direct mode)
 example_code_direct:
-  question: "Calculate the sum of the first 10 prime numbers."
+  question: |
+    What is the sum of the first 10 prime numbers?
+
+    Choices:
+    A. 120
+    B. 129
+    C. 130
+    D. 140
   steps:
     - step: 1
       reasoning: "I need to find the first 10 prime numbers and calculate their sum."
@@ -90,11 +119,18 @@ example_code_direct:
       tool_call: '{"name": "code_generator", "arguments": {"code": "def is_prime(n):\n    if n < 2:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True\n\nprimes = []\nx = 2\nwhile len(primes) < 10:\n    if is_prime(x):\n        primes.append(x)\n    x += 1\n\nprint(f\"First 10 primes: {primes}\")\nprint(f\"Sum: {sum(primes)}\")\n"}}'
       tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
     - step: final
-      answer: "The sum of the first 10 prime numbers is \\boxed{129}."
+      answer: "\\boxed{B}"
 
 # Example for code_generator only (sub-agent mode)
 example_code_subagent:
-  question: "Calculate the sum of the first 10 prime numbers."
+  question: |
+    What is the sum of the first 10 prime numbers?
+
+    Choices:
+    A. 120
+    B. 129
+    C. 130
+    D. 140
   steps:
     - step: 1
       reasoning: "I need to find the first 10 prime numbers and calculate their sum."
@@ -102,4 +138,4 @@ example_code_subagent:
       tool_call: '{"name": "code_generator", "arguments": {"task": "1. Generate the first 10 prime numbers\n2. Calculate their sum\n3. Print both the primes and the sum"}}'
       tool_response: "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
     - step: final
-      answer: "The sum of the first 10 prime numbers is \\boxed{129}."
+      answer: "\\boxed{B}"

@@ -6,6 +6,7 @@ mirrors scripts/run_experiment.py (model caching, tool wiring, prompt building).
 
 import json
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -16,7 +17,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from agent_engine.caching import CacheManager
-from agent_engine.config import load_experiment_config
+from agent_engine.config.schema import ModelConfig
 from agent_engine.core import AgenticOrchestrator, ToolRegistry
 from agent_engine.models.base import ModelFamily
 from agent_engine.prompts import PromptBuilder
@@ -30,8 +31,88 @@ from agent_engine.tools import (
 from agent_engine.utils import set_seed, setup_logging
 from agent_engine.models.vllm_provider import resolve_gpu_assignments
 
-DEFAULT_CONFIG = (
-    Path(__file__).parent.parent / "experiments/configs/gaia/test_subagent.yaml"
+
+# ---------------------------------------------------------------------------
+# Hard-coded example config — no YAML file needed
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _ToolsConfig:
+    web_tool_provider: str = "serper"
+    max_search_limit: int = 10
+    top_k_results: int = 3
+    max_doc_len: int = 4000
+
+
+@dataclass
+class _DatasetConfig:
+    name: str = "gaia"
+
+
+@dataclass
+class ExampleConfig:
+    """Self-contained config for example scripts — no YAML dependency.
+
+    Mirrors the subset of ExperimentConfig fields that the example helpers use.
+    Override fields as keyword args when constructing, e.g.:
+        ExampleConfig(max_turns=20, extra_models={"image_inspector": vlm_cfg})
+    """
+    max_turns: int = 15
+    cache_dir: Path = field(default_factory=lambda: Path("./cache"))
+    seed: int = 0
+    baseline: bool = False
+    tools: _ToolsConfig = field(default_factory=_ToolsConfig)
+    dataset: _DatasetConfig = field(default_factory=_DatasetConfig)
+    # role → ModelConfig; sub-agent roles not listed here fall back to orchestrator
+    extra_models: Dict[str, ModelConfig] = field(default_factory=dict)
+
+    def __post_init__(self):
+        self._models: Dict[str, ModelConfig] = {
+            "orchestrator": ModelConfig(
+                name="Qwen3-4B",
+                family="qwen3",
+                path_or_id="Qwen/Qwen3-4B",
+                role="orchestrator",
+            ),
+            **self.extra_models,
+        }
+
+    def get_model(self, role: str) -> Optional[ModelConfig]:
+        return self._models.get(role)
+
+    def has_model(self, role: str) -> bool:
+        return role in self._models
+
+    def use_orchestrator_thinking(self) -> bool:
+        return False
+
+    def use_subagent_thinking(self) -> bool:
+        return False
+
+
+# Default config used by all examples unless overridden
+DEFAULT_CONFIG = ExampleConfig()
+
+# Config variant for image_inspector — VLM serves as both orchestrator and
+# image_inspector so only one model is loaded (fits on a single GPU).
+# The cache key (path_or_id) is identical for both roles, so _get_model_provider
+# returns the same instance for the second role lookup.
+_VLM = ModelConfig(
+    name="Qwen2.5-VL-3B-Instruct",
+    family="qwen3",
+    path_or_id="Qwen/Qwen2.5-VL-3B-Instruct",
+    role="orchestrator",
+)
+IMAGE_INSPECTOR_CONFIG = ExampleConfig(
+    extra_models={
+        "orchestrator": _VLM,
+        "image_inspector": ModelConfig(
+            name="Qwen2.5-VL-3B-Instruct",
+            family="qwen3",
+            path_or_id="Qwen/Qwen2.5-VL-3B-Instruct",
+            role="image_inspector",
+        ),
+    }
 )
 
 
@@ -217,6 +298,7 @@ def build_system_prompt(config, tools: ToolRegistry) -> str:
         tool_schemas=tools.get_all_schemas(),
         max_search_limit=config.tools.max_search_limit,
         direct_tool_call=False,
+        baseline=getattr(config, "baseline", False),
     )
 
 

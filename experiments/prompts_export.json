@@ -1,30 +1,35 @@
 {
   "system_prompts": {
     "base": {
-      "base_instruction": "You are a helpful AI assistant with the ability to use tools to answer questions accurately.\n\nThink step-by-step and use tools when they would be helpful. Be thorough and precise in your reasoning.\n",
-      "reasoning_guidelines": "- Break complex problems into smaller, manageable steps\n- Use web search when you need current or factual information\n- Use code execution for calculations, data processing, or verification\n- Verify important facts before stating them as certain\n- Cite sources when using information from web search\n- Show your reasoning process clearly\n",
-      "final_answer_format": "## Final Answer\n\nWhen you have determined the answer, state it clearly in this format:\n\nFinal Answer: [your answer here]\n\nMake your answer concise and directly address the question.\n",
+      "base_instruction": "You are a helpful AI assistant. Think step-by-step and be thorough and precise in your reasoning.\n",
+      "base_instruction_tools": "You are a helpful AI assistant with tools to answer questions accurately.\nThink step-by-step and use tools when they would be helpful. Be thorough and precise in your reasoning.\n",
+      "final_instructions": "Remember:\n- Provide your final answer in the format \\boxed{YOUR_ANSWER}\n",
+      "final_instructions_tools": "- Use tools when you need external information or calculations\n",
       "example": {
         "question": "What is the atomic number of the element that makes up diamonds?",
-        "reasoning": "Diamonds are made of carbon atoms. Let me verify the atomic number of carbon.\n<tool_call>{\"name\": \"web_search\", \"arguments\": {\"query\": \"carbon atomic number\"}}</tool_call>\n",
+        "reasoning": "Diamonds are made of carbon atoms. Let me verify the atomic number of carbon.\n<sub_goal>Find the atomic number of carbon.</sub_goal>\n<tool_call>{\"name\": \"web_search\", \"arguments\": {\"query\": \"carbon atomic number\"}}</tool_call>\n",
         "answer": "6"
       }
     },
     "gaia": {
-      "base_instruction": "You are a reasoning assistant with tools to help answer questions accurately.\n",
-      "final_instructions": "Remember:\n- Use tools when you need external information or calculations\n- Provide your final answer in the format \\boxed{YOUR_ANSWER}\n",
+      "base_instruction": "You are a reasoning assistant. Answer questions accurately.\n",
+      "base_instruction_tools": "You are a reasoning assistant with tools to help answer questions accurately.\n",
+      "final_instructions": "Remember:\n- Provide your final answer in the format \\boxed{YOUR_ANSWER}\n",
+      "final_instructions_tools": "- Use tools when you need external information or calculations\n",
       "example_search_code_direct": {
         "question": "What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?",
         "steps": [
           {
             "step": 1,
             "reasoning": "I need to find the atomic number of Oxygen.",
+            "sub_goal": "Search for the atomic number of Oxygen.",
             "tool_call": "{\"name\": \"web_search\", \"arguments\": {\"query\": \"atomic number of Oxygen\"}}",
             "tool_response": "The atomic number of Oxygen is 8."
           },
           {
             "step": 2,
             "reasoning": "Now I need to calculate the sum of the first 10 primes and multiply by 8.",
+            "sub_goal": "Compute the sum of the first 10 prime numbers and multiply by 8.",
             "tool_call": "{\"name\": \"code_generator\", \"arguments\": {\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\nx = 2\\nwhile len(primes) < 10:\\n    if is_prime(x):\\n        primes.append(x)\\n    x += 1\\n\\ns = sum(primes)\\nresult = s * 8\\nprint(f\\\"First 10 primes: {primes}\\\")\\nprint(f\\\"Sum: {s}\\\")\\nprint(f\\\"Result: {result}\\\")\\n\"}}",
             "tool_response": "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
           },
@@ -40,12 +45,14 @@
           {
             "step": 1,
             "reasoning": "I need to find the atomic number of Oxygen.",
+            "sub_goal": "Search for the atomic number of Oxygen.",
             "tool_call": "{\"name\": \"web_search\", \"arguments\": {\"query\": \"atomic number of Oxygen\"}}",
             "tool_response": "The atomic number of Oxygen is 8."
           },
           {
             "step": 2,
             "reasoning": "Now I need to calculate the sum of the first 10 primes and multiply by 8.",
+            "sub_goal": "Compute the sum of the first 10 prime numbers and multiply by 8.",
             "tool_call": "{\"name\": \"code_generator\", \"arguments\": {\"task\": \"Calculate the sum of the first 10 prime numbers, then multiply by 8\"}}",
             "tool_response": "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
           },
@@ -61,6 +68,7 @@
           {
             "step": 1,
             "reasoning": "I need to search for information about the first Nobel Prize in Physics.",
+            "sub_goal": "Find the winner of the first Nobel Prize in Physics.",
             "tool_call": "{\"name\": \"web_search\", \"arguments\": {\"query\": \"first Nobel Prize in Physics winner 1901\"}}",
             "tool_response": "The first Nobel Prize in Physics was awarded in 1901 to Wilhelm Conrad Röntgen for his discovery of X-rays."
           },
@@ -76,6 +84,7 @@
           {
             "step": 1,
             "reasoning": "I need to find the first 10 prime numbers and calculate their sum.",
+            "sub_goal": "Generate the first 10 prime numbers and compute their sum.",
             "tool_call": "{\"name\": \"code_generator\", \"arguments\": {\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\nx = 2\\nwhile len(primes) < 10:\\n    if is_prime(x):\\n        primes.append(x)\\n    x += 1\\n\\nprint(f\\\"First 10 primes: {primes}\\\")\\nprint(f\\\"Sum: {sum(primes)}\\\")\\n\"}}",
             "tool_response": "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
           },
@@ -91,6 +100,7 @@
           {
             "step": 1,
             "reasoning": "I need to find the first 10 prime numbers and calculate their sum.",
+            "sub_goal": "Generate the first 10 prime numbers and compute their sum.",
             "tool_call": "{\"name\": \"code_generator\", \"arguments\": {\"task\": \"1. Generate the first 10 prime numbers\\n2. Calculate their sum\\n3. Print both the primes and the sum\"}}",
             "tool_response": "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
           },
@@ -102,111 +112,124 @@
       }
     },
     "gpqa": {
-      "base_instruction": "You are a reasoning assistant with the ability to use tools to help answer questions accurately.\n",
-      "final_instructions": "Remember:\n- Call tools using the <tool_call> format shown above\n- Wait for tool responses before continuing your reasoning\n- Use the information from tool responses to form your final answer\n- Provide your final answer in the format \\boxed{YOUR_ANSWER}\n",
+      "base_instruction": "You are a reasoning assistant.\nThe dataset consists of multiple-choice questions with options labeled A, B, C, and D.\nAlways select the single best option.\n",
+      "base_instruction_tools": "You are a reasoning assistant with tools to help answer questions accurately.\nThe dataset consists of multiple-choice questions with options labeled A, B, C, and D.\nAlways select the single best option.\n",
+      "final_instructions": "Remember:\n- Provide your final answer as the single best option letter (A, B, C, or D) in the format \\boxed{A}\n",
+      "final_instructions_tools": "- Call tools using the <tool_call> format shown above\n- Wait for tool responses before continuing your reasoning\n- Use the information from tool responses to choose exactly one option letter (A–D)\n- Your final line must be only \\boxed{A}, \\boxed{B}, \\boxed{C}, or \\boxed{D}\n",
       "example_search_code_direct": {
-        "question": "What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?",
+        "question": "What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?\n\nChoices:\nA. 1000\nB. 1032\nC. 1100\nD. 1200\n",
         "steps": [
           {
             "step": 1,
             "reasoning": "I need to find the atomic number of Oxygen.",
+            "sub_goal": "Search for the atomic number of Oxygen.",
             "tool_call": "{\"name\": \"web_search\", \"arguments\": {\"query\": \"atomic number of Oxygen\"}}",
             "tool_response": "The atomic number of Oxygen is 8."
           },
           {
             "step": 2,
             "reasoning": "Now I need to calculate the sum of the first 10 primes and multiply by 8.",
+            "sub_goal": "Compute the sum of the first 10 prime numbers and multiply by 8.",
             "tool_call": "{\"name\": \"code_generator\", \"arguments\": {\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\nx = 2\\nwhile len(primes) < 10:\\n    if is_prime(x):\\n        primes.append(x)\\n    x += 1\\n\\ns = sum(primes)\\nresult = s * 8\\nprint(f\\\"First 10 primes: {primes}\\\")\\nprint(f\\\"Sum: {s}\\\")\\nprint(f\\\"Result: {result}\\\")\\n\"}}",
             "tool_response": "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
           },
           {
             "step": "final",
-            "answer": "The sum of the first 10 prime numbers (129) multiplied by the atomic number of Oxygen (8) is \\boxed{1032}."
+            "answer": "\\boxed{B}"
           }
         ]
       },
       "example_search_code_subagent": {
-        "question": "What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?",
+        "question": "What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?\n\nChoices:\nA. 1000\nB. 1032\nC. 1100\nD. 1200\n",
         "steps": [
           {
             "step": 1,
             "reasoning": "I need to find the atomic number of Oxygen.",
+            "sub_goal": "Search for the atomic number of Oxygen.",
             "tool_call": "{\"name\": \"web_search\", \"arguments\": {\"query\": \"atomic number of Oxygen\"}}",
             "tool_response": "The atomic number of Oxygen is 8."
           },
           {
             "step": 2,
             "reasoning": "Now I need to calculate the sum of the first 10 primes and multiply by 8.",
+            "sub_goal": "Compute the sum of the first 10 prime numbers and multiply by 8.",
             "tool_call": "{\"name\": \"code_generator\", \"arguments\": {\"task\": \"Calculate the sum of the first 10 prime numbers, then multiply by 8\"}}",
             "tool_response": "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
           },
           {
             "step": "final",
-            "answer": "The sum of the first 10 prime numbers (129) multiplied by the atomic number of Oxygen (8) is \\boxed{1032}."
+            "answer": "\\boxed{B}"
           }
         ]
       },
       "example_search_only": {
-        "question": "Who won the first Nobel Prize in Physics?",
+        "question": "Who won the first Nobel Prize in Physics?\n\nChoices:\nA. Albert Einstein\nB. Wilhelm Conrad Röntgen\nC. Marie Curie\nD. Max Planck\n",
         "steps": [
           {
             "step": 1,
             "reasoning": "I need to search for information about the first Nobel Prize in Physics.",
+            "sub_goal": "Find the winner of the first Nobel Prize in Physics.",
             "tool_call": "{\"name\": \"web_search\", \"arguments\": {\"query\": \"first Nobel Prize in Physics winner 1901\"}}",
             "tool_response": "The first Nobel Prize in Physics was awarded in 1901 to Wilhelm Conrad Röntgen for his discovery of X-rays."
           },
           {
             "step": "final",
-            "answer": "The winner of the first Nobel Prize in Physics in 1901 was \\boxed{Wilhelm Conrad Röntgen}."
+            "answer": "\\boxed{B}"
           }
         ]
       },
       "example_code_direct": {
-        "question": "Calculate the sum of the first 10 prime numbers.",
+        "question": "What is the sum of the first 10 prime numbers?\n\nChoices:\nA. 120\nB. 129\nC. 130\nD. 140\n",
         "steps": [
           {
             "step": 1,
             "reasoning": "I need to find the first 10 prime numbers and calculate their sum.",
+            "sub_goal": "Generate the first 10 prime numbers and compute their sum.",
             "tool_call": "{\"name\": \"code_generator\", \"arguments\": {\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\nx = 2\\nwhile len(primes) < 10:\\n    if is_prime(x):\\n        primes.append(x)\\n    x += 1\\n\\nprint(f\\\"First 10 primes: {primes}\\\")\\nprint(f\\\"Sum: {sum(primes)}\\\")\\n\"}}",
             "tool_response": "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
           },
           {
             "step": "final",
-            "answer": "The sum of the first 10 prime numbers is \\boxed{129}."
+            "answer": "\\boxed{B}"
           }
         ]
       },
       "example_code_subagent": {
-        "question": "Calculate the sum of the first 10 prime numbers.",
+        "question": "What is the sum of the first 10 prime numbers?\n\nChoices:\nA. 120\nB. 129\nC. 130\nD. 140\n",
         "steps": [
           {
             "step": 1,
             "reasoning": "I need to find the first 10 prime numbers and calculate their sum.",
+            "sub_goal": "Generate the first 10 prime numbers and compute their sum.",
             "tool_call": "{\"name\": \"code_generator\", \"arguments\": {\"task\": \"1. Generate the first 10 prime numbers\\n2. Calculate their sum\\n3. Print both the primes and the sum\"}}",
             "tool_response": "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
           },
           {
             "step": "final",
-            "answer": "The sum of the first 10 prime numbers is \\boxed{129}."
+            "answer": "\\boxed{B}"
           }
         ]
       }
     },
     "math": {
-      "base_instruction": "You are a mathematical reasoning assistant with tools to help solve problems accurately.\n",
-      "final_instructions": "Remember:\n- Use tools for calculations to ensure accuracy\n- Verify numerical results when possible\n- Provide your final answer in the format \\boxed{YOUR_ANSWER}\n- The user expects accuracy above all else\n",
+      "base_instruction": "You are a mathematical reasoning assistant. Solve problems accurately.\n",
+      "base_instruction_tools": "You are a mathematical reasoning assistant with tools to help solve problems accurately.\n",
+      "final_instructions": "Remember:\n- Verify numerical results when possible\n- Provide your final answer in the format \\boxed{YOUR_ANSWER}\n- The user expects accuracy above all else\n",
+      "final_instructions_tools": "- Use tools for calculations to ensure accuracy\n",
       "example_search_code_direct": {
         "question": "What is the sum of the first 10 prime numbers multiplied by the atomic number of Oxygen?",
         "steps": [
           {
             "step": 1,
             "reasoning": "I need to verify the atomic number of Oxygen.",
+            "sub_goal": "Search for the atomic number of Oxygen.",
             "tool_call": "{\"name\": \"web_search\", \"arguments\": {\"query\": \"atomic number of Oxygen\"}}",
             "tool_response": "The atomic number of Oxygen is 8."
           },
           {
             "step": 2,
             "reasoning": "Now I need to calculate the sum of the first 10 primes and multiply by 8.",
+            "sub_goal": "Compute the sum of the first 10 prime numbers and multiply by 8.",
             "tool_call": "{\"name\": \"code_generator\", \"arguments\": {\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\nx = 2\\nwhile len(primes) < 10:\\n    if is_prime(x):\\n        primes.append(x)\\n    x += 1\\n\\ns = sum(primes)\\nresult = s * 8\\nprint(f\\\"First 10 primes: {primes}\\\")\\nprint(f\\\"Sum: {s}\\\")\\nprint(f\\\"Result: {result}\\\")\\n\"}}",
             "tool_response": "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
           },
@@ -222,12 +245,14 @@
           {
             "step": 1,
             "reasoning": "I need to verify the atomic number of Oxygen.",
+            "sub_goal": "Search for the atomic number of Oxygen.",
             "tool_call": "{\"name\": \"web_search\", \"arguments\": {\"query\": \"atomic number of Oxygen\"}}",
             "tool_response": "The atomic number of Oxygen is 8."
           },
           {
             "step": 2,
             "reasoning": "Now I need to calculate the sum of the first 10 primes and multiply by 8.",
+            "sub_goal": "Compute the sum of the first 10 prime numbers and multiply by 8.",
             "tool_call": "{\"name\": \"code_generator\", \"arguments\": {\"task\": \"1. Generate the first 10 prime numbers\\n2. Sum them up\\n3. Multiply the sum by 8\\n4. Print the result\"}}",
             "tool_response": "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129\nResult: 1032"
           },
@@ -243,6 +268,7 @@
           {
             "step": 1,
             "reasoning": "I need to search for information about the first Nobel Prize in Physics.",
+            "sub_goal": "Find the winner of the first Nobel Prize in Physics.",
             "tool_call": "{\"name\": \"web_search\", \"arguments\": {\"query\": \"first Nobel Prize in Physics winner 1901\"}}",
             "tool_response": "The first Nobel Prize in Physics was awarded in 1901 to Wilhelm Conrad Röntgen for his discovery of X-rays."
           },
@@ -258,8 +284,9 @@
           {
             "step": 1,
             "reasoning": "I need to find the first 10 prime numbers and calculate their sum.",
+            "sub_goal": "Generate the first 10 prime numbers and compute their sum.",
             "tool_call": "{\"name\": \"code_generator\", \"arguments\": {\"code\": \"def is_prime(n):\\n    if n < 2:\\n        return False\\n    for i in range(2, int(n**0.5) + 1):\\n        if n % i == 0:\\n            return False\\n    return True\\n\\nprimes = []\\nx = 2\\nwhile len(primes) < 10:\\n    if is_prime(x):\\n        primes.append(x)\\n    x += 1\\n\\nprint(primes)\\nprint(sum(primes))\\n\"}}",
-            "tool_response": "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
+            "tool_response": "[2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\n129"
           },
           {
             "step": "final",
@@ -273,6 +300,7 @@
           {
             "step": 1,
             "reasoning": "I need to find the first 10 prime numbers and calculate their sum.",
+            "sub_goal": "Generate the first 10 prime numbers and compute their sum.",
             "tool_call": "{\"name\": \"code_generator\", \"arguments\": {\"task\": \"Generate the first 10 prime numbers, sum them, and print both the list and the sum\"}}",
             "tool_response": "First 10 primes: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]\nSum: 129"
           },

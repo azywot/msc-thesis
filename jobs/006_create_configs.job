@@ -1,0 +1,42 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=CreateConfigs
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --time=00:02:00
+#SBATCH --output=out/create_configs/create_configs_%A.log
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis — Generate Experiment Configs"
+echo "=========================================="
+echo "Start time: $(date)"
+echo ""
+
+# Load modules
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+
+# Set project directory
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+
+echo "Project directory: $PROJECT_DIR"
+
+# Activate environment
+ENV_NAME="${ENV_NAME:-agent_engine}"
+echo "Activating environment: $ENV_NAME"
+source activate "$ENV_NAME"
+
+echo ""
+echo "=========================================="
+echo "Generating experiment configs (all suites)"
+echo "=========================================="
+
+python experiments/configs/generate_configs.py
+
+echo ""
+echo "Done at: $(date)"

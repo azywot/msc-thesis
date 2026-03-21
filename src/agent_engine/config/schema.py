@@ -95,6 +95,9 @@ class ExperimentConfig(BaseModel):
             batching (equivalent to sequential processing).
         seed: Global random seed propagated to all model configs.
         thinking_mode: Which components (if any) use extended ``<think>`` output.
+        baseline: When ``True`` the orchestrator skips the planning turn and uses
+            a standard growing conversation instead of the structured AgentFlow
+            memory prompt. Used as the baseline in the experiments; Defaults to ``False``.
         output_dir: Root directory for experiment result subdirectories.
         use_wandb: Whether to log results to Weights & Biases.
         wandb_project: W&B project name (required when ``use_wandb=True``).
@@ -111,6 +114,7 @@ class ExperimentConfig(BaseModel):
     batch_size: int = -1
     seed: int = 0
     thinking_mode: ThinkingMode = ThinkingMode.NO
+    baseline: bool = False
     output_dir: Path = Path("./experiments/results")
     use_wandb: bool = False
     wandb_project: Optional[str] = None

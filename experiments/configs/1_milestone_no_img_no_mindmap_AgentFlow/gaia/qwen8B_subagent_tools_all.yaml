@@ -1,4 +1,4 @@
-# GAIA — Qwen3-8B, sub-agent tools, all thinking
+# GAIA — Qwen3-8B, sub-agent tools, orchestrator + sub-agents thinking
 
 name: "AF_no_img_no_mm_gaia_qwen8B_subagent_tools_all"
 description: "[AgentFlow; NO image_inspector, NO mindmap] GAIA all_validation with Qwen3-8B, sub-agent tools, orchestrator + sub-agents thinking"
@@ -33,7 +33,6 @@ dataset:
 
 seed: 0
 thinking_mode: "ALL"
-
 output_dir: "./experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/gaia/qwen8B_subagent_tools_all"
 use_wandb: true
 wandb_project: "benchmarks"
