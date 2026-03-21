@@ -93,9 +93,19 @@ class ExampleConfig:
 # Default config used by all examples unless overridden
 DEFAULT_CONFIG = ExampleConfig()
 
-# Config variant for image_inspector — swaps orchestrator to a VLM
+# Config variant for image_inspector — VLM serves as both orchestrator and
+# image_inspector so only one model is loaded (fits on a single GPU).
+# The cache key (path_or_id) is identical for both roles, so _get_model_provider
+# returns the same instance for the second role lookup.
+_VLM = ModelConfig(
+    name="Qwen2.5-VL-3B-Instruct",
+    family="qwen3",
+    path_or_id="Qwen/Qwen2.5-VL-3B-Instruct",
+    role="orchestrator",
+)
 IMAGE_INSPECTOR_CONFIG = ExampleConfig(
     extra_models={
+        "orchestrator": _VLM,
         "image_inspector": ModelConfig(
             name="Qwen2.5-VL-3B-Instruct",
             family="qwen3",
