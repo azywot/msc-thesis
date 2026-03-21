@@ -11,12 +11,12 @@
 
 base_instruction: |
   You are a reasoning assistant.
-  Questions include a "Choices:" block with four options formatted as A. B. C. D. (letter, period, then the option text).
+  The dataset consists of multiple-choice questions with options labeled A, B, C, and D.
   Always select the single best option.
 
 base_instruction_tools: |
   You are a reasoning assistant with tools to help answer questions accurately.
-  Questions include a "Choices:" block with four options formatted as A. B. C. D. (letter, period, then the option text).
+  The dataset consists of multiple-choice questions with options labeled A, B, C, and D.
   Always select the single best option.
 
 # Tool descriptions and examples are added dynamically by PromptBuilder
