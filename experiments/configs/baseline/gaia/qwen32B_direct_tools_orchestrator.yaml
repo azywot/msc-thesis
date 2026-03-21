@@ -35,7 +35,6 @@ dataset:
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 baseline: true
-
 output_dir: "./experiments/results/NEW_baseline/gaia/qwen32B_direct_tools_orchestrator"
 use_wandb: true
 wandb_project: "benchmarks"

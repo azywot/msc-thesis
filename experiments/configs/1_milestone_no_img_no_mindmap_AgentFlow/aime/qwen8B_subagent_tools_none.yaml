@@ -1,4 +1,4 @@
-# AIME — Qwen3-8B, sub-agent tools, no thinking
+# AIME — Qwen3-8B, sub-agent tools, thinking disabled
 
 name: "AF_no_img_no_mm_aime_qwen8B_subagent_tools_none"
 description: "[AgentFlow; NO image_inspector, NO mindmap] AIME train with Qwen3-8B, sub-agent tools, thinking disabled"
@@ -32,7 +32,6 @@ dataset:
 
 seed: 0
 thinking_mode: "NO"
-
 output_dir: "./experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/aime/qwen8B_subagent_tools_none"
 use_wandb: true
 wandb_project: "benchmarks"

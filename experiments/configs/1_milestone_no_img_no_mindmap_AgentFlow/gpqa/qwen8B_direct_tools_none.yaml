@@ -1,4 +1,4 @@
-# GPQA — Qwen3-8B, direct tool call, no thinking
+# GPQA — Qwen3-8B, direct tools, thinking disabled
 
 name: "AF_no_img_no_mm_gpqa_qwen8B_direct_tools_none"
 description: "[AgentFlow; NO image_inspector, NO mindmap] GPQA diamond with Qwen3-8B, direct tools, thinking disabled"
@@ -32,7 +32,6 @@ dataset:
 
 seed: 0
 thinking_mode: "NO"
-
 output_dir: "./experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/gpqa/qwen8B_direct_tools_none"
 use_wandb: true
 wandb_project: "benchmarks"

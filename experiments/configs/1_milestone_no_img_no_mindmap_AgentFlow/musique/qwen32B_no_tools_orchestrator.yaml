@@ -1,7 +1,7 @@
 # MuSiQue — Qwen3-32B, no tools, orchestrator thinking
 
 name: "AF_no_img_no_mm_musique_qwen32B_no_tools_orchestrator"
-description: "[AgentFlow; NO image_inspector, NO mindmap] MuSiQue validation with Qwen3-32B, no tools, orchestrator thinking"
+description: "[AgentFlow; NO image_inspector, NO mindmap] MuSiQue validation_subset_200 with Qwen3-32B, no tools, orchestrator thinking"
 
 slurm:
   partition: "gpu_h100"
@@ -25,13 +25,12 @@ tools:
 
 dataset:
   name: "musique"
-  split: "validation"
+  split: "validation_subset_200"
   data_dir: "./data"
   subset_num: -1
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
-
 output_dir: "./experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/musique/qwen32B_no_tools_orchestrator"
 use_wandb: true
 wandb_project: "benchmarks"

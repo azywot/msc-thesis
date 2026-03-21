@@ -1,7 +1,7 @@
-# MuSiQue — Qwen3-32B, direct tool call, no thinking
+# MuSiQue — Qwen3-32B, direct tools, thinking disabled
 
 name: "AF_no_img_no_mm_musique_qwen32B_direct_tools_none"
-description: "[AgentFlow; NO image_inspector, NO mindmap] MuSiQue validation with Qwen3-32B, direct tools, thinking disabled"
+description: "[AgentFlow; NO image_inspector, NO mindmap] MuSiQue validation_subset_200 with Qwen3-32B, direct tools, thinking disabled"
 
 slurm:
   partition: "gpu_h100"
@@ -27,13 +27,12 @@ tools:
 
 dataset:
   name: "musique"
-  split: "validation"
+  split: "validation_subset_200"
   data_dir: "./data"
   subset_num: -1
 
 seed: 0
 thinking_mode: "NO"
-
 output_dir: "./experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/musique/qwen32B_direct_tools_none"
 use_wandb: true
 wandb_project: "benchmarks"

@@ -1,4 +1,4 @@
-# AIME — Qwen3-32B, direct tool call, no thinking
+# AIME — Qwen3-32B, direct tools, thinking disabled
 
 name: "AF_no_img_no_mm_aime_qwen32B_direct_tools_none"
 description: "[AgentFlow; NO image_inspector, NO mindmap] AIME train with Qwen3-32B, direct tools, thinking disabled"
@@ -33,7 +33,6 @@ dataset:
 
 seed: 0
 thinking_mode: "NO"
-
 output_dir: "./experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/aime/qwen32B_direct_tools_none"
 use_wandb: true
 wandb_project: "benchmarks"

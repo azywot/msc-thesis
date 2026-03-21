@@ -30,7 +30,6 @@ dataset:
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
-
 output_dir: "./experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/gpqa/qwen8B_no_tools_orchestrator"
 use_wandb: true
 wandb_project: "benchmarks"

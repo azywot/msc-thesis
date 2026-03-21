@@ -69,9 +69,9 @@ class ExampleConfig:
     def __post_init__(self):
         self._models: Dict[str, ModelConfig] = {
             "orchestrator": ModelConfig(
-                name="Qwen3-8B",
+                name="Qwen3-4B",
                 family="qwen3",
-                path_or_id="Qwen/Qwen3-8B",
+                path_or_id="Qwen/Qwen3-4B",
                 role="orchestrator",
             ),
             **self.extra_models,

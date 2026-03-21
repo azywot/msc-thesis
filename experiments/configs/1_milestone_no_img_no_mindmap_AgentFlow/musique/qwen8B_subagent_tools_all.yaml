@@ -1,7 +1,7 @@
-# MuSiQue — Qwen3-8B, sub-agent tools, all thinking
+# MuSiQue — Qwen3-8B, sub-agent tools, orchestrator + sub-agents thinking
 
 name: "AF_no_img_no_mm_musique_qwen8B_subagent_tools_all"
-description: "[AgentFlow; NO image_inspector, NO mindmap] MuSiQue validation with Qwen3-8B, sub-agent tools, orchestrator + sub-agents thinking"
+description: "[AgentFlow; NO image_inspector, NO mindmap] MuSiQue validation_subset_200 with Qwen3-8B, sub-agent tools, orchestrator + sub-agents thinking"
 
 slurm:
   partition: "gpu_h100"
@@ -26,13 +26,12 @@ tools:
 
 dataset:
   name: "musique"
-  split: "validation"
+  split: "validation_subset_200"
   data_dir: "./data"
   subset_num: -1
 
 seed: 0
 thinking_mode: "ALL"
-
 output_dir: "./experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/musique/qwen8B_subagent_tools_all"
 use_wandb: true
 wandb_project: "benchmarks"
