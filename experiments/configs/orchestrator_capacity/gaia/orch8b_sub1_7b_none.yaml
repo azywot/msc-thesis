@@ -17,11 +17,21 @@ models:
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-8B"
     role: "orchestrator"
-  sub_agent:
+  web_search:
     name: "Qwen3-1.7B"
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-1.7B"
-    role: "sub_agent"
+    role: "web_search"
+  code_generator:
+    name: "Qwen3-1.7B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-1.7B"
+    role: "code_generator"
+  text_inspector:
+    name: "Qwen3-1.7B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-1.7B"
+    role: "text_inspector"
 
 tools:
   enabled_tools:

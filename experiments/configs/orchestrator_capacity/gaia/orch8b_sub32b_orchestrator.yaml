@@ -17,11 +17,23 @@ models:
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-8B"
     role: "orchestrator"
-  sub_agent:
+  web_search:
     name: "Qwen3-32B"
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-32B"
-    role: "sub_agent"
+    role: "web_search"
+    tensor_parallel_size: 2  # TP must divide num attention heads.
+  code_generator:
+    name: "Qwen3-32B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"
+    role: "code_generator"
+    tensor_parallel_size: 2  # TP must divide num attention heads.
+  text_inspector:
+    name: "Qwen3-32B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"
+    role: "text_inspector"
     tensor_parallel_size: 2  # TP must divide num attention heads.
 
 tools:

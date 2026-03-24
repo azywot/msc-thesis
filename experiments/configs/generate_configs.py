@@ -187,7 +187,8 @@ def _model_block(key: str) -> str:
     return "\n".join(lines)
 
 
-def _model_block_with_subagent(orch_key: str, sub_key: str) -> str:
+def _model_block_with_subagent(orch_key: str, sub_key: str, tool_roles: list[str]) -> str:
+    """Build a models block with explicit per-tool-role sub-agent entries."""
     orch = MODELS[orch_key]
     sub  = MODELS[sub_key]
     lines = [
@@ -200,15 +201,16 @@ def _model_block_with_subagent(orch_key: str, sub_key: str) -> str:
     ]
     if orch["tp"]:
         lines.append(f"    tensor_parallel_size: {orch['tp']}  # TP must divide num attention heads.")
-    lines += [
-        "  sub_agent:",
-        f'    name: "{sub["name"]}"',
-        f'    family: "{sub["family"]}"',
-        f'    path_or_id: "{sub["path_or_id"]}"',
-        '    role: "sub_agent"',
-    ]
-    if sub["tp"]:
-        lines.append(f"    tensor_parallel_size: {sub['tp']}  # TP must divide num attention heads.")
+    for role in tool_roles:
+        lines += [
+            f"  {role}:",
+            f'    name: "{sub["name"]}"',
+            f'    family: "{sub["family"]}"',
+            f'    path_or_id: "{sub["path_or_id"]}"',
+            f'    role: "{role}"',
+        ]
+        if sub["tp"]:
+            lines.append(f"    tensor_parallel_size: {sub['tp']}  # TP must divide num attention heads.")
     return "\n".join(lines)
 
 
@@ -288,7 +290,8 @@ def make_config_orch_capacity(suite: dict, dataset: str, stem: str,
     num_gpus    = suite["num_gpus"]
     wandb_project = suite["wandb_project"]
 
-    tools_block = _tools_block(direct=False, enabled=ds["tools"])
+    tools_block  = _tools_block(direct=False, enabled=ds["tools"])
+    models_block = _model_block_with_subagent(orch_key, sub_key, ds["tools"])
 
     return f"""{comment_line}
 
@@ -303,7 +306,7 @@ slurm:
   time: "16:00:00"
   conda_env: "agent_engine"
 
-{_model_block_with_subagent(orch_key, sub_key)}
+{models_block}
 
 {tools_block}
 
