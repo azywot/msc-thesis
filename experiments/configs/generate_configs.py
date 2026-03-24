@@ -153,7 +153,7 @@ SUITES = {
         "variant_type":    "orch_capacity",
         "variants":        VARIANTS_ORCH_CAPACITY,
         "datasets":        ["gaia"],
-        "num_gpus":        2,
+        # num_gpus is computed per-combo in make_config_orch_capacity
         "wandb_project":   "benchmarks",
         "split_overrides": {},
     },
@@ -269,6 +269,23 @@ cache_dir: "./cache"
 """
 
 
+def _num_gpus_for_combo(orch_key: str, sub_key: str) -> int:
+    """Compute the SLURM GPU request for an orchestrator/sub-agent model combo.
+
+    Large models (32B; tp=2) need 2 GPUs each.  When the orchestrator and
+    sub-agent share the same model path only one model instance is loaded, so
+    we count that model once.
+    """
+    orch_m = MODELS[orch_key]
+    sub_m  = MODELS[sub_key]
+    orch_gpus = orch_m["tp"] or 1
+    sub_gpus  = sub_m["tp"] or 1
+    if orch_m["path_or_id"] == sub_m["path_or_id"]:
+        # Single shared instance — only count once.
+        return max(2, orch_gpus)
+    return max(2, orch_gpus + sub_gpus)
+
+
 def make_config_orch_capacity(suite: dict, dataset: str, stem: str,
                               orch_key: str, sub_key: str, thinking: str) -> str:
     ds = {**DATASETS[dataset], **suite["split_overrides"].get(dataset, {})}
@@ -286,10 +303,9 @@ def make_config_orch_capacity(suite: dict, dataset: str, stem: str,
         f"{ds['display']} {ds['split']} with orch {orch['name']} / sub-agent {sub['name']}, "
         f"sub-agent tools, {think_desc}"
     )
-    output_dir  = f"{suite['output_dir_root']}/{dataset}/{stem}"
-    num_gpus    = suite["num_gpus"]
+    output_dir    = f"{suite['output_dir_root']}/{dataset}/{stem}"
     wandb_project = suite["wandb_project"]
-
+    num_gpus      = _num_gpus_for_combo(orch_key, sub_key)
     tools_block  = _tools_block(direct=False, enabled=ds["tools"])
     models_block = _model_block_with_subagent(orch_key, sub_key, ds["tools"])
 

@@ -300,10 +300,13 @@ class VLLMProvider(BaseModelProvider):
 def resolve_gpu_assignments(config) -> Dict[str, Tuple[float, Optional[List[int]]]]:
     """Compute (gpu_memory_utilization, gpu_ids) for each distinct local model path.
 
-    - 1 distinct local model                        → util=0.95, no pinning
-    - N models sharing fewer GPUs than models       → util = 0.9 / N (split evenly)
-    - N models, each gets its own GPU (≥N GPUs)     → util=0.9, pin each to one GPU
-    - Large (14B/32B/72B) main + ≥4 GPUs            → main gets 2 GPUs (TP=2), rest get 1
+    - 1 distinct local model                  → util=0.95, no pinning (all GPUs visible)
+    - N distinct models, total GPUs needed ≤ available
+                                              → pin each model to its own GPU slice;
+                                                large models (14B/32B/72B) get 2 GPUs,
+                                                others get 1 GPU
+    - N distinct models, total GPUs needed > available
+                                              → util = 0.9 / N (shared, no pinning)
     """
     try:
         num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
@@ -317,9 +320,12 @@ def resolve_gpu_assignments(config) -> Dict[str, Tuple[float, Optional[List[int]
             and getattr(cfg, "backend", "vllm") == "vllm"
         )
 
+    def _is_large(path: str) -> bool:
+        return any(s in path.lower() for s in ("14b", "32b", "72b"))
+
     orch_cfg = config.get_model("orchestrator")
 
-    # Collect distinct local model paths preserving load order.
+    # Collect distinct local model paths preserving load order (orchestrator first).
     seen: set = set()
     ordered_paths: List[str] = []
 
@@ -341,40 +347,35 @@ def resolve_gpu_assignments(config) -> Dict[str, Tuple[float, Optional[List[int]
 
     n = len(ordered_paths)
     main_path = orch_cfg.path_or_id if _is_local(orch_cfg) else None
-    main_is_large = main_path and any(s in main_path.lower() for s in ("14b", "32b", "72b"))
 
     assignment: Dict[str, Tuple[float, Optional[List[int]]]] = {}
 
     if n == 0:
         pass  # all API models, nothing to assign
-    elif n >= 2 and num_gpus >= 4 and main_is_large and main_path:
-        # Large main model gets 2 GPUs for tensor parallelism; others get 1 each.
-        gpu_ids_map: Dict[str, List[int]] = {main_path: list(range(0, min(2, num_gpus)))}
-        idx = 2
-        for p in ordered_paths:
-            if p != main_path:
-                gpu_ids_map[p] = [idx % num_gpus]
-                idx += 1
-        for path in ordered_paths:
-            assignment[path] = (0.9, gpu_ids_map[path])
-        logger.info("GPU assignment (large main + multi-model): %s",
-                    {p: v[1] for p, v in assignment.items()})
-    elif n >= 2 and num_gpus >= n:
-        # Pin each model to its own GPU to eliminate contention.
-        pairs = ([main_path] + [p for p in ordered_paths if p != main_path]) if main_path else ordered_paths
-        for i, path in enumerate(pairs):
-            assignment[path] = (0.9, [i % num_gpus])
-        logger.info("GPU assignment (multi-model, one GPU per model): %s",
-                    {p: v[1] for p, v in assignment.items()})
-    elif n >= 2:
-        # More models than GPUs: split utilization evenly on shared GPU.
-        util = round(0.9 / n, 4)
-        for path in ordered_paths:
-            assignment[path] = (util, None)
-        logger.info("GPU assignment (%d models sharing %d GPU(s)): util=%.4f", n, num_gpus, util)
-    else:
-        # Single local model: use most of the GPU.
+    elif n == 1:
+        # Single distinct model: give it all visible GPUs.
         assignment[ordered_paths[0]] = (0.95, None)
         logger.info("GPU assignment (single model): util=0.95")
+    else:
+        # Multiple distinct models: pin each to its own GPU slice.
+        # Large models (14B+) require 2 GPUs for tensor parallelism; others need 1.
+        pairs = ([main_path] + [p for p in ordered_paths if p != main_path]) if main_path else ordered_paths
+        gpus_per_model = {p: (2 if _is_large(p) else 1) for p in pairs}
+        total_needed = sum(gpus_per_model.values())
+
+        if total_needed <= num_gpus:
+            idx = 0
+            for path in pairs:
+                g = gpus_per_model[path]
+                assignment[path] = (0.9, list(range(idx, idx + g)))
+                idx += g
+            logger.info("GPU assignment (multi-model, pinned): %s",
+                        {p: v[1] for p, v in assignment.items()})
+        else:
+            # Not enough GPUs to pin individually; share evenly.
+            util = round(0.9 / n, 4)
+            for path in ordered_paths:
+                assignment[path] = (util, None)
+            logger.info("GPU assignment (%d models sharing %d GPU(s)): util=%.4f", n, num_gpus, util)
 
     return assignment
