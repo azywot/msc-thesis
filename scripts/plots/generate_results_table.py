@@ -130,18 +130,14 @@ def draw(data: pd.DataFrame) -> plt.Figure:
     # ── best-value bookkeeping ────────────────────────────────────────────────
     best_all = {ds: data[ds].max() for ds in DATASETS}
     norms = {ds: Normalize(vmin=0, vmax=best_all[ds]) for ds in DATASETS}
-    # Best 8B value strictly below the overall best (runner-up threshold).
-    # Using this (rather than plain max of 8B) ensures that when the overall
-    # best IS an 8B row, the runner-up 8B rows are still underlined.
-    best_8b_runnerup: dict = {}
+    # Best value strictly below the overall best (runner-up threshold).
+    # All rows tied at this value get underlined (any model).
+    best_runnerup: dict = {}
     for ds in DATASETS:
         sub = data.loc[
-            (data["model"] == "Qwen3-8B")
-            & data[ds].notna()
-            & (data[ds] < best_all[ds] - 1e-9),
-            ds,
+            data[ds].notna() & (data[ds] < best_all[ds] - 1e-9), ds
         ]
-        best_8b_runnerup[ds] = sub.max() if not sub.empty else None
+        best_runnerup[ds] = sub.max() if not sub.empty else None
 
     # baseline values (row BASELINE_IDX = Qwen3-32B, no tools, no thinking)
     baseline = {ds: data.iloc[BASELINE_IDX][ds] for ds in DATASETS}
@@ -239,15 +235,12 @@ def draw(data: pd.DataFrame) -> plt.Figure:
             ))
 
             # bold      → tied for best overall (any model)
-            # underline → tied for best 8B among non-bold rows.
-            #             When the overall best IS an 8B row, runner-up 8B
-            #             rows are still underlined (uses best_8b_runnerup).
-            is_best    = val >= best_all[ds] - 1e-9
-            is_best_8b = (
-                row["model"] == "Qwen3-8B"
-                and not is_best
-                and best_8b_runnerup[ds] is not None
-                and val >= best_8b_runnerup[ds] - 1e-9
+            # underline → tied for runner-up (second best, any model)
+            is_best       = val >= best_all[ds] - 1e-9
+            is_best_8b    = (
+                not is_best
+                and best_runnerup[ds] is not None
+                and val >= best_runnerup[ds] - 1e-9
             )
 
             # upper sub-line: accuracy value
