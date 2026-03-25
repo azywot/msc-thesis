@@ -23,12 +23,14 @@ class ModelFamily(Enum):
     LLAMA3 = "llama3"
     MISTRAL = "mistral"
     DEEPSEEK = "deepseek"
+    OLMO_THINK = "olmo-think"
+    OLMO_INSTRUCT = "olmo-instruct"
     GPT4 = "gpt4"
     CLAUDE = "claude"
 
 
 # Families whose models natively support extended <think> output.
-_THINKING_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ, ModelFamily.DEEPSEEK})
+_THINKING_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ, ModelFamily.DEEPSEEK, ModelFamily.OLMO_THINK})
 
 
 class ModelConfig(BaseModel):

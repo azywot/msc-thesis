@@ -1,0 +1,41 @@
+# HLE — OLMo-3.1-32B-Think, sub-agent tools, orchestrator + sub-agents thinking
+
+name: "OLMo_Think_hle_olmo32b_subagent_tools"
+description: "[OLMo-Think; NO image_inspector, NO mindmap] HLE test_subset_200 with OLMo-3.1-32B-Think, sub-agent tools, orchestrator + sub-agents thinking"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "16:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "OLMo-3.1-32B-Think"
+    family: "olmo-think"
+    path_or_id: "allenai/Olmo-3.1-32B-Think"
+    role: "orchestrator"
+    tensor_parallel_size: 2  # 64 heads; TP must divide 64.
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+  direct_tool_call: false
+
+dataset:
+  name: "hle"
+  split: "test_subset_200"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "ALL"
+output_dir: "./experiments/results/olmo/think/hle/olmo32b_subagent_tools"
+use_wandb: true
+wandb_project: "benchmarks"
+
+cache_dir: "./cache"
