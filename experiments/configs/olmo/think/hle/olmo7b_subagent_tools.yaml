@@ -1,7 +1,7 @@
 # HLE — OLMo-3-7B-Think, sub-agent tools, orchestrator + sub-agents thinking
 
-name: "OLMo_hle_olmo7b_subagent_tools"
-description: "[OLMo; NO image_inspector, NO mindmap] HLE test_subset_200 with OLMo-3-7B-Think, sub-agent tools, orchestrator + sub-agents thinking"
+name: "OLMo_Think_hle_olmo7b_subagent_tools"
+description: "[OLMo-Think; NO image_inspector, NO mindmap] HLE test_subset_200 with OLMo-3-7B-Think, sub-agent tools, orchestrator + sub-agents thinking"
 
 slurm:
   partition: "gpu_h100"
@@ -14,7 +14,7 @@ slurm:
 models:
   orchestrator:
     name: "OLMo-3-7B-Think"
-    family: "olmo"
+    family: "olmo-think"
     path_or_id: "allenai/Olmo-3-7B-Think"
     role: "orchestrator"
 
@@ -33,7 +33,7 @@ dataset:
 
 seed: 0
 thinking_mode: "ALL"
-output_dir: "./experiments/results/olmo/hle/olmo7b_subagent_tools"
+output_dir: "./experiments/results/olmo/think/hle/olmo7b_subagent_tools"
 use_wandb: true
 wandb_project: "benchmarks"
 

@@ -63,15 +63,29 @@ MODELS = {
     },
     "olmo-7b": {
         "name": "OLMo-3-7B-Think",
-        "family": "olmo",
+        "family": "olmo-think",
         "path_or_id": "allenai/Olmo-3-7B-Think",
         "tp": None,
         "gpus": 1,
     },
     "olmo-32b": {
         "name": "OLMo-3.1-32B-Think",
-        "family": "olmo",
+        "family": "olmo-think",
         "path_or_id": "allenai/Olmo-3.1-32B-Think",
+        "tp": 2,
+        "gpus": 2,
+    },
+    "olmo-instruct-7b": {
+        "name": "OLMo-3-7B-Instruct",
+        "family": "olmo-instruct",
+        "path_or_id": "allenai/Olmo-3-7B-Instruct",
+        "tp": None,
+        "gpus": 1,
+    },
+    "olmo-instruct-32b": {
+        "name": "OLMo-3.1-32B-Instruct",
+        "family": "olmo-instruct",
+        "path_or_id": "allenai/Olmo-3.1-32B-Instruct",
         "tp": 2,
         "gpus": 2,
     },
@@ -121,9 +135,9 @@ VARIANTS_ORCH_CAPACITY = [
 
 # ── olmo variants ──────────────────────────────────────────────────────────────
 # OLMo-Think models always produce <think> output regardless of config, so all
-# variants use thinking_mode="ALL" for consistency.
+# Think variants use thinking_mode="ALL" for consistency.
 # (filename_stem, model_key, direct_tool_call, tools_key, thinking_mode)
-VARIANTS_OLMO = [
+VARIANTS_OLMO_THINK = [
     # # 7B — no tools
     # ("olmo7b_no_tools",        "olmo-7b",  True,  "none",  "ALL"),
     # # 7B — direct tools
@@ -134,8 +148,23 @@ VARIANTS_OLMO = [
     # ("olmo32b_no_tools",       "olmo-32b", True,  "none",  "ALL"),
     # # 32B — direct tools
     # ("olmo32b_direct_tools",   "olmo-32b", True,  "tools", "ALL"),
-    # # 32B — sub-agent tools (self as sub-agent)
+    # 32B — sub-agent tools (self as sub-agent)
     ("olmo32b_subagent_tools", "olmo-32b", False, "tools", "ALL"),
+]
+
+VARIANTS_OLMO_INSTRUCT = [
+    # # 7B — no tools
+    # ("olmo_instruct7b_no_tools",        "olmo-instruct-7b",  True,  "none",  "NO"),
+    # # 7B — direct tools
+    # ("olmo_instruct7b_direct_tools",    "olmo-instruct-7b",  True,  "tools", "NO"),
+    # 7B — sub-agent tools
+    ("olmo_instruct7b_subagent_tools",  "olmo-instruct-7b",  False, "tools", "NO"),
+    # # 32B — no tools
+    # ("olmo_instruct32b_no_tools",        "olmo-instruct-32b", True,  "none",  "NO"),
+    # # 32B — direct tools
+    # ("olmo_instruct32b_direct_tools",    "olmo-instruct-32b", True,  "tools", "NO"),
+    # 32B — sub-agent tools
+    ("olmo_instruct32b_subagent_tools", "olmo-instruct-32b", False, "tools", "NO"),
 ]
 
 
@@ -192,13 +221,24 @@ SUITES = {
         "wandb_project":   "benchmarks",
         "split_overrides": {},
     },
-    "olmo": {
-        "description_tag": "[OLMo; NO image_inspector, NO mindmap]",
-        "name_prefix":     "OLMo",
-        "output_dir_root": "./experiments/results/olmo",
-        "config_subdir":   "olmo",
+    "olmo-think": {
+        "description_tag": "[OLMo-Think; NO image_inspector, NO mindmap]",
+        "name_prefix":     "OLMo_Think",
+        "output_dir_root": "./experiments/results/olmo/think",
+        "config_subdir":   "olmo/think",
         "baseline":        False,
-        "variants":        VARIANTS_OLMO,
+        "variants":        VARIANTS_OLMO_THINK,
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+    },
+    "olmo-instruct": {
+        "description_tag": "[OLMo-Instruct; NO image_inspector, NO mindmap]",
+        "name_prefix":     "OLMo_Instruct",
+        "output_dir_root": "./experiments/results/olmo/instruct",
+        "config_subdir":   "olmo/instruct",
+        "baseline":        False,
+        "variants":        VARIANTS_OLMO_INSTRUCT,
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
         "split_overrides": {},

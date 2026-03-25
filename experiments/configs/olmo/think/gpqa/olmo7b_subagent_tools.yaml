@@ -1,7 +1,7 @@
-# MuSiQue — OLMo-3-7B-Think, sub-agent tools, orchestrator + sub-agents thinking
+# GPQA — OLMo-3-7B-Think, sub-agent tools, orchestrator + sub-agents thinking
 
-name: "OLMo_musique_olmo7b_subagent_tools"
-description: "[OLMo; NO image_inspector, NO mindmap] MuSiQue validation_subset_200 with OLMo-3-7B-Think, sub-agent tools, orchestrator + sub-agents thinking"
+name: "OLMo_Think_gpqa_olmo7b_subagent_tools"
+description: "[OLMo-Think; NO image_inspector, NO mindmap] GPQA diamond with OLMo-3-7B-Think, sub-agent tools, orchestrator + sub-agents thinking"
 
 slurm:
   partition: "gpu_h100"
@@ -14,7 +14,7 @@ slurm:
 models:
   orchestrator:
     name: "OLMo-3-7B-Think"
-    family: "olmo"
+    family: "olmo-think"
     path_or_id: "allenai/Olmo-3-7B-Think"
     role: "orchestrator"
 
@@ -25,14 +25,14 @@ tools:
   direct_tool_call: false
 
 dataset:
-  name: "musique"
-  split: "validation_subset_200"
+  name: "gpqa"
+  split: "diamond"
   data_dir: "./data"
   subset_num: -1
 
 seed: 0
 thinking_mode: "ALL"
-output_dir: "./experiments/results/olmo/musique/olmo7b_subagent_tools"
+output_dir: "./experiments/results/olmo/think/gpqa/olmo7b_subagent_tools"
 use_wandb: true
 wandb_project: "benchmarks"
 

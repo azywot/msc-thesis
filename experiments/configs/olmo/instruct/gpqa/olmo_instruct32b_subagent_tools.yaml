@@ -1,0 +1,40 @@
+# GPQA — OLMo-3.1-32B-Instruct, sub-agent tools, thinking disabled
+
+name: "OLMo_Instruct_gpqa_olmo_instruct32b_subagent_tools"
+description: "[OLMo-Instruct; NO image_inspector, NO mindmap] GPQA diamond with OLMo-3.1-32B-Instruct, sub-agent tools, thinking disabled"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "16:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "OLMo-3.1-32B-Instruct"
+    family: "olmo-instruct"
+    path_or_id: "allenai/Olmo-3.1-32B-Instruct"
+    role: "orchestrator"
+    tensor_parallel_size: 2  # 64 heads; TP must divide 64.
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+  direct_tool_call: false
+
+dataset:
+  name: "gpqa"
+  split: "diamond"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "NO"
+output_dir: "./experiments/results/olmo/instruct/gpqa/olmo_instruct32b_subagent_tools"
+use_wandb: true
+wandb_project: "benchmarks"
+
+cache_dir: "./cache"
