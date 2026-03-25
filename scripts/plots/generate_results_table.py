@@ -44,7 +44,7 @@ CONFIGS: list[tuple[str, str, str, str, str]] = [
     ("Qwen3-8B",  "direct_tools",   "ORCHESTRATOR_ONLY", "Direct",    "Orch."),
     # ── Qwen3-8B AgentFlow (subagent mode) ───────────────────────────────────
     ("Qwen3-8B",  "subagent_tools", "NO",                "Sub-agent", "—"),
-    ("Qwen3-8B",  "subagent_tools", "SUBAGENTS_ONLY",    "Sub-agent", "Sub. only"),
+    ("Qwen3-8B",  "subagent_tools", "SUBAGENTS_ONLY",    "Sub-agent", "Sub."),
     ("Qwen3-8B",  "subagent_tools", "ORCHESTRATOR_ONLY", "Sub-agent", "Orch."),
     ("Qwen3-8B",  "subagent_tools", "ALL",               "Sub-agent", "All"),
 ]
