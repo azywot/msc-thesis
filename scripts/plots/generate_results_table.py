@@ -20,7 +20,7 @@ from matplotlib.colors import LinearSegmentedColormap, Normalize
 from pathlib import Path
 
 # ─────────────────────────── paths ───────────────────────────────────────────
-ROOT     = Path(__file__).resolve().parent.parent
+ROOT     = Path(__file__).resolve().parent.parent.parent
 CSV_PATH = ROOT / "data/results/MALGAI_main_results.csv"
 OUT_PDF  = ROOT / "data/results/MALGAI_main_results_table.pdf"
 OUT_PNG  = ROOT / "data/results/MALGAI_main_results_table.png"
@@ -71,8 +71,8 @@ FONT_SZ  = 8.5
 DELTA_SZ = 7.0   # font size for the delta sub-line
 SMALL_SZ = 7.5
 
-# Row index of the reference baseline (Qwen3-32B, no tools, no thinking)
-BASELINE_IDX = 0
+# Row index of the reference baseline (Qwen3-8B, no tools, no thinking)
+BASELINE_IDX = 4
 
 CMAP    = LinearSegmentedColormap.from_list("tbl", ["#f0f9ff", "#74c0fc"], N=256)
 
