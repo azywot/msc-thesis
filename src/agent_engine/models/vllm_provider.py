@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from vllm import LLM, SamplingParams
 
 from .base import BaseModelProvider, GenerationResult, ModelConfig, ModelFamily
+
+# Families whose HF chat template accepts the ``enable_thinking`` kwarg.
+# Other thinking-capable families (e.g. OLMo) always think and don't expose this knob.
+_ENABLE_THINKING_KWARG_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ})
 from .llm_shared import get_llm_lock
 from ..utils.logging import get_logger, format_messages_as_chat
 
@@ -270,16 +274,18 @@ class VLLMProvider(BaseModelProvider):
     def _render_messages(self, msgs: List[Dict[str, Any]], use_thinking: bool) -> str:
         """Apply the tokenizer chat template to a messages list.
 
-        For Qwen3 and other thinking-capable models, passes ``enable_thinking``
-        (the variable name expected by the Qwen chat template). When False, the
-        template inserts an empty <think></think> block so the model skips reasoning.
+        For Qwen3/QwQ, passes ``enable_thinking`` so the template can suppress
+        the reasoning block when thinking is disabled.  For other families
+        (e.g. OLMo) the kwarg is not part of their template and must be omitted;
+        thinking-capable variants in those families always produce <think> output.
         """
-        if use_thinking and self.config.supports_thinking:
+        if self.config.family in _ENABLE_THINKING_KWARG_FAMILIES:
             return self.tokenizer.apply_chat_template(
-                msgs, tokenize=False, add_generation_prompt=True, enable_thinking=True,
+                msgs, tokenize=False, add_generation_prompt=True,
+                enable_thinking=(use_thinking and self.config.supports_thinking),
             )
         return self.tokenizer.apply_chat_template(
-            msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False,
+            msgs, tokenize=False, add_generation_prompt=True,
         )
 
     def _make_result(self, output: Any, messages: Optional[List[Dict[str, Any]]]) -> GenerationResult:

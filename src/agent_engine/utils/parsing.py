@@ -96,6 +96,14 @@ def strip_thinking_tags(text: str) -> str:
     """
     if not text:
         return text
-    return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+    # Normal case: both tags present (Qwen, DeepSeek, QwQ).
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    # OLMo (and potentially others) emit <think> as a special token that vLLM
+    # strips during decoding, leaving the thinking content as bare text followed
+    # by an orphaned </think>.  Strip everything from the start of the text up
+    # to (and including) the first </think>.
+    if '</think>' in text:
+        text = re.sub(r'^.*?</think>', '', text, flags=re.DOTALL)
+    return text.strip()
 
 

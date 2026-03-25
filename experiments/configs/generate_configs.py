@@ -53,12 +53,27 @@ MODELS = {
         "family": "qwen3",
         "path_or_id": "Qwen/Qwen3-8B",
         "tp": None,
+        "gpus": 1,
     },
     "32B": {
         "name": "Qwen3-32B",
         "family": "qwen3",
         "path_or_id": "Qwen/Qwen3-32B",
         "tp": 2,
+    },
+    "olmo-7b": {
+        "name": "OLMo-3-7B-Think",
+        "family": "olmo",
+        "path_or_id": "allenai/Olmo-3-7B-Think",
+        "tp": None,
+        "gpus": 1,
+    },
+    "olmo-32b": {
+        "name": "OLMo-3.1-32B-Think",
+        "family": "olmo",
+        "path_or_id": "allenai/Olmo-3.1-32B-Think",
+        "tp": 2,
+        "gpus": 2,
     },
 }
 
@@ -103,6 +118,26 @@ VARIANTS_ORCH_CAPACITY = [
     for sk in ["1.7B", "8B", "32B"]
     for t  in ["NO", "ORCHESTRATOR_ONLY", "ALL"]
 ]
+
+# ── olmo variants ──────────────────────────────────────────────────────────────
+# OLMo-Think models always produce <think> output regardless of config, so all
+# variants use thinking_mode="ALL" for consistency.
+# (filename_stem, model_key, direct_tool_call, tools_key, thinking_mode)
+VARIANTS_OLMO = [
+    # # 7B — no tools
+    # ("olmo7b_no_tools",        "olmo-7b",  True,  "none",  "ALL"),
+    # # 7B — direct tools
+    # ("olmo7b_direct_tools",    "olmo-7b",  True,  "tools", "ALL"),
+    # 7B — sub-agent tools (self as sub-agent)
+    ("olmo7b_subagent_tools",  "olmo-7b",  False, "tools", "ALL"),
+    # # 32B — no tools
+    # ("olmo32b_no_tools",       "olmo-32b", True,  "none",  "ALL"),
+    # # 32B — direct tools
+    # ("olmo32b_direct_tools",   "olmo-32b", True,  "tools", "ALL"),
+    # # 32B — sub-agent tools (self as sub-agent)
+    ("olmo32b_subagent_tools", "olmo-32b", False, "tools", "ALL"),
+]
+
 
 # ── human-readable labels ──────────────────────────────────────────────────────
 THINKING_LABELS = {
@@ -154,6 +189,17 @@ SUITES = {
         "variants":        VARIANTS_ORCH_CAPACITY,
         "datasets":        ["gaia"],
         # num_gpus is computed per-combo in make_config_orch_capacity
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+    },
+    "olmo": {
+        "description_tag": "[OLMo; NO image_inspector, NO mindmap]",
+        "name_prefix":     "OLMo",
+        "output_dir_root": "./experiments/results/olmo",
+        "config_subdir":   "olmo",
+        "baseline":        False,
+        "variants":        VARIANTS_OLMO,
+        "num_gpus":        2,
         "wandb_project":   "benchmarks",
         "split_overrides": {},
     },
@@ -233,7 +279,7 @@ def make_config(suite: dict, dataset: str, stem: str, model_key: str,
     output_dir = f"{suite['output_dir_root']}/{dataset}/{stem}"
 
     baseline_line = "baseline: true\n" if suite["baseline"] else ""
-    num_gpus = suite["num_gpus"]
+    num_gpus = m.get("gpus", suite["num_gpus"])
     wandb_project = suite["wandb_project"]
 
     return f"""{comment_line}
