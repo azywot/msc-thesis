@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap, Normalize
 
 # ─────────────────────────── paths ───────────────────────────────────────────
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -108,7 +110,7 @@ CATEGORIES: dict[str, dict] = {
             ("qwen8B", "subagent_tools", "orchestrator"),
             ("qwen8B", "subagent_tools", "all"),
         ],
-        "config_labels": ["No think", "Sub. Think", "Orch. Think", "All Think"],
+        "config_labels": ["No Think", "Sub. Think", "Orch. Think", "All Think"],
     },
 }
 
@@ -165,6 +167,21 @@ def num_samples(s: str) -> int:
 
 
 def load_all() -> dict[str, list[dict]]:
+    """
+    Load per-run metrics and compute all reported aggregate values.
+
+    Computation notes (source: metrics.json):
+      - n = parsed from overall.num_correct string (e.g., "23 of 200")
+      - accuracy (%) = overall.accuracy * 100
+      - tokens_per_query = token_usage.total_tokens / n
+      - prompt_tokens_per_query = token_usage.prompt_tokens / n
+      - completion_tokens_per_query = token_usage.completion_tokens / n
+      - wall_sec_per_q = (end_time - start_time).total_seconds() / n
+        This is throughput latency (batched run wall-time / questions), not
+        isolated single-query sequential latency.
+      - tool_calls[tool] = sum_benchmarks int(tool_usage[tool])
+      - avg_* values = arithmetic mean across available benchmarks in per_bm
+    """
     data: dict[str, list[dict]] = {k: [] for k in CATEGORIES}
     for cat_key, model, tools, think in ALL_CONFIGS:
         cat     = CATEGORIES[cat_key]
@@ -180,11 +197,20 @@ def load_all() -> dict[str, list[dict]]:
             ov = m["overall"]
             n  = num_samples(ov["num_correct"])
             tu = ov["token_usage"]
+            # Throughput-based latency: total wall-clock time for the entire
+            # benchmark run (all questions batched in parallel) divided by the
+            # number of questions.  Not equivalent to sequential single-query
+            # latency, but a fair apples-to-apples comparison across configs.
+            wall_sec = (
+                datetime.fromisoformat(m["end_time"]) -
+                datetime.fromisoformat(m["start_time"])
+            ).total_seconds()
             per_bm[bm] = {
                 "accuracy":          ov["accuracy"] * 100,
                 "tokens_per_query":  tu["total_tokens"] / n,
                 "prompt_tokens":     tu["prompt_tokens"] / n,
                 "completion_tokens": tu["completion_tokens"] / n,
+                "wall_sec_per_q":    wall_sec / n,  # seconds per question
                 "n":                 n,
                 "tool_usage":        m.get("tool_usage", {}),
             }
@@ -206,6 +232,7 @@ def load_all() -> dict[str, list[dict]]:
             "avg_tokens_per_query": np.mean([v["tokens_per_query"]  for v in per_bm.values()]),
             "avg_prompt_per_query": np.mean([v["prompt_tokens"]     for v in per_bm.values()]),
             "avg_compl_per_query":  np.mean([v["completion_tokens"] for v in per_bm.values()]),
+            "avg_sec_per_query":    np.mean([v["wall_sec_per_q"]    for v in per_bm.values()]),
             "tool_calls":    tool_agg,
             "per_benchmark": per_bm,
             "source_files":  source_files,
@@ -371,17 +398,146 @@ def plot_token_breakdown(data: dict[str, list[dict]]) -> None:
     print(f"  Saved → {OUT_DIR}/token_breakdown.png")
 
 
-# ─────────────────────────── Figure 2: Tool-call breakdown ───────────────────
+# ─────────────────────────── Figure 2: Latency breakdown ────────────────────
+
+_LATENCY_FOOTNOTE = (
+    "Each bar = (end\_time \u2212 start\_time) / n\_samples, where start/end are taken from "
+    "metrics.json and n\_samples is the number of evaluation questions in that benchmark run. "
+    "All questions are processed in a single batched pass on the cluster (parallel execution), "
+    "so this figure reflects \u2018throughput latency\u2019 \u2014 average cluster wall-time consumed per "
+    "question \u2014 rather than the sequential latency of a single isolated query. "
+    "Values are averaged over the five benchmarks (GAIA, GPQA, AIME, MuSiQue, HLE)."
+)
+
+
+def plot_latency_breakdown(data: dict[str, list[dict]],
+                           with_footnote: bool = False,
+                           benchmark: str | None = None) -> None:
+    """
+    Vertical bar chart: wall-clock seconds per query.
+
+    How "seconds per query" is computed
+    ------------------------------------
+    Each metrics.json records start_time and end_time for the whole benchmark
+    run.  All questions in a run are processed in a single batched pass on the
+    cluster (questions run in parallel), so:
+
+        wall_sec_per_q = (end_time - start_time).total_seconds() / n_samples
+
+    This is a *throughput-based* latency figure — how many seconds of cluster
+    wall-time were consumed per question on average.  It is NOT the sequential
+    latency for a single isolated query.
+
+    Parameters
+    ----------
+    with_footnote : bool
+        If True, adds a detailed explanatory footnote and saves as
+        latency_breakdown_footnote.png (or latency_breakdown_<bm>_footnote.png).
+    benchmark : str | None
+        If None (default), bar heights are averaged over all five benchmarks.
+        If a benchmark key (e.g. "gaia"), only that dataset's latency is shown.
+
+    Style mirrors plot_token_breakdown exactly (spacing, colours, underlines).
+    """
+    BAR_W     = 0.60
+    BAR_GAP   = 0.10
+    GROUP_GAP = 1.20
+
+    positions: dict[str, list[float]] = {}
+    x = 0.0
+    for cat_key, recs in data.items():
+        positions[cat_key] = [x + i * (BAR_W + BAR_GAP) for i in range(len(recs))]
+        x += len(recs) * (BAR_W + BAR_GAP) - BAR_GAP + GROUP_GAP
+
+    fig_h   = 5.4 if with_footnote else 4.6
+    bot_adj = 0.42 if with_footnote else 0.38
+    fig, ax = plt.subplots(figsize=(6.75, fig_h))
+
+    for cat_key, recs in data.items():
+        base_color = CATEGORIES[cat_key]["color"]
+        for r, xi in zip(recs, positions[cat_key]):
+            if benchmark is None:
+                # Average wall-clock seconds/query across all available benchmarks.
+                val = r["avg_sec_per_query"]
+            else:
+                # Single-dataset latency; skip bar if this benchmark wasn't run.
+                if benchmark not in r["per_benchmark"]:
+                    continue
+                val = r["per_benchmark"][benchmark]["wall_sec_per_q"]
+            ax.bar(xi, val, BAR_W, color=base_color, zorder=2)
+            ax.text(xi, val + 0.4, f"{val:.1f}s",
+                    ha="center", va="bottom", fontsize=6.5, color="#333333")
+
+    all_x, all_lbl = [], []
+    for cat_key, recs in data.items():
+        for r, xi in zip(recs, positions[cat_key]):
+            all_x.append(xi)
+            all_lbl.append(r["config_label"])
+
+    ax.set_xticks(all_x)
+    ax.set_xticklabels(all_lbl, fontsize=7.0, rotation=45, ha="right", va="top",
+                       color="black")
+    ax.set_ylabel("Wall-clock seconds per query")
+    ax.set_xlim(-0.55, all_x[-1] + 0.55)
+    ax.set_ylim(bottom=0)
+    ax.yaxis.grid(True, color="#e0e0e0", linewidth=0.5)
+    ax.xaxis.grid(False)
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#cccccc")
+
+    fig.subplots_adjust(left=0.10, right=0.97, bottom=bot_adj, top=0.91)
+
+    for cat_key, recs in data.items():
+        _category_underline(ax, positions[cat_key], BAR_W, cat_key, y_frac=-0.42)
+
+    bm_label = BM_LABELS.get(benchmark, benchmark) if benchmark else "avg. over all benchmarks"
+    fig.text(0.5, 0.97, f"Latency per configuration  —  {bm_label}",
+             ha="center", va="top", fontsize=9.5, transform=fig.transFigure)
+
+    if with_footnote:
+        fig.text(0.5, 0.01, _LATENCY_FOOTNOTE,
+                 ha="center", va="bottom", fontsize=6.0, color="#555555",
+                 style="italic", transform=fig.transFigure,
+                 multialignment="center", wrap=True)
+
+    # File naming: latency_breakdown[_<bm>][_footnote].png
+    bm_suffix  = f"_{benchmark}" if benchmark else ""
+    fn_suffix  = "_footnote"     if with_footnote else ""
+    fname      = f"latency_breakdown{bm_suffix}{fn_suffix}.png"
+    fig.savefig(OUT_DIR / fname, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    print(f"  Saved → {OUT_DIR}/{fname}")
+
+
+# ─────────────────────────── Figure 3: Tool-call breakdown ───────────────────
 
 TOOL_KEYS   = ["web_search", "code_generator", "text_inspector",
                "image_inspector", "mind_map"]
-TOOL_LABELS = ["Web search", "Code gen.", "Text insp.", "Image insp.", "Mind map"]
+TOOL_LABELS = ["Web search", "Code generator", "Text inspector", "Image insp.", "Mind map"]
 TOOL_COLORS = ["#1976D2", "#388E3C", "#F57F17", "#7B1FA2", "#E53935"]
+
+TOOL_CALL_BAR_H = 0.46
+TOOL_CALL_ROW_GAP = 0.08
+TOOL_CALL_GROUP_GAP = 0.52
+TOOL_CALL_XMAX = 1300
+TOOL_CALL_TOTAL_XPAD = 10
+TOOL_CALL_TITLE_Y = 0.965
+TOOL_CALL_LEGEND_Y = 0.928
+TOOL_CALL_SUBPLOT = dict(left=0.23, right=0.80, top=0.875, bottom=0.12)
 
 
 def plot_tool_calls(data: dict[str, list[dict]]) -> None:
-    BAR_H    = 0.60
-    GRP_GAP  = 0.55
+    """
+    Stacked horizontal bars of total tool calls by configuration.
+
+    Reported values in this figure:
+      - Each stacked segment = summed tool calls for one tool across all
+        benchmarks for that configuration.
+      - Right-side number label = total tool calls for that row
+        (sum of all displayed stacked segments).
+      - Rows shown only when total tool calls > 0.
+      - `image_inspector` and `mind_map` are intentionally excluded.
+    """
 
     # Collect only configs with at least one tool call
     rows, row_cats = [], []
@@ -394,6 +550,22 @@ def plot_tool_calls(data: dict[str, list[dict]]) -> None:
         print("  (No tool calls; skipping)")
         return
 
+    # Keep only tools with non-zero usage in this figure.
+    # Also explicitly suppress image_inspector and mind_map from the legend.
+    tool_totals = {
+        tk: sum(int(r["tool_calls"].get(tk, 0)) for r in rows)
+        for tk in TOOL_KEYS
+    }
+    excluded_tools = {"image_inspector", "mind_map"}
+    active_tools = [
+        (tk, tl, tc) for tk, tl, tc in zip(TOOL_KEYS, TOOL_LABELS, TOOL_COLORS)
+        if tool_totals[tk] > 0 and tk not in excluded_tools
+    ]
+
+    if not active_tools:
+        print("  (No active tools after filtering; skipping)")
+        return
+
     # Assign y-positions, inserting gaps between categories
     y_pos: list[float] = []
     cat_ys: dict[str, list[float]] = {}
@@ -401,36 +573,59 @@ def plot_tool_calls(data: dict[str, list[dict]]) -> None:
     prev = None
     for r, ck in zip(rows, row_cats):
         if prev is not None and ck != prev:
-            y += GRP_GAP
+            y += TOOL_CALL_GROUP_GAP
         y_pos.append(y)
         cat_ys.setdefault(ck, []).append(y)
-        y += BAR_H
+        y += TOOL_CALL_BAR_H + TOOL_CALL_ROW_GAP
         prev = ck
 
     y_arr = np.array(y_pos)
-    fig, ax = plt.subplots(figsize=(6.75, max(3.5, y + 0.4)))
+    fig_h = max(3.2, y + 0.9)
+    fig, ax = plt.subplots(figsize=(6.75, fig_h))
 
     lefts = np.zeros(len(rows))
-    for tk, tl, tc in zip(TOOL_KEYS, TOOL_LABELS, TOOL_COLORS):
+    for tk, tl, tc in active_tools:
         vals = np.array([r["tool_calls"].get(tk, 0) for r in rows], dtype=float)
-        ax.barh(y_arr, vals, BAR_H, left=lefts, label=tl, color=tc, alpha=0.85, zorder=2)
+        ax.barh(
+            y_arr, vals, TOOL_CALL_BAR_H, left=lefts, label=tl,
+            color=tc, alpha=0.92, edgecolor="white", linewidth=0.4, zorder=2
+        )
         lefts += vals
 
+    # Show total tool calls for each row at the right edge of bars.
+    for yi, total in zip(y_arr, lefts):
+        ax.text(total + TOOL_CALL_TOTAL_XPAD, yi, f"{int(total):,}",
+                va="center", ha="left", fontsize=7.0, color="black",
+                clip_on=False)
+
     ax.set_yticks(y_arr)
-    ax.set_yticklabels([r["config_label"] for r in rows])
-    for tick, ck in zip(ax.get_yticklabels(), row_cats):
-        tick.set_color(CATEGORIES[ck]["color"])
+    ax.set_yticklabels([r["config_label"] for r in rows], fontsize=7.3, color="black")
 
     for ck, ys in cat_ys.items():
-        _category_sidebar(ax, ys, BAR_H, ck)
+        _category_sidebar(ax, ys, TOOL_CALL_BAR_H, ck)
 
     ax.set_xlabel("Total tool calls (all benchmarks)")
-    ax.set_title("Tool-Call Breakdown by Configuration", pad=6)
-    ax.legend(loc="lower right", ncol=2)
-    ax.xaxis.grid(True); ax.yaxis.grid(False)
-    ax.set_ylim(-0.4, y_arr[-1] + BAR_H * 0.7)
-    fig.tight_layout()
-    fig.subplots_adjust(right=0.68)
+    ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+    ax.xaxis.grid(True, color="#e0e0e0", linewidth=0.5)
+    ax.yaxis.grid(False)
+    ax.set_xlim(0, TOOL_CALL_XMAX)
+    # Keep top-to-bottom order as: 32B Direct → 8B Direct → 8B MAS.
+    # Note: low/high are intentionally reversed to preserve inverted y-axis.
+    ax.set_ylim(y_arr[-1] + TOOL_CALL_BAR_H * 0.8, -0.35)
+    ax.margins(x=0.02)
+    fig.suptitle("Tool-call breakdown by configuration", y=TOOL_CALL_TITLE_Y, fontsize=9.2)
+    fig.legend(
+        *ax.get_legend_handles_labels(),
+        loc="upper center",
+        bbox_to_anchor=(0.5, TOOL_CALL_LEGEND_Y),
+        ncol=max(1, len(active_tools)),
+        frameon=True,
+        borderpad=0.35,
+        handlelength=1.1,
+        columnspacing=0.9,
+        fontsize=7.3,
+    )
+    fig.subplots_adjust(**TOOL_CALL_SUBPLOT)
     fig.savefig(OUT_DIR / "tool_calls_breakdown.png", bbox_inches="tight", dpi=300)
     plt.close(fig)
     print(f"  Saved → {OUT_DIR}/tool_calls_breakdown.png")
@@ -552,6 +747,180 @@ def plot_per_benchmark_pareto(data: dict[str, list[dict]]) -> None:
     print(f"  Saved → {OUT_DIR}/pareto_per_benchmark.png")
 
 
+# ─────────────────────────── Figure 5: Latency heatmap table ─────────────────
+
+# Orange colormap: lighter = lower latency (faster / better),
+#                  darker  = higher latency (slower / worse).
+_LAT_CMAP = LinearSegmentedColormap.from_list(
+    "lat_orange", ["#fff7ed", "#ea580c"], N=256
+)
+
+# Table geometry (inches) — mirrors generate_results_table.py column layout.
+_TBL_COL = [
+    (0.08, 1.10),   # 0  Model
+    (1.18, 1.00),   # 1  Tools      (+0.20 wider)
+    (2.18, 1.15),   # 2  Thinking
+    (3.33, 0.82),   # 3  GAIA
+    (4.15, 0.82),   # 4  GPQA
+    (4.97, 0.82),   # 5  AIME
+    (5.79, 0.92),   # 6  MuSiQue
+    (6.71, 0.82),   # 7  HLE
+    (7.53, 0.82),   # 8  Avg
+]
+_TBL_FIG_W = 8.43
+_ROW_H     = 0.400   # matches main results table ROW_H
+_HDR_H     = 0.33
+_LEG_H     = 0.40
+_LR_PAD    = 0.08
+_FONT_SZ   = 8.5
+_SMALL_SZ  = 7.5
+
+
+def plot_latency_heatmap(data: dict[str, list[dict]]) -> None:
+    """
+    NeurIPS-style heatmap table of wall-clock seconds per query.
+
+    Rows  = configurations (grouped by category with horizontal rules).
+    Cols  = GAIA | GPQA | AIME | MuSiQue | HLE | Avg.
+    Color = orange, globally normalised: lighter → faster (lower latency).
+    """
+    # ── build flat row list ───────────────────────────────────────────────────
+    # Labels match the main results table (generate_results_table.py) exactly:
+    #   Tools:    "—" (no_tools) | "Direct" (direct_tools) | "Sub-agent" (subagent_tools)
+    #   Thinking: "—" (none) | "Orchestrator" (orchestrator) | "Sub-agents" (subagents) | "All" (all)
+    #   Model:    shown only on the first row of each model group (blank thereafter)
+    _TOOLS_LBL   = {"no_tools": "—", "direct_tools": "Direct", "subagent_tools": "Sub-agent"}
+    _THINK_LBL   = {"none": "—", "orchestrator": "Orchestrator",
+                    "subagents": "Sub-agents", "all": "All"}
+    # Canonical model name per category (same as main table)
+    _MODEL_LBL   = {"32B Direct": "Qwen3-32B", "8B Direct": "Qwen3-8B", "8B MAS": "Qwen3-8B"}
+
+    rows = []
+    prev_model_name: str | None = None
+    for cat_key, recs in data.items():
+        model_name = _MODEL_LBL[cat_key]
+        for r in recs:
+            # Show the model name only on the first row where it changes
+            show_model  = model_name != prev_model_name
+            prev_model_name = model_name
+            row: dict = {
+                "cat_key":   cat_key,
+                "model_lbl": model_name if show_model else "",
+                "tools_lbl": _TOOLS_LBL[r["tools"]],
+                "think_lbl": _THINK_LBL[r["think"]],
+            }
+            for bm in BENCHMARKS:
+                row[bm] = (r["per_benchmark"][bm]["wall_sec_per_q"]
+                           if bm in r["per_benchmark"] else None)
+            vals = [v for v in (row[bm] for bm in BENCHMARKS) if v is not None]
+            row["avg"] = float(np.mean(vals)) if vals else None
+            rows.append(row)
+
+    # ── global normalisation across all latency values ───────────────────────
+    all_vals = [row[col] for row in rows
+                for col in BENCHMARKS + ["avg"] if row[col] is not None]
+    norm = Normalize(vmin=min(all_vals), vmax=max(all_vals))
+
+    # ── figure setup ─────────────────────────────────────────────────────────
+    n_rows = len(rows)
+    fig_h  = _HDR_H + n_rows * _ROW_H + _LEG_H
+    matplotlib.rcParams.update({"font.family": "serif", "font.size": _FONT_SZ,
+                                 "pdf.fonttype": 42, "ps.fonttype": 42})
+    fig, ax = plt.subplots(figsize=(_TBL_FIG_W, fig_h))
+    ax.set_xlim(0, _TBL_FIG_W)
+    ax.set_ylim(0, fig_h)
+    ax.axis("off")
+
+    def hline(y, lw=0.6, **kw):
+        ax.plot([_LR_PAD, _TBL_FIG_W - _LR_PAD], [y, y], "k-", lw=lw, **kw)
+
+    def cx(ci):   return _TBL_COL[ci][0] + _TBL_COL[ci][1] / 2
+    def lx(ci):   return _TBL_COL[ci][0] + 0.04
+
+    # ── header ───────────────────────────────────────────────────────────────
+    col_hdrs = ["Model", "Tools", "Thinking"] + \
+               [BM_LABELS[bm] for bm in BENCHMARKS] + ["Avg"]
+    y_top = fig_h - 0.04
+    hline(y_top, lw=0.9)
+    hy = y_top - _HDR_H / 2
+    for ci, lbl in enumerate(col_hdrs):
+        if ci < 3:
+            ax.text(lx(ci), hy, lbl, ha="left", va="center", fontsize=_FONT_SZ)
+        else:
+            ax.text(cx(ci), hy, lbl, ha="center", va="center", fontsize=_FONT_SZ)
+    hline(y_top - _HDR_H, lw=0.5)
+
+    # ── data rows ─────────────────────────────────────────────────────────────
+    bm_cols = BENCHMARKS + ["avg"]
+    y = y_top - _HDR_H
+    prev_cat = None
+    for row in rows:
+        y  -= _ROW_H
+        yc  = y + _ROW_H / 2
+
+        # Light separator between model groups (same as main table)
+        if row["cat_key"] != prev_cat:
+            if prev_cat is not None:
+                hline(y + _ROW_H, lw=0.3, alpha=0.45)
+            prev_cat = row["cat_key"]
+
+        # Plain black text — no RGB category colouring
+        if row["model_lbl"]:
+            ax.text(lx(0), yc, row["model_lbl"],
+                    ha="left", va="center", fontsize=_FONT_SZ)
+        ax.text(lx(1), yc, row["tools_lbl"], ha="left", va="center",
+                fontsize=_FONT_SZ)
+        ax.text(lx(2), yc, row["think_lbl"], ha="left", va="center",
+                fontsize=_FONT_SZ)
+
+        for ci, col in enumerate(bm_cols, start=3):
+            val = row[col]
+            xc_pos      = cx(ci)
+            col_x, col_w = _TBL_COL[ci]
+
+            if val is None:
+                ax.text(xc_pos, yc, "—", ha="center", va="center",
+                        fontsize=_FONT_SZ)
+                continue
+
+            # coloured cell background
+            ax.add_patch(mpatches.Rectangle(
+                (col_x, y), col_w, _ROW_H,
+                facecolor=_LAT_CMAP(norm(val)),
+                edgecolor="none", zorder=0,
+            ))
+            # cell value
+            ax.text(xc_pos, yc, f"{val:.1f}",
+                    ha="center", va="center", fontsize=_FONT_SZ, zorder=2)
+
+    y_bot = y
+    hline(y_bot, lw=0.9)
+
+    # ── legend (gradient bar) ─────────────────────────────────────────────────
+    yl    = y_bot - _LEG_H / 2
+    bar_w = 1.20
+    bar_h = 0.10
+    bar_x = _LR_PAD + 1.70
+    ax.text(_LR_PAD, yl, "Latency (s/query):", ha="left", va="center",
+            fontsize=_SMALL_SZ)
+    ax.text(bar_x - 0.07, yl, "Fast", ha="right", va="center",
+            fontsize=_SMALL_SZ)
+    gradient = np.linspace(0, 1, 256).reshape(1, -1)
+    ax.imshow(gradient,
+              extent=[bar_x, bar_x + bar_w, yl - bar_h / 2, yl + bar_h / 2],
+              aspect="auto", cmap=_LAT_CMAP, origin="lower", zorder=1)
+    ax.add_patch(mpatches.Rectangle(
+        (bar_x, yl - bar_h / 2), bar_w, bar_h,
+        linewidth=0.4, edgecolor="black", facecolor="none", zorder=2,
+    ))
+    ax.text(bar_x + bar_w + 0.05, yl, "Slow", ha="left", va="center",
+            fontsize=_SMALL_SZ)
+
+    fig.savefig(OUT_DIR / "latency_heatmap.png", bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    print(f"  Saved → {OUT_DIR}/latency_heatmap.png")
+
+
 # ─────────────────────────── entry point ─────────────────────────────────────
 
 def main() -> None:
@@ -566,6 +935,9 @@ def main() -> None:
     print_summary(data)
     print("\nGenerating plots…")
     plot_token_breakdown(data)
+    plot_latency_breakdown(data, with_footnote=False)   # avg, clean
+    plot_latency_breakdown(data, with_footnote=True)    # avg, annotated
+    plot_latency_heatmap(data)                          # per-dataset heatmap table
     plot_tool_calls(data)
     plot_per_benchmark_pareto(data)
     print(f"\nDone. Outputs in: {OUT_DIR}")

@@ -3,7 +3,6 @@
 Generate NeurIPS-style results table from MALGAI_main_results.csv.
 
 Output:
-    data/results/MALGAI_main_results_table.pdf
     data/results/MALGAI_main_results_table.png
 
 Usage:
@@ -22,8 +21,7 @@ from pathlib import Path
 # ─────────────────────────── paths ───────────────────────────────────────────
 ROOT     = Path(__file__).resolve().parent.parent.parent
 CSV_PATH = ROOT / "data/results/MALGAI_main_results.csv"
-OUT_PDF  = ROOT / "data/results/MALGAI_main_results_table.pdf"
-OUT_PNG  = ROOT / "data/results/MALGAI_main_results_table.png"
+OUT_PNG  = ROOT / "data/results/plots/MALGAI_main_results_table.png"
 
 # ─────────────────────────── table structure ─────────────────────────────────
 DATASETS       = ["gaia", "gpqa", "aime", "musique", "hle"]
@@ -34,18 +32,18 @@ DATASET_LABELS = ["GAIA", "GPQA", "AIME", "MuSiQue", "HLE"]
 CONFIGS: list[tuple[str, str, str, str, str]] = [
     # ── Qwen3-32B (baseline, direct mode only) ──────────────────────────────
     ("Qwen3-32B", "no_tools",       "NO",                "—",         "—"),
-    ("Qwen3-32B", "no_tools",       "ORCHESTRATOR_ONLY", "—",         "Orch."),
+    ("Qwen3-32B", "no_tools",       "ORCHESTRATOR_ONLY", "—",         "Orchestrator"),
     ("Qwen3-32B", "direct_tools",   "NO",                "Direct",    "—"),
-    ("Qwen3-32B", "direct_tools",   "ORCHESTRATOR_ONLY", "Direct",    "Orch."),
+    ("Qwen3-32B", "direct_tools",   "ORCHESTRATOR_ONLY", "Direct",    "Orchestrator"),
     # ── Qwen3-8B baseline (direct mode) ─────────────────────────────────────
     ("Qwen3-8B",  "no_tools",       "NO",                "—",         "—"),
-    ("Qwen3-8B",  "no_tools",       "ORCHESTRATOR_ONLY", "—",         "Orch."),
+    ("Qwen3-8B",  "no_tools",       "ORCHESTRATOR_ONLY", "—",         "Orchestrator"),
     ("Qwen3-8B",  "direct_tools",   "NO",                "Direct",    "—"),
-    ("Qwen3-8B",  "direct_tools",   "ORCHESTRATOR_ONLY", "Direct",    "Orch."),
+    ("Qwen3-8B",  "direct_tools",   "ORCHESTRATOR_ONLY", "Direct",    "Orchestrator"),
     # ── Qwen3-8B AgentFlow (subagent mode) ───────────────────────────────────
     ("Qwen3-8B",  "subagent_tools", "NO",                "Sub-agent", "—"),
-    ("Qwen3-8B",  "subagent_tools", "SUBAGENTS_ONLY",    "Sub-agent", "Sub."),
-    ("Qwen3-8B",  "subagent_tools", "ORCHESTRATOR_ONLY", "Sub-agent", "Orch."),
+    ("Qwen3-8B",  "subagent_tools", "SUBAGENTS_ONLY",    "Sub-agent", "Sub-agents"),
+    ("Qwen3-8B",  "subagent_tools", "ORCHESTRATOR_ONLY", "Sub-agent", "Orchestrator"),
     ("Qwen3-8B",  "subagent_tools", "ALL",               "Sub-agent", "All"),
 ]
 
@@ -54,14 +52,14 @@ CONFIGS: list[tuple[str, str, str, str, str]] = [
 COL_LAYOUT = [
     (0.08, 1.10),   # 0 Model
     (1.18, 1.00),   # 1 Tools
-    (2.18, 0.90),   # 2 Thinking
-    (3.08, 0.97),   # 3 GAIA
-    (4.05, 0.97),   # 4 GPQA
-    (5.02, 0.97),   # 5 AIME
-    (5.99, 0.97),   # 6 MuSiQue
-    (6.96, 0.96),   # 7 HLE  (ends at 7.92; + 0.08 pad = 8.00)
+    (2.18, 1.15),   # 2 Thinking
+    (3.33, 0.97),   # 3 GAIA
+    (4.30, 0.97),   # 4 GPQA
+    (5.27, 0.97),   # 5 AIME
+    (6.24, 0.97),   # 6 MuSiQue
+    (7.21, 0.96),   # 7 HLE  (ends at 8.17; + 0.08 pad = 8.25)
 ]
-FIG_W   = 8.00   # total figure width
+FIG_W   = 8.25   # total figure width
 ROW_H   = 0.400  # height of each data row (two sub-lines: value + delta)
 HDR_H   = 0.330  # height of the header row
 LEG_H   = 0.40   # height of the legend area
@@ -199,18 +197,25 @@ def draw(data: pd.DataFrame) -> plt.Figure:
     # ── data rows ─────────────────────────────────────────────────────────────
     y           = y_mid
     prev_model: str | None = None
+    prev_tools: str | None = None
 
     for row_idx, row in data.iterrows():
         y  -= ROW_H
         yc  = y + ROW_H / 2
 
-        # model-group separator + label
+        # Separator between model groups (e.g. 32B → 8B)
         if row["model"] != prev_model:
             if prev_model is not None:
                 hline(y + ROW_H, lw=0.3, alpha=0.45)
             prev_model = row["model"]
             ax.text(_col_lx(0), yc, row["model"],
                     ha="left", va="center", fontsize=FONT_SZ)
+
+        # Separator between tool groups within the same model (e.g. Direct → Sub-agent)
+        elif row["tools"] != prev_tools and prev_tools is not None:
+            hline(y + ROW_H, lw=0.3, alpha=0.45)
+
+        prev_tools = row["tools"]
 
         ax.text(_col_lx(1), yc, row["tools"],    ha="left", va="center", fontsize=FONT_SZ)
         ax.text(_col_lx(2), yc, row["thinking"], ha="left", va="center", fontsize=FONT_SZ)
@@ -304,11 +309,9 @@ def main() -> None:
     print()
 
     fig = draw(data)
-    fig.savefig(OUT_PDF, bbox_inches="tight", dpi=300)
     fig.savefig(OUT_PNG, bbox_inches="tight", dpi=300)
     plt.close(fig)
 
-    print(f"Saved → {OUT_PDF}")
     print(f"Saved → {OUT_PNG}")
 
 
