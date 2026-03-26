@@ -379,7 +379,7 @@ def plot_token_breakdown(data: dict[str, list[dict]]) -> None:
     fig.subplots_adjust(left=0.10, right=0.97, bottom=0.38, top=0.88)
 
     for cat_key, recs in data.items():
-        _category_underline(ax, positions[cat_key], BAR_W, cat_key, y_frac=-0.42)
+        _category_underline(ax, positions[cat_key], BAR_W, cat_key, y_frac=-0.38)
 
     # Title and legend in the space above the axes
     fig.text(0.5, 0.97, "Token usage per configuration",
@@ -487,7 +487,7 @@ def plot_latency_breakdown(data: dict[str, list[dict]],
     fig.subplots_adjust(left=0.10, right=0.97, bottom=bot_adj, top=0.91)
 
     for cat_key, recs in data.items():
-        _category_underline(ax, positions[cat_key], BAR_W, cat_key, y_frac=-0.42)
+        _category_underline(ax, positions[cat_key], BAR_W, cat_key, y_frac=-0.36)
 
     bm_label = BM_LABELS.get(benchmark, benchmark) if benchmark else "average over all benchmarks"
     fig.text(0.5, 0.97, f"Latency per configuration  —  {bm_label}",

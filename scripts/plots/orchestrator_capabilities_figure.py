@@ -25,9 +25,9 @@ OUT_PNG  = ROOT / "data/results/plots/orchestrator_capabilities_figure.png"
 # ─── display config ───────────────────────────────────────────────────────────
 # thinking modes in display order
 THINKING_MODES = [
-    ("NO",                "None"),
-    ("ORCHESTRATOR_ONLY", "Orch."),
-    ("ALL",               "All"),
+    ("NO",                "No Think"),
+    ("ORCHESTRATOR_ONLY", "Orch. Think"),
+    ("ALL",               "All Think"),
 ]
 THINKING_KEYS = [k for k, _ in THINKING_MODES]
 THINKING_LBLS = {k: lbl for k, lbl in THINKING_MODES}
