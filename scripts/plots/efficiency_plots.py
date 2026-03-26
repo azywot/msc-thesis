@@ -28,6 +28,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.lines import Line2D
 
 # ─────────────────────────── paths ───────────────────────────────────────────
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -298,8 +299,14 @@ def _category_underline(ax, positions: list[float], bar_w: float,
 
 
 def _category_sidebar(ax, y_positions: list[float], bar_h: float,
-                       cat_key: str, x_frac: float = 1.02) -> None:
-    """Draw a coloured vertical rule + label to the right of a group of bars."""
+                       cat_key: str, x_frac: float = 1.02,
+                       align: str = "right") -> None:
+    """Draw a coloured vertical rule + label beside a group of bars.
+
+    align="right"  — rule + label to the right of the axes (default).
+    align="left"   — rule + label to the left  of the axes; text rotates
+                     bottom-to-top so it reads naturally on a left margin.
+    """
     cat   = CATEGORIES[cat_key]
     y0    = min(y_positions) - bar_h * 0.5
     y1    = max(y_positions) + bar_h * 0.5
@@ -308,8 +315,13 @@ def _category_sidebar(ax, y_positions: list[float], bar_h: float,
     ax.plot([x_frac, x_frac], [y0, y1], transform=trans,
             color=cat["color"], lw=2.0, solid_capstyle="round",
             clip_on=False)
-    ax.text(x_frac + 0.015, ym, cat["label"], transform=trans,
-            ha="left", va="center", fontsize=7.5,
+    # Split "(Direct)" labels onto two lines; keep "(MAS)" on one line
+    raw   = cat["label"]
+    label = raw.replace(" (", "\n(")
+    rot = 0
+    ax.text(x_frac + 0.16, ym, label, transform=trans,
+            ha="center", va="center", fontsize=7.5, rotation=rot,
+            rotation_mode="anchor", linespacing=1.2,
             color=cat["color"], fontweight="bold", clip_on=False)
 
 
@@ -501,11 +513,12 @@ def plot_latency_breakdown(data: dict[str, list[dict]],
 TOOL_KEYS   = ["web_search", "code_generator", "text_inspector",
                "image_inspector", "mind_map"]
 TOOL_LABELS = ["Web search", "Code generator", "Text inspector", "Image insp.", "Mind map"]
-TOOL_COLORS = ["#1976D2", "#388E3C", "#F57F17", "#7B1FA2", "#E53935"]
+# Wong orange · Tol reddish-purple · Tol teal — none overlaps the config blues/reds/greens
+TOOL_COLORS = ["#AA4499", "#44AA99", "#E69F00", "#7B1FA2", "#E53935"]
 
-TOOL_CALL_BAR_H = 0.46
-TOOL_CALL_ROW_GAP = 0.08
-TOOL_CALL_GROUP_GAP = 0.52
+TOOL_CALL_BAR_H = 0.30
+TOOL_CALL_ROW_GAP = 0.06
+TOOL_CALL_GROUP_GAP = 0.18
 TOOL_CALL_XMAX = 1300
 TOOL_CALL_TOTAL_XPAD = 10
 TOOL_CALL_TITLE_Y = 0.965
@@ -515,104 +528,158 @@ TOOL_CALL_SUBPLOT = dict(left=0.23, right=0.80, top=0.875, bottom=0.12)
 
 def plot_tool_calls(data: dict[str, list[dict]]) -> None:
     """
-    Stacked horizontal bars of total tool calls by configuration.
+    Per-benchmark small-multiples stacked horizontal bar chart.
 
-    Reported values in this figure:
-      - Each stacked segment = summed tool calls for one tool across all
-        benchmarks for that configuration.
-      - Right-side number label = total tool calls for that row
-        (sum of all displayed stacked segments).
-      - Rows shown only when total tool calls > 0.
+    Layout: 2 × 3 grid — five panels (one per benchmark) + one legend panel.
+
+    Each panel shows tool-call counts for every configuration, stacked by
+    tool type (web_search, code_generator, text_inspector).  The shared
+    x-axis is scaled to the per-benchmark maximum so that within-benchmark
+    proportions are clear and cross-benchmark differences are visible.
+
+    Y-tick labels are coloured by category and appear only on the left-most
+    column; a subtle background band per category group aids scanning.
+
+    Reported values:
+      - Each stacked segment = tool calls for one tool for that (config, bm).
+      - Number label at bar end = total tool calls for that (config, bm).
       - `image_inspector` and `mind_map` are intentionally excluded.
     """
-
-    # Collect only configs with at least one tool call
-    rows, row_cats = [], []
+    # ── collect rows ──────────────────────────────────────────────────────────
+    rows: list[dict] = []
+    row_cats: list[str] = []
     for cat_key, recs in data.items():
         for r in recs:
-            if sum(r["tool_calls"].values()) > 0:
-                rows.append(r); row_cats.append(cat_key)
+            if any(
+                sum(int(v) for v in
+                    r["per_benchmark"].get(bm, {}).get("tool_usage", {}).values()) > 0
+                for bm in BENCHMARKS
+            ):
+                rows.append(r)
+                row_cats.append(cat_key)
 
     if not rows:
         print("  (No tool calls; skipping)")
         return
 
-    # Keep only tools with non-zero usage in this figure.
-    # Also explicitly suppress image_inspector and mind_map from the legend.
-    tool_totals = {
-        tk: sum(int(r["tool_calls"].get(tk, 0)) for r in rows)
-        for tk in TOOL_KEYS
-    }
-    excluded_tools = {"image_inspector", "mind_map"}
+    # ── active tools ──────────────────────────────────────────────────────────
+    excluded = {"image_inspector", "mind_map"}
+    all_counts: dict[str, int] = {}
+    for r in rows:
+        for bm_data in r["per_benchmark"].values():
+            for k, v in bm_data.get("tool_usage", {}).items():
+                all_counts[k] = all_counts.get(k, 0) + int(v)
     active_tools = [
-        (tk, tl, tc) for tk, tl, tc in zip(TOOL_KEYS, TOOL_LABELS, TOOL_COLORS)
-        if tool_totals[tk] > 0 and tk not in excluded_tools
+        (tk, tl, tc)
+        for tk, tl, tc in zip(TOOL_KEYS, TOOL_LABELS, TOOL_COLORS)
+        if all_counts.get(tk, 0) > 0 and tk not in excluded
     ]
-
     if not active_tools:
         print("  (No active tools after filtering; skipping)")
         return
 
-    # Assign y-positions, inserting gaps between categories
+    # ── y-positions ───────────────────────────────────────────────────────────
+    BAR_H = TOOL_CALL_BAR_H
     y_pos: list[float] = []
     cat_ys: dict[str, list[float]] = {}
-    y = 0.0
-    prev = None
+    y, prev = 0.0, None
     for r, ck in zip(rows, row_cats):
         if prev is not None and ck != prev:
             y += TOOL_CALL_GROUP_GAP
         y_pos.append(y)
         cat_ys.setdefault(ck, []).append(y)
-        y += TOOL_CALL_BAR_H + TOOL_CALL_ROW_GAP
+        y += BAR_H + TOOL_CALL_ROW_GAP
         prev = ck
-
     y_arr = np.array(y_pos)
-    fig_h = max(3.2, y + 0.9)
-    fig, ax = plt.subplots(figsize=(6.75, fig_h))
+    y_lo  = y_arr[-1] + BAR_H * 0.9   # bottom of inverted axis
+    y_hi  = -0.40                       # top of inverted axis
 
-    lefts = np.zeros(len(rows))
-    for tk, tl, tc in active_tools:
-        vals = np.array([r["tool_calls"].get(tk, 0) for r in rows], dtype=float)
-        ax.barh(
-            y_arr, vals, TOOL_CALL_BAR_H, left=lefts, label=tl,
-            color=tc, alpha=0.92, edgecolor="white", linewidth=0.4, zorder=2
-        )
-        lefts += vals
-
-    # Show total tool calls for each row at the right edge of bars.
-    for yi, total in zip(y_arr, lefts):
-        ax.text(total + TOOL_CALL_TOTAL_XPAD, yi, f"{int(total):,}",
-                va="center", ha="left", fontsize=7.0, color="black",
-                clip_on=False)
-
-    ax.set_yticks(y_arr)
-    ax.set_yticklabels([r["config_label"] for r in rows], fontsize=7.3, color="black")
-
-    for ck, ys in cat_ys.items():
-        _category_sidebar(ax, ys, TOOL_CALL_BAR_H, ck)
-
-    ax.set_xlabel("Total tool calls (all benchmarks)")
-    ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
-    ax.xaxis.grid(True, color="#e0e0e0", linewidth=0.5)
-    ax.yaxis.grid(False)
-    ax.set_xlim(0, TOOL_CALL_XMAX)
-    # Keep top-to-bottom order as: 32B Direct → 8B Direct → 8B MAS.
-    # Note: low/high are intentionally reversed to preserve inverted y-axis.
-    ax.set_ylim(y_arr[-1] + TOOL_CALL_BAR_H * 0.8, -0.35)
-    ax.margins(x=0.02)
-    fig.suptitle("Tool-call breakdown by configuration", y=TOOL_CALL_TITLE_Y, fontsize=9.2)
-    fig.legend(
-        *ax.get_legend_handles_labels(),
-        loc="upper center",
-        bbox_to_anchor=(0.5, TOOL_CALL_LEGEND_Y),
-        ncol=max(1, len(active_tools)),
-        frameon=True,
-        borderpad=0.35,
-        handlelength=1.1,
-        columnspacing=0.9,
-        fontsize=7.3,
+    # ── global x-max (across all per-benchmark totals) ────────────────────────
+    per_bm_max = max(
+        sum(int(r["per_benchmark"].get(bm, {}).get("tool_usage", {}).get(tk, 0))
+            for tk, _, _ in active_tools)
+        for r in rows for bm in BENCHMARKS
     )
-    fig.subplots_adjust(**TOOL_CALL_SUBPLOT)
+    x_max = int(per_bm_max * 1.22) + 15
+
+    # ── figure: 1 row × 5 cols ───────────────────────────────────────────────
+    fig_h = max(3.2, (y_arr[-1] + BAR_H * 1.2) + 1.0)
+    fig, axes = plt.subplots(1, len(BENCHMARKS), figsize=(13.5, fig_h), squeeze=True)
+
+    for i, bm in enumerate(BENCHMARKS):
+        ax = axes[i]
+
+        # subtle category background bands — symmetric half-row padding
+        half_row = (BAR_H + TOOL_CALL_ROW_GAP) / 2
+        for ck, ys in cat_ys.items():
+            ax.axhspan(min(ys) - half_row, max(ys) + half_row,
+                       color=CATEGORIES[ck]["color"], alpha=0.06, zorder=0)
+
+        # stacked bars
+        lefts = np.zeros(len(rows))
+        for tk, tl, tc in active_tools:
+            vals = np.array([
+                int(r["per_benchmark"].get(bm, {}).get("tool_usage", {}).get(tk, 0))
+                for r in rows
+            ], dtype=float)
+            ax.barh(y_arr, vals, BAR_H, left=lefts, label=tl,
+                    color=tc, alpha=0.92, edgecolor="white", linewidth=0.4, zorder=2)
+            lefts += vals
+
+        # total labels at bar end (show 0 explicitly when no tool calls)
+        for yi, total in zip(y_arr, lefts):
+            ax.text(total + x_max * 0.02, yi, str(int(total)),
+                    va="center", ha="left", fontsize=6.2,
+                    color="#333333", clip_on=False)
+
+        # axes formatting
+        ax.set_title(BM_LABELS[bm], fontsize=8.5, fontweight="bold", pad=3)
+        ax.set_xlim(0, x_max)
+        ax.set_ylim(y_lo, y_hi)
+        ax.xaxis.grid(True, color="#e0e0e0", linewidth=0.5, zorder=1)
+        ax.yaxis.grid(False)
+        ax.set_xlabel("")
+        ax.tick_params(axis="x", labelsize=7.0)
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#cccccc")
+
+        # y-tick labels: only leftmost panel, black font
+        ax.set_yticks(y_arr)
+        if i == 0:
+            ax.set_yticklabels([r["config_label"] for r in rows],
+                               fontsize=7.3, color="black")
+        else:
+            ax.set_yticklabels([])
+
+    # ── category sidebars on the leftmost panel ──────────────────────────────
+    for ck, ys in cat_ys.items():
+        _category_sidebar(axes[0], ys, BAR_H, ck, x_frac=-0.88, align="left")
+
+    # ── legend (tools only) just below title ─────────────────────────────────
+    tool_handles = [mpatches.Patch(facecolor=tc, alpha=0.92, label=tl)
+                    for _, tl, tc in active_tools]
+
+    SA_LEFT, SA_RIGHT = 0.17, 0.97
+    # The sidebar labels extend ~0.10 left of SA_LEFT in figure coords, so
+    # the visual centre of the saved image sits left of the subplot midpoint.
+    subplot_cx = (SA_LEFT + SA_RIGHT) / 2   # centre of bar area (0.57)
+    content_cx = (SA_LEFT - 0.10 + SA_RIGHT) / 2  # centre of all content (~0.52)
+
+    fig.subplots_adjust(top=0.86, bottom=0.10, left=SA_LEFT, right=SA_RIGHT, wspace=0.05)
+    fig.text(content_cx, 0.02, "Tool calls",
+             ha="center", va="bottom", fontsize=8.0)
+
+    fig.suptitle("Tool-call breakdown per benchmark",
+                 fontsize=9.5, x=content_cx, y=0.980, va="bottom")
+    fig.legend(
+        handles=tool_handles,
+        loc="upper center",
+        bbox_to_anchor=(content_cx, 0.973),
+        ncol=len(tool_handles),
+        frameon=True, framealpha=0.95, edgecolor="#cccccc",
+        borderpad=0.45, handlelength=1.2, handletextpad=0.55,
+        columnspacing=0.8, fontsize=7.5,
+    )
     fig.savefig(OUT_DIR / "tool_calls_breakdown.png", bbox_inches="tight", dpi=300)
     plt.close(fig)
     print(f"  Saved → {OUT_DIR}/tool_calls_breakdown.png")
