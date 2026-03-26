@@ -299,7 +299,7 @@ def _category_underline(ax, positions: list[float], bar_w: float,
 
 
 def _category_sidebar(ax, y_positions: list[float], bar_h: float,
-                       cat_key: str, x_frac: float = 1.02,
+                       cat_key: str, x_frac: float = 1.07,
                        align: str = "right") -> None:
     """Draw a coloured vertical rule + label beside a group of bars.
 
@@ -319,7 +319,7 @@ def _category_sidebar(ax, y_positions: list[float], bar_h: float,
     raw   = cat["label"]
     label = raw.replace(" (", "\n(")
     rot = 0
-    ax.text(x_frac + 0.16, ym, label, transform=trans,
+    ax.text(x_frac + 0.2, ym, label, transform=trans,
             ha="center", va="center", fontsize=7.5, rotation=rot,
             rotation_mode="anchor", linespacing=1.2,
             color=cat["color"], fontweight="bold", clip_on=False)
@@ -653,7 +653,7 @@ def plot_tool_calls(data: dict[str, list[dict]]) -> None:
 
     # ── category sidebars on the leftmost panel ──────────────────────────────
     for ck, ys in cat_ys.items():
-        _category_sidebar(axes[0], ys, BAR_H, ck, x_frac=-0.88, align="left")
+        _category_sidebar(axes[0], ys, BAR_H, ck, x_frac=-0.80, align="left")
 
     # ── legend (tools only) just below title ─────────────────────────────────
     tool_handles = [mpatches.Patch(facecolor=tc, alpha=0.92, label=tl)
