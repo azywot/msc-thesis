@@ -20,8 +20,7 @@ from pathlib import Path
 # ─── paths ───────────────────────────────────────────────────────────────────
 ROOT     = Path(__file__).resolve().parent.parent.parent
 CSV_PATH = ROOT / "data/results/orchestrator_capabilities_results.csv"
-OUT_PDF  = ROOT / "data/results/orchestrator_capabilities_figure.pdf"
-OUT_PNG  = ROOT / "data/results/orchestrator_capabilities_figure.png"
+OUT_PNG  = ROOT / "data/results/plots/orchestrator_capabilities_figure.png"
 
 # ─── display config ───────────────────────────────────────────────────────────
 # thinking modes in display order
@@ -35,9 +34,9 @@ THINKING_LBLS = {k: lbl for k, lbl in THINKING_MODES}
 
 # sub-agent sizes and their colours (matches example figure palette)
 SUB_SIZES  = ["1.7B", "8B", "32B"]
-# Seaborn "deep" palette – standard in NeurIPS/ICML papers
+# Seaborn "deep" palette - standard in NeurIPS/ICML papers
 SUB_COLORS = {"1.7B": "#4C72B0", "8B": "#DD8452", "32B": "#55A868"}
-SUB_LABELS = {"1.7B": "1.7–2B",  "8B": "8B",      "32B": "32B"}
+SUB_LABELS = {"1.7B": "1.7B",  "8B": "8B",      "32B": "32B"}
 
 ORCH_GROUPS = [("8B", "8B Orchestrator"), ("32B", "32B Orchestrator")]
 
@@ -196,10 +195,8 @@ def main() -> None:
             print(f"  [{tlbl:9s}]  {row}")
 
     fig = draw(data)
-    fig.savefig(OUT_PDF, bbox_inches="tight", dpi=300)
     fig.savefig(OUT_PNG, bbox_inches="tight", dpi=300)
     plt.close(fig)
-    print(f"\nSaved → {OUT_PDF}")
     print(f"Saved → {OUT_PNG}")
 
 

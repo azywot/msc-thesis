@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Efficiency plots for AgentFlow experiments — NeurIPS style.
+Efficiency plots for AgentFlow experiments.
 
 Three categories compared:
   • Qwen3-32B  Direct   (large baseline, single-agent)
@@ -10,7 +10,6 @@ Three categories compared:
 Outputs (data/results/plots/):
   token_breakdown.png       — avg tokens/query, grouped by category
   tool_calls_breakdown.png  — total tool calls by type, grouped by category
-  pareto_per_benchmark.png  — accuracy vs tokens/query, one panel per benchmark
 
 Usage:
     python scripts/plots/efficiency_plots.py
@@ -73,7 +72,6 @@ BM_LABELS  = {"gaia": "GAIA", "gpqa": "GPQA", "aime": "AIME",
 #
 # Direct categories carry 4 configs (no_tools + direct_tools × no-think/+think) so
 # the token-breakdown plot shows the full picture.
-# The Pareto scatter filters to direct_tools only (2 dots per model).
 # "Sub. Think" and "All Think" are exclusive to the MAS category.
 CATEGORIES: dict[str, dict] = {
     "32B Direct": {
@@ -119,17 +117,6 @@ ALL_CONFIGS: list[tuple[str, str, str, str]] = [
     for cat_key, cat in CATEGORIES.items()
     for cfg in cat["configs"]
 ]
-
-# Marker style per thinking mode — keyed by the `think` config value so that
-# the same mode (e.g. "none" / "orchestrator") gets an identical marker across
-# all categories (Direct and MAS alike).
-# Order: No Think, Orch. Think, Sub. Think (MAS-only), All Think (MAS-only).
-THINK_STYLE: dict[str, tuple[str, str]] = {
-    "none":         ("o",  "No Think"),
-    "orchestrator": ("^",  "Orch. Think"),
-    "subagents":    ("s",  "Sub. Think"),
-    "all":          ("D",  "All Think"),
-}
 
 # ─────────────────────────── data loading ────────────────────────────────────
 
@@ -490,7 +477,7 @@ def plot_latency_breakdown(data: dict[str, list[dict]],
     for cat_key, recs in data.items():
         _category_underline(ax, positions[cat_key], BAR_W, cat_key, y_frac=-0.42)
 
-    bm_label = BM_LABELS.get(benchmark, benchmark) if benchmark else "avg. over all benchmarks"
+    bm_label = BM_LABELS.get(benchmark, benchmark) if benchmark else "average over all benchmarks"
     fig.text(0.5, 0.97, f"Latency per configuration  —  {bm_label}",
              ha="center", va="top", fontsize=9.5, transform=fig.transFigure)
 
@@ -631,123 +618,7 @@ def plot_tool_calls(data: dict[str, list[dict]]) -> None:
     print(f"  Saved → {OUT_DIR}/tool_calls_breakdown.png")
 
 
-# ─────────────────────────── Figure 3: Per-benchmark Pareto ──────────────────
-
-def plot_per_benchmark_pareto(data: dict[str, list[dict]]) -> None:
-    """
-    1 × 5 small-multiples.  Each panel = one benchmark.
-    x = tokens/query,  y = accuracy (%).
-    Colour = category; marker = thinking level.
-    The Pareto frontier across all plotted configs is drawn as a solid step line.
-    """
-    fig, axes = plt.subplots(1, len(BENCHMARKS),
-                             figsize=(15.0, 3.0), sharey=False)
-    # Reserve a small right margin for the legend (placed just outside the panels).
-    fig.subplots_adjust(wspace=0.30, right=0.88)
-
-    for ax, bm in zip(axes, BENCHMARKS):
-        pts: list[tuple[str, str, float, float]] = []  # (cat, think, x, y)
-        for cat_key, recs in data.items():
-            for r in recs:
-                if bm not in r["per_benchmark"]:
-                    continue
-                # Direct categories: direct_tools only (no no_tools)
-                if cat_key != "8B MAS" and r["tools"] == "no_tools":
-                    continue
-                bmd = r["per_benchmark"][bm]
-                pts.append((cat_key, r["think"],
-                             bmd["tokens_per_query"], bmd["accuracy"]))
-
-        if not pts:
-            ax.set_visible(False)
-            continue
-
-        # Scatter — marker determined by think value, consistent across categories
-        for cat_key, think_val, x, y in pts:
-            marker, _ = THINK_STYLE.get(think_val, ("o", ""))
-            ax.scatter(x, y,
-                       color=CATEGORIES[cat_key]["color"],
-                       marker=marker,
-                       s=90, zorder=4,
-                       edgecolors="white", linewidths=0.8)
-
-        # Pareto frontier: point i is non-dominated if no other point j has
-        # (tokens_j <= tokens_i AND accuracy_j >= accuracy_i) with at least
-        # one strict inequality  →  min tokens, max accuracy.
-        pareto = []
-        for i, (_, _, xi, yi) in enumerate(pts):
-            dominated = any(
-                pts[j][2] <= xi and pts[j][3] >= yi
-                and (pts[j][2] < xi or pts[j][3] > yi)
-                for j in range(len(pts)) if j != i
-            )
-            if not dominated:
-                pareto.append((xi, yi))
-        if pareto:
-            # Sort by tokens ascending; accuracy must be strictly increasing
-            # (any point with same/more tokens but same/lower accuracy is dominated).
-            pareto.sort()
-            # Staircase: vertical-then-horizontal steps (┐─) so each plateau
-            # extends rightward from the point where accuracy improves.
-            sx, sy = [pareto[0][0]], [pareto[0][1]]
-            for i in range(1, len(pareto)):
-                # jump up to new accuracy at previous x, then extend right
-                sx += [pareto[i - 1][0], pareto[i][0]]
-                sy += [pareto[i][1],     pareto[i][1]]
-            ax.plot(sx, sy, color="#555555", lw=1.3, ls="-",
-                    alpha=0.75, zorder=2)
-
-        ax.set_title(BM_LABELS.get(bm, bm), fontsize=8.5, fontweight="bold", pad=3)
-        ax.set_xlabel("Tokens / query", labelpad=2)
-        if ax is axes[0]:
-            ax.set_ylabel("Accuracy (%)", labelpad=2)
-        ax.tick_params(pad=2)
-        # Consistent headroom: top point always sits at ~77% of panel height.
-        y_max = max(y for *_, y in pts)
-        ax.set_ylim(0, min(100.0, y_max * 1.30))
-        ax.set_xlim(left=0)
-        ax.xaxis.set_major_formatter(
-            mticker.FuncFormatter(lambda v, _: f"{v/1000:.0f}K"))
-        ax.yaxis.grid(True); ax.xaxis.grid(False)
-
-    # ── single-column legend on the right, two visual groups ──────────────────
-    # Group 1: Pareto frontier line + one colour patch per category (setup)
-    group1 = [
-        plt.Line2D([0], [0], color="#555555", lw=1.3, label="Pareto frontier"),
-    ] + [
-        mpatches.Patch(color=cat["color"], label=cat["label"])
-        for cat in CATEGORIES.values()
-    ]
-
-    # blank separator between groups
-    separator = [plt.Line2D([0], [0], color="none", label="")]
-
-    # Group 2: marker shapes = thinking modes (keyed by think value)
-    group2 = [
-        plt.Line2D([0], [0], marker=marker, color="#444444",
-                   linestyle="none", markersize=6, label=lbl)
-        for marker, lbl in THINK_STYLE.values()
-    ]
-
-    all_handles = group1 + separator + group2
-
-    fig.legend(
-        handles=all_handles,
-        loc="upper left",
-        ncol=1,
-        bbox_to_anchor=(0.885, 0.992),
-        handlelength=1.25,
-        handletextpad=0.5,
-        borderpad=0.6,
-        labelspacing=0.35,
-    )
-    fig.suptitle("Accuracy vs. Token Cost per Benchmark", y=1.02, fontsize=9.5)
-    fig.savefig(OUT_DIR / "pareto_per_benchmark.png", bbox_inches="tight", dpi=300)
-    plt.close(fig)
-    print(f"  Saved → {OUT_DIR}/pareto_per_benchmark.png")
-
-
-# ─────────────────────────── Figure 5: Latency heatmap table ─────────────────
+# ─────────────────────────── Figure 4: Latency heatmap table ─────────────────
 
 # Orange colormap: lighter = lower latency (faster / better),
 #                  darker  = higher latency (slower / worse).
@@ -778,7 +649,7 @@ _SMALL_SZ  = 7.5
 
 def plot_latency_heatmap(data: dict[str, list[dict]]) -> None:
     """
-    NeurIPS-style heatmap table of wall-clock seconds per query.
+    Heatmap table of wall-clock seconds per query.
 
     Rows  = configurations (grouped by category with horizontal rules).
     Cols  = GAIA | GPQA | AIME | MuSiQue | HLE | Avg.
@@ -839,15 +710,18 @@ def plot_latency_heatmap(data: dict[str, list[dict]]) -> None:
 
     # ── header ───────────────────────────────────────────────────────────────
     col_hdrs = ["Model", "Tools", "Thinking"] + \
-               [BM_LABELS[bm] for bm in BENCHMARKS] + ["Avg"]
+               [BM_LABELS[bm] for bm in BENCHMARKS] + ["Avg."]
     y_top = fig_h - 0.04
     hline(y_top, lw=0.9)
     hy = y_top - _HDR_H / 2
     for ci, lbl in enumerate(col_hdrs):
+        hdr_kw: dict = {"fontsize": _FONT_SZ}
+        if ci == 8:  # Avg. column — emphasise header
+            hdr_kw["fontweight"] = "bold"
         if ci < 3:
-            ax.text(lx(ci), hy, lbl, ha="left", va="center", fontsize=_FONT_SZ)
+            ax.text(lx(ci), hy, lbl, ha="left", va="center", **hdr_kw)
         else:
-            ax.text(cx(ci), hy, lbl, ha="center", va="center", fontsize=_FONT_SZ)
+            ax.text(cx(ci), hy, lbl, ha="center", va="center", **hdr_kw)
     hline(y_top - _HDR_H, lw=0.5)
 
     # ── data rows ─────────────────────────────────────────────────────────────
@@ -877,10 +751,13 @@ def plot_latency_heatmap(data: dict[str, list[dict]]) -> None:
             val = row[col]
             xc_pos      = cx(ci)
             col_x, col_w = _TBL_COL[ci]
+            cell_txt_kw: dict = {"fontsize": _FONT_SZ}
+            if ci == 8:  # Avg. column — bold figures
+                cell_txt_kw["fontweight"] = "bold"
 
             if val is None:
                 ax.text(xc_pos, yc, "—", ha="center", va="center",
-                        fontsize=_FONT_SZ)
+                        **cell_txt_kw)
                 continue
 
             # coloured cell background
@@ -891,9 +768,17 @@ def plot_latency_heatmap(data: dict[str, list[dict]]) -> None:
             ))
             # cell value
             ax.text(xc_pos, yc, f"{val:.1f}",
-                    ha="center", va="center", fontsize=_FONT_SZ, zorder=2)
+                    ha="center", va="center", zorder=2, **cell_txt_kw)
 
     y_bot = y
+    # Bold outline around the average column (header + all data rows)
+    _ci_avg = 8
+    ax_x, ax_w = _TBL_COL[_ci_avg]
+    ax.add_patch(mpatches.Rectangle(
+        (ax_x, y_bot), ax_w, y_top - y_bot,
+        fill=False, edgecolor="#1a1a1a", linewidth=2.0,
+        joinstyle="miter", zorder=6,
+    ))
     hline(y_bot, lw=0.9)
 
     # ── legend (gradient bar) ─────────────────────────────────────────────────
@@ -939,7 +824,6 @@ def main() -> None:
     plot_latency_breakdown(data, with_footnote=True)    # avg, annotated
     plot_latency_heatmap(data)                          # per-dataset heatmap table
     plot_tool_calls(data)
-    plot_per_benchmark_pareto(data)
     print(f"\nDone. Outputs in: {OUT_DIR}")
 
 

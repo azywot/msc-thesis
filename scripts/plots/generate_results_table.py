@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Generate NeurIPS-style results table from MALGAI_main_results.csv.
+Generate results table from main_results.csv.
 
 Output:
-    data/results/MALGAI_main_results_table.png
+    data/results/main_results_table.png
 
 Usage:
     python scripts/generate_results_table.py
@@ -20,8 +20,8 @@ from pathlib import Path
 
 # ─────────────────────────── paths ───────────────────────────────────────────
 ROOT     = Path(__file__).resolve().parent.parent.parent
-CSV_PATH = ROOT / "data/results/MALGAI_main_results.csv"
-OUT_PNG  = ROOT / "data/results/plots/MALGAI_main_results_table.png"
+CSV_PATH = ROOT / "data/results/main_results.csv"
+OUT_PNG  = ROOT / "data/results/plots/main_results_table.png"
 
 # ─────────────────────────── table structure ─────────────────────────────────
 DATASETS       = ["gaia", "gpqa", "aime", "musique", "hle"]
