@@ -5,8 +5,8 @@ Run from the repo root:
     python experiments/configs/generate_configs.py --suite baseline
     python experiments/configs/generate_configs.py --suite agentflow
     python experiments/configs/generate_configs.py --suite orch_capacity
-    python experiments/configs/generate_configs.py --suite subagent_orchestrator
-        (subagent_orchestrator: leave-one-out no_<tool> ablations per dataset, 8B only)
+    python experiments/configs/generate_configs.py --suite subagent_orchestrator_ablation
+        (subagent_orchestrator_ablation: leave-one-out no_<tool> ablations per dataset, 8B only)
     python experiments/configs/generate_configs.py --suite structured_memory_ablation
         (8B: subagent tools + orch thinking + baseline: true — no query analysis / structured memory)
 """
@@ -124,7 +124,7 @@ VARIANTS_ALL_SUBAGENTS = [v for v in VARIANTS_ALL if v[2] == False]
 VARIANTS_32B = [v for v in VARIANTS_ALL if v[1] == "32B"]
 VARIANTS_8B = [v for v in VARIANTS_ALL if v[1] == "8B"]
 
-# Used only as documentation; subagent_orchestrator suite uses variant_type ablation instead.
+# Used only as documentation; subagent_orchestrator_ablation suite uses variant_type ablation instead.
 _SUBAGENT_ORCH_MODEL_STEMS = (("8B", "qwen8B"),)
 
 # AF-style sub-agent tools + orchestrator thinking, but baseline: true (plain message history;
@@ -235,14 +235,14 @@ SUITES = {
         "wandb_project":   "benchmarks",
         "split_overrides": {},
     },
-    "subagent_orchestrator": {
+    "subagent_orchestrator_ablation": {
         "description_tag": (
             "[Subagent tools + orchestrator thinking; tool ablations (leave-one-out); "
             "NO image_inspector, NO mindmap]"
         ),
         "name_prefix":     "AF_subagent_orch",
-        "output_dir_root": "./experiments/results/subagent_orchestrator",
-        "config_subdir":   "subagent_orchestrator",
+        "output_dir_root": "./experiments/results/subagent_orchestrator_ablation",
+        "config_subdir":   "subagent_orchestrator_ablation",
         "baseline":        False,
         "variant_type":    "subagent_orch_ablation",
         "num_gpus":        2,

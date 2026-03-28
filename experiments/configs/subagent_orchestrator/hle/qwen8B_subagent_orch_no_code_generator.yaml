@@ -32,7 +32,7 @@ dataset:
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
-output_dir: "./experiments/results/subagent_orchestrator/hle/qwen8B_subagent_orch_no_code_generator"
+output_dir: "./experiments/results/subagent_orchestrator_ablation/hle/qwen8B_subagent_orch_no_code_generator"
 use_wandb: true
 wandb_project: "benchmarks"
 

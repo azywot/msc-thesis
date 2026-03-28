@@ -32,7 +32,7 @@ dataset:
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
-output_dir: "./experiments/results/subagent_orchestrator/gaia/qwen8B_subagent_orch_no_text_inspector"
+output_dir: "./experiments/results/subagent_orchestrator_ablation/gaia/qwen8B_subagent_orch_no_text_inspector"
 use_wandb: true
 wandb_project: "benchmarks"
 
