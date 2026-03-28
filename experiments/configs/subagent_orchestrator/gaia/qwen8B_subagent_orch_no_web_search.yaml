@@ -1,0 +1,39 @@
+# GAIA — Qwen3-8B, sub-agent tools (without web_search), orchestrator thinking
+
+name: "AF_subagent_orch_gaia_qwen8B_subagent_orch_no_web_search"
+description: "[Subagent tools + orchestrator thinking; tool ablations (leave-one-out); NO image_inspector, NO mindmap] GAIA all_validation with Qwen3-8B, sub-agent tools (without web_search), orchestrator thinking"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 1
+  ntasks: 1
+  cpus_per_task: 8
+  time: "16:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "Qwen3-8B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-8B"
+    role: "orchestrator"
+
+tools:
+  enabled_tools:
+    - code_generator
+    - text_inspector
+  direct_tool_call: false
+
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "ORCHESTRATOR_ONLY"
+output_dir: "./experiments/results/subagent_orchestrator/gaia/qwen8B_subagent_orch_no_web_search"
+use_wandb: true
+wandb_project: "benchmarks"
+
+cache_dir: "./cache"

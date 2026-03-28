@@ -5,9 +5,12 @@ Run from the repo root:
     python experiments/configs/generate_configs.py --suite baseline
     python experiments/configs/generate_configs.py --suite agentflow
     python experiments/configs/generate_configs.py --suite orch_capacity
+    python experiments/configs/generate_configs.py --suite subagent_orchestrator
+        (subagent_orchestrator: leave-one-out no_<tool> ablations per dataset, 8B only)
 """
 import argparse
 from pathlib import Path
+from typing import List, Optional
 
 CONFIGS_ROOT = Path(__file__).parent
 
@@ -119,6 +122,9 @@ VARIANTS_ALL_SUBAGENTS = [v for v in VARIANTS_ALL if v[2] == False]
 VARIANTS_32B = [v for v in VARIANTS_ALL if v[1] == "32B"]
 VARIANTS_8B = [v for v in VARIANTS_ALL if v[1] == "8B"]
 
+# Used only as documentation; subagent_orchestrator suite uses variant_type ablation instead.
+_SUBAGENT_ORCH_MODEL_STEMS = (("8B", "qwen8B"),)
+
 # ── orchestrator-capacity variants ─────────────────────────────────────────────
 # (filename_stem, orch_key, sub_key, thinking_mode)
 # Always sub-agent tool mode (direct_tool_call: false) with full tools.
@@ -221,6 +227,20 @@ SUITES = {
         "wandb_project":   "benchmarks",
         "split_overrides": {},
     },
+    "subagent_orchestrator": {
+        "description_tag": (
+            "[Subagent tools + orchestrator thinking; tool ablations (leave-one-out); "
+            "NO image_inspector, NO mindmap]"
+        ),
+        "name_prefix":     "AF_subagent_orch",
+        "output_dir_root": "./experiments/results/subagent_orchestrator",
+        "config_subdir":   "subagent_orchestrator",
+        "baseline":        False,
+        "variant_type":    "subagent_orch_ablation",
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+    },
     "olmo-think": {
         "description_tag": "[OLMo-Think; NO image_inspector, NO mindmap]",
         "name_prefix":     "OLMo_Think",
@@ -300,13 +320,39 @@ def _model_block_with_subagent(orch_key: str, sub_key: str, tool_roles: list[str
     return "\n".join(lines)
 
 
-def make_config(suite: dict, dataset: str, stem: str, model_key: str,
-                direct: bool, tools_key: str, thinking: str) -> str:
+def make_config(
+    suite: dict,
+    dataset: str,
+    stem: str,
+    model_key: str,
+    direct: bool,
+    tools_key: str,
+    thinking: str,
+    *,
+    enabled_tools_override: Optional[List[str]] = None,
+) -> str:
     ds = {**DATASETS[dataset], **suite["split_overrides"].get(dataset, {})}
     m = MODELS[model_key]
-    enabled = ds["tools"] if tools_key == "tools" else []
+    full_tools = ds["tools"]
+    if enabled_tools_override is not None:
+        enabled = list(enabled_tools_override)
+    else:
+        enabled = full_tools if tools_key == "tools" else []
 
-    tool_desc = "no tools" if not enabled else TOOL_MODE_LABELS[direct]
+    if not enabled:
+        tool_desc = "no tools"
+    else:
+        base = TOOL_MODE_LABELS[direct]
+        if enabled_tools_override is not None:
+            omitted = [t for t in full_tools if t not in enabled]
+            if not omitted:
+                tool_desc = f"{base} (full tool set)"
+            elif len(omitted) == 1:
+                tool_desc = f"{base} (without {omitted[0]})"
+            else:
+                tool_desc = f"{base} (enabled: {', '.join(enabled)})"
+        else:
+            tool_desc = base
     think_desc = THINKING_LABELS[thinking]
     comment_line = f"# {ds['display']} — {m['name']}, {tool_desc}, {think_desc}"
 
@@ -453,6 +499,28 @@ def generate_suite(suite_name: str) -> None:
                 path.write_text(content)
                 print(f"  wrote {path.relative_to(CONFIGS_ROOT.parent)}")
                 created += 1
+        elif variant_type == "subagent_orch_ablation":
+            ds = {**DATASETS[dataset], **suite["split_overrides"].get(dataset, {})}
+            full_tools = list(ds["tools"])
+            thinking = "ORCHESTRATOR_ONLY"
+            for model_key, stem_prefix in _SUBAGENT_ORCH_MODEL_STEMS:
+                for absent in full_tools:
+                    stem = f"{stem_prefix}_subagent_orch_no_{absent}"
+                    ablated = [t for t in full_tools if t != absent]
+                    content = make_config(
+                        suite,
+                        dataset,
+                        stem,
+                        model_key,
+                        False,
+                        "tools",
+                        thinking,
+                        enabled_tools_override=ablated,
+                    )
+                    path = dataset_dir / f"{stem}.yaml"
+                    path.write_text(content)
+                    print(f"  wrote {path.relative_to(CONFIGS_ROOT.parent)}")
+                    created += 1
         else:
             for stem, model_key, direct, tools_key, thinking in suite["variants"]:
                 content = make_config(suite, dataset, stem, model_key, direct, tools_key, thinking)
