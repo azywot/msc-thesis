@@ -7,6 +7,8 @@ Run from the repo root:
     python experiments/configs/generate_configs.py --suite orch_capacity
     python experiments/configs/generate_configs.py --suite subagent_orchestrator
         (subagent_orchestrator: leave-one-out no_<tool> ablations per dataset, 8B only)
+    python experiments/configs/generate_configs.py --suite structured_memory_ablation
+        (8B: subagent tools + orch thinking + baseline: true — no query analysis / structured memory)
 """
 import argparse
 from pathlib import Path
@@ -125,6 +127,12 @@ VARIANTS_8B = [v for v in VARIANTS_ALL if v[1] == "8B"]
 # Used only as documentation; subagent_orchestrator suite uses variant_type ablation instead.
 _SUBAGENT_ORCH_MODEL_STEMS = (("8B", "qwen8B"),)
 
+# AF-style sub-agent tools + orchestrator thinking, but baseline: true (plain message history;
+# skips planning / query analysis and structured AgentFlow memory).
+VARIANTS_STRUCTURED_MEMORY_ABLATION = [
+    ("qwen8B_subagent_orch_baseline_chat", "8B", False, "tools", "ORCHESTRATOR_ONLY"),
+]
+
 # ── orchestrator-capacity variants ─────────────────────────────────────────────
 # (filename_stem, orch_key, sub_key, thinking_mode)
 # Always sub-agent tool mode (direct_tool_call: false) with full tools.
@@ -237,6 +245,20 @@ SUITES = {
         "config_subdir":   "subagent_orchestrator",
         "baseline":        False,
         "variant_type":    "subagent_orch_ablation",
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+    },
+    "structured_memory_ablation": {
+        "description_tag": (
+            "[Structured-memory ablation: subagent tools + orch thinking, baseline chat "
+            "(no query analysis / structured memory); NO image_inspector, NO mindmap]"
+        ),
+        "name_prefix":     "AF_struct_mem_ablation",
+        "output_dir_root": "./experiments/results/structured_memory_ablation",
+        "config_subdir":   "structured_memory_ablation",
+        "baseline":        True,
+        "variants":        VARIANTS_STRUCTURED_MEMORY_ABLATION,
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
         "split_overrides": {},
