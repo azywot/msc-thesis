@@ -81,21 +81,15 @@ def struct_mem_key(ds: str) -> str:
 
 
 def full_system_rows(ds: str, rows: dict[str, dict], ref_acc: float) -> list[str]:
-    """Render the 'Full system (all tools)' block."""
-    lines: list[str] = [r"\multicolumn{4}{l}{\textit{Full system (all tools)}} \\"]
-    for suffix, label in THINKING_MODES:
-        key = full_key(ds, suffix)
-        if key not in rows:
-            continue
-        acc = pct(rows[key]["accuracy"])
-        d   = "—" if suffix == "orchestrator" else delta_str(acc, ref_acc)
-        if suffix == "orchestrator":
-            lines.append(
-                f" & \\textbf{{{label}}} & \\textbf{{{acc:.1f}}} & \\textbf{{{d}}} \\\\"
-            )
-        else:
-            lines.append(f" & {label} & {acc:.1f} & {d} \\\\")
-    return lines
+    """Render the 'Full system' reference row (orchestrator-only thinking)."""
+    key = full_key(ds, "orchestrator")
+    if key not in rows:
+        return []
+    acc = pct(rows[key]["accuracy"])
+    return [
+        r"\multicolumn{4}{l}{\textit{Full system (orchestrator-only thinking)}} \\",
+        f" & Orchestrator only & \\textbf{{{acc:.1f}}} & \\textbf{{—}} \\\\",
+    ]
 
 
 # ─── tools ablation ──────────────────────────────────────────────────────────
@@ -116,17 +110,29 @@ _TOOL_COLS = [
 ]
 
 
+_NO_TOOLS = "no_tools"  # sentinel for the all-tools-disabled row
+
+
 def _tool_cell(ds: str, ablated_suffix: str | None, col_suffix: str) -> str:
     r"""Return \cmark, \xmark, or $-$ for one tool column in one data row.
 
-    ablated_suffix -- the tool being removed in this row (None = full-system row).
-    col_suffix     -- the ablation suffix that corresponds to this column's tool.
+    ablated_suffix -- tool being removed (None = full system, _NO_TOOLS = all off).
+    col_suffix     -- ablation suffix that corresponds to this column's tool.
     """
     if ds not in _TEXT_INSPECTOR_DATASETS and col_suffix == "no_text_inspector":
         return DASH
-    if ablated_suffix == col_suffix:
+    if ablated_suffix == _NO_TOOLS or ablated_suffix == col_suffix:
         return XMARK
     return CMARK
+
+
+def _no_tools_key(ds: str, rows: dict[str, dict]) -> str | None:
+    """Return the best-matching no-tools orchestrator key for a dataset."""
+    for prefix in (f"AF_no_img_no_mm_{ds}", f"NEW_baseline_{ds}"):
+        k = f"{prefix}_qwen8B_no_tools_orchestrator"
+        if k in rows:
+            return k
+    return None
 
 
 def tools_table(ds: str, label: str, rows: dict[str, dict]) -> str | None:
@@ -145,8 +151,8 @@ def tools_table(ds: str, label: str, rows: dict[str, dict]) -> str | None:
         r"\centering",
         r"\caption{",
         f"  Tool ablation on {label} (Qwen3-8B, sub-agent tools).",
-        r"  The upper block shows the full system under each thinking mode;",
-        r"  the lower block performs leave-one-out tool ablations with orchestrator-only thinking.",
+        r"  The upper block shows the full system with orchestrator-only thinking (reference);",
+        r"  the lower block performs leave-one-out tool ablations, also with orchestrator-only thinking.",
         r"  $\Delta$ is relative to the full system with orchestrator-only thinking (bold).",
         r"  A dash (${-}$) indicates the tool was not used for this dataset.",
         r"}",
@@ -163,26 +169,16 @@ def tools_table(ds: str, label: str, rows: dict[str, dict]) -> str | None:
     )
     lines.append(r"\midrule")
     lines.append(
-        f"\\multicolumn{{{N}}}{{l}}{{\\textit{{Full system (all tools)}}}} \\\\"
+        f"\\multicolumn{{{N}}}{{l}}{{\\textit{{Full system (orchestrator-only thinking)}}}} \\\\"
     )
 
-    # Full-system rows: all tools ✓, varying thinking mode
-    for suffix, th_label in THINKING_MODES:
-        key = full_key(ds, suffix)
-        if key not in rows:
-            continue
-        acc = pct(rows[key]["accuracy"])
-        d   = "—" if suffix == "orchestrator" else delta_str(acc, ref_acc)
-        tools_cells = " & ".join(
-            _tool_cell(ds, None, col_suffix)
-            for _, col_suffix, _ in _TOOL_COLS
-        )
-        if suffix == "orchestrator":
-            lines.append(
-                f"{tools_cells} & \\textbf{{{th_label}}} & \\textbf{{{acc:.1f}}} & \\textbf{{{d}}} \\\\"
-            )
-        else:
-            lines.append(f"{tools_cells} & {th_label} & {acc:.1f} & {d} \\\\")
+    # Full-system reference row: all tools ✓, orchestrator-only thinking
+    tools_cells = " & ".join(
+        _tool_cell(ds, None, col_suffix) for _, col_suffix, _ in _TOOL_COLS
+    )
+    lines.append(
+        f"{tools_cells} & Orchestrator only & \\textbf{{{ref_acc:.1f}}} & \\textbf{{—}} \\\\"
+    )
 
     lines.append(r"\midrule")
     lines.append(
@@ -213,50 +209,190 @@ def tools_table(ds: str, label: str, rows: dict[str, dict]) -> str | None:
     return "\n".join(lines)
 
 
-# ─── structured-memory ablation ──────────────────────────────────────────────
+# ─── shared helper ───────────────────────────────────────────────────────────
 
-def structured_memory_table(ds: str, label: str, rows: dict[str, dict]) -> str | None:
-    ref_key = full_key(ds, "orchestrator")
-    if ref_key not in rows:
-        return None
-    ref_acc = pct(rows[ref_key]["accuracy"])
+def _fmt(val: float | None, is_best: bool) -> str:
+    """Format an accuracy cell, bolding the best value per column."""
+    if val is None:
+        return "—"
+    s = f"{val:.1f}"
+    return f"\\textbf{{{s}}}" if is_best else s
 
-    sm_key = struct_mem_key(ds)
+
+def _best_per_col(data: list[list[float | None]]) -> list[float | None]:
+    """Return the max (ignoring None) for each column across all rows."""
+    n_cols = len(data[0])
+    bests: list[float | None] = []
+    for c in range(n_cols):
+        vals = [row[c] for row in data if row[c] is not None]
+        bests.append(max(vals) if vals else None)
+    return bests
+
+
+def _combined_table(
+    caption_lines: list[str],
+    label: str,
+    ds_list: list[str],
+    row_specs: list[tuple[str, list[float | None]]],
+    ref_accs: list[float],
+    show_delta: bool = True,
+) -> str:
+    """Render a compact all-datasets table.
+
+    row_specs  -- [(row_label, [val_ds0, val_ds1, ...]), ...]
+    ref_accs   -- reference accuracy per dataset column for the Delta row
+    show_delta -- whether to append a midrule + Delta row at the bottom
+    """
+    ds_labels = [DATASET_LABELS[ds] for ds in ds_list]
+    col_spec  = "l " + " ".join(["r"] * len(ds_list))
+
+    # Determine per-column best across all data rows
+    bests = _best_per_col([vals for _, vals in row_specs])
 
     lines: list[str] = [
         r"\begin{table}[H]",
         r"\centering",
         r"\caption{",
-        f"  Structured-memory ablation on {label} (Qwen3-8B, sub-agent tools).",
-        r"  The upper block shows the full system (with query analysis and structured memory)",
-        r"  under each thinking mode; the lower block replaces both components with a plain",
-        r"  chat baseline, evaluated with orchestrator-only thinking.",
-        r"  $\Delta$ is relative to the full system with orchestrator-only thinking (bold).",
+        *[f"  {l}" for l in caption_lines],
         r"}",
-        f"\\label{{tab:struct_mem_ablation_{ds}}}",
+        f"\\label{{{label}}}",
         r"\vspace{0.5em}",
-        r"\begin{tabular}{llcc}",
+        f"\\begin{{tabular}}{{{col_spec}}}",
         r"\toprule",
-        r"\textbf{Setup} & \textbf{Thinking} & \textbf{Avg.\ (\%)} & \textbf{$\Delta$} \\",
+        r"\textbf{Setup} & "
+        + " & ".join(f"\\textbf{{{lbl}}}" for lbl in ds_labels)
+        + r" \\",
         r"\midrule",
     ]
 
-    lines += full_system_rows(ds, rows, ref_acc)
-    lines.append(r"\midrule")
-    lines.append(
-        r"\multicolumn{4}{l}{\textit{Ablation: no structured memory (orchestrator-only thinking)}} \\"
+    for row_label, vals in row_specs:
+        cells = [
+            _fmt(v, bests[c] is not None and v is not None and v >= bests[c] - 1e-9)
+            for c, v in enumerate(vals)
+        ]
+        lines.append(f"{row_label} & " + " & ".join(cells) + r" \\")
+
+    if show_delta:
+        lines.append(r"\midrule")
+        last_vals = row_specs[-1][1]
+        delta_cells = [
+            "—" if last_vals[c] is None else delta_str(last_vals[c], ref_accs[c])
+            for c in range(len(ds_list))
+        ]
+        lines.append(r"$\Delta$ & " + " & ".join(delta_cells) + r" \\")
+
+    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    return "\n".join(lines)
+
+
+# ─── structured-memory ablation ──────────────────────────────────────────────
+
+def structured_memory_combined_table(all_rows: dict[str, dict[str, dict]]) -> str:
+    ds_list  = [ds for ds in DATASETS if full_key(ds, "orchestrator") in all_rows[ds]]
+    ref_accs = [pct(all_rows[ds][full_key(ds, "orchestrator")]["accuracy"]) for ds in ds_list]
+
+    sm_vals: list[float | None] = []
+    for ds in ds_list:
+        k = struct_mem_key(ds)
+        sm_vals.append(pct(all_rows[ds][k]["accuracy"]) if k in all_rows[ds] else None)
+
+    row_specs = [
+        ("Full system",          ref_accs),
+        ("w/o Structured memory", sm_vals),
+    ]
+    return _combined_table(
+        caption_lines=[
+            "Structured-memory ablation across all datasets (Qwen3-8B, sub-agent tools,",
+            "orchestrator-only thinking). The reference row uses the full system with query",
+            "analysis and structured memory; the ablation row replaces both with a plain chat",
+            "baseline. Bold denotes the better result per dataset.",
+            "$\\Delta$ is relative to the full system.",
+        ],
+        label="tab:struct_mem_ablation",
+        ds_list=ds_list,
+        row_specs=row_specs,
+        ref_accs=ref_accs,
+        show_delta=True,
     )
 
-    if sm_key in rows:
-        acc = pct(rows[sm_key]["accuracy"])
-        d   = delta_str(acc, ref_acc)
-        lines.append(
-            f"w/o Structured memory & Orchestrator only & {acc:.1f} & {d} \\\\"
+
+# ─── tools ablation (combined) ───────────────────────────────────────────────
+
+def tools_combined_table(all_rows: dict[str, dict[str, dict]]) -> str:
+    """Combined table: tool-tick columns (Web/Code/File) + dataset accuracy columns."""
+    ds_list   = [ds for ds in DATASETS if full_key(ds, "orchestrator") in all_rows[ds]]
+    ds_labels = [DATASET_LABELS[ds] for ds in ds_list]
+
+    ref_accs: list[float] = [
+        pct(all_rows[ds][full_key(ds, "orchestrator")]["accuracy"]) for ds in ds_list
+    ]
+
+    # ── collect all data rows first so we can compute bests in one pass ───────
+    # Each entry: (ablated_suffix, vals, add_midrule_before)
+    data_rows: list[tuple[str | None, list[float | None], bool]] = [
+        (None, list(ref_accs), False),
+    ]
+    for _, col_suffix, _ in _TOOL_COLS:
+        vals: list[float | None] = [
+            pct(all_rows[ds][k]["accuracy"])
+            if (k := tool_ablation_key(ds, col_suffix)) in all_rows[ds] else None
+            for ds in ds_list
+        ]
+        if any(v is not None for v in vals):
+            data_rows.append((col_suffix, vals, False))
+
+    no_tools_vals: list[float | None] = [
+        pct(all_rows[ds][k]["accuracy"])
+        if (k := _no_tools_key(ds, all_rows[ds])) is not None else None
+        for ds in ds_list
+    ]
+    if any(v is not None for v in no_tools_vals):
+        data_rows.append((_NO_TOOLS, no_tools_vals, True))   # midrule before
+
+    bests = _best_per_col([vals for _, vals, _ in data_rows])
+
+    def acc_row(ablated_suffix: str | None, vals: list[float | None]) -> str:
+        tick_cells = " & ".join(
+            _tool_cell(ds_list[0], ablated_suffix, col_suffix)
+            for _, col_suffix, _ in _TOOL_COLS
         )
-    else:
-        lines.append(
-            r"\multicolumn{4}{l}{\quad\textit{(no ablation data for this dataset)}} \\"
+        acc_cells = " & ".join(
+            _fmt(v, bests[c] is not None and v is not None and v >= bests[c] - 1e-9)
+            for c, v in enumerate(vals)
         )
+        return f"{tick_cells} & {acc_cells} \\\\"
+
+    # ── build LaTeX ───────────────────────────────────────────────────────────
+    col_spec = "ccc|" + "r" * len(ds_list)
+    lines: list[str] = [
+        r"\begin{table}[H]",
+        r"\centering",
+        r"\caption{",
+        r"  Tool ablation across all datasets (Qwen3-8B, sub-agent tools,",
+        r"  orchestrator-only thinking). Each row removes one tool from the full system;",
+        r"  the last row disables all tools (no-tools baseline).",
+        r"  A dash ($-$) indicates the tool was not used for that dataset.",
+        r"  Bold denotes the best result per dataset.",
+        r"}",
+        r"\label{tab:tool_ablation}",
+        r"\vspace{0.5em}",
+        f"\\begin{{tabular}}{{{col_spec}}}",
+        r"\toprule",
+        r"\multicolumn{3}{c|}{\textbf{Tools}} & "
+        + f"\\multicolumn{{{len(ds_list)}}}{{c}}{{\\textbf{{Accuracy (\\%)}}}} \\\\",
+        r"\textbf{Web} & \multirow{2}{*}{\textbf{Coder}} & \textbf{File} & "
+        + " & ".join(f"\\multirow{{2}}{{*}}{{\\textbf{{{lbl}}}}}" for lbl in ds_labels)
+        + r" \\",
+        r"\textbf{Searcher} & & \textbf{Inspector} & "
+        + " & ".join("" for _ in ds_labels)
+        + r" \\",
+        r"\midrule",
+    ]
+
+    for ablated_suffix, vals, add_midrule in data_rows:
+        if add_midrule:
+            lines.append(r"\midrule")
+        lines.append(acc_row(ablated_suffix, vals))
 
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
     return "\n".join(lines)
@@ -272,32 +408,13 @@ def main() -> None:
         csv_path = ROOT / f"data/results/all_results_{ds}.csv"
         all_rows[ds] = read_csv(csv_path)
 
-    # Tools ablation — one table per dataset
-    tools_parts: list[str] = []
-    for ds in DATASETS:
-        t = tools_table(ds, DATASET_LABELS[ds], all_rows[ds])
-        if t:
-            if tools_parts:
-                tools_parts.append("")
-            label = DATASET_LABELS[ds]
-            sep = f"% {'─' * (len(label) + 2)} {label} {'─' * (len(label) + 2)}"
-            tools_parts.append(sep)
-            tools_parts.append(t)
-    (OUT_DIR / "tools.txt").write_text("\n".join(tools_parts) + "\n")
+    # Tools ablation — single combined table across all datasets
+    (OUT_DIR / "tools.txt").write_text(tools_combined_table(all_rows) + "\n")
     print(f"Wrote {OUT_DIR / 'tools.txt'}")
 
-    # Structured-memory ablation — one table per dataset
-    sm_parts: list[str] = []
-    for ds in DATASETS:
-        t = structured_memory_table(ds, DATASET_LABELS[ds], all_rows[ds])
-        if t:
-            if sm_parts:
-                sm_parts.append("")
-            label = DATASET_LABELS[ds]
-            sep = f"% {'─' * (len(label) + 2)} {label} {'─' * (len(label) + 2)}"
-            sm_parts.append(sep)
-            sm_parts.append(t)
-    (OUT_DIR / "structured_memory.txt").write_text("\n".join(sm_parts) + "\n")
+    # Structured-memory ablation — single combined table across all datasets
+    sm_table = structured_memory_combined_table(all_rows)
+    (OUT_DIR / "structured_memory.txt").write_text(sm_table + "\n")
     print(f"Wrote {OUT_DIR / 'structured_memory.txt'}")
 
 
