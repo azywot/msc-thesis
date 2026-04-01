@@ -6,11 +6,16 @@ Bars are grouped first by orchestrator size (8B / 32B), then by thinking
 mode within each group. Bar colour indicates sub-agent size (1.7B / 8B / 32B).
 
 Output:
-    data/results/orchestrator_capabilities_figure.{pdf,png}
+    data/results/plots/orchestrator_capabilities_figure.png
+
+Input:
+    data/results/orchestrator_capabilities_results.csv
+    If missing, the script exits 0 with a message so ``main.py`` can continue.
 """
 from __future__ import annotations
 
-import pandas as pd
+import csv
+import sys
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -63,13 +68,13 @@ def parse_config(name: str) -> tuple[str, str] | tuple[None, None]:
     return orch, sub
 
 
-def build_data(df: pd.DataFrame) -> dict:
+def build_data(rows: list[dict[str, str]]) -> dict:
     """Return data[orch][thinking_key][sub_size] = accuracy fraction."""
     d: dict = {
         orch: {t: {s: None for s in SUB_SIZES} for t in THINKING_KEYS}
         for orch, _ in ORCH_GROUPS
     }
-    for _, row in df.iterrows():
+    for row in rows:
         orch, sub = parse_config(row["Name"])
         if orch is None:
             continue
@@ -85,7 +90,10 @@ def build_data(df: pd.DataFrame) -> dict:
 def draw(data: dict) -> plt.Figure:
     matplotlib.rcParams.update({
         "font.family":  "serif",
-        "font.size":    9,
+        "font.size":    10.5,
+        "axes.labelsize": 12,
+        "xtick.labelsize": 10.5,
+        "ytick.labelsize": 10.5,
         "pdf.fonttype": 42,
         "ps.fonttype":  42,
     })
@@ -127,14 +135,14 @@ def draw(data: dict) -> plt.Figure:
                color=SUB_COLORS[sub], edgecolor="white", linewidth=0.5, zorder=3)
         ax.text(xpos + BAR_W / 2, val + 0.004,
                 f"{val * 100:.1f}%",
-                ha="center", va="bottom", fontsize=6.5, zorder=4)
+                ha="center", va="bottom", fontsize=8.5, zorder=4)
 
     # ── axes styling ─────────────────────────────────────────────────────────
     ax.set_xlim(-BAR_W * 0.5, x_max + BAR_W * 0.5)
     ax.set_ylim(0, 0.34)
 
     ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1, decimals=0))
-    ax.set_ylabel("Avg. Accuracy [%]", fontsize=9.5)
+    ax.set_ylabel("Avg. Accuracy [%]", fontsize=12)
 
     ax.yaxis.grid(True, linestyle=":", linewidth=0.6, color="gray", alpha=0.7, zorder=0)
     ax.set_axisbelow(True)
@@ -149,14 +157,14 @@ def draw(data: dict) -> plt.Figure:
                       for _, _ in ORCH_GROUPS
                       for tkey, _ in THINKING_MODES]
     ax.set_xticks(tick_positions)
-    ax.set_xticklabels(tick_labels, fontsize=8.5)
+    ax.set_xticklabels(tick_labels, fontsize=10.5)
     ax.tick_params(axis="x", length=0)
 
     # ── orchestrator group labels (below x ticks) ─────────────────────────────
     for orch, orch_lbl in ORCH_GROUPS:
         ax.text(orch_cx[orch], -0.075, orch_lbl,
                 transform=ax.get_xaxis_transform(),
-                ha="center", va="top", fontsize=10, fontweight="bold")
+                ha="center", va="top", fontsize=12, fontweight="bold")
 
     # ── vertical separator between groups ────────────────────────────────────
     ax.axvline(sep_x, color="gray", linewidth=0.8, linestyle="--", zorder=1)
@@ -167,21 +175,38 @@ def draw(data: dict) -> plt.Figure:
                        label=SUB_LABELS[s])
         for s in SUB_SIZES
     ]
-    ax.legend(handles=handles, title="Sub-agent size",
-              loc="upper right", framealpha=0.9,
-              fontsize=8.5, title_fontsize=9,
-              handlelength=1.2, handleheight=0.9)
+    ax.legend(
+        handles=handles,
+        title="Sub-agent size",
+        loc="upper right",
+        bbox_to_anchor=(1.0, 1.09),
+        bbox_transform=ax.transAxes,
+        framealpha=0.9,
+        fontsize=10.5,
+        title_fontsize=11.5,
+        handlelength=1.2,
+        handleheight=0.9,
+    )
 
     fig.tight_layout()
-    fig.subplots_adjust(bottom=0.17)   # room for the group labels
+    fig.subplots_adjust(bottom=0.20)   # room for larger x-axis / group labels
     return fig
 
 
 # ─── entry point ─────────────────────────────────────────────────────────────
 
-def main() -> None:
-    df   = pd.read_csv(CSV_PATH)
-    data = build_data(df)
+def main() -> int:
+    if not CSV_PATH.is_file():
+        print(
+            "Skipping orchestrator capabilities figure: input CSV not found.\n"
+            f"  Expected: {CSV_PATH}",
+            file=sys.stderr,
+        )
+        return 0
+
+    with open(CSV_PATH, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    data = build_data(rows)
 
     # print summary
     for orch, _ in ORCH_GROUPS:
@@ -194,11 +219,13 @@ def main() -> None:
             )
             print(f"  [{tlbl:9s}]  {row}")
 
+    OUT_PNG.parent.mkdir(parents=True, exist_ok=True)
     fig = draw(data)
     fig.savefig(OUT_PNG, bbox_inches="tight", dpi=300)
     plt.close(fig)
     print(f"Saved → {OUT_PNG}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

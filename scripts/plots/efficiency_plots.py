@@ -283,7 +283,8 @@ def print_summary(data: dict[str, list[dict]]) -> None:
 # ─────────────────────────── shared helpers ───────────────────────────────────
 
 def _category_underline(ax, positions: list[float], bar_w: float,
-                         cat_key: str, y_frac: float = -0.50) -> None:
+                         cat_key: str, y_frac: float = -0.50,
+                         fontsize: float = 7.5) -> None:
     """Draw a coloured horizontal rule + label below a group of bars."""
     cat   = CATEGORIES[cat_key]
     x0    = positions[0]  - bar_w * 0.5
@@ -294,7 +295,7 @@ def _category_underline(ax, positions: list[float], bar_w: float,
             color=cat["color"], lw=2.0, solid_capstyle="round",
             clip_on=False)
     ax.text(xm, y_frac - 0.055, cat["label"], transform=trans,
-            ha="center", va="top", fontsize=7.5,
+            ha="center", va="top", fontsize=fontsize,
             color=cat["color"], fontweight="bold", clip_on=False)
 
 
@@ -320,7 +321,7 @@ def _category_sidebar(ax, y_positions: list[float], bar_h: float,
     label = raw.replace(" (", "\n(")
     rot = 0
     ax.text(x_frac + 0.2, ym, label, transform=trans,
-            ha="center", va="center", fontsize=7.5, rotation=rot,
+            ha="center", va="center", fontsize=10.5, rotation=rot,
             rotation_mode="anchor", linespacing=1.2,
             color=cat["color"], fontweight="bold", clip_on=False)
 
@@ -351,7 +352,7 @@ def plot_token_breakdown(data: dict[str, list[dict]]) -> None:
                    color=base_color, hatch="///", alpha=0.40, zorder=2)
             total_k = p + c
             ax.text(xi, total_k + 0.3, f"{total_k:.1f}K",
-                    ha="center", va="bottom", fontsize=6.5, color="#333333")
+                    ha="center", va="bottom", fontsize=8.5, color="#333333")
 
     # x-ticks
     all_x, all_lbl = [], []
@@ -361,10 +362,10 @@ def plot_token_breakdown(data: dict[str, list[dict]]) -> None:
             all_lbl.append(r["config_label"])
 
     ax.set_xticks(all_x)
-    ax.set_xticklabels(all_lbl, fontsize=7.0, rotation=45, ha="right", va="top")
+    ax.set_xticklabels(all_lbl, fontsize=9.0, rotation=45, ha="right", va="top")
 
     # Axis styling — light theme
-    ax.set_ylabel("Avg. tokens per query (K)")
+    ax.set_ylabel("Avg. tokens per query (K)", fontsize=11.0)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}K"))
     ax.set_xlim(-0.55, all_x[-1] + 0.55)
     ax.set_ylim(bottom=0, top=22)
@@ -379,18 +380,19 @@ def plot_token_breakdown(data: dict[str, list[dict]]) -> None:
     fig.subplots_adjust(left=0.10, right=0.97, bottom=0.38, top=0.88)
 
     for cat_key, recs in data.items():
-        _category_underline(ax, positions[cat_key], BAR_W, cat_key, y_frac=-0.38)
+        _category_underline(ax, positions[cat_key], BAR_W, cat_key, y_frac=-0.38,
+                            fontsize=11.5)
 
     # Title and legend in the space above the axes
     fig.text(0.5, 0.97, "Token usage per configuration",
-             ha="center", va="top", fontsize=9.5,
+             ha="center", va="top", fontsize=11.5,
              transform=fig.transFigure)
 
     fig.legend(handles=[
         mpatches.Patch(facecolor="#888888",                          label="Prompt tokens"),
         mpatches.Patch(facecolor="#888888", hatch="///", alpha=0.55, label="Completion tokens"),
-    ], loc="upper center", ncol=2, bbox_to_anchor=(0.5, 0.92),
-       facecolor="white", edgecolor="#cccccc", fontsize=7.5)
+    ], loc="upper center", ncol=2, bbox_to_anchor=(0.5, 0.938),
+       facecolor="white", edgecolor="#cccccc", fontsize=9.5)
 
     fig.savefig(OUT_DIR / "token_breakdown.png", bbox_inches="tight", dpi=300)
     plt.close(fig)
@@ -465,7 +467,7 @@ def plot_latency_breakdown(data: dict[str, list[dict]],
                 val = r["per_benchmark"][benchmark]["wall_sec_per_q"]
             ax.bar(xi, val, BAR_W, color=base_color, zorder=2)
             ax.text(xi, val + 0.4, f"{val:.1f}s",
-                    ha="center", va="bottom", fontsize=6.5, color="#333333")
+                    ha="center", va="bottom", fontsize=8.5, color="#333333")
 
     all_x, all_lbl = [], []
     for cat_key, recs in data.items():
@@ -474,9 +476,9 @@ def plot_latency_breakdown(data: dict[str, list[dict]],
             all_lbl.append(r["config_label"])
 
     ax.set_xticks(all_x)
-    ax.set_xticklabels(all_lbl, fontsize=7.0, rotation=45, ha="right", va="top",
+    ax.set_xticklabels(all_lbl, fontsize=9.0, rotation=45, ha="right", va="top",
                        color="black")
-    ax.set_ylabel("Wall-clock seconds per query")
+    ax.set_ylabel("Wall-clock seconds per query", fontsize=11.0)
     ax.set_xlim(-0.55, all_x[-1] + 0.55)
     ax.set_ylim(bottom=0)
     ax.yaxis.grid(True, color="#e0e0e0", linewidth=0.5)
@@ -487,15 +489,16 @@ def plot_latency_breakdown(data: dict[str, list[dict]],
     fig.subplots_adjust(left=0.10, right=0.97, bottom=bot_adj, top=0.91)
 
     for cat_key, recs in data.items():
-        _category_underline(ax, positions[cat_key], BAR_W, cat_key, y_frac=-0.36)
+        _category_underline(ax, positions[cat_key], BAR_W, cat_key, y_frac=-0.36,
+                            fontsize=11.5)
 
     bm_label = BM_LABELS.get(benchmark, benchmark) if benchmark else "average over all benchmarks"
     fig.text(0.5, 0.97, f"Latency per configuration  —  {bm_label}",
-             ha="center", va="top", fontsize=9.5, transform=fig.transFigure)
+             ha="center", va="top", fontsize=11.5, transform=fig.transFigure)
 
     if with_footnote:
         fig.text(0.5, 0.01, _LATENCY_FOOTNOTE,
-                 ha="center", va="bottom", fontsize=6.0, color="#555555",
+                 ha="center", va="bottom", fontsize=8.0, color="#555555",
                  style="italic", transform=fig.transFigure,
                  multialignment="center", wrap=True)
 
@@ -710,8 +713,8 @@ _ROW_H     = 0.400   # matches main results table ROW_H
 _HDR_H     = 0.33
 _LEG_H     = 0.40
 _LR_PAD    = 0.08
-_FONT_SZ   = 8.5
-_SMALL_SZ  = 7.5
+_FONT_SZ   = 10.0
+_SMALL_SZ  = 9.0
 
 
 def plot_latency_heatmap(data: dict[str, list[dict]]) -> None:
