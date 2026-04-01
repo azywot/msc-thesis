@@ -30,11 +30,6 @@ DATASET_LABELS = ["GAIA", "GPQA", "AIME", "MuSiQue", "HLE"]
 # Each entry: (model_name, tools_key, thinking_mode, tools_label, thinking_label)
 # tools_key is matched as a substring in the experiment Name column.
 CONFIGS: list[tuple[str, str, str, str, str]] = [
-    # ── Qwen3-32B (baseline, direct mode only) ──────────────────────────────
-    ("Qwen3-32B", "no_tools",       "NO",                "—",         "—"),
-    ("Qwen3-32B", "no_tools",       "ORCHESTRATOR_ONLY", "—",         "Orchestrator"),
-    ("Qwen3-32B", "direct_tools",   "NO",                "Direct",    "—"),
-    ("Qwen3-32B", "direct_tools",   "ORCHESTRATOR_ONLY", "Direct",    "Orchestrator"),
     # ── Qwen3-8B baseline (direct mode) ─────────────────────────────────────
     ("Qwen3-8B",  "no_tools",       "NO",                "—",         "—"),
     ("Qwen3-8B",  "no_tools",       "ORCHESTRATOR_ONLY", "—",         "Orchestrator"),
@@ -45,6 +40,11 @@ CONFIGS: list[tuple[str, str, str, str, str]] = [
     ("Qwen3-8B",  "subagent_tools", "SUBAGENTS_ONLY",    "Sub-agent", "Sub-agents"),
     ("Qwen3-8B",  "subagent_tools", "ORCHESTRATOR_ONLY", "Sub-agent", "Orchestrator"),
     ("Qwen3-8B",  "subagent_tools", "ALL",               "Sub-agent", "All"),
+    # ── Qwen3-32B (large model reference) ───────────────────────────────────
+    ("Qwen3-32B", "no_tools",       "NO",                "—",         "—"),
+    ("Qwen3-32B", "no_tools",       "ORCHESTRATOR_ONLY", "—",         "Orchestrator"),
+    ("Qwen3-32B", "direct_tools",   "NO",                "Direct",    "—"),
+    ("Qwen3-32B", "direct_tools",   "ORCHESTRATOR_ONLY", "Direct",    "Orchestrator"),
 ]
 
 # ─────────────────────────── layout constants ─────────────────────────────────
@@ -70,7 +70,7 @@ DELTA_SZ = 7.0   # font size for the delta sub-line
 SMALL_SZ = 7.5
 
 # Row index of the reference baseline (Qwen3-8B, no tools, no thinking)
-BASELINE_IDX = 4
+BASELINE_IDX = 0
 
 CMAP    = LinearSegmentedColormap.from_list("tbl", ["#f0f9ff", "#74c0fc"], N=256)
 
@@ -203,10 +203,10 @@ def draw(data: pd.DataFrame) -> plt.Figure:
         y  -= ROW_H
         yc  = y + ROW_H / 2
 
-        # Separator between model groups (e.g. 32B → 8B)
+        # Separator between model groups (e.g. 8B → 32B)
         if row["model"] != prev_model:
             if prev_model is not None:
-                hline(y + ROW_H, lw=0.3, alpha=0.45)
+                hline(y + ROW_H, lw=0.8, alpha=0.75)
             prev_model = row["model"]
             ax.text(_col_lx(0), yc, row["model"],
                     ha="left", va="center", fontsize=FONT_SZ)

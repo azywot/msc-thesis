@@ -75,18 +75,6 @@ BM_LABELS  = {"gaia": "GAIA", "gpqa": "GPQA", "aime": "AIME",
 # the token-breakdown plot shows the full picture.
 # "Sub. Think" and "All Think" are exclusive to the MAS category.
 CATEGORIES: dict[str, dict] = {
-    "32B Direct": {
-        "label":  "Qwen3-32B (Direct)",
-        "color":  "#0072B2",                                     # Wong blue
-        "shades": ["#B3D7F0", "#66AEDE", "#0072B2", "#004F7D"],
-        "configs": [
-            ("qwen32B", "no_tools",     "none"),
-            ("qwen32B", "no_tools",     "orchestrator"),
-            ("qwen32B", "direct_tools", "none"),
-            ("qwen32B", "direct_tools", "orchestrator"),
-        ],
-        "config_labels": ["No tools", "No tools + Think", "Direct", "Direct + Think"],
-    },
     "8B Direct": {
         "label":  "Qwen3-8B (Direct)",
         "color":  "#990000",                                     # dark red
@@ -110,6 +98,18 @@ CATEGORIES: dict[str, dict] = {
             ("qwen8B", "subagent_tools", "all"),
         ],
         "config_labels": ["No Think", "Sub. Think", "Orch. Think", "All Think"],
+    },
+    "32B Direct": {
+        "label":  "Qwen3-32B (Direct)",
+        "color":  "#0072B2",                                     # Wong blue
+        "shades": ["#B3D7F0", "#66AEDE", "#0072B2", "#004F7D"],
+        "configs": [
+            ("qwen32B", "no_tools",     "none"),
+            ("qwen32B", "no_tools",     "orchestrator"),
+            ("qwen32B", "direct_tools", "none"),
+            ("qwen32B", "direct_tools", "orchestrator"),
+        ],
+        "config_labels": ["No tools", "No tools + Think", "Direct", "Direct + Think"],
     },
 }
 
@@ -799,10 +799,12 @@ def plot_latency_heatmap(data: dict[str, list[dict]]) -> None:
         y  -= _ROW_H
         yc  = y + _ROW_H / 2
 
-        # Light separator between model groups (same as main table)
+        # Separator between category groups; stronger at the 8B → 32B model boundary
         if row["cat_key"] != prev_cat:
             if prev_cat is not None:
-                hline(y + _ROW_H, lw=0.3, alpha=0.45)
+                cross_model = _MODEL_LBL[row["cat_key"]] != _MODEL_LBL[prev_cat]
+                hline(y + _ROW_H, lw=0.8 if cross_model else 0.3,
+                      alpha=0.75 if cross_model else 0.45)
             prev_cat = row["cat_key"]
 
         # Plain black text — no RGB category colouring
