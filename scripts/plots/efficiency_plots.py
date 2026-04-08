@@ -74,19 +74,8 @@ BM_LABELS  = {"gaia": "GAIA", "gpqa": "GPQA", "aime": "AIME",
 # Direct categories carry 4 configs (no_tools + direct_tools × no-think/+think) so
 # the token-breakdown plot shows the full picture.
 # "Sub. Think" and "All Think" are exclusive to the MAS category.
+# Order: 8B blocks first (baseline configs left/top in figures), 32B last.
 CATEGORIES: dict[str, dict] = {
-    "32B Direct": {
-        "label":  "Qwen3-32B (Direct)",
-        "color":  "#0072B2",                                     # Wong blue
-        "shades": ["#B3D7F0", "#66AEDE", "#0072B2", "#004F7D"],
-        "configs": [
-            ("qwen32B", "no_tools",     "none"),
-            ("qwen32B", "no_tools",     "orchestrator"),
-            ("qwen32B", "direct_tools", "none"),
-            ("qwen32B", "direct_tools", "orchestrator"),
-        ],
-        "config_labels": ["No tools", "No tools + Think", "Direct", "Direct + Think"],
-    },
     "8B Direct": {
         "label":  "Qwen3-8B (Direct)",
         "color":  "#990000",                                     # dark red
@@ -110,6 +99,18 @@ CATEGORIES: dict[str, dict] = {
             ("qwen8B", "subagent_tools", "all"),
         ],
         "config_labels": ["No Think", "Sub. Think", "Orch. Think", "All Think"],
+    },
+    "32B Direct": {
+        "label":  "Qwen3-32B (Direct)",
+        "color":  "#0072B2",                                     # Wong blue
+        "shades": ["#B3D7F0", "#66AEDE", "#0072B2", "#004F7D"],
+        "configs": [
+            ("qwen32B", "no_tools",     "none"),
+            ("qwen32B", "no_tools",     "orchestrator"),
+            ("qwen32B", "direct_tools", "none"),
+            ("qwen32B", "direct_tools", "orchestrator"),
+        ],
+        "config_labels": ["No tools", "No tools + Think", "Direct", "Direct + Think"],
     },
 }
 

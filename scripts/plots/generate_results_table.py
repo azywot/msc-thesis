@@ -30,12 +30,7 @@ DATASET_LABELS = ["GAIA", "GPQA", "AIME", "MuSiQue", "HLE"]
 # Each entry: (model_name, tools_key, thinking_mode, tools_label, thinking_label)
 # tools_key is matched as a substring in the experiment Name column.
 CONFIGS: list[tuple[str, str, str, str, str]] = [
-    # ── Qwen3-32B (baseline, direct mode only) ──────────────────────────────
-    ("Qwen3-32B", "no_tools",       "NO",                "—",         "—"),
-    ("Qwen3-32B", "no_tools",       "ORCHESTRATOR_ONLY", "—",         "Orchestrator"),
-    ("Qwen3-32B", "direct_tools",   "NO",                "Direct",    "—"),
-    ("Qwen3-32B", "direct_tools",   "ORCHESTRATOR_ONLY", "Direct",    "Orchestrator"),
-    # ── Qwen3-8B baseline (direct mode) ─────────────────────────────────────
+    # ── Qwen3-8B direct (baseline row first: no tools, no thinking) ──────────
     ("Qwen3-8B",  "no_tools",       "NO",                "—",         "—"),
     ("Qwen3-8B",  "no_tools",       "ORCHESTRATOR_ONLY", "—",         "Orchestrator"),
     ("Qwen3-8B",  "direct_tools",   "NO",                "Direct",    "—"),
@@ -45,6 +40,11 @@ CONFIGS: list[tuple[str, str, str, str, str]] = [
     ("Qwen3-8B",  "subagent_tools", "SUBAGENTS_ONLY",    "Sub-agent", "Sub-agents"),
     ("Qwen3-8B",  "subagent_tools", "ORCHESTRATOR_ONLY", "Sub-agent", "Orchestrator"),
     ("Qwen3-8B",  "subagent_tools", "ALL",               "Sub-agent", "All"),
+    # ── Qwen3-32B (direct mode only; after 8B blocks) ─────────────────────────
+    ("Qwen3-32B", "no_tools",       "NO",                "—",         "—"),
+    ("Qwen3-32B", "no_tools",       "ORCHESTRATOR_ONLY", "—",         "Orchestrator"),
+    ("Qwen3-32B", "direct_tools",   "NO",                "Direct",    "—"),
+    ("Qwen3-32B", "direct_tools",   "ORCHESTRATOR_ONLY", "Direct",    "Orchestrator"),
 ]
 
 # ─────────────────────────── layout constants ─────────────────────────────────
@@ -69,8 +69,8 @@ FONT_SZ  = 8.5
 DELTA_SZ = 7.0   # font size for the delta sub-line
 SMALL_SZ = 7.5
 
-# Row index of the reference baseline (Qwen3-8B, no tools, no thinking)
-BASELINE_IDX = 4
+# Row index of the reference baseline (Qwen3-8B, no tools, no thinking) — first row
+BASELINE_IDX = 0
 
 CMAP    = LinearSegmentedColormap.from_list("tbl", ["#f0f9ff", "#74c0fc"], N=256)
 
@@ -137,7 +137,7 @@ def draw(data: pd.DataFrame) -> plt.Figure:
         ]
         best_runnerup[ds] = sub.max() if not sub.empty else None
 
-    # baseline values (row BASELINE_IDX = Qwen3-32B, no tools, no thinking)
+    # baseline values (row BASELINE_IDX: Qwen3-8B, no tools, no thinking)
     baseline = {ds: data.iloc[BASELINE_IDX][ds] for ds in DATASETS}
 
     n_rows = len(data)
