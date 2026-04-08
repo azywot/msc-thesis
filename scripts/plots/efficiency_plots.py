@@ -313,15 +313,12 @@ def _category_sidebar(ax, y_positions: list[float], bar_h: float,
     y1    = max(y_positions) + bar_h * 0.5
     ym    = (y0 + y1) / 2
     trans = ax.get_yaxis_transform()   # y in data, x in axes fraction
-    ax.plot([x_frac, x_frac], [y0, y1], transform=trans,
-            color=cat["color"], lw=2.0, solid_capstyle="round",
-            clip_on=False)
     # Split "(Direct)" labels onto two lines; keep "(MAS)" on one line
     raw   = cat["label"]
     label = raw.replace(" (", "\n(")
     rot = 0
     ax.text(x_frac + 0.2, ym, label, transform=trans,
-            ha="center", va="center", fontsize=10.5, rotation=rot,
+            ha="center", va="center", fontsize=13.0, rotation=rot,
             rotation_mode="anchor", linespacing=1.2,
             color=cat["color"], fontweight="bold", clip_on=False)
 
@@ -632,17 +629,17 @@ def plot_tool_calls(data: dict[str, list[dict]]) -> None:
         # total labels at bar end (show 0 explicitly when no tool calls)
         for yi, total in zip(y_arr, lefts):
             ax.text(total + x_max * 0.02, yi, str(int(total)),
-                    va="center", ha="left", fontsize=6.2,
+                    va="center", ha="left", fontsize=9.0,
                     color="#333333", clip_on=False)
 
         # axes formatting
-        ax.set_title(BM_LABELS[bm], fontsize=8.5, fontweight="bold", pad=3)
+        ax.set_title(BM_LABELS[bm], fontsize=11.0, fontweight="bold", pad=3)
         ax.set_xlim(0, x_max)
         ax.set_ylim(y_lo, y_hi)
         ax.xaxis.grid(True, color="#e0e0e0", linewidth=0.5, zorder=1)
         ax.yaxis.grid(False)
         ax.set_xlabel("")
-        ax.tick_params(axis="x", labelsize=7.0)
+        ax.tick_params(axis="x", labelsize=9.5)
         for spine in ax.spines.values():
             spine.set_edgecolor("#cccccc")
 
@@ -650,13 +647,13 @@ def plot_tool_calls(data: dict[str, list[dict]]) -> None:
         ax.set_yticks(y_arr)
         if i == 0:
             ax.set_yticklabels([r["config_label"] for r in rows],
-                               fontsize=7.3, color="black")
+                               fontsize=10.0, color="black")
         else:
             ax.set_yticklabels([])
 
     # ── category sidebars on the leftmost panel ──────────────────────────────
     for ck, ys in cat_ys.items():
-        _category_sidebar(axes[0], ys, BAR_H, ck, x_frac=-0.80, align="left")
+        _category_sidebar(axes[0], ys, BAR_H, ck, x_frac=-1.05, align="left")
 
     # ── legend (tools only) just below title ─────────────────────────────────
     tool_handles = [mpatches.Patch(facecolor=tc, alpha=0.92, label=tl)
@@ -665,23 +662,22 @@ def plot_tool_calls(data: dict[str, list[dict]]) -> None:
     SA_LEFT, SA_RIGHT = 0.17, 0.97
     # The sidebar labels extend ~0.10 left of SA_LEFT in figure coords, so
     # the visual centre of the saved image sits left of the subplot midpoint.
-    subplot_cx = (SA_LEFT + SA_RIGHT) / 2   # centre of bar area (0.57)
     content_cx = (SA_LEFT - 0.10 + SA_RIGHT) / 2  # centre of all content (~0.52)
 
     fig.subplots_adjust(top=0.86, bottom=0.10, left=SA_LEFT, right=SA_RIGHT, wspace=0.05)
-    fig.text(content_cx, 0.02, "Tool calls",
-             ha="center", va="bottom", fontsize=8.0)
+    fig.text(content_cx, 0.005, "Tool calls",
+             ha="center", va="bottom", fontsize=10.5)
 
     fig.suptitle("Tool-call breakdown per benchmark",
-                 fontsize=9.5, x=content_cx, y=0.980, va="bottom")
+                 fontsize=12.0, x=content_cx, y=0.980, va="bottom")
     fig.legend(
         handles=tool_handles,
         loc="upper center",
-        bbox_to_anchor=(content_cx, 0.973),
+        bbox_to_anchor=(content_cx, 0.993),
         ncol=len(tool_handles),
         frameon=True, framealpha=0.95, edgecolor="#cccccc",
         borderpad=0.45, handlelength=1.2, handletextpad=0.55,
-        columnspacing=0.8, fontsize=7.5,
+        columnspacing=0.8, fontsize=10.0,
     )
     fig.savefig(OUT_DIR / "tool_calls_breakdown.png", bbox_inches="tight", dpi=300)
     plt.close(fig)
@@ -878,6 +874,86 @@ def plot_latency_heatmap(data: dict[str, list[dict]]) -> None:
     print(f"  Saved → {OUT_DIR}/latency_heatmap.png")
 
 
+# ─────────────────────────── Table: Tool-call breakdown (LaTeX) ──────────────
+
+def generate_tool_call_latex(data: dict[str, list[dict]]) -> None:
+    """
+    Write a booktabs LaTeX table of tool-call counts, broken down by tool type,
+    summed across all benchmarks.
+
+    Columns: Model | Tools | Thinking | Web Search | Code Gen. | Text Insp. | Total
+    Rows: one per config that uses tools, grouped by model with \\midrule.
+
+    Output: data/results/plots/tool_calls_table.tex
+    """
+    _TOOLS_LBL = {"no_tools": "—", "direct_tools": "Direct",
+                  "subagent_tools": "Sub-agent"}
+    _THINK_LBL = {"none": "—", "orchestrator": "Orchestrator",
+                  "subagents": "Sub-agents", "all": "All"}
+    _MODEL_LBL = {"32B Direct": "Qwen3-32B", "8B Direct": "Qwen3-8B",
+                  "8B MAS": "Qwen3-8B"}
+
+    excluded   = {"image_inspector", "mind_map"}
+    act_keys   = [tk for tk in TOOL_KEYS   if tk not in excluded]
+    act_labels = [tl for tk, tl in zip(TOOL_KEYS, TOOL_LABELS) if tk not in excluded]
+
+    # collect rows that have at least one tool call
+    rows: list[tuple[str, dict]] = []
+    for cat_key, recs in data.items():
+        for r in recs:
+            total = sum(
+                int(v)
+                for bm_data in r["per_benchmark"].values()
+                for k, v in bm_data.get("tool_usage", {}).items()
+                if k not in excluded
+            )
+            if total > 0:
+                rows.append((cat_key, r))
+
+    col_spec = "lll" + "r" * len(BENCHMARKS) + "r"
+    header_bms = " & ".join(f"\\textbf{{{BM_LABELS[bm]}}}" for bm in BENCHMARKS)
+
+    lines: list[str] = [
+        r"\begin{tabular}{" + col_spec + "}",
+        r"\toprule",
+        r"\textbf{Model} & \textbf{Tools} & \textbf{Thinking} & "
+        + header_bms + r" & \textbf{Total} \\",
+        r"\midrule",
+    ]
+
+    prev_model: str | None = None
+    for cat_key, r in rows:
+        model_name = _MODEL_LBL[cat_key]
+        if prev_model is not None and model_name != prev_model:
+            lines.append(r"\midrule")
+
+        model_str = model_name if model_name != prev_model else ""
+        tools_str = _TOOLS_LBL[r["tools"]]
+        think_str = _THINK_LBL[r["think"]]
+
+        counts = [
+            sum(
+                int(v)
+                for k, v in r["per_benchmark"].get(bm, {}).get("tool_usage", {}).items()
+                if k not in excluded
+            )
+            for bm in BENCHMARKS
+        ]
+        total = sum(counts)
+
+        cells = " & ".join(str(c) for c in counts)
+        lines.append(
+            f"{model_str} & {tools_str} & {think_str} & {cells} & {total} \\\\"
+        )
+        prev_model = model_name
+
+    lines += [r"\bottomrule", r"\end{tabular}"]
+
+    out_path = OUT_DIR / "tool_calls_table.tex"
+    out_path.write_text("\n".join(lines) + "\n")
+    print(f"  Saved → {out_path}")
+
+
 # ─────────────────────────── entry point ─────────────────────────────────────
 
 def main() -> None:
@@ -896,6 +972,7 @@ def main() -> None:
     plot_latency_breakdown(data, with_footnote=True)    # avg, annotated
     plot_latency_heatmap(data)                          # per-dataset heatmap table
     plot_tool_calls(data)
+    generate_tool_call_latex(data)
     print(f"\nDone. Outputs in: {OUT_DIR}")
 
 

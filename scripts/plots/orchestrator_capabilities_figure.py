@@ -193,6 +193,47 @@ def draw(data: dict) -> plt.Figure:
     return fig
 
 
+# ─── LaTeX table ─────────────────────────────────────────────────────────────
+
+OUT_TEX = ROOT / "data/results/plots/orchestrator_capabilities_table.tex"
+
+
+def generate_latex_table(data: dict) -> None:
+    """
+    Write a booktabs LaTeX table that mirrors the bar chart:
+
+      Rows    : orchestrator size (8B / 32B) × thinking mode
+      Columns : sub-agent size (1.7B | 8B | 32B), values as accuracy %
+    """
+    sub_headers = " & ".join(
+        f"\\textbf{{Sub-{s}}}" for s in SUB_SIZES
+    )
+    lines: list[str] = [
+        r"\begin{tabular}{llrrr}",
+        r"\toprule",
+        r"\textbf{Orchestrator} & \textbf{Thinking} & "
+        + sub_headers + r" \\",
+        r"\midrule",
+    ]
+
+    for g_idx, (orch, orch_lbl) in enumerate(ORCH_GROUPS):
+        if g_idx > 0:
+            lines.append(r"\midrule")
+        for t_idx, (tkey, tlbl) in enumerate(THINKING_MODES):
+            orch_str = orch_lbl if t_idx == 0 else ""
+            vals = [data[orch][tkey][s] for s in SUB_SIZES]
+            cells = " & ".join(
+                f"{v * 100:.1f}" if v is not None else "—" for v in vals
+            )
+            lines.append(f"{orch_str} & {tlbl} & {cells} \\\\")
+
+    lines += [r"\bottomrule", r"\end{tabular}"]
+
+    OUT_TEX.parent.mkdir(parents=True, exist_ok=True)
+    OUT_TEX.write_text("\n".join(lines) + "\n")
+    print(f"Saved → {OUT_TEX}")
+
+
 # ─── entry point ─────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -224,6 +265,7 @@ def main() -> int:
     fig.savefig(OUT_PNG, bbox_inches="tight", dpi=300)
     plt.close(fig)
     print(f"Saved → {OUT_PNG}")
+    generate_latex_table(data)
     return 0
 
 
