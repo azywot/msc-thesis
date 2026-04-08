@@ -203,10 +203,10 @@ def draw(data: pd.DataFrame) -> plt.Figure:
         y  -= ROW_H
         yc  = y + ROW_H / 2
 
-        # Separator between model groups (e.g. 32B → 8B)
+        # Separator between model groups (e.g. 8B → 32B)
         if row["model"] != prev_model:
             if prev_model is not None:
-                hline(y + ROW_H, lw=0.3, alpha=0.45)
+                hline(y + ROW_H, lw=0.8, alpha=0.75)
             prev_model = row["model"]
             ax.text(_col_lx(0), yc, row["model"],
                     ha="left", va="center", fontsize=FONT_SZ)
