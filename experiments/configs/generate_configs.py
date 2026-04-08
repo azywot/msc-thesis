@@ -94,6 +94,20 @@ MODELS = {
         "tp": 2,
         "gpus": 2,
     },
+    "ds-r1-32b": {
+        "name": "DeepSeek-R1-Distill-Qwen-32B",
+        "family": "deepseek",
+        "path_or_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+        "tp": 2,
+        "gpus": 2,
+    },
+    "ds-r1-qwen-7b": {
+        "name": "DeepSeek-R1-Distill-Qwen-7B",
+        "family": "deepseek",
+        "path_or_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+        "tp": 2,
+        "gpus": 2,
+    },
 }
 
 # ── all possible variants ──────────────────────────────────────────────────────
@@ -282,6 +296,34 @@ SUITES = {
         "baseline":        False,
         "variants":        VARIANTS_OLMO_INSTRUCT,
         "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+    },
+    "ds32_test": {
+        "description_tag": "[DeepSeek-R1-Distill-Qwen-32B test; direct tools; orchestrator thinking; GAIA only]",
+        "name_prefix":     "DS32_test",
+        "output_dir_root": "./experiments/results/ds32_test",
+        "config_subdir":   "ds32_test",
+        "baseline":        True,
+        "variants": [
+            ("ds32b_direct_tools_orchestrator", "ds-r1-32b", True, "tools", "ORCHESTRATOR_ONLY"),
+        ],
+        "datasets":        ["gaia"],
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+    },
+    "ds8_AgentFlow": {
+        "description_tag": "[DeepSeek-R1-Distill-Qwen-7B single test; sub-agent tools; orchestrator thinking; GAIA only]",
+        "name_prefix":     "DS8_AgentFlow",
+        "output_dir_root": "./experiments/results/ds8_AgentFlow",
+        "config_subdir":   "ds8_AgentFlow",
+        "baseline":        False,
+        "variants":        [
+            ("ds7b_subagent_tools_orchestrator", "ds-r1-qwen-7b", False, "tools", "ORCHESTRATOR_ONLY"),
+        ],
+        "datasets":        ["gaia"],
+        "num_gpus":        1,
         "wandb_project":   "benchmarks",
         "split_overrides": {},
     },

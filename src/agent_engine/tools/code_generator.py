@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from ..core.tool import BaseTool, ToolResult
 from ..utils.logging import get_logger
 from ..utils.parsing import strip_thinking_tags
+from ..utils.prompting import append_step_by_step_instruction, should_append_step_by_step_instruction
 
 logger = get_logger(__name__)
 
@@ -165,6 +166,8 @@ class CodeGeneratorTool(BaseTool):
             "- NO comments like \"Here's the code\" or \"This will output\"\n\n"
             "Python code:"
         )
+        if should_append_step_by_step_instruction(self.model_provider, self.use_thinking):
+            prompt = append_step_by_step_instruction(prompt)
         prompt_messages = [{"role": "user", "content": prompt}]
         return self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
 

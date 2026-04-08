@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from ..utils.prompting import append_step_by_step_instruction, should_append_step_by_step_instruction
+
 try:
     import numpy as np
     from nano_graphrag import GraphRAG, QueryParam
@@ -137,6 +139,8 @@ def _make_completion_func(model_provider, use_thinking: bool = False):
             messages.append({"role": "system", "content": system_prompt})
         if history_messages:
             messages.extend(history_messages)
+        if should_append_step_by_step_instruction(model_provider, bool(use_thinking)):
+            prompt = append_step_by_step_instruction(prompt)
         messages.append({"role": "user", "content": prompt})
 
         prompt_text = model_provider.apply_chat_template(
