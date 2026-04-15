@@ -1,19 +1,61 @@
-"""Parsing utilities for Qwen3 tool calls and answers.
+"""Parsing utilities for tool calls and answers.
 
 This module provides utilities to parse tool calls from model outputs and
 extract final answers from responses.
+
+Supported tool-call formats:
+  - Qwen3/baseline: ``<tool_call>{"name": ..., "arguments": {...}}</tool_call>``
+  - OLMo 3: ``<function_calls>\\ntool_name(arg=value)\\n</function_calls>``
+    (pythonic; JSON boolean/null literals allowed alongside Python ones)
 """
 
+import ast
 import json
 import re
 from typing import Any, Dict, Optional
 
 
-def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
-    """Parse the last tool call from model output.
+def _parse_pythonic_call(line: str) -> Optional[Dict[str, Any]]:
+    """Parse one pythonic function-call line emitted by OLMo 3.
 
-    Extracts JSON from ``<tool_call>…</tool_call>`` tags.  When multiple tags
-    are present (shouldn't happen in practice) the last one is used.
+    Handles JSON boolean/null literals (``true``, ``false``, ``null``) in
+    addition to the Python equivalents (``True``, ``False``, ``None``).
+
+    Args:
+        line: A single line such as ``web_search(query="foo")``.
+
+    Returns:
+        Dict with ``"name"`` and ``"arguments"`` keys, or ``None`` on failure.
+    """
+    # Normalise JSON boolean/null → Python literals before parsing.
+    line = re.sub(r'\btrue\b', 'True', line)
+    line = re.sub(r'\bfalse\b', 'False', line)
+    line = re.sub(r'\bnull\b', 'None', line)
+    try:
+        tree = ast.parse(line.strip(), mode='eval')
+    except SyntaxError:
+        return None
+    if not isinstance(tree.body, ast.Call):
+        return None
+    call = tree.body
+    if not isinstance(call.func, ast.Name):
+        return None
+    try:
+        arguments = {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords}
+    except (ValueError, TypeError):
+        return None
+    return {"name": call.func.id, "arguments": arguments}
+
+
+def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
+    """Parse the first/last tool call from model output.
+
+    Tries two formats in order:
+
+    1. **Qwen3 format** — ``<tool_call>…</tool_call>`` with a JSON payload.
+       When multiple tags are present the last one wins.
+    2. **OLMo 3 format** — ``<function_calls>…</function_calls>`` containing
+       newline-delimited pythonic calls.  The first parseable call is returned.
 
     Args:
         text: Raw model output text.
@@ -22,22 +64,27 @@ def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
         Dict with ``"name"`` and ``"arguments"`` keys, or ``None`` if no valid
         tool call was found.
     """
-    pattern = r'<tool_call>(.*?)</tool_call>'
-    matches = re.findall(pattern, text, re.DOTALL)
+    # ── Qwen3 / default: <tool_call>JSON</tool_call> ──────────────────────────
+    matches = re.findall(r'<tool_call>(.*?)</tool_call>', text, re.DOTALL)
+    if matches:
+        try:
+            tool_call = json.loads(matches[-1].strip())
+            if isinstance(tool_call, dict) and "name" in tool_call:
+                tool_call.setdefault("arguments", {})
+                return tool_call
+        except json.JSONDecodeError:
+            pass
 
-    if not matches:
-        return None
-
-    tool_call_json = matches[-1].strip()
-
-    try:
-        tool_call = json.loads(tool_call_json)
-        if isinstance(tool_call, dict) and "name" in tool_call:
-            if "arguments" not in tool_call:
-                tool_call["arguments"] = {}
-            return tool_call
-    except json.JSONDecodeError:
-        return None
+    # ── OLMo 3: <function_calls>pythonic calls</function_calls> ──────────────
+    fc_match = re.search(r'<function_calls>(.*?)</function_calls>', text, re.DOTALL)
+    if fc_match:
+        for line in fc_match.group(1).splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            result = _parse_pythonic_call(line)
+            if result:
+                return result
 
     return None
 

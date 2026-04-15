@@ -14,8 +14,9 @@ from pydantic import BaseModel, field_validator, model_validator
 class ModelFamily(Enum):
     """Supported model families.
 
-    Explicit enumeration used throughout the codebase. 
-    Add a new entry here when onboarding a new family.
+    Explicit enumeration used throughout the codebase.
+    Add a new entry here when onboarding a new family, then update
+    ``_THINKING_FAMILIES`` and ``_TOOL_CALL_FORMAT`` below accordingly.
     """
     QWEN3 = "qwen3"
     QWEN2_5 = "qwen2.5"
@@ -29,8 +30,31 @@ class ModelFamily(Enum):
     CLAUDE = "claude"
 
 
+class ToolCallFormat(Enum):
+    """Format a model family uses to emit tool calls.
+
+    JSON      — ``<tool_call>{"name": ..., "arguments": {...}}</tool_call>``
+                (Qwen3, most families)
+    PYTHONIC  — ``<function_calls>\\ntool(arg=val)\\n</function_calls>``
+                (OLMo 3; also accepts JSON boolean/null literals)
+    """
+    JSON = "json"
+    PYTHONIC = "pythonic"
+
+
 # Families whose models natively support extended <think> output.
 _THINKING_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ, ModelFamily.DEEPSEEK, ModelFamily.OLMO_THINK})
+
+# Per-family tool-call output format.  Unlisted families default to JSON.
+_TOOL_CALL_FORMAT: Dict[ModelFamily, ToolCallFormat] = {
+    ModelFamily.OLMO_THINK: ToolCallFormat.PYTHONIC,
+    ModelFamily.OLMO_INSTRUCT: ToolCallFormat.PYTHONIC,
+}
+
+
+def get_tool_call_format(family: ModelFamily) -> ToolCallFormat:
+    """Return the tool-call format for *family* (defaults to JSON)."""
+    return _TOOL_CALL_FORMAT.get(family, ToolCallFormat.JSON)
 
 
 class ModelConfig(BaseModel):
@@ -86,6 +110,20 @@ class ModelConfig(BaseModel):
     seed: int = 0
 
     backend: str = "vllm"  # "vllm", "mlx", "openai", "anthropic"
+
+    _FAMILY_DEFAULTS: Dict[str, Dict[str, Any]] = {
+        "olmo-think":    {"temperature": 0.6, "top_p": 0.95, "max_tokens": 32768},
+        "olmo-instruct": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 32768},
+    }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_family_defaults(cls, values):
+        family = values.get("family", "")
+        family_str = family.value if isinstance(family, ModelFamily) else str(family)
+        for param, default in cls._FAMILY_DEFAULTS.get(family_str, {}).items():
+            values.setdefault(param, default)
+        return values
 
     @field_validator("family", mode="before")
     @classmethod

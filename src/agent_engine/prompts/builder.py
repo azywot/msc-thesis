@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from ..models.base import ToolCallFormat
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -66,11 +67,15 @@ class PromptBuilder:
         max_search_limit: int = 10,
         direct_tool_call: bool = True,
         baseline: bool = False,
+        tool_call_format: ToolCallFormat = ToolCallFormat.JSON,
     ) -> str:
         """Build system prompt with tools and instructions.
 
         When *baseline* is ``True``, load ``*_baseline`` templates and omit
         sub-goal / reasoning scaffolding from tool instructions and examples.
+        *tool_call_format* controls the syntax used in format instructions and
+        examples: :attr:`ToolCallFormat.JSON` (default, Qwen3-style) or
+        :attr:`ToolCallFormat.PYTHONIC` (OLMo 3-style).
         """
         try:
             # GAIA, HLE, and MuSiQue share the same single‑QA prompt template.
@@ -101,12 +106,14 @@ class PromptBuilder:
         if tool_schemas:
             sections.append(
                 self._format_tool_schemas(
-                    tool_schemas, max_search_limit, direct_tool_call, baseline=baseline
+                    tool_schemas, max_search_limit, direct_tool_call,
+                    baseline=baseline, tool_call_format=tool_call_format,
                 )
             )
 
         example_text = self._select_and_format_example(
-            template, tool_schemas, direct_tool_call, baseline=baseline
+            template, tool_schemas, direct_tool_call,
+            baseline=baseline, tool_call_format=tool_call_format,
         )
         if example_text:
             sections.append(example_text)
@@ -122,60 +129,92 @@ class PromptBuilder:
 
         return "\n\n".join(sections)
 
+    @staticmethod
+    def _json_tool_call_to_pythonic(tool_call_json: str) -> str:
+        """Convert a JSON tool-call string to OLMo 3 pythonic format.
+
+        ``'{"name": "web_search", "arguments": {"query": "foo"}}'``
+        → ``'web_search(query="foo")'``
+
+        Falls back to the original string on parse failure.
+        """
+        try:
+            obj = json.loads(tool_call_json)
+            name = obj.get("name", "")
+            args = obj.get("arguments", {})
+            arg_str = ", ".join(f"{k}={json.dumps(v)}" for k, v in args.items())
+            return f"{name}({arg_str})"
+        except (json.JSONDecodeError, AttributeError):
+            return tool_call_json
+
+    # Per-format strings for tool-call syntax instructions and examples.
+    # Add a new entry here when onboarding a family with a different tool-call format.
+    _CALL_TAG_OPEN: Dict[ToolCallFormat, str] = {
+        ToolCallFormat.JSON: "<tool_call>",
+        ToolCallFormat.PYTHONIC: "<function_calls>",
+    }
+    _CALL_TAG_CLOSE: Dict[ToolCallFormat, str] = {
+        ToolCallFormat.JSON: "</tool_call>",
+        ToolCallFormat.PYTHONIC: "</function_calls>",
+    }
+    _CALL_PLACEHOLDER: Dict[ToolCallFormat, str] = {
+        ToolCallFormat.JSON: '{"name": <function-name>, "arguments": <args-json-object>}',
+        ToolCallFormat.PYTHONIC: 'function_name(arg1="value1", arg2="value2")',
+    }
+
     def _format_tool_schemas(
         self,
         schemas: List[Dict[str, Any]],
         max_search_limit: int,
         direct_tool_call: bool = False,
         baseline: bool = False,
+        tool_call_format: ToolCallFormat = ToolCallFormat.JSON,
     ) -> str:
-        """Format tool schemas using the Qwen3 XML <tools> format (matches MAT)."""
+        """Format tool schemas and call-format instructions."""
         if not schemas:
             return ""
 
         tools_json = "\n".join(json.dumps(schema, indent=2) for schema in schemas)
+        open_tag  = self._CALL_TAG_OPEN[tool_call_format]
+        close_tag = self._CALL_TAG_CLOSE[tool_call_format]
+        placeholder = self._CALL_PLACEHOLDER[tool_call_format]
 
-        if baseline:
-            return (
-                "# Tools\n\n"
-                "You may call one or more functions to assist with the user query.\n\n"
-                "You are provided with function signatures within <tools></tools> XML tags:\n"
-                f"<tools>\n{tools_json}\n</tools>\n\n"
-                "When you need a tool, return exactly one function call within "
-                "<tool_call></tool_call> XML tags:\n"
-                "<tool_call>\n"
-                '{{"name": <function-name>, "arguments": <args-json-object>}}\n'
-                "</tool_call>\n\n"
-                "Important: You may call tools zero, one, or multiple times as needed. "
-                "Only call a tool when it would help answer the question. "
-                "After receiving tool results in <tool_response></tool_response> tags, "
-                "continue your reasoning with the new information."
-            )
-
-        direct_mode_rule = ""
-        if direct_tool_call:
-            direct_mode_rule = (
-                "\n"
-                "After every <tool_response>...</tool_response>, "
-                "write at least one sentence of reasoning before making another <tool_call>.\n"
-            )
-
-        return (
+        header = (
             "# Tools\n\n"
             "You may call one or more functions to assist with the user query.\n\n"
             "You are provided with function signatures within <tools></tools> XML tags:\n"
             f"<tools>\n{tools_json}\n</tools>\n\n"
-            "For each function call, first state your specific sub-goal for this step "
-            "within <sub_goal></sub_goal> tags, then return the function call within "
-            "<tool_call></tool_call> XML tags:\n"
-            "<sub_goal>A specific, actionable goal for this step</sub_goal>\n"
-            "<tool_call>\n"
-            '{{"name": <function-name>, "arguments": <args-json-object>}}\n'
-            "</tool_call>\n\n"
+        )
+        tail = (
             "Important: You may call tools zero, one, or multiple times as needed. "
             "Only call a tool when it would help answer the question. "
             "After receiving tool results in <tool_response></tool_response> tags, "
-            f"continue your reasoning with the new information.{direct_mode_rule}"
+            "continue your reasoning with the new information."
+        )
+
+        if baseline:
+            return (
+                header
+                + f"When you need a tool, return exactly one function call within "
+                f"{open_tag}{close_tag} XML tags:\n"
+                f"{open_tag}\n{placeholder}\n{close_tag}\n\n"
+                + tail
+            )
+
+        direct_mode_rule = (
+            f"\nAfter every <tool_response>...</tool_response>, "
+            f"write at least one sentence of reasoning before making another {open_tag} call.\n"
+            if direct_tool_call else ""
+        )
+        return (
+            header
+            + "For each function call, first state your specific sub-goal for this step "
+            f"within <sub_goal></sub_goal> tags, then return the function call within "
+            f"{open_tag}{close_tag} XML tags:\n"
+            f"<sub_goal>A specific, actionable goal for this step</sub_goal>\n"
+            f"{open_tag}\n{placeholder}\n{close_tag}\n\n"
+            + tail
+            + direct_mode_rule
         )
 
     def _select_and_format_example(
@@ -184,23 +223,13 @@ class PromptBuilder:
         tool_schemas: List[Dict[str, Any]],
         direct_tool_call: bool,
         baseline: bool = False,
+        tool_call_format: ToolCallFormat = ToolCallFormat.JSON,
     ) -> str:
-        """Select and format appropriate example based on tools and mode.
-
-        Args:
-            template: Template dictionary
-            tool_schemas: List of enabled tool schemas
-            direct_tool_call: Whether using direct mode (True) or sub-agent mode (False)
-
-        Returns:
-            Formatted example text or empty string if no example
-        """
-        # Determine enabled tools
+        """Select and format appropriate example based on tools and mode."""
         enabled_tools = {schema.get("function", {}).get("name", "") for schema in tool_schemas}
         has_search = "web_search" in enabled_tools
         has_code = "code_generator" in enabled_tools
 
-        # Select appropriate example key
         example_key = None
         if has_search and has_code:
             example_key = "example_search_code_direct" if direct_tool_call else "example_search_code_subagent"
@@ -213,6 +242,9 @@ class PromptBuilder:
             if "example" in template and template["example"]:
                 return self._format_example(template["example"], baseline=baseline)
             return ""
+
+        open_tag  = self._CALL_TAG_OPEN[tool_call_format]
+        close_tag = self._CALL_TAG_CLOSE[tool_call_format]
 
         example = template[example_key]
         if not example or "question" not in example or "steps" not in example:
@@ -240,9 +272,14 @@ class PromptBuilder:
                         lines.append("")
 
                 if "tool_call" in step_data:
-                    lines.append("<tool_call>")
-                    lines.append(step_data["tool_call"])
-                    lines.append("</tool_call>")
+                    call_content = (
+                        self._json_tool_call_to_pythonic(step_data["tool_call"])
+                        if tool_call_format == ToolCallFormat.PYTHONIC
+                        else step_data["tool_call"]
+                    )
+                    lines.append(open_tag)
+                    lines.append(call_content)
+                    lines.append(close_tag)
                     lines.append("")
 
                 if "tool_response" in step_data:
