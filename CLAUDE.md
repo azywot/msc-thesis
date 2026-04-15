@@ -32,7 +32,9 @@ scripts/
   tables/             # Table generation scripts
 
 experiments/
-  configs/            # YAML experiment configs (baseline/, 1_milestone_...AgentFlow/, local/, datasets/)
+  configs/            # YAML experiment configs (baseline/, 1_milestone_...AgentFlow/, local/, datasets/,
+                      #   orchestrator_capacity/, subagent_orchestrator_ablation/,
+                      #   structured_memory_ablation/, olmo/)
   configs/generate_configs.py  # Programmatic config generator
   results/            # Default output root
 
