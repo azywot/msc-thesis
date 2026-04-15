@@ -7,6 +7,7 @@ with tool execution.
 import json
 import os
 import re
+import inspect
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 
 from ..models.base import BaseModelProvider
@@ -744,11 +745,41 @@ class AgenticOrchestrator:
             if inject_error:
                 return ToolResult(success=False, output="", metadata={}, error=inject_error)
 
+            arguments = self._sanitize_tool_arguments(tool, arguments)
             logger.info("Tool call: %s, %s", tool_name, arguments)
             return tool.execute(**arguments)
         except Exception as e:
             logger.exception("Tool execution error")
             return ToolResult(success=False, output="", metadata={}, error=str(e))
+
+    def _sanitize_tool_arguments(self, tool: Any, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Drop unexpected kwargs for tools that don't accept ``**kwargs``.
+
+        Some models emit extra JSON fields (e.g., ``limit`` for ``web_search``).
+        For strict tool signatures, filter unknown keys to avoid hard failures.
+        """
+        try:
+            sig = inspect.signature(tool.execute)
+        except (TypeError, ValueError):
+            return arguments
+
+        params = sig.parameters
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            return arguments
+
+        allowed = {
+            name for name, p in params.items()
+            if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        }
+        filtered = {k: v for k, v in arguments.items() if k in allowed}
+        dropped = sorted(set(arguments) - set(filtered))
+        if dropped:
+            logger.warning(
+                "Dropping unsupported args for tool %s: %s",
+                getattr(tool, "name", type(tool).__name__),
+                dropped,
+            )
+        return filtered
 
     def _inject_attachment_path(
         self,
