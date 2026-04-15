@@ -72,7 +72,33 @@ class CodeGeneratorTool(BaseTool):
     def get_schema(self) -> Dict[str, Any]:
         """Return Qwen3 JSON Schema."""
         if self.direct_mode:
-            # Direct mode: expects actual Python code
+            if self.return_code:
+                # BigCodeBench / code-generation benchmark: syntax-check a function implementation.
+                return {
+                    "type": "function",
+                    "function": {
+                        "name": "code_generator",
+                        "description": (
+                            "Syntax-check a Python function implementation. "
+                            "Pass your complete implementation as `code`; returns "
+                            "'[Syntax check: OK]' followed by the code, or a syntax error."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "string",
+                                    "description": (
+                                        "Complete Python function implementation to check "
+                                        "(including imports). Do not include markdown fences."
+                                    ),
+                                }
+                            },
+                            "required": ["code"]
+                        }
+                    }
+                }
+            # Direct execution mode: expects a standalone script.
             return {
                 "type": "function",
                 "function": {
@@ -97,7 +123,33 @@ class CodeGeneratorTool(BaseTool):
                 }
             }
         else:
-            # Sub-agent mode: expects task description
+            if self.return_code:
+                # BigCodeBench / code-generation benchmark: generate a function implementation.
+                return {
+                    "type": "function",
+                    "function": {
+                        "name": "code_generator",
+                        "description": (
+                            "Generate a Python function implementation from a description. "
+                            "Pass the task and function stub as `task`; returns "
+                            "'[Syntax check: OK]' followed by the generated code, or a syntax error."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "task": {
+                                    "type": "string",
+                                    "description": (
+                                        "Description of the function to implement, including the "
+                                        "function stub (imports + signature) it must conform to."
+                                    ),
+                                }
+                            },
+                            "required": ["task"]
+                        }
+                    }
+                }
+            # Sub-agent execution mode: generate and run a script.
             return {
                 "type": "function",
                 "function": {
@@ -132,20 +184,25 @@ class CodeGeneratorTool(BaseTool):
         logger.info(f"Executing code ({'sub-agent' if not self.direct_mode else 'direct'} mode)")
 
         if not self.direct_mode:
-            if not task:
+            # Sub-agent mode: either generate from ``task`` (single-tool call path)
+            # or accept pre-generated ``code`` (batched orchestrator path after LLM).
+            if task:
+                code = self.generate_code(task)
+                if not code:
+                    return ToolResult(
+                        success=False,
+                        output="",
+                        metadata={},
+                        error="Failed to generate code from task description",
+                    )
+            elif code:
+                pass  # use provided code as-is
+            else:
                 return ToolResult(
                     success=False,
                     output="",
                     metadata={},
-                    error="Task description required for sub-agent mode",
-                )
-            code = self.generate_code(task)
-            if not code:
-                return ToolResult(
-                    success=False,
-                    output="",
-                    metadata={},
-                    error="Failed to generate code from task description",
+                    error="Task description or code required for sub-agent mode",
                 )
         elif self.direct_mode and not code:
             return ToolResult(
@@ -178,20 +235,41 @@ class CodeGeneratorTool(BaseTool):
 
         This is used by both single and batched sub-agent execution.
         context: Previous reasoning and optional attachment info (MAT-style).
+
+        When ``self.return_code`` is True (e.g. BigCodeBench) the sub-agent is
+        asked to implement a *function body*, not a standalone executable script.
         """
         context_block = f"Context:\n\n{context}\n\n" if context else ""
-        prompt = (
-            "You are a code generator. Generate ONLY executable Python code, with NO explanations, "
-            "NO comments about what the code does, and NO additional text.\n\n"
-            f"{context_block}Problem: {task}\n\n"
-            "Requirements:\n"
-            "- Output ONLY the Python code\n"
-            "- The code must be executable as a standalone script\n"
-            "- The code must print its output directly\n"
-            "- NO explanatory text before or after the code\n"
-            "- NO comments like \"Here's the code\" or \"This will output\"\n\n"
-            "Python code:"
-        )
+
+        if self.return_code:
+            # Code-generation benchmark mode: produce a complete function
+            # implementation that will be tested by an external test harness.
+            prompt = (
+                "You are a Python function implementer. Given a task description and "
+                "a code stub (imports + function signature), write the complete function "
+                "body. Output ONLY the finished Python code — no prose, no markdown "
+                "fences, no print statements, no __main__ block.\n\n"
+                f"{context_block}Task:\n{task}\n\n"
+                "Requirements:\n"
+                "- Include all imports that appear in the stub or that you add\n"
+                "- Implement the function body completely\n"
+                "- Do NOT add standalone execution code (if __name__ == '__main__', print(), etc.)\n"
+                "- Output ONLY the Python code, starting from the first import or def line\n\n"
+                "Python code:"
+            )
+        else:
+            prompt = (
+                "You are a code generator. Generate ONLY executable Python code, with NO explanations, "
+                "NO comments about what the code does, and NO additional text.\n\n"
+                f"{context_block}Problem: {task}\n\n"
+                "Requirements:\n"
+                "- Output ONLY the Python code\n"
+                "- The code must be executable as a standalone script\n"
+                "- The code must print its output directly\n"
+                "- NO explanatory text before or after the code\n"
+                "- NO comments like \"Here's the code\" or \"This will output\"\n\n"
+                "Python code:"
+            )
         prompt_messages = [{"role": "user", "content": prompt}]
         return self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
 

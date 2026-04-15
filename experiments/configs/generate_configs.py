@@ -401,6 +401,9 @@ def make_config(
     baseline_line = "baseline: true\n" if suite["baseline"] else ""
     num_gpus = suite["num_gpus"] if suite.get("force_num_gpus", False) else m.get("gpus", suite["num_gpus"])
     wandb_project = suite["wandb_project"]
+    # BigCodeBench evaluation is done externally via test harness; the tool must
+    # return generated code rather than executing it.
+    return_code = dataset == "bigcodebench" and bool(enabled)
 
     return f"""{comment_line}
 
@@ -417,7 +420,7 @@ slurm:
 
 {_model_block(model_key)}
 
-{_tools_block(direct, enabled)}
+{_tools_block(direct, enabled, return_code=return_code)}
 
 dataset:
   name: "{dataset}"

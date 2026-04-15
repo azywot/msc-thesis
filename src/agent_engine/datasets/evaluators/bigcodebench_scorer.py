@@ -9,11 +9,17 @@ import re
 import signal
 import subprocess
 import tempfile
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from ...utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# When set, assembled test files are written here (workspace-relative) instead
+# of /tmp so they are visible on shared filesystems (e.g. SLURM compute nodes).
+# Set to None to use the system temp dir (files are deleted after each run).
+DEBUG_EVAL_DIR: Optional[str] = "./cache/bigcodebench_eval_debug"  # e.g. "./cache/bigcodebench_eval_debug"
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -49,9 +55,10 @@ def evaluate_bigcodebench(
 
     impl = _strip_markdown_fences(generated_code)
 
-    # If the prediction already contains the full function definition (starts with
-    # `def <entry_point>`) use it directly; otherwise append it after code_prompt.
-    if re.match(rf"^\s*def\s+{re.escape(entry_point)}\s*\(", impl, re.MULTILINE):
+    # If the prediction already contains the full function definition (anywhere in
+    # the code) use it directly; otherwise append it after code_prompt.
+    # Use re.search so imports/comments before the def are allowed.
+    if re.search(rf"^\s*def\s+{re.escape(entry_point)}\s*\(", impl, re.MULTILINE):
         full_code = impl
     else:
         full_code = code_prompt.rstrip() + "\n" + impl
@@ -68,12 +75,22 @@ def evaluate_bigcodebench(
     )
 
     tmp_path = None
+    keep_file = DEBUG_EVAL_DIR is not None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False, encoding="utf-8"
-        ) as tmp:
-            tmp.write(assembled)
-            tmp_path = tmp.name
+        if DEBUG_EVAL_DIR:
+            debug_dir = Path(DEBUG_EVAL_DIR)
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            safe_id = task_id.replace("/", "_")
+            tmp_path = str(debug_dir / f"{safe_id}.py")
+            with open(tmp_path, "w", encoding="utf-8") as tmp:
+                tmp.write(assembled)
+            logger.debug("BigCodeBench assembled test file: %s", tmp_path)
+        else:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".py", delete=False, encoding="utf-8"
+            ) as tmp:
+                tmp.write(assembled)
+                tmp_path = tmp.name
 
         process = subprocess.Popen(
             ["python", tmp_path],
@@ -117,7 +134,7 @@ def evaluate_bigcodebench(
         logger.error("BigCodeBench scorer error for task %s: %s", task_id, exc, exc_info=True)
         return {"correct": False, "score": 0.0, "task_id": task_id, "error": str(exc)}
     finally:
-        if tmp_path and os.path.exists(tmp_path):
+        if tmp_path and not keep_file and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
             except OSError:

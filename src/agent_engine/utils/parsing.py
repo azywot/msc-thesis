@@ -87,9 +87,11 @@ def extract_answer(text: str) -> Optional[str]:
         return match.group(1).strip()
 
     # Fallback: fenced code block (for code-generation tasks like BigCodeBench).
-    code_match = re.search(r'```(?:python)?\n?(.*?)\n?```', stripped, re.DOTALL)
-    if code_match:
-        return code_match.group(1).strip()
+    # Use the LAST match so that a final implementation block is preferred over
+    # any example/intermediate snippets earlier in the response.
+    code_blocks = re.findall(r'```(?:python)?\n?(.*?)\n?```', stripped, re.DOTALL)
+    if code_blocks:
+        return code_blocks[-1].strip()
 
     return None
 
