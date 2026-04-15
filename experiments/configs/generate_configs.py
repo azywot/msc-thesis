@@ -150,6 +150,7 @@ VARIANTS_ORCH_CAPACITY = [
     for ok in ["8B", "32B"]
     for sk in ["1.7B", "8B", "32B"]
     for t  in ["NO", "ORCHESTRATOR_ONLY", "ALL"]
+    if not (ok == "8B" and sk == "8B")
 ]
 
 # ── olmo variants ──────────────────────────────────────────────────────────────
@@ -208,6 +209,7 @@ SUITES = {
         "output_dir_root": "./experiments/results/NEW_baseline",
         "config_subdir":   "baseline",
         "baseline":        True,
+        "force_num_gpus":  True,
         "variants":        VARIANTS_ALL_BASELINE,
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
@@ -222,6 +224,7 @@ SUITES = {
         "output_dir_root": "./experiments/results/1_milestone_no_img_no_mindmap_AgentFlow",
         "config_subdir":   "1_milestone_no_img_no_mindmap_AgentFlow",
         "baseline":        False,
+        "force_num_gpus":  True,
         "variants":        VARIANTS_ALL,
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
@@ -275,6 +278,7 @@ SUITES = {
         "config_subdir":   "olmo/think",
         "baseline":        False,
         "variants":        VARIANTS_OLMO_THINK,
+        "datasets":        ["gaia", "hle", "gpqa", "aime", "musique"],
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
         "split_overrides": {},
@@ -286,6 +290,7 @@ SUITES = {
         "config_subdir":   "olmo/instruct",
         "baseline":        False,
         "variants":        VARIANTS_OLMO_INSTRUCT,
+        "datasets":        ["gaia", "hle", "gpqa", "aime", "musique"],
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
         "split_overrides": {},
@@ -394,7 +399,7 @@ def make_config(
     output_dir = f"{suite['output_dir_root']}/{dataset}/{stem}"
 
     baseline_line = "baseline: true\n" if suite["baseline"] else ""
-    num_gpus = m.get("gpus", suite["num_gpus"])
+    num_gpus = suite["num_gpus"] if suite.get("force_num_gpus", False) else m.get("gpus", suite["num_gpus"])
     wandb_project = suite["wandb_project"]
 
     return f"""{comment_line}
@@ -609,17 +614,6 @@ for _mk in ["8B", "32B"]:
                 _mk, True, "none", _think, _bl, False,
             ))
 
-SUITES["bigcodebench"] = {
-    "description_tag": "[BigCodeBench; code generation benchmark]",
-    "name_prefix": "BCB",
-    "output_dir_root": "./experiments/results/bigcodebench",
-    "config_subdir": "bigcodebench",
-    "num_gpus": 2,
-    "wandb_project": "benchmarks",
-    "split_overrides": {},
-}
-
-
 def generate_suite(suite_name: str) -> None:
     suite = SUITES[suite_name]
     suite_dir = CONFIGS_ROOT / suite["config_subdir"]
@@ -632,23 +626,6 @@ def generate_suite(suite_name: str) -> None:
     variant_type    = suite.get("variant_type", "standard")
 
     created = 0
-
-    # BigCodeBench has its own generation logic (configs in suite_dir directly)
-    if suite_name == "bigcodebench":
-        suite_dir.mkdir(parents=True, exist_ok=True)
-        # Remove stale top-level yaml files
-        removed = sum(1 for p in suite_dir.glob("*.yaml") if p.unlink() or True)
-        removed += sum(1 for p in suite_dir.glob("*.yml") if p.unlink() or True)
-        for stem, model_key, direct, tools_key, thinking, baseline, return_code in _BCB_VARIANTS:
-            content = make_config_bigcodebench(
-                suite, stem, model_key, direct, tools_key, thinking, baseline, return_code
-            )
-            path = suite_dir / f"{stem}.yaml"
-            path.write_text(content)
-            print(f"  wrote {path.relative_to(CONFIGS_ROOT.parent)}")
-            created += 1
-        print(f"\n[{suite_name}] removed {removed} old, created {created} configs.")
-        return
 
     for dataset in datasets_to_run:
         dataset_dir = suite_dir / dataset

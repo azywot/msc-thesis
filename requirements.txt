@@ -373,6 +373,16 @@ yarg==0.1.9
 yarl==1.17.2
 # msc-thesis specific (not in environment_new.yml)
 math-verify[antlr4_13_2]>=0.7.0
+# BigCodeBench extra runtime deps (from libs fields)
+# django>=4.2.0
+# faker>=28.0.0
+# flask>=3.0.0
+# flask-mail>=0.10.0
+# flask-restful>=0.3.10
+# mechanize>=0.4.10
+# python-dateutil>=2.8.2
+# seaborn>=0.13.0
+# textblob>=0.18.0
 # Development (optional)
 pytest>=7.0.0
 pytest-cov>=4.0.0
