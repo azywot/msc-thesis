@@ -512,7 +512,7 @@ slurm:
   num_gpus: {num_gpus}
   ntasks: 1
   cpus_per_task: 8
-  time: "16:00:00"
+  time: "24:00:00"
   conda_env: "agent_engine"
 
 {_model_block(model_key)}
@@ -584,7 +584,7 @@ slurm:
   num_gpus: {num_gpus}
   ntasks: 1
   cpus_per_task: 8
-  time: "16:00:00"
+  time: "24:00:00"
   conda_env: "agent_engine"
 
 {models_block}
