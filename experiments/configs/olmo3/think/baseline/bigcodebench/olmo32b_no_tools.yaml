@@ -1,0 +1,38 @@
+# BigCodeBench — OLMo-3.1-32B-Think, no tools
+
+name: "OLMo_Think_baseline_bigcodebench_olmo32b_no_tools"
+description: "[OLMo-Think Baseline; NO image_inspector, NO mindmap] BigCodeBench v0.1.4_subset_200 with OLMo-3.1-32B-Think, no tools"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "16:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "OLMo-3.1-32B-Think"
+    family: "olmo-think"
+    path_or_id: "allenai/Olmo-3.1-32B-Think"
+    role: "orchestrator"
+    tensor_parallel_size: 2  # 64 heads; TP must divide 64.
+
+tools:
+  enabled_tools: []
+  direct_tool_call: true
+
+dataset:
+  name: "bigcodebench"
+  split: "v0.1.4_subset_200"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+baseline: true
+output_dir: "./experiments/results/olmo/think/baseline/bigcodebench/olmo32b_no_tools"
+use_wandb: true
+wandb_project: "benchmarks"
+
+cache_dir: "./cache"
