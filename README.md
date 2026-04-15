@@ -2,7 +2,9 @@
 
 CoSMAS is a configuration-driven multi-agent research framework for investigating how small, collaborative language models can be composed to solve complex tasks efficiently. Its primary focus is the design and evaluation of collaboration mechanisms, enabling systematic comparison between single-model baselines and cooperative multi-agent configurations under controlled experimental conditions.
 
----
+![Framework diagram](data/static/FrameworkDiagram.jpg)
+
+
 
 ## Table of contents
 

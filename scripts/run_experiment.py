@@ -151,7 +151,8 @@ def setup_tools(
                 timeout_seconds=60,
                 temp_dir=str(config.cache_dir / "code_temp"),
                 model_provider=coding_model,
-                use_thinking=use_subagent_thinking
+                use_thinking=use_subagent_thinking,
+                return_code=config.tools.return_code,
             ))
         elif tool_name == "mind_map":
             # In sub-agent mode, GraphRAG runs with a local model — no OpenAI key needed (mirrors MAT).

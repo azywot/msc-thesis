@@ -159,6 +159,21 @@ python scripts/download_datasets.py \
 
 echo ""
 echo "=========================================="
+echo "Downloading BigCodeBench Dataset"
+echo "=========================================="
+
+echo ""
+echo "Downloading BigCodeBench instruct v0.1.4 (200 examples)…"
+python scripts/download_datasets.py \
+    --dataset bigcodebench \
+    --split v0.1.4 \
+    --subset 200 \
+    --output-dir "$DATA_DIR" || {
+        echo "Warning: Failed to download BigCodeBench"
+    }
+
+echo ""
+echo "=========================================="
 echo "Dataset Download Summary"
 echo "=========================================="
 echo "Data directory: $DATA_DIR"
