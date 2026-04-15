@@ -45,12 +45,16 @@ def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
 def extract_answer(text: str) -> Optional[str]:
     """Extract the final answer from model output.
 
+    Strips ``<think>…</think>`` blocks first so that reasoning summaries inside
+    thinking do not accidentally match answer patterns.
+
     Tries the following patterns in order of priority:
 
     1. ``\\boxed{answer}`` — LaTeX format used by math reasoning models.
     2. ``Final Answer: <answer>``
     3. ``Answer: <answer>``
     4. ``The answer is <answer>``
+    5. Fenced code block (``` python … ```) — fallback for code-generation tasks.
 
     Args:
         text: Model output text.
@@ -58,25 +62,34 @@ def extract_answer(text: str) -> Optional[str]:
     Returns:
         Extracted answer string, or ``None`` if no pattern matched.
     """
+    # Strip thinking tags before any pattern matching so that reasoning
+    # summaries inside <think> don't shadow the real answer.
+    stripped = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
     boxed_pattern = r'\\+boxed\{([^}]+)\}'
-    match = re.search(boxed_pattern, text, re.IGNORECASE)
+    match = re.search(boxed_pattern, stripped, re.IGNORECASE)
     if match:
         return match.group(1).strip()
 
     pattern1 = r'Final Answer:\s*(.+?)(?:\n|$)'
-    match = re.search(pattern1, text, re.IGNORECASE)
+    match = re.search(pattern1, stripped, re.IGNORECASE)
     if match:
         return match.group(1).strip()
 
     pattern2 = r'(?<!Final )Answer:\s*(.+?)(?:\n|$)'
-    match = re.search(pattern2, text, re.IGNORECASE)
+    match = re.search(pattern2, stripped, re.IGNORECASE)
     if match:
         return match.group(1).strip()
 
     pattern3 = r'The answer is[:\s]+(.+?)(?:\n|$)'
-    match = re.search(pattern3, text, re.IGNORECASE)
+    match = re.search(pattern3, stripped, re.IGNORECASE)
     if match:
         return match.group(1).strip()
+
+    # Fallback: fenced code block (for code-generation tasks like BigCodeBench).
+    code_match = re.search(r'```(?:python)?\n?(.*?)\n?```', stripped, re.DOTALL)
+    if code_match:
+        return code_match.group(1).strip()
 
     return None
 
