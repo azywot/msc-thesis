@@ -20,7 +20,7 @@ load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from agent_engine.config import load_experiment_config
-from agent_engine.models.base import ModelFamily
+from agent_engine.models.base import ModelFamily, get_tool_call_format
 from agent_engine.core import ToolRegistry, AgenticOrchestrator, ExecutionState
 from agent_engine.utils import setup_logging, set_seed
 from agent_engine.utils.wandb_logging import log_results_wandb
@@ -338,6 +338,7 @@ def run_experiment(args):
             max_search_limit=config.tools.max_search_limit,
             direct_tool_call=config.tools.direct_tool_call,
             baseline=getattr(config, "baseline", False),
+            tool_call_format=get_tool_call_format(config.get_model("orchestrator").family),
         )
 
         orchestrator = AgenticOrchestrator(
