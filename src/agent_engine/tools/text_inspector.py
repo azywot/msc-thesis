@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 from ..core.tool import BaseTool, ToolResult
 from ..utils.logging import get_logger
 from ..utils.parsing import strip_thinking_tags
+from ..utils.prompting import append_step_by_step_instruction, should_append_step_by_step_instruction
 
 logger = get_logger(__name__)
 
@@ -277,6 +278,8 @@ class TextInspectorTool(BaseTool):
             "You are given the content of a plain-text file attached to the user's question. "
             "Answer the question using only the file content. If the file does not contain the answer, say so."
         )
+        if should_append_step_by_step_instruction(self.model_provider, self.use_thinking):
+            system_prompt = append_step_by_step_instruction(system_prompt)
         user_prompt = f"File content:\n\n{file_content}\n\nQuestion:\n{question}\n"
 
         prompt_messages = [

@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from ..core.tool import BaseTool, ToolResult
 from ..utils.logging import get_logger
 from ..utils.parsing import strip_thinking_tags
+from ..utils.prompting import append_step_by_step_instruction, should_append_step_by_step_instruction
 from ..external.serper import SerperRM
 from ..external.tavily import TavilyRM
 from ..external.url_fetcher import fetch_page_content, extract_snippet_with_context
@@ -311,6 +312,9 @@ No helpful information found.
 
 Now you should analyze each web page and find helpful information based on the current search query "{query}".
 """
+
+        if should_append_step_by_step_instruction(self.model_provider, self.use_thinking):
+            instruction = append_step_by_step_instruction(instruction)
 
         prompt_messages = [{"role": "user", "content": instruction}]
         prompt = self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)

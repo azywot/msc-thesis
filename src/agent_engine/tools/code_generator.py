@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from ..core.tool import BaseTool, ToolResult
 from ..utils.logging import get_logger
 from ..utils.parsing import strip_thinking_tags
+from ..utils.prompting import append_step_by_step_instruction, should_append_step_by_step_instruction
 
 logger = get_logger(__name__)
 

@@ -12,6 +12,12 @@ from .base import BaseModelProvider, GenerationResult, ModelConfig, ModelFamily
 # Families whose HF chat template accepts the ``enable_thinking`` kwarg.
 # Other thinking-capable families (e.g. OLMo) always think and don't expose this knob.
 _ENABLE_THINKING_KWARG_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ})
+
+# DeepSeek-R1-Distill models have no ``enable_thinking`` kwarg.  Instead,
+# thinking is suppressed by prefilling the assistant turn with an empty
+# <think>\n</think>\n block so the model skips reasoning and goes straight
+# to its response.
+_DEEPSEEK_FAMILIES = frozenset({ModelFamily.DEEPSEEK})
 from .llm_shared import get_llm_lock
 from ..utils.logging import get_logger, format_messages_as_chat
 
@@ -278,15 +284,23 @@ class VLLMProvider(BaseModelProvider):
         the reasoning block when thinking is disabled.  For other families
         (e.g. OLMo) the kwarg is not part of their template and must be omitted;
         thinking-capable variants in those families always produce <think> output.
+
+        For DeepSeek-R1-Distill (``_DEEPSEEK_FAMILIES``), there is no
+        ``enable_thinking`` kwarg.  When thinking should be suppressed the
+        rendered prompt is post-fixed with ``<think>\\n</think>\\n`` so the
+        model interprets the reasoning block as already complete and skips it.
         """
         if self.config.family in _ENABLE_THINKING_KWARG_FAMILIES:
             return self.tokenizer.apply_chat_template(
                 msgs, tokenize=False, add_generation_prompt=True,
                 enable_thinking=(use_thinking and self.config.supports_thinking),
             )
-        return self.tokenizer.apply_chat_template(
+        rendered = self.tokenizer.apply_chat_template(
             msgs, tokenize=False, add_generation_prompt=True,
         )
+        if self.config.family in _DEEPSEEK_FAMILIES and not (use_thinking and self.config.supports_thinking):
+            rendered += "<think>\n</think>\n"
+        return rendered
 
     def _make_result(self, output: Any, messages: Optional[List[Dict[str, Any]]]) -> GenerationResult:
         """Build a GenerationResult from a single vLLM output object."""

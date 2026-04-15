@@ -66,11 +66,17 @@ class PromptBuilder:
         max_search_limit: int = 10,
         direct_tool_call: bool = True,
         baseline: bool = False,
+        think_step_by_step: bool = False,
     ) -> str:
         """Build system prompt with tools and instructions.
 
         When *baseline* is ``True``, load ``*_baseline`` templates and omit
         sub-goal / reasoning scaffolding from tool instructions and examples.
+
+        When *think_step_by_step* is ``True`` (recommended for DeepSeek-R1
+        models in thinking mode), an explicit "Think step by step." sentence is
+        appended to the opening instruction so the model is primed to reason
+        before producing its response.
         """
         try:
             # GAIA, HLE, and MuSiQue share the same single‑QA prompt template.
@@ -94,9 +100,16 @@ class PromptBuilder:
         sections = []
 
         if tool_schemas and "base_instruction_tools" in template:
-            sections.append(template["base_instruction_tools"].strip())
+            instruction = template["base_instruction_tools"].strip()
         elif "base_instruction" in template:
-            sections.append(template["base_instruction"].strip())
+            instruction = template["base_instruction"].strip()
+        else:
+            instruction = ""
+
+        if instruction:
+            if think_step_by_step:
+                instruction = instruction + "\nThink step by step."
+            sections.append(instruction)
 
         if tool_schemas:
             sections.append(

@@ -12,6 +12,7 @@ from PIL import Image
 from ..core.tool import BaseTool, ToolResult
 from ..utils.logging import get_logger
 from ..utils.parsing import strip_thinking_tags
+from ..utils.prompting import append_step_by_step_instruction, should_append_step_by_step_instruction
 
 logger = get_logger(__name__)
 
@@ -195,6 +196,8 @@ class ImageInspectorTool(BaseTool):
             "Answer the question using only the image content. "
             "If the image does not contain enough information, say so."
         )
+        if should_append_step_by_step_instruction(self.model_provider, self.use_thinking):
+            system_prompt = append_step_by_step_instruction(system_prompt)
 
         prompt_messages = [
             {"role": "system", "content": system_prompt},

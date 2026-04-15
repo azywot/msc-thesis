@@ -1,0 +1,42 @@
+# GAIA — DeepSeek-R1-Distill-Qwen-32B, direct tools, orchestrator thinking
+
+name: "DS32_test_gaia_ds32b_direct_tools_orchestrator"
+description: "[DeepSeek-R1-Distill-Qwen-32B test; direct tools; orchestrator thinking; GAIA only] GAIA all_validation with DeepSeek-R1-Distill-Qwen-32B, direct tools, orchestrator thinking"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "16:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "DeepSeek-R1-Distill-Qwen-32B"
+    family: "deepseek"
+    path_or_id: "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+    role: "orchestrator"
+    tensor_parallel_size: 2  # 64 heads; TP must divide 64.
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+  direct_tool_call: true
+
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "ORCHESTRATOR_ONLY"
+baseline: true
+output_dir: "./experiments/results/ds32_test/gaia/ds32b_direct_tools_orchestrator"
+use_wandb: true
+wandb_project: "benchmarks"
+
+cache_dir: "./cache"
