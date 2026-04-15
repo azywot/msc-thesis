@@ -44,6 +44,7 @@ class ToolsConfig(BaseModel):
     """
     enabled_tools: List[str] = ["web_search", "code_generator"]
     direct_tool_call: bool = True
+    return_code: bool = False
     web_tool_provider: str = "serper"
     max_search_limit: int = 10
     top_k_results: int = 5

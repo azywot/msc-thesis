@@ -35,7 +35,8 @@ class CodeGeneratorTool(BaseTool):
         max_output_chars: int = 8000,
         temp_dir: str = "./cache/code_temp",
         model_provider = None,  # Optional: for sub-agent mode
-        use_thinking: bool = False  # Whether sub-agent uses thinking
+        use_thinking: bool = False,  # Whether sub-agent uses thinking
+        return_code: bool = False,  # Return generated code instead of executing it
     ):
         """Initialize code execution tool.
 
@@ -45,12 +46,15 @@ class CodeGeneratorTool(BaseTool):
             temp_dir: Directory for temporary files
             model_provider: Optional model provider for sub-agent mode
             use_thinking: Whether sub-agent uses thinking mode
+            return_code: When True, return generated code as output instead of executing it.
+                Required for code-generation benchmarks such as BigCodeBench.
         """
         self.timeout_seconds = timeout_seconds
         self.max_output_chars = max_output_chars
         self.temp_dir = temp_dir
         self.model_provider = model_provider
         self.use_thinking = use_thinking
+        self.return_code = return_code
         self.direct_mode = model_provider is None
         self._exec_counter = 0
 
@@ -142,6 +146,29 @@ class CodeGeneratorTool(BaseTool):
                     output="",
                     metadata={},
                     error="Failed to generate code from task description",
+                )
+        elif self.direct_mode and not code:
+            return ToolResult(
+                success=False,
+                output="",
+                metadata={},
+                error="Code required for direct mode",
+            )
+
+        if self.return_code:
+            try:
+                ast.parse(code)
+                return ToolResult(
+                    success=True,
+                    output=f"[Syntax check: OK]\n\n{code}",
+                    metadata={"return_code_mode": True},
+                )
+            except SyntaxError as exc:
+                return ToolResult(
+                    success=False,
+                    output=code,
+                    metadata={"return_code_mode": True},
+                    error=f"Syntax error: {exc}",
                 )
 
         return self.execute_code(code)

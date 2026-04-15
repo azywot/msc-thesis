@@ -43,6 +43,11 @@ DATASETS = {
         "split": "validation_subset_200",
         "tools": ["web_search", "code_generator"],
     },
+    "bigcodebench": {
+        "display": "BigCodeBench",
+        "split": "v0.1.4_subset_200",
+        "tools": ["code_generator"],
+    },
 }
 
 # ── model definitions ──────────────────────────────────────────────────────────
@@ -290,13 +295,15 @@ SUITES = {
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
-def _tools_block(direct: bool, enabled: list[str]) -> str:
+def _tools_block(direct: bool, enabled: list[str], return_code: bool = False) -> str:
     if not enabled:
         return "tools:\n  enabled_tools: []\n  direct_tool_call: true"
     lines = ["tools:", "  enabled_tools:"]
     for t in enabled:
         lines.append(f"    - {t}")
     lines.append(f"  direct_tool_call: {'true' if direct else 'false'}")
+    if return_code:
+        lines.append("  return_code: true")
     return "\n".join(lines)
 
 
@@ -496,6 +503,123 @@ cache_dir: "./cache"
 """
 
 
+def make_config_bigcodebench(
+    suite: dict,
+    stem: str,
+    model_key: str,
+    direct: bool,
+    tools_key: str,
+    thinking: str,
+    baseline: bool,
+    return_code: bool,
+) -> str:
+    """Generate a BigCodeBench experiment config.
+
+    tools_key:
+        "subagent"  — code_generator, direct=False, return_code=True
+        "direct"    — code_generator, direct=True,  return_code=True
+        "none"      — no tools (model outputs code directly)
+    """
+    ds = DATASETS["bigcodebench"]
+    m = MODELS[model_key]
+
+    if tools_key == "none":
+        enabled = []
+        tool_desc = "no tools"
+    else:
+        enabled = ["code_generator"]
+        tool_desc = "direct code_generator" if direct else "sub-agent code_generator"
+
+    think_desc = THINKING_LABELS[thinking]
+    baseline_desc = "baseline" if baseline else "AgentFlow"
+    comment_line = f"# BigCodeBench — {m['name']}, {tool_desc}, {think_desc}, {baseline_desc}"
+
+    exp_name = f"{suite['name_prefix']}_bigcodebench_{stem}"
+    description = (
+        f"{suite['description_tag']} "
+        f"BigCodeBench {ds['split']} with {m['name']}, "
+        f"{tool_desc}, {think_desc}, {baseline_desc}"
+    )
+    output_dir = f"{suite['output_dir_root']}/bigcodebench/{stem}"
+    baseline_line = "baseline: true\n" if baseline else ""
+    num_gpus = m.get("gpus", suite.get("num_gpus", 2))
+    wandb_project = suite.get("wandb_project", "benchmarks")
+
+    tools_blk = _tools_block(direct, enabled, return_code=return_code and bool(enabled))
+
+    return f"""{comment_line}
+
+name: "{exp_name}"
+description: "{description}"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: {num_gpus}
+  ntasks: 1
+  cpus_per_task: 8
+  time: "16:00:00"
+  conda_env: "agent_engine"
+
+{_model_block(model_key)}
+
+{tools_blk}
+
+dataset:
+  name: "bigcodebench"
+  split: "{ds['split']}"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "{thinking}"
+{baseline_line}output_dir: "{output_dir}"
+use_wandb: true
+wandb_project: "{wandb_project}"
+
+cache_dir: "./cache"
+"""
+
+
+# BigCodeBench variants:
+# (stem, model_key, direct_tool_call, tools_key, thinking_mode, baseline, return_code)
+_BCB_VARIANTS = []
+for _mk in ["8B", "32B"]:
+    for _think in ["NO", "ORCHESTRATOR_ONLY"]:
+        _short_think = {"NO": "none", "ORCHESTRATOR_ONLY": "orchestrator"}[_think]
+        _mk_slug = _mk.lower().replace(".", "_")
+        # mode 1: sub-agent, return_code=True, AgentFlow + baseline
+        for _bl in [False, True]:
+            _bl_slug = "baseline" if _bl else "af"
+            _BCB_VARIANTS.append((
+                f"qwen{_mk_slug}_subagent_{_short_think}_{_bl_slug}",
+                _mk, False, "subagent", _think, _bl, True,
+            ))
+        # mode 2: direct, return_code=True, AgentFlow + baseline
+        for _bl in [False, True]:
+            _bl_slug = "baseline" if _bl else "af"
+            _BCB_VARIANTS.append((
+                f"qwen{_mk_slug}_direct_{_short_think}_{_bl_slug}",
+                _mk, True, "direct", _think, _bl, True,
+            ))
+        # mode 3: no tools, AgentFlow + baseline
+        for _bl in [False, True]:
+            _bl_slug = "baseline" if _bl else "af"
+            _BCB_VARIANTS.append((
+                f"qwen{_mk_slug}_no_tools_{_short_think}_{_bl_slug}",
+                _mk, True, "none", _think, _bl, False,
+            ))
+
+SUITES["bigcodebench"] = {
+    "description_tag": "[BigCodeBench; code generation benchmark]",
+    "name_prefix": "BCB",
+    "output_dir_root": "./experiments/results/bigcodebench",
+    "config_subdir": "bigcodebench",
+    "num_gpus": 2,
+    "wandb_project": "benchmarks",
+    "split_overrides": {},
+}
+
+
 def generate_suite(suite_name: str) -> None:
     suite = SUITES[suite_name]
     suite_dir = CONFIGS_ROOT / suite["config_subdir"]
@@ -508,6 +632,24 @@ def generate_suite(suite_name: str) -> None:
     variant_type    = suite.get("variant_type", "standard")
 
     created = 0
+
+    # BigCodeBench has its own generation logic (configs in suite_dir directly)
+    if suite_name == "bigcodebench":
+        suite_dir.mkdir(parents=True, exist_ok=True)
+        # Remove stale top-level yaml files
+        removed = sum(1 for p in suite_dir.glob("*.yaml") if p.unlink() or True)
+        removed += sum(1 for p in suite_dir.glob("*.yml") if p.unlink() or True)
+        for stem, model_key, direct, tools_key, thinking, baseline, return_code in _BCB_VARIANTS:
+            content = make_config_bigcodebench(
+                suite, stem, model_key, direct, tools_key, thinking, baseline, return_code
+            )
+            path = suite_dir / f"{stem}.yaml"
+            path.write_text(content)
+            print(f"  wrote {path.relative_to(CONFIGS_ROOT.parent)}")
+            created += 1
+        print(f"\n[{suite_name}] removed {removed} old, created {created} configs.")
+        return
+
     for dataset in datasets_to_run:
         dataset_dir = suite_dir / dataset
         dataset_dir.mkdir(parents=True, exist_ok=True)
@@ -560,8 +702,7 @@ def main():
         "--suite",
         choices=list(SUITES.keys()),
         default=None,
-        help="Suite to generate (default: all suites). "
-             f"Available: {', '.join(SUITES.keys())}",
+        help="Suite to generate (default: all suites).",
     )
     args = parser.parse_args()
 

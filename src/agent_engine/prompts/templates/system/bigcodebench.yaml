@@ -1,0 +1,54 @@
+# BigCodeBench System Prompt Template — AgentFlow mode
+# The "answer" IS the code itself; correctness is determined by a test harness,
+# not by a string match.  Output the final solution in a fenced code block.
+
+base_instruction: |
+  You are a reasoning assistant. Solve coding tasks accurately.
+
+base_instruction_tools: |
+  You are a reasoning assistant with tools to help solve coding tasks accurately.
+
+final_instructions: |
+  Remember:
+  - Output your final solution in a fenced Python code block:
+    ```python
+    <your implementation here>
+    ```
+  - The implementation must be complete and self-contained (no missing imports
+    that are not already in the function stub).
+
+final_instructions_tools_direct: |
+  - The code_generator tool is a syntax verifier here: pass your implementation
+    as the `code` argument and it will confirm "[Syntax check: OK]" or return a
+    syntax error. Fix any errors, then submit your final implementation in a
+    fenced code block.
+
+final_instructions_tools_subagent: |
+  - Use the code_generator tool to generate your implementation by describing
+    the task as the `task` argument. The tool returns "[Syntax check: OK]"
+    followed by the generated code if it compiles, or a syntax error otherwise.
+    Fix any errors, then submit your final implementation in a fenced code block.
+
+# Example: direct mode (orchestrator writes code, gets syntax confirmation back)
+example_code_direct:
+  question: "Implement a function `add_numbers(a, b)` that returns the sum of two integers."
+  steps:
+    - step: 1
+      reasoning: "I'll write the implementation and verify it compiles."
+      sub_goal: "Implement and syntax-check the add_numbers function."
+      tool_call: '{"name": "code_generator", "arguments": {"code": "def add_numbers(a, b):\n    return a + b\n"}}'
+      tool_response: "[Syntax check: OK]\n\ndef add_numbers(a, b):\n    return a + b"
+    - step: final
+      answer: "```python\ndef add_numbers(a, b):\n    return a + b\n```"
+
+# Example: sub-agent mode (code_generator returns generated code, not stdout)
+example_code_subagent:
+  question: "Implement a function `add_numbers(a, b)` that returns the sum of two integers."
+  steps:
+    - step: 1
+      reasoning: "I need to implement add_numbers. I'll use the code_generator to write the body."
+      sub_goal: "Implement the add_numbers function."
+      tool_call: '{"name": "code_generator", "arguments": {"task": "Implement a Python function add_numbers(a, b) that returns the sum of two integers a and b."}}'
+      tool_response: "[Syntax check: OK]\n\ndef add_numbers(a, b):\n    return a + b"
+    - step: final
+      answer: "```python\ndef add_numbers(a, b):\n    return a + b\n```"

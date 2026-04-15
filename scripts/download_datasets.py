@@ -380,6 +380,43 @@ def download_musique(output_dir: str, token: str | None, subset: int = 0, seed: 
     _save_jsonl(data, output_dir, _subset_filename("validation.jsonl", subset))
 
 
+def download_bigcodebench(output_dir: str, token: str | None, version: str = "v0.1.4",
+                          subset: int = 0, seed: int = 0):
+    """Download BigCodeBench instruct tasks and save as JSONL.
+
+    Source: bigcode/bigcodebench
+    Config: "instruct" (natural language description → model writes the full function)
+    Split:  version string, e.g. "v0.1.4" (use --split to override)
+    Fields saved: task_id, instruct_prompt, code_prompt, test, entry_point, libs
+    """
+    print(f"Downloading BigCodeBench instruct {version} …")
+    try:
+        ds = load_dataset(
+            "bigcode/bigcodebench",
+            name="instruct",
+            split=version,
+            download_config=_download_cfg(token),
+        )
+    except Exception as e:
+        print(f"  Error loading BigCodeBench: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    data = []
+    for ex in ds:
+        data.append({
+            "task_id":         ex.get("task_id", ""),
+            "instruct_prompt": ex.get("instruct_prompt", ""),
+            "code_prompt":     ex.get("code_prompt", ""),
+            "test":            ex.get("test", ""),
+            "entry_point":     ex.get("entry_point", ""),
+            "libs":            ex.get("libs", []),
+        })
+
+    data = _apply_subset(data, subset, seed)
+    # Save as <version>.jsonl so the experiment config split name matches the file.
+    _save_jsonl(data, output_dir, _subset_filename(f"{version}.jsonl", subset))
+
+
 def download_bamboogle(output_dir: str, token: str | None, subset: int = 0, seed: int = 0):
     print("Downloading Bamboogle …")
     data = []
@@ -536,6 +573,7 @@ def download_hle(split: str, output_dir: str, token: str | None,
 # ---------------------------------------------------------------------------
 
 DATASET_DIRS = {
+    "bigcodebench": "BigCodeBench",
     "gaia": "GAIA",
     "gpqa": "GPQA",
     "hle": "HLE",
@@ -597,6 +635,7 @@ def main():
     subset = args.subset
     seed = args.seed if args.seed is not None else get_seed_from_env(default=0)
     dispatch = {
+        "bigcodebench": lambda: download_bigcodebench(output_dir, token, args.split, subset, seed),
         "gaia": lambda: download_gaia(args.level, args.split, output_dir, token, subset, seed),
         "gpqa": lambda: download_gpqa(args.variant, output_dir, token, subset, seed),
         "hle": lambda: download_hle(args.split, output_dir, token,
