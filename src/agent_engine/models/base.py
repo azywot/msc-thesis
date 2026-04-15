@@ -6,7 +6,7 @@ This module defines the core abstractions for working with different model provi
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -111,7 +111,7 @@ class ModelConfig(BaseModel):
 
     backend: str = "vllm"  # "vllm", "mlx", "openai", "anthropic"
 
-    _FAMILY_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    _FAMILY_DEFAULTS: ClassVar[Dict[str, Dict[str, Any]]] = {
         "olmo-think":    {"temperature": 0.6, "top_p": 0.95, "max_tokens": 32768},
         "olmo-instruct": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 32768},
     }
