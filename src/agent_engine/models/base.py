@@ -111,6 +111,20 @@ class ModelConfig(BaseModel):
 
     backend: str = "vllm"  # "vllm", "mlx", "openai", "anthropic"
 
+    _FAMILY_DEFAULTS: Dict[str, Dict[str, Any]] = {
+        "olmo-think":    {"temperature": 0.6, "top_p": 0.95, "max_tokens": 32768},
+        "olmo-instruct": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 32768},
+    }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_family_defaults(cls, values):
+        family = values.get("family", "")
+        family_str = family.value if isinstance(family, ModelFamily) else str(family)
+        for param, default in cls._FAMILY_DEFAULTS.get(family_str, {}).items():
+            values.setdefault(param, default)
+        return values
+
     @field_validator("family", mode="before")
     @classmethod
     def _coerce_family(cls, v):
