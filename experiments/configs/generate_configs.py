@@ -6,7 +6,7 @@ Run from the repo root:
     python experiments/configs/generate_configs.py --suite agentflow
     python experiments/configs/generate_configs.py --suite orch_capacity
     python experiments/configs/generate_configs.py --suite subagent_orchestrator_ablation
-        (subagent_orchestrator_ablation: leave-one-out no_<tool> ablations per dataset, 8B only)
+        (leave-one-out no_<tool> ablations; 8B only; single-tool datasets skip empty ablation)
     python experiments/configs/generate_configs.py --suite structured_memory_ablation
         (8B: subagent tools + orch thinking + baseline: true — no query analysis / structured memory)
 """
@@ -125,15 +125,14 @@ VARIANTS_ALL = [
 ]
 
 VARIANTS_ALL_BASELINE = [v for v in VARIANTS_ALL if v[2] == True]
-VARIANTS_ALL_SUBAGENTS = [v for v in VARIANTS_ALL if v[2] == False]
 # AgentFlow BigCodeBench: sub-agent code_generator only (no direct / no-tools / 32B sweeps).
 VARIANTS_QWEN8B_SUBAGENT_TOOLS_ONLY = [
     v for v in VARIANTS_ALL if v[0].startswith("qwen8B_subagent_tools_")
 ]
+# Documented in README as a smaller variant grid example (not used by any built-in suite).
 VARIANTS_32B = [v for v in VARIANTS_ALL if v[1] == "32B"]
-VARIANTS_8B = [v for v in VARIANTS_ALL if v[1] == "8B"]
 
-# Used only as documentation; subagent_orchestrator_ablation suite uses variant_type ablation instead.
+# (model_key, filename prefix) for subagent_orchestrator_ablation leave-one-out configs.
 _SUBAGENT_ORCH_MODEL_STEMS = (("8B", "qwen8B"),)
 
 # AF-style sub-agent tools + orchestrator thinking, but baseline: true (plain message history;
@@ -519,113 +518,6 @@ wandb_project: "{wandb_project}"
 cache_dir: "./cache"
 """
 
-
-def make_config_bigcodebench(
-    suite: dict,
-    stem: str,
-    model_key: str,
-    direct: bool,
-    tools_key: str,
-    thinking: str,
-    baseline: bool,
-    return_code: bool,
-) -> str:
-    """Generate a BigCodeBench experiment config.
-
-    tools_key:
-        "subagent"  — code_generator, direct=False, return_code=True
-        "direct"    — code_generator, direct=True,  return_code=True
-        "none"      — no tools (model outputs code directly)
-    """
-    ds = DATASETS["bigcodebench"]
-    m = MODELS[model_key]
-
-    if tools_key == "none":
-        enabled = []
-        tool_desc = "no tools"
-    else:
-        enabled = ["code_generator"]
-        tool_desc = "direct code_generator" if direct else "sub-agent code_generator"
-
-    think_desc = THINKING_LABELS[thinking]
-    baseline_desc = "baseline" if baseline else "AgentFlow"
-    comment_line = f"# BigCodeBench — {m['name']}, {tool_desc}, {think_desc}, {baseline_desc}"
-
-    exp_name = f"{suite['name_prefix']}_bigcodebench_{stem}"
-    description = (
-        f"{suite['description_tag']} "
-        f"BigCodeBench {ds['split']} with {m['name']}, "
-        f"{tool_desc}, {think_desc}, {baseline_desc}"
-    )
-    output_dir = f"{suite['output_dir_root']}/bigcodebench/{stem}"
-    baseline_line = "baseline: true\n" if baseline else ""
-    num_gpus = m.get("gpus", suite.get("num_gpus", 2))
-    wandb_project = suite.get("wandb_project", "benchmarks")
-
-    tools_blk = _tools_block(direct, enabled, return_code=return_code and bool(enabled))
-
-    return f"""{comment_line}
-
-name: "{exp_name}"
-description: "{description}"
-
-slurm:
-  partition: "gpu_h100"
-  num_gpus: {num_gpus}
-  ntasks: 1
-  cpus_per_task: 8
-  time: "16:00:00"
-  conda_env: "agent_engine"
-
-{_model_block(model_key)}
-
-{tools_blk}
-
-dataset:
-  name: "bigcodebench"
-  split: "{ds['split']}"
-  data_dir: "./data"
-  subset_num: -1
-
-seed: 0
-thinking_mode: "{thinking}"
-{baseline_line}output_dir: "{output_dir}"
-use_wandb: true
-wandb_project: "{wandb_project}"
-
-cache_dir: "./cache"
-"""
-
-
-# BigCodeBench variants:
-# (stem, model_key, direct_tool_call, tools_key, thinking_mode, baseline, return_code)
-_BCB_VARIANTS = []
-for _mk in ["8B", "32B"]:
-    for _think in ["NO", "ORCHESTRATOR_ONLY"]:
-        _short_think = {"NO": "none", "ORCHESTRATOR_ONLY": "orchestrator"}[_think]
-        _mk_slug = _mk.lower().replace(".", "_")
-        # mode 1: sub-agent, return_code=True, AgentFlow + baseline (8B sub-agent tools only)
-        if _mk == "8B":
-            for _bl in [False, True]:
-                _bl_slug = "baseline" if _bl else "af"
-                _BCB_VARIANTS.append((
-                    f"qwen{_mk_slug}_subagent_{_short_think}_{_bl_slug}",
-                    _mk, False, "subagent", _think, _bl, True,
-                ))
-        # mode 2: direct, return_code=True, AgentFlow + baseline
-        for _bl in [False, True]:
-            _bl_slug = "baseline" if _bl else "af"
-            _BCB_VARIANTS.append((
-                f"qwen{_mk_slug}_direct_{_short_think}_{_bl_slug}",
-                _mk, True, "direct", _think, _bl, True,
-            ))
-        # mode 3: no tools, AgentFlow + baseline
-        for _bl in [False, True]:
-            _bl_slug = "baseline" if _bl else "af"
-            _BCB_VARIANTS.append((
-                f"qwen{_mk_slug}_no_tools_{_short_think}_{_bl_slug}",
-                _mk, True, "none", _think, _bl, False,
-            ))
 
 def generate_suite(suite_name: str) -> None:
     suite = SUITES[suite_name]
