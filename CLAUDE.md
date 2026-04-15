@@ -32,10 +32,12 @@ scripts/
   tables/             # Table generation scripts
 
 experiments/
-  configs/            # YAML experiment configs (baseline/, 1_milestone_...AgentFlow/, local/, datasets/,
-                      #   orchestrator_capacity/, subagent_orchestrator_ablation/,
-                      #   structured_memory_ablation/, olmo/)
-  configs/generate_configs.py  # Programmatic config generator
+  configs/            # YAML experiment configs organised by model family
+                      #   qwen3/  (baseline/, agentflow/, orchestrator_capacity/,
+                      #            subagent_orchestrator_ablation/, structured_memory_ablation/)
+                      #   olmo3/  (think/, instruct/)
+                      #   local/, datasets/
+  configs/generate_configs.py          # Programmatic config generator
   results/            # Default output root
 
 jobs/                 # SLURM job scripts for Snellius HPC
@@ -69,8 +71,13 @@ python scripts/run_experiment.py --config experiments/configs/local/qwen3_4b_gai
 python scripts/run_experiment.py --config <config.yaml> --output-dir ./experiments/results/my_run
 
 # Batch (SLURM)
-./experiments/scripts/run_all_in_folder.sh experiments/configs/baseline
-./experiments/scripts/run_all_in_folder.sh experiments/configs/baseline --local  # sequential, no SLURM
+./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/baseline
+./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/baseline --local  # sequential, no SLURM
+```
+
+Regenerate all configs after changing `generate_configs.py`:
+```bash
+python experiments/configs/generate_configs.py
 ```
 
 ## Config essentials
@@ -81,11 +88,6 @@ python scripts/run_experiment.py --config <config.yaml> --output-dir ./experimen
 - `thinking_mode` — `NO` / `ORCHESTRATOR_ONLY` / `SUBAGENTS_ONLY` / `ALL`
 - `batch_size` — questions per batch (`-1` = all; `1` = no batching)
 - `web_tool_provider` — `serper` (default, fetches full pages) or `tavily` (pre-cleaned content)
-
-Regenerate all configs after changing `generate_configs.py`:
-```bash
-python experiments/configs/generate_configs.py
-```
 
 ## Outputs (per run, under `output_dir/`)
 

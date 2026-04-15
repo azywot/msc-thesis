@@ -9,6 +9,13 @@ Run from the repo root:
         (leave-one-out no_<tool> ablations; 8B only; single-tool datasets skip empty ablation)
     python experiments/configs/generate_configs.py --suite structured_memory_ablation
         (8B: subagent tools + orch thinking + baseline: true — no query analysis / structured memory)
+    python experiments/configs/generate_configs.py --suite olmo-think
+    python experiments/configs/generate_configs.py --suite olmo-instruct
+
+Config output layout:
+    experiments/configs/qwen3/<suite>/<dataset>/<variant>.yaml
+    experiments/configs/olmo3/think/<dataset>/<variant>.yaml
+    experiments/configs/olmo3/instruct/<dataset>/<variant>.yaml
 """
 import argparse
 from pathlib import Path
@@ -212,7 +219,7 @@ SUITES = {
         "description_tag": "[Baseline; NO image_inspector, NO mindmap]",
         "name_prefix":     "NEW_baseline",
         "output_dir_root": "./experiments/results/NEW_baseline",
-        "config_subdir":   "baseline",
+        "config_subdir":   "qwen3/baseline",
         "baseline":        True,
         "force_num_gpus":  True,
         "variants":        VARIANTS_ALL_BASELINE,
@@ -227,7 +234,7 @@ SUITES = {
         "description_tag": "[AgentFlow; NO image_inspector, NO mindmap]",
         "name_prefix":     "AF_no_img_no_mm",
         "output_dir_root": "./experiments/results/1_milestone_no_img_no_mindmap_AgentFlow",
-        "config_subdir":   "1_milestone_no_img_no_mindmap_AgentFlow",
+        "config_subdir":   "qwen3/agentflow",
         "baseline":        False,
         "force_num_gpus":  True,
         "variants":        VARIANTS_ALL,
@@ -242,7 +249,7 @@ SUITES = {
         "description_tag": "[OrchestratorCapacity; NO image_inspector, NO mindmap]",
         "name_prefix":     "OC",
         "output_dir_root": "./experiments/results/orchestrator_capacity",
-        "config_subdir":   "orchestrator_capacity",
+        "config_subdir":   "qwen3/orchestrator_capacity",
         "baseline":        False,
         "variant_type":    "orch_capacity",
         "variants":        VARIANTS_ORCH_CAPACITY,
@@ -258,7 +265,7 @@ SUITES = {
         ),
         "name_prefix":     "AF_subagent_orch",
         "output_dir_root": "./experiments/results/subagent_orchestrator_ablation",
-        "config_subdir":   "subagent_orchestrator_ablation",
+        "config_subdir":   "qwen3/subagent_orchestrator_ablation",
         "baseline":        False,
         "variant_type":    "subagent_orch_ablation",
         "num_gpus":        2,
@@ -272,7 +279,7 @@ SUITES = {
         ),
         "name_prefix":     "AF_struct_mem_ablation",
         "output_dir_root": "./experiments/results/structured_memory_ablation",
-        "config_subdir":   "structured_memory_ablation",
+        "config_subdir":   "qwen3/structured_memory_ablation",
         "baseline":        True,
         "variants":        VARIANTS_STRUCTURED_MEMORY_ABLATION,
         "num_gpus":        2,
@@ -283,7 +290,7 @@ SUITES = {
         "description_tag": "[OLMo-Think; NO image_inspector, NO mindmap]",
         "name_prefix":     "OLMo_Think",
         "output_dir_root": "./experiments/results/olmo/think",
-        "config_subdir":   "olmo/think",
+        "config_subdir":   "olmo3/think",
         "baseline":        False,
         "variants":        VARIANTS_OLMO_THINK,
         "datasets":        ["gaia", "hle", "gpqa", "aime", "musique"],
@@ -295,7 +302,7 @@ SUITES = {
         "description_tag": "[OLMo-Instruct; NO image_inspector, NO mindmap]",
         "name_prefix":     "OLMo_Instruct",
         "output_dir_root": "./experiments/results/olmo/instruct",
-        "config_subdir":   "olmo/instruct",
+        "config_subdir":   "olmo3/instruct",
         "baseline":        False,
         "variants":        VARIANTS_OLMO_INSTRUCT,
         "datasets":        ["gaia", "hle", "gpqa", "aime", "musique"],
