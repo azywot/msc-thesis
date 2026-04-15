@@ -508,7 +508,7 @@ class AgenticOrchestrator:
                 text = strip_thinking_tags(out.text)
                 code = job.tool.extract_code_from_llm_response(text)
                 logger.info("Tool call: %s, %s", job.tool_call["name"], job.tool_call.get("arguments", {}))
-                tr = job.tool.execute_code(code)
+                tr = job.tool.execute(code=code, task=None)
             except Exception as exc:
                 tr = ToolResult(success=False, output="", metadata={}, error=str(exc))
             clean_output = strip_thinking_tags(tr.output or "")

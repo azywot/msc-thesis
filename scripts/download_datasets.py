@@ -380,6 +380,55 @@ def download_musique(output_dir: str, token: str | None, subset: int = 0, seed: 
     _save_jsonl(data, output_dir, _subset_filename("validation.jsonl", subset))
 
 
+def download_bigcodebench(output_dir: str, token: str | None, version: str = "v0.1.4",
+                          subset: int = 0, seed: int = 0):
+    """Download BigCodeBench instruct tasks and save as JSONL.
+
+    Source: bigcode/bigcodebench
+    Config: "instruct" (natural language description → model writes the full function)
+    Split:  version string, e.g. "v0.1.4" (use --split to override)
+    Fields saved: task_id, instruct_prompt, code_prompt, test, entry_point, libs
+    """
+    print(f"Downloading BigCodeBench {version} …")
+    config_candidates = ("instruct", "default")
+    ds = None
+    last_err = None
+    selected_cfg = None
+    for cfg in config_candidates:
+        try:
+            ds = load_dataset(
+                "bigcode/bigcodebench",
+                name=cfg,
+                split=version,
+                download_config=_download_cfg(token),
+            )
+            selected_cfg = cfg
+            break
+        except Exception as e:
+            last_err = e
+
+    if ds is None:
+        print(f"  Error loading BigCodeBench: {last_err}", file=sys.stderr)
+        sys.exit(1)
+    if selected_cfg != config_candidates[0]:
+        print(f"  Note: using BigCodeBench config '{selected_cfg}' (fallback from 'instruct').")
+
+    data = []
+    for ex in ds:
+        data.append({
+            "task_id":         ex.get("task_id", ""),
+            "instruct_prompt": ex.get("instruct_prompt", ""),
+            "code_prompt":     ex.get("code_prompt", ""),
+            "test":            ex.get("test", ""),
+            "entry_point":     ex.get("entry_point", ""),
+            "libs":            ex.get("libs", []),
+        })
+
+    data = _apply_subset(data, subset, seed)
+    # Save as <version>.jsonl so the experiment config split name matches the file.
+    _save_jsonl(data, output_dir, _subset_filename(f"{version}.jsonl", subset))
+
+
 def download_bamboogle(output_dir: str, token: str | None, subset: int = 0, seed: int = 0):
     print("Downloading Bamboogle …")
     data = []
@@ -536,6 +585,7 @@ def download_hle(split: str, output_dir: str, token: str | None,
 # ---------------------------------------------------------------------------
 
 DATASET_DIRS = {
+    "bigcodebench": "BigCodeBench",
     "gaia": "GAIA",
     "gpqa": "GPQA",
     "hle": "HLE",
@@ -550,6 +600,11 @@ DATASET_DIRS = {
     "2wiki": "2WikiMultiHopQA",
 }
 
+_SPLIT_RULES = {
+    "gaia": {"validation", "test"},
+    "hle": {"dev", "test"},
+}
+
 
 def main():
     load_dotenv()
@@ -561,8 +616,14 @@ def main():
                         default="./data", help="Root output directory (default: ./data)")
     parser.add_argument("--level", choices=["level1", "level2", "level3", "all"],
                         default="all", help="GAIA level (default: all)")
-    parser.add_argument("--split", choices=["validation", "test", "dev"],
-                        default="validation", help="Dataset split (default: validation)")
+    parser.add_argument(
+        "--split",
+        default="validation",
+        help=(
+            "Dataset split/version. For GAIA/HLE use validation|test|dev; "
+            "for BigCodeBench use a version string (e.g., v0.1.4)."
+        ),
+    )
     parser.add_argument("--variant", choices=["diamond", "main", "experts", "extended"],
                         default="diamond", help="GPQA variant (default: diamond)")
     parser.add_argument("--subset", type=int, default=-1,
@@ -591,12 +652,31 @@ def main():
         print(f"Error: unknown dataset '{dataset}'. Use --list to see available datasets.")
         sys.exit(1)
 
+    # Validate split per dataset instead of using one global argparse choices list.
+    if dataset in _SPLIT_RULES:
+        allowed = _SPLIT_RULES[dataset]
+        if args.split not in allowed:
+            print(
+                f"Error: invalid --split '{args.split}' for {dataset.upper()} "
+                f"(choose from {sorted(allowed)})"
+            )
+            sys.exit(1)
+    if dataset == "bigcodebench":
+        # BigCodeBench expects split to be a version label such as v0.1.4.
+        if not args.split.startswith("v"):
+            print(
+                f"Error: invalid --split '{args.split}' for BigCodeBench "
+                "(expected version string like 'v0.1.4')."
+            )
+            sys.exit(1)
+
     token = os.getenv("HF_TOKEN")
     output_dir = os.path.join(args.output_dir, DATASET_DIRS[dataset])
 
     subset = args.subset
     seed = args.seed if args.seed is not None else get_seed_from_env(default=0)
     dispatch = {
+        "bigcodebench": lambda: download_bigcodebench(output_dir, token, args.split, subset, seed),
         "gaia": lambda: download_gaia(args.level, args.split, output_dir, token, subset, seed),
         "gpqa": lambda: download_gpqa(args.variant, output_dir, token, subset, seed),
         "hle": lambda: download_hle(args.split, output_dir, token,

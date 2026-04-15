@@ -1,0 +1,35 @@
+# BigCodeBench System Prompt Template — Baseline mode
+
+base_instruction: |
+  You are a reasoning assistant. Solve coding tasks accurately.
+
+base_instruction_tools: |
+  You are a reasoning assistant with tools to help solve coding tasks accurately.
+
+final_instructions: |
+  Remember:
+  - Output your final solution in a fenced Python code block:
+    ```python
+    <your implementation here>
+    ```
+
+final_instructions_tools: |
+  - Use tools when they help implement or verify your solution
+
+example_code_direct:
+  question: "Implement a function `task_func(n: int) -> int` that returns the factorial of n. You should write self-contained code starting with:\n```\ndef task_func(n: int) -> int:\n```"
+  steps:
+    - step: 1
+      tool_call: '{"name": "code_generator", "arguments": {"code": "def task_func(n: int) -> int:\n    if n <= 1:\n        return 1\n    return n * task_func(n - 1)\n"}}'
+      tool_response: "[Syntax check: OK]\n\ndef task_func(n: int) -> int:\n    if n <= 1:\n        return 1\n    return n * task_func(n - 1)"
+    - step: final
+      answer: "```python\ndef task_func(n: int) -> int:\n    if n <= 1:\n        return 1\n    return n * task_func(n - 1)\n```"
+
+example_code_subagent:
+  question: "Implement a function `task_func(n: int) -> int` that returns the factorial of n. You should write self-contained code starting with:\n```\ndef task_func(n: int) -> int:\n```"
+  steps:
+    - step: 1
+      tool_call: '{"name": "code_generator", "arguments": {"task": "Implement the Python function task_func(n: int) -> int that returns n factorial using recursion. The stub is:\n\ndef task_func(n: int) -> int:"}}'
+      tool_response: "[Syntax check: OK]\n\ndef task_func(n: int) -> int:\n    if n <= 1:\n        return 1\n    return n * task_func(n - 1)"
+    - step: final
+      answer: "```python\ndef task_func(n: int) -> int:\n    if n <= 1:\n        return 1\n    return n * task_func(n - 1)\n```"

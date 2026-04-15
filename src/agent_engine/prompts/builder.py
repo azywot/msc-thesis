@@ -82,6 +82,8 @@ class PromptBuilder:
                 template_name = "math_baseline" if baseline else "math"
             elif dataset_name.lower() == "gpqa":
                 template_name = "gpqa_baseline" if baseline else "gpqa"
+            elif dataset_name.lower() == "bigcodebench":
+                template_name = "bigcodebench_baseline" if baseline else "bigcodebench"
 
             template = self.load_template(template_name)
         except FileNotFoundError:
@@ -112,8 +114,11 @@ class PromptBuilder:
         if "final_instructions" in template:
             sections.append(template["final_instructions"].strip())
 
-        if tool_schemas and "final_instructions_tools" in template:
-            sections.append(template["final_instructions_tools"].strip())
+        if tool_schemas:
+            mode_key = "final_instructions_tools_direct" if direct_tool_call else "final_instructions_tools_subagent"
+            ft_key = mode_key if mode_key in template else "final_instructions_tools"
+            if ft_key in template:
+                sections.append(template[ft_key].strip())
 
         return "\n\n".join(sections)
 

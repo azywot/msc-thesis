@@ -6,7 +6,7 @@ Run from the repo root:
     python experiments/configs/generate_configs.py --suite agentflow
     python experiments/configs/generate_configs.py --suite orch_capacity
     python experiments/configs/generate_configs.py --suite subagent_orchestrator_ablation
-        (subagent_orchestrator_ablation: leave-one-out no_<tool> ablations per dataset, 8B only)
+        (leave-one-out no_<tool> ablations; 8B only; single-tool datasets skip empty ablation)
     python experiments/configs/generate_configs.py --suite structured_memory_ablation
         (8B: subagent tools + orch thinking + baseline: true — no query analysis / structured memory)
 """
@@ -42,6 +42,11 @@ DATASETS = {
         "display": "MuSiQue",
         "split": "validation_subset_200",
         "tools": ["web_search", "code_generator"],
+    },
+    "bigcodebench": {
+        "display": "BigCodeBench",
+        "split": "v0.1.4_subset_200",
+        "tools": ["code_generator"],
     },
 }
 
@@ -120,11 +125,14 @@ VARIANTS_ALL = [
 ]
 
 VARIANTS_ALL_BASELINE = [v for v in VARIANTS_ALL if v[2] == True]
-VARIANTS_ALL_SUBAGENTS = [v for v in VARIANTS_ALL if v[2] == False]
+# AgentFlow BigCodeBench: sub-agent code_generator only (no direct / no-tools / 32B sweeps).
+VARIANTS_QWEN8B_SUBAGENT_TOOLS_ONLY = [
+    v for v in VARIANTS_ALL if v[0].startswith("qwen8B_subagent_tools_")
+]
+# Documented in README as a smaller variant grid example (not used by any built-in suite).
 VARIANTS_32B = [v for v in VARIANTS_ALL if v[1] == "32B"]
-VARIANTS_8B = [v for v in VARIANTS_ALL if v[1] == "8B"]
 
-# Used only as documentation; subagent_orchestrator_ablation suite uses variant_type ablation instead.
+# (model_key, filename prefix) for subagent_orchestrator_ablation leave-one-out configs.
 _SUBAGENT_ORCH_MODEL_STEMS = (("8B", "qwen8B"),)
 
 # AF-style sub-agent tools + orchestrator thinking, but baseline: true (plain message history;
@@ -137,6 +145,8 @@ VARIANTS_STRUCTURED_MEMORY_ABLATION = [
 # (filename_stem, orch_key, sub_key, thinking_mode)
 # Always sub-agent tool mode (direct_tool_call: false) with full tools.
 _THINK_SHORT = {"NO": "none", "ORCHESTRATOR_ONLY": "orchestrator", "ALL": "all"}
+# Orchestrator capacity: Qwen3 8B/32B orchestrators × 1.7B/8B/32B sub-agents × 3 thinking
+# modes, skipping orch 8B + sub 8B (same path / no distinct sub sweep) → 15 experiments (GAIA).
 VARIANTS_ORCH_CAPACITY = [
     (
         f"orch{ok.lower().replace('.','_')}_sub{sk.lower().replace('.','_')}_{_THINK_SHORT[t]}",
@@ -144,7 +154,8 @@ VARIANTS_ORCH_CAPACITY = [
     )
     for ok in ["8B", "32B"]
     for sk in ["1.7B", "8B", "32B"]
-    for t  in ["NO", "ORCHESTRATOR_ONLY", "ALL"]
+    for t in ["NO", "ORCHESTRATOR_ONLY", "ALL"]
+    if not (ok == "8B" and sk == "8B")
 ]
 
 # ── olmo variants ──────────────────────────────────────────────────────────────
@@ -203,6 +214,7 @@ SUITES = {
         "output_dir_root": "./experiments/results/NEW_baseline",
         "config_subdir":   "baseline",
         "baseline":        True,
+        "force_num_gpus":  True,
         "variants":        VARIANTS_ALL_BASELINE,
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
@@ -217,7 +229,11 @@ SUITES = {
         "output_dir_root": "./experiments/results/1_milestone_no_img_no_mindmap_AgentFlow",
         "config_subdir":   "1_milestone_no_img_no_mindmap_AgentFlow",
         "baseline":        False,
+        "force_num_gpus":  True,
         "variants":        VARIANTS_ALL,
+        "variants_by_dataset": {
+            "bigcodebench": VARIANTS_QWEN8B_SUBAGENT_TOOLS_ONLY,
+        },
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
         "split_overrides": {},
@@ -270,6 +286,7 @@ SUITES = {
         "config_subdir":   "olmo/think",
         "baseline":        False,
         "variants":        VARIANTS_OLMO_THINK,
+        "datasets":        ["gaia", "hle", "gpqa", "aime", "musique"],
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
         "split_overrides": {},
@@ -281,6 +298,7 @@ SUITES = {
         "config_subdir":   "olmo/instruct",
         "baseline":        False,
         "variants":        VARIANTS_OLMO_INSTRUCT,
+        "datasets":        ["gaia", "hle", "gpqa", "aime", "musique"],
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
         "split_overrides": {},
@@ -290,13 +308,15 @@ SUITES = {
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
-def _tools_block(direct: bool, enabled: list[str]) -> str:
+def _tools_block(direct: bool, enabled: list[str], return_code: bool = False) -> str:
     if not enabled:
         return "tools:\n  enabled_tools: []\n  direct_tool_call: true"
     lines = ["tools:", "  enabled_tools:"]
     for t in enabled:
         lines.append(f"    - {t}")
     lines.append(f"  direct_tool_call: {'true' if direct else 'false'}")
+    if return_code:
+        lines.append("  return_code: true")
     return "\n".join(lines)
 
 
@@ -387,8 +407,11 @@ def make_config(
     output_dir = f"{suite['output_dir_root']}/{dataset}/{stem}"
 
     baseline_line = "baseline: true\n" if suite["baseline"] else ""
-    num_gpus = m.get("gpus", suite["num_gpus"])
+    num_gpus = suite["num_gpus"] if suite.get("force_num_gpus", False) else m.get("gpus", suite["num_gpus"])
     wandb_project = suite["wandb_project"]
+    # BigCodeBench evaluation is done externally via test harness; the tool must
+    # return generated code rather than executing it.
+    return_code = dataset == "bigcodebench" and bool(enabled)
 
     return f"""{comment_line}
 
@@ -405,7 +428,7 @@ slurm:
 
 {_model_block(model_key)}
 
-{_tools_block(direct, enabled)}
+{_tools_block(direct, enabled, return_code=return_code)}
 
 dataset:
   name: "{dataset}"
@@ -508,6 +531,7 @@ def generate_suite(suite_name: str) -> None:
     variant_type    = suite.get("variant_type", "standard")
 
     created = 0
+
     for dataset in datasets_to_run:
         dataset_dir = suite_dir / dataset
         dataset_dir.mkdir(parents=True, exist_ok=True)
@@ -527,8 +551,11 @@ def generate_suite(suite_name: str) -> None:
             thinking = "ORCHESTRATOR_ONLY"
             for model_key, stem_prefix in _SUBAGENT_ORCH_MODEL_STEMS:
                 for absent in full_tools:
-                    stem = f"{stem_prefix}_subagent_orch_no_{absent}"
                     ablated = [t for t in full_tools if t != absent]
+                    if not ablated:
+                        # Single-tool datasets (e.g. BigCodeBench): skip "no tools" leave-one-out.
+                        continue
+                    stem = f"{stem_prefix}_subagent_orch_no_{absent}"
                     content = make_config(
                         suite,
                         dataset,
@@ -544,7 +571,8 @@ def generate_suite(suite_name: str) -> None:
                     print(f"  wrote {path.relative_to(CONFIGS_ROOT.parent)}")
                     created += 1
         else:
-            for stem, model_key, direct, tools_key, thinking in suite["variants"]:
+            variants = suite.get("variants_by_dataset", {}).get(dataset, suite["variants"])
+            for stem, model_key, direct, tools_key, thinking in variants:
                 content = make_config(suite, dataset, stem, model_key, direct, tools_key, thinking)
                 path = dataset_dir / f"{stem}.yaml"
                 path.write_text(content)
@@ -560,8 +588,7 @@ def main():
         "--suite",
         choices=list(SUITES.keys()),
         default=None,
-        help="Suite to generate (default: all suites). "
-             f"Available: {', '.join(SUITES.keys())}",
+        help="Suite to generate (default: all suites).",
     )
     args = parser.parse_args()
 
