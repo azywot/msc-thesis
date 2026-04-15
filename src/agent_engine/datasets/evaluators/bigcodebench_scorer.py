@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 # When set, assembled test files are written here (workspace-relative) instead
 # of /tmp so they are visible on shared filesystems (e.g. SLURM compute nodes).
 # Set to None to use the system temp dir (files are deleted after each run).
-DEBUG_EVAL_DIR: Optional[str] = "./cache/bigcodebench_eval_debug"  # e.g. "./cache/bigcodebench_eval_debug"
+DEBUG_EVAL_DIR: Optional[str] = None  # e.g. "./cache/bigcodebench_eval_debug"
 
 
 def _strip_markdown_fences(text: str) -> str:

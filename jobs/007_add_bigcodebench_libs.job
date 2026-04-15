@@ -1,0 +1,69 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=AddBigCodeBenchLibs
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=00:30:00
+#SBATCH --output=out/add_bigcodebench_libs/add_bigcodebench_libs_%A.log
+
+# Install optional Python packages used by some BigCodeBench tasks (see
+# requirements.txt section "BigCodeBench extra runtime deps (from libs fields)").
+
+set -euo pipefail
+
+mkdir -p out/add_bigcodebench_libs
+
+echo "=========================================="
+echo "MSC Thesis — BigCodeBench extra runtime libs"
+echo "=========================================="
+echo "Start time: $(date)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+ENV_NAME="${ENV_NAME:-agent_engine}"
+echo "Activating environment: $ENV_NAME"
+source activate "$ENV_NAME"
+
+export PYTHONNOUSERSITE=1
+
+echo ""
+echo "Installing BigCodeBench-related packages (pip)..."
+pip install --no-cache-dir \
+  "django>=4.2.0" \
+  "faker>=28.0.0" \
+  "flask>=3.0.0" \
+  "flask-mail>=0.10.0" \
+  "flask-restful>=0.3.10" \
+  "mechanize>=0.4.10" \
+  "python-dateutil>=2.8.2" \
+  "seaborn>=0.13.0" \
+  "textblob>=0.18.0"
+
+echo ""
+echo "Quick import smoke test..."
+python - <<'PY'
+import django
+import faker
+import flask
+import flask_mail
+import flask_restful
+import mechanize
+import dateutil
+import seaborn
+import textblob
+
+print("django", django.get_version())
+print("flask", getattr(flask, "__version__", "?"))
+print("All listed BigCodeBench extra libs import OK.")
+PY
+
+echo ""
+echo "Done at: $(date)"
