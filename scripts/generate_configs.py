@@ -1,16 +1,16 @@
 """Generate experiment configs for all suites.
 
 Run from the repo root:
-    python experiments/configs/generate_configs.py                  # all suites
-    python experiments/configs/generate_configs.py --suite baseline
-    python experiments/configs/generate_configs.py --suite agentflow
-    python experiments/configs/generate_configs.py --suite orch_capacity
-    python experiments/configs/generate_configs.py --suite subagent_orchestrator_ablation
+    python scripts/generate_configs.py                  # all suites
+    python scripts/generate_configs.py --suite baseline
+    python scripts/generate_configs.py --suite agentflow
+    python scripts/generate_configs.py --suite orch_capacity
+    python scripts/generate_configs.py --suite subagent_orchestrator_ablation
         (leave-one-out no_<tool> ablations; 8B only; single-tool datasets skip empty ablation)
-    python experiments/configs/generate_configs.py --suite structured_memory_ablation
+    python scripts/generate_configs.py --suite structured_memory_ablation
         (8B: subagent tools + orch thinking + baseline: true — no query analysis / structured memory)
-    python experiments/configs/generate_configs.py --suite olmo-think
-    python experiments/configs/generate_configs.py --suite olmo-instruct
+    python scripts/generate_configs.py --suite olmo-think
+    python scripts/generate_configs.py --suite olmo-instruct
 
 Config output layout:
     experiments/configs/qwen3/<suite>/<dataset>/<variant>.yaml
@@ -21,7 +21,7 @@ import argparse
 from pathlib import Path
 from typing import List, Optional
 
-CONFIGS_ROOT = Path(__file__).parent
+CONFIGS_ROOT = Path(__file__).parent.parent / "experiments" / "configs"
 
 # ── dataset metadata (defaults; suites may override per-dataset fields) ────────
 DATASETS = {
