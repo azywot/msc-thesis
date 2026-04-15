@@ -1,7 +1,7 @@
-# AIME Direct Mode — Qwen3-8B, single model, tools execute without sub-agent LLMs
+# AIME Direct Mode — Qwen3-8B, direct tool calls, orchestrator thinking
 
-name: "aime_qwen3_direct_test"
-description: "AIME with direct tool execution using Qwen3-8B (no sub-agents)"
+name: "aime_qwen3_direct_orchestrator_test"
+description: "AIME direct-tool test run with Qwen3-8B (5-item subset)"
 
 slurm:
   partition: "gpu_h100"
@@ -22,20 +22,19 @@ tools:
   enabled_tools:
     - web_search
     - code_generator
-    - mind_map
   direct_tool_call: true
 
 dataset:
   name: "aime"
   split: "train"
   data_dir: "./data"
-  subset_num: 10  # -1 for all
+  subset_num: 5  # tiny sanity run
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/aime_qwen3_direct_test"
-use_wandb: true
+output_dir: "./experiments/results/aime_qwen3_direct_orchestrator_test"
+use_wandb: false
 wandb_project: "msc-thesis"
 
 cache_dir: "./cache"

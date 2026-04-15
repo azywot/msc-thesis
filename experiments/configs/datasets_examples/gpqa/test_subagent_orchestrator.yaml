@@ -1,7 +1,7 @@
-# AIME Sub-Agent Mode — Qwen3-8B for all text roles (no images)
+# GPQA Sub-Agent Mode — Qwen3-8B with sub-agent tool calls, orchestrator thinking
 
-name: "aime_qwen3_subagent_test"
-description: "AIME with sub-agent mode using Qwen3-8B for orchestrator and tool agents"
+name: "gpqa_qwen3_subagent_orchestrator_test"
+description: "GPQA sub-agent-tool test run with Qwen3-8B (5-item subset)"
 
 slurm:
   partition: "gpu_h100"
@@ -18,26 +18,23 @@ models:
     path_or_id: "Qwen/Qwen3-8B"
     role: "orchestrator"
 
-  # web_search, code_generator, text_inspector, mind_map share orchestrator
-
 tools:
   enabled_tools:
     - web_search
     - code_generator
-    - mind_map
   direct_tool_call: false
 
 dataset:
-  name: "aime"
-  split: "train"
+  name: "gpqa"
+  split: "diamond"
   data_dir: "./data"
-  subset_num: 10  # -1 for all
+  subset_num: 5  # tiny sanity run
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/aime_qwen3_subagent_test"
-use_wandb: true
+output_dir: "./experiments/results/gpqa_qwen3_subagent_orchestrator_test"
+use_wandb: false
 wandb_project: "msc-thesis"
 
 cache_dir: "./cache"

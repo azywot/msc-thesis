@@ -1,14 +1,14 @@
-# AIME Baseline — Qwen3-8B, direct tool call, orchestrator thinking
+# AIME Sub-Agent Mode — Qwen3-8B with sub-agent tool calls, orchestrator thinking
 
-name: "aime_qwen3_baseline"
-description: "AIME train set evaluation with Qwen3-8B and full toolset"
+name: "aime_qwen3_subagent_orchestrator_test"
+description: "AIME sub-agent-tool test run with Qwen3-8B (5-item subset)"
 
 slurm:
   partition: "gpu_h100"
   num_gpus: 1
   ntasks: 1
   cpus_per_task: 8
-  time: "10:00:00"
+  time: "01:00:00"
   conda_env: "agent_engine"
 
 models:
@@ -22,20 +22,19 @@ tools:
   enabled_tools:
     - web_search
     - code_generator
-    - mind_map
-  direct_tool_call: true
+  direct_tool_call: false
 
 dataset:
   name: "aime"
   split: "train"
   data_dir: "./data"
-  subset_num: -1  # -1 for all
+  subset_num: 5  # tiny sanity run
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/aime_baseline"
-use_wandb: true
+output_dir: "./experiments/results/aime_qwen3_subagent_orchestrator_test"
+use_wandb: false
 wandb_project: "msc-thesis"
 
 cache_dir: "./cache"

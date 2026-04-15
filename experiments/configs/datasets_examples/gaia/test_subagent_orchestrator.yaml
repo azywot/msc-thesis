@@ -1,11 +1,11 @@
-# GAIA Direct Mode — single orchestrator model, tools execute without sub-agent LLMs
+# GAIA Sub-Agent Mode — Qwen3-8B with sub-agent tool calls, orchestrator thinking
 
-name: "gaia_qwen3_direct_test"
-description: "GAIA with direct tool execution using Qwen3-8B (no sub-agents)"
+name: "gaia_qwen3_subagent_orchestrator_test"
+description: "GAIA sub-agent-tool test run with Qwen3-8B (5-item subset)"
 
 slurm:
   partition: "gpu_h100"
-  num_gpus: 2
+  num_gpus: 1
   ntasks: 1
   cpus_per_task: 8
   time: "01:00:00"
@@ -23,19 +23,19 @@ tools:
     - web_search
     - code_generator
     - text_inspector
-  direct_tool_call: true
+  direct_tool_call: false
 
 dataset:
   name: "gaia"
   split: "all_validation"
   data_dir: "./data"
-  subset_num: 10  # -1 for all
+  subset_num: 5  # tiny sanity run
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
 
-output_dir: "./experiments/results/gaia_qwen3_direct_test"
-use_wandb: true
+output_dir: "./experiments/results/gaia_qwen3_subagent_orchestrator_test"
+use_wandb: false
 wandb_project: "msc-thesis"
 
 cache_dir: "./cache"
