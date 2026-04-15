@@ -126,6 +126,10 @@ VARIANTS_ALL = [
 
 VARIANTS_ALL_BASELINE = [v for v in VARIANTS_ALL if v[2] == True]
 VARIANTS_ALL_SUBAGENTS = [v for v in VARIANTS_ALL if v[2] == False]
+# AgentFlow BigCodeBench: sub-agent code_generator only (no direct / no-tools / 32B sweeps).
+VARIANTS_QWEN8B_SUBAGENT_TOOLS_ONLY = [
+    v for v in VARIANTS_ALL if v[0].startswith("qwen8B_subagent_tools_")
+]
 VARIANTS_32B = [v for v in VARIANTS_ALL if v[1] == "32B"]
 VARIANTS_8B = [v for v in VARIANTS_ALL if v[1] == "8B"]
 
@@ -142,6 +146,8 @@ VARIANTS_STRUCTURED_MEMORY_ABLATION = [
 # (filename_stem, orch_key, sub_key, thinking_mode)
 # Always sub-agent tool mode (direct_tool_call: false) with full tools.
 _THINK_SHORT = {"NO": "none", "ORCHESTRATOR_ONLY": "orchestrator", "ALL": "all"}
+# Orchestrator capacity: Qwen3 8B/32B orchestrators × 1.7B/8B/32B sub-agents × 3 thinking
+# modes, skipping orch 8B + sub 8B (same path / no distinct sub sweep) → 15 experiments (GAIA).
 VARIANTS_ORCH_CAPACITY = [
     (
         f"orch{ok.lower().replace('.','_')}_sub{sk.lower().replace('.','_')}_{_THINK_SHORT[t]}",
@@ -149,7 +155,7 @@ VARIANTS_ORCH_CAPACITY = [
     )
     for ok in ["8B", "32B"]
     for sk in ["1.7B", "8B", "32B"]
-    for t  in ["NO", "ORCHESTRATOR_ONLY", "ALL"]
+    for t in ["NO", "ORCHESTRATOR_ONLY", "ALL"]
     if not (ok == "8B" and sk == "8B")
 ]
 
@@ -226,6 +232,9 @@ SUITES = {
         "baseline":        False,
         "force_num_gpus":  True,
         "variants":        VARIANTS_ALL,
+        "variants_by_dataset": {
+            "bigcodebench": VARIANTS_QWEN8B_SUBAGENT_TOOLS_ONLY,
+        },
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
         "split_overrides": {},
@@ -595,13 +604,14 @@ for _mk in ["8B", "32B"]:
     for _think in ["NO", "ORCHESTRATOR_ONLY"]:
         _short_think = {"NO": "none", "ORCHESTRATOR_ONLY": "orchestrator"}[_think]
         _mk_slug = _mk.lower().replace(".", "_")
-        # mode 1: sub-agent, return_code=True, AgentFlow + baseline
-        for _bl in [False, True]:
-            _bl_slug = "baseline" if _bl else "af"
-            _BCB_VARIANTS.append((
-                f"qwen{_mk_slug}_subagent_{_short_think}_{_bl_slug}",
-                _mk, False, "subagent", _think, _bl, True,
-            ))
+        # mode 1: sub-agent, return_code=True, AgentFlow + baseline (8B sub-agent tools only)
+        if _mk == "8B":
+            for _bl in [False, True]:
+                _bl_slug = "baseline" if _bl else "af"
+                _BCB_VARIANTS.append((
+                    f"qwen{_mk_slug}_subagent_{_short_think}_{_bl_slug}",
+                    _mk, False, "subagent", _think, _bl, True,
+                ))
         # mode 2: direct, return_code=True, AgentFlow + baseline
         for _bl in [False, True]:
             _bl_slug = "baseline" if _bl else "af"
@@ -649,8 +659,11 @@ def generate_suite(suite_name: str) -> None:
             thinking = "ORCHESTRATOR_ONLY"
             for model_key, stem_prefix in _SUBAGENT_ORCH_MODEL_STEMS:
                 for absent in full_tools:
-                    stem = f"{stem_prefix}_subagent_orch_no_{absent}"
                     ablated = [t for t in full_tools if t != absent]
+                    if not ablated:
+                        # Single-tool datasets (e.g. BigCodeBench): skip "no tools" leave-one-out.
+                        continue
+                    stem = f"{stem_prefix}_subagent_orch_no_{absent}"
                     content = make_config(
                         suite,
                         dataset,
@@ -666,7 +679,8 @@ def generate_suite(suite_name: str) -> None:
                     print(f"  wrote {path.relative_to(CONFIGS_ROOT.parent)}")
                     created += 1
         else:
-            for stem, model_key, direct, tools_key, thinking in suite["variants"]:
+            variants = suite.get("variants_by_dataset", {}).get(dataset, suite["variants"])
+            for stem, model_key, direct, tools_key, thinking in variants:
                 content = make_config(suite, dataset, stem, model_key, direct, tools_key, thinking)
                 path = dataset_dir / f"{stem}.yaml"
                 path.write_text(content)
