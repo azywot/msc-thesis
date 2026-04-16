@@ -49,6 +49,11 @@ DATASETS = {
         "split": "train",
         "tools": ["web_search", "code_generator"],
     },
+    "math500": {
+        "display": "MATH500",
+        "split": "test",
+        "tools": ["web_search", "code_generator"],
+    },
     "musique": {
         "display": "MuSiQue",
         "split": "validation_subset_200",

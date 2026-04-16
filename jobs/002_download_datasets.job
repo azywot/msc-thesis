@@ -115,14 +115,14 @@ echo "=========================================="
 echo "Downloading Math Datasets"
 echo "=========================================="
 
-# # Download MATH500
-# echo ""
-# echo "Downloading MATH500..."
-# python scripts/download_datasets.py \
-#     --dataset math500 \
-#     --output-dir "$DATA_DIR" || {
-#         echo "Warning: Failed to download MATH500"
-#     }
+# Download MATH500
+echo ""
+echo "Downloading MATH500..."
+python scripts/download_datasets.py \
+    --dataset math500 \
+    --output-dir "$DATA_DIR" || {
+        echo "Warning: Failed to download MATH500"
+    }
 
 # Download AIME
 echo ""
