@@ -51,7 +51,7 @@ DATASETS = {
     },
     "math500": {
         "display": "MATH500",
-        "split": "test",
+        "split": "test_subset_200",
         "tools": ["web_search", "code_generator"],
     },
     "musique": {

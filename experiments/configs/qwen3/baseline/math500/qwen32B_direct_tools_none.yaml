@@ -1,7 +1,7 @@
 # MATH500 — Qwen3-32B, direct tools, thinking disabled
 
 name: "NEW_baseline_math500_qwen32B_direct_tools_none"
-description: "[Baseline; NO image_inspector, NO mindmap] MATH500 test with Qwen3-32B, direct tools, thinking disabled"
+description: "[Baseline; NO image_inspector, NO mindmap] MATH500 test_subset_200 with Qwen3-32B, direct tools, thinking disabled"
 
 slurm:
   partition: "gpu_h100"
@@ -27,7 +27,7 @@ tools:
 
 dataset:
   name: "math500"
-  split: "test"
+  split: "test_subset_200"
   data_dir: "./data"
   subset_num: -1
 

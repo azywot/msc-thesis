@@ -120,6 +120,7 @@ echo ""
 echo "Downloading MATH500..."
 python scripts/download_datasets.py \
     --dataset math500 \
+    --subset 200 \
     --output-dir "$DATA_DIR" || {
         echo "Warning: Failed to download MATH500"
     }

@@ -1,7 +1,7 @@
 # MATH500 — Qwen3-8B, sub-agent tools, orchestrator + sub-agents thinking
 
 name: "AF_no_img_no_mm_math500_qwen8B_subagent_tools_all"
-description: "[AgentFlow; NO image_inspector, NO mindmap] MATH500 test with Qwen3-8B, sub-agent tools, orchestrator + sub-agents thinking"
+description: "[AgentFlow; NO image_inspector, NO mindmap] MATH500 test_subset_200 with Qwen3-8B, sub-agent tools, orchestrator + sub-agents thinking"
 
 slurm:
   partition: "gpu_h100"
@@ -26,7 +26,7 @@ tools:
 
 dataset:
   name: "math500"
-  split: "test"
+  split: "test_subset_200"
   data_dir: "./data"
   subset_num: -1
 
