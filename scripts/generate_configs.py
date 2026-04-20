@@ -13,6 +13,8 @@ Run from the repo root:
     python scripts/generate_configs.py --suite olmo-think-agentflow
     python scripts/generate_configs.py --suite olmo-instruct-baseline
     python scripts/generate_configs.py --suite olmo-instruct-agentflow
+    python scripts/generate_configs.py --suite deepseek-baseline
+    python scripts/generate_configs.py --suite deepseek-agentflow
 
 Config output layout:
     experiments/configs/qwen3/<suite>/<dataset>/<variant>.yaml
@@ -20,6 +22,8 @@ Config output layout:
     experiments/configs/olmo3/think/agentflow/<dataset>/<variant>.yaml
     experiments/configs/olmo3/instruct/baseline/<dataset>/<variant>.yaml
     experiments/configs/olmo3/instruct/agentflow/<dataset>/<variant>.yaml
+    experiments/configs/deepseek/baseline/<dataset>/<variant>.yaml
+    experiments/configs/deepseek/agentflow/<dataset>/<variant>.yaml
 """
 import argparse
 from pathlib import Path
@@ -86,6 +90,7 @@ MODELS = {
         "family": "qwen3",
         "path_or_id": "Qwen/Qwen3-32B",
         "tp": 2,
+        "tp_comment": "64 heads; TP must divide 64.",
     },
     "olmo-7b": {
         "name": "OLMo-3-7B-Think",
@@ -112,6 +117,20 @@ MODELS = {
         "name": "OLMo-3.1-32B-Instruct",
         "family": "olmo-instruct",
         "path_or_id": "allenai/Olmo-3.1-32B-Instruct",
+        "tp": 2,
+        "gpus": 2,
+    },
+    "deepseek-7b": {
+        "name": "DeepSeek-R1-Distill-Qwen-7B",
+        "family": "deepseek",
+        "path_or_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+        "tp": None,
+        "gpus": 1,
+    },
+    "deepseek-32b": {
+        "name": "DeepSeek-R1-Distill-Qwen-32B",
+        "family": "deepseek",
+        "path_or_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
         "tp": 2,
         "gpus": 2,
     },
@@ -242,6 +261,41 @@ VARIANTS_OLMO_THINK_7B_SUBAGENT_ONLY = [
 VARIANTS_OLMO_INSTRUCT_7B_SUBAGENT_ONLY = [
     v for v in VARIANTS_OLMO_INSTRUCT_AGENTFLOW if v[0] == "olmo_instruct7b_subagent_tools"
 ]
+
+# ── deepseek variants (mirrors qwen3 grid) ─────────────────────────────────────
+# Thinking modes are implemented via <think> prefix injection, not a model kwarg,
+# so all four thinking_mode values (NO / ORCHESTRATOR_ONLY / SUBAGENTS_ONLY / ALL)
+# are supported exactly like Qwen3.
+VARIANTS_DEEPSEEK_ALL = [
+    # 7B — no tools
+    ("ds7b_no_tools_none",               "deepseek-7b",  True,  "none",  "NO"),
+    ("ds7b_no_tools_orchestrator",       "deepseek-7b",  True,  "none",  "ORCHESTRATOR_ONLY"),
+    # 7B — direct tools
+    ("ds7b_direct_tools_none",           "deepseek-7b",  True,  "tools", "NO"),
+    ("ds7b_direct_tools_orchestrator",   "deepseek-7b",  True,  "tools", "ORCHESTRATOR_ONLY"),
+    # 7B — sub-agent tools
+    ("ds7b_subagent_tools_none",         "deepseek-7b",  False, "tools", "NO"),
+    ("ds7b_subagent_tools_orchestrator", "deepseek-7b",  False, "tools", "ORCHESTRATOR_ONLY"),
+    ("ds7b_subagent_tools_subagents",    "deepseek-7b",  False, "tools", "SUBAGENTS_ONLY"),
+    ("ds7b_subagent_tools_all",          "deepseek-7b",  False, "tools", "ALL"),
+    # 32B — no tools
+    ("ds32b_no_tools_none",              "deepseek-32b", True,  "none",  "NO"),
+    ("ds32b_no_tools_orchestrator",      "deepseek-32b", True,  "none",  "ORCHESTRATOR_ONLY"),
+    # 32B — direct tools
+    ("ds32b_direct_tools_none",          "deepseek-32b", True,  "tools", "NO"),
+    ("ds32b_direct_tools_orchestrator",  "deepseek-32b", True,  "tools", "ORCHESTRATOR_ONLY"),
+]
+
+# Baseline: direct_tool_call=True only (mirrors VARIANTS_ALL_BASELINE).
+VARIANTS_DEEPSEEK_BASELINE = [v for v in VARIANTS_DEEPSEEK_ALL if v[2] == True]
+
+# AgentFlow: sub-agent variants for 7B only (mirrors VARIANTS_QWEN8B_SUBAGENT_TOOLS_ONLY).
+VARIANTS_DEEPSEEK_AGENTFLOW = [
+    v for v in VARIANTS_DEEPSEEK_ALL if v[0].startswith("ds7b_subagent_tools_")
+]
+
+# BigCodeBench in agentflow: only 7B sub-agent tools (mirrors qwen/olmo pattern).
+VARIANTS_DEEPSEEK_7B_SUBAGENT_ONLY = VARIANTS_DEEPSEEK_AGENTFLOW
 
 
 # ── human-readable labels ──────────────────────────────────────────────────────
@@ -385,6 +439,33 @@ SUITES = {
         "wandb_project":   "benchmarks",
         "split_overrides": {},
     },
+    "deepseek-baseline": {
+        "description_tag": "[DeepSeek-R1 Baseline; NO image_inspector, NO mindmap]",
+        "name_prefix":     "DS_baseline",
+        "output_dir_root": "./experiments/results/deepseek/baseline",
+        "config_subdir":   "deepseek/baseline",
+        "baseline":        True,
+        "force_num_gpus":  True,
+        "variants":        VARIANTS_DEEPSEEK_BASELINE,
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+    },
+    "deepseek-agentflow": {
+        "description_tag": "[DeepSeek-R1 AgentFlow; NO image_inspector, NO mindmap]",
+        "name_prefix":     "DS_AF",
+        "output_dir_root": "./experiments/results/deepseek/agentflow",
+        "config_subdir":   "deepseek/agentflow",
+        "baseline":        False,
+        "force_num_gpus":  True,
+        "variants":        VARIANTS_DEEPSEEK_AGENTFLOW,
+        "variants_by_dataset": {
+            "bigcodebench": VARIANTS_DEEPSEEK_7B_SUBAGENT_ONLY,
+        },
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+    },
 }
 
 
@@ -413,7 +494,8 @@ def _model_block(key: str) -> str:
         '    role: "orchestrator"',
     ]
     if m["tp"]:
-        lines.append(f"    tensor_parallel_size: {m['tp']}  # 64 heads; TP must divide 64.")
+        comment = m.get("tp_comment", "TP must divide num attention heads.")
+        lines.append(f"    tensor_parallel_size: {m['tp']}  # {comment}")
     return "\n".join(lines)
 
 
@@ -430,7 +512,8 @@ def _model_block_with_subagent(orch_key: str, sub_key: str, tool_roles: list[str
         '    role: "orchestrator"',
     ]
     if orch["tp"]:
-        lines.append(f"    tensor_parallel_size: {orch['tp']}  # TP must divide num attention heads.")
+        comment = orch.get("tp_comment", "TP must divide num attention heads.")
+        lines.append(f"    tensor_parallel_size: {orch['tp']}  # {comment}")
     for role in tool_roles:
         lines += [
             f"  {role}:",
@@ -440,7 +523,8 @@ def _model_block_with_subagent(orch_key: str, sub_key: str, tool_roles: list[str
             f'    role: "{role}"',
         ]
         if sub["tp"]:
-            lines.append(f"    tensor_parallel_size: {sub['tp']}  # TP must divide num attention heads.")
+            comment = sub.get("tp_comment", "TP must divide num attention heads.")
+            lines.append(f"    tensor_parallel_size: {sub['tp']}  # {comment}")
     return "\n".join(lines)
 
 

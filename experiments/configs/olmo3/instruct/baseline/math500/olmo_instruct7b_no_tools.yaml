@@ -1,0 +1,37 @@
+# MATH500 — OLMo-3-7B-Instruct, no tools
+
+name: "OLMo_Instruct_baseline_math500_olmo_instruct7b_no_tools"
+description: "[OLMo-Instruct Baseline; NO image_inspector, NO mindmap] MATH500 test_subset_200 with OLMo-3-7B-Instruct, no tools"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "24:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "OLMo-3-7B-Instruct"
+    family: "olmo-instruct"
+    path_or_id: "allenai/Olmo-3-7B-Instruct"
+    role: "orchestrator"
+
+tools:
+  enabled_tools: []
+  direct_tool_call: true
+
+dataset:
+  name: "math500"
+  split: "test_subset_200"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+baseline: true
+output_dir: "./experiments/results/olmo/instruct/baseline/math500/olmo_instruct7b_no_tools"
+use_wandb: true
+wandb_project: "benchmarks"
+
+cache_dir: "./cache"

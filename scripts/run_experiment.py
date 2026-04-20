@@ -20,7 +20,7 @@ load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from agent_engine.config import load_experiment_config
-from agent_engine.models.base import ModelFamily, get_tool_call_format
+from agent_engine.models.base import ModelFamily, get_tool_call_format, _TOOL_ENCOURAGEMENT_FAMILIES
 from agent_engine.core import ToolRegistry, AgenticOrchestrator, ExecutionState
 from agent_engine.utils import setup_logging, set_seed
 from agent_engine.utils.wandb_logging import log_results_wandb
@@ -332,13 +332,15 @@ def run_experiment(args):
     try:
         # Capture the common system prompt once for this run (same for all questions).
         tool_schemas = tools.get_all_schemas()
+        orch_family = config.get_model("orchestrator").family
         system_prompt_for_config = prompt_builder.build_system_prompt(
             dataset_name=config.dataset.name,
             tool_schemas=tool_schemas,
             max_search_limit=config.tools.max_search_limit,
             direct_tool_call=config.tools.direct_tool_call,
             baseline=getattr(config, "baseline", False),
-            tool_call_format=get_tool_call_format(config.get_model("orchestrator").family),
+            tool_call_format=get_tool_call_format(orch_family),
+            encourage_tool_use=(bool(tool_schemas) and orch_family in _TOOL_ENCOURAGEMENT_FAMILIES),
         )
 
         orchestrator = AgenticOrchestrator(

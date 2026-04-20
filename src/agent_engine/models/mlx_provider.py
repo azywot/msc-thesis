@@ -3,7 +3,11 @@
 import json
 from typing import Any, Dict, List, Optional, Union
 
-from .base import BaseModelProvider, GenerationResult, ModelConfig
+from .base import (
+    BaseModelProvider, GenerationResult, ModelConfig,
+    _ENABLE_THINKING_KWARG_FAMILIES, _NO_SYSTEM_PROMPT_FAMILIES,
+    _THINK_PREFIX_FAMILIES, merge_system_into_user,
+)
 from ..utils.logging import get_logger, format_messages_as_chat
 
 logger = get_logger(__name__)
@@ -175,10 +179,23 @@ class MLXProvider(BaseModelProvider):
 
     def _render_messages(self, msgs: List[Dict[str, Any]], use_thinking: bool) -> str:
         """Apply tokenizer chat template, matching VLLMProvider behaviour."""
-        if use_thinking and self.config.supports_thinking:
-            return self.tokenizer.apply_chat_template(
-                msgs, tokenize=False, add_generation_prompt=True, enable_thinking=True,
+        if self.config.family in _NO_SYSTEM_PROMPT_FAMILIES:
+            msgs = merge_system_into_user(msgs)
+
+        if self.config.family in _ENABLE_THINKING_KWARG_FAMILIES:
+            rendered = self.tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True,
+                enable_thinking=(use_thinking and self.config.supports_thinking),
             )
-        return self.tokenizer.apply_chat_template(
-            msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False,
-        )
+        else:
+            rendered = self.tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True,
+            )
+
+        if self.config.family in _THINK_PREFIX_FAMILIES:
+            if use_thinking and self.config.supports_thinking:
+                rendered += "Think step by step.<think>\n"
+            else:
+                rendered += "<think>\n\n</think>\n"
+
+        return rendered

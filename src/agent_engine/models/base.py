@@ -45,6 +45,24 @@ class ToolCallFormat(Enum):
 # Families whose models natively support extended <think> output.
 _THINKING_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ, ModelFamily.DEEPSEEK, ModelFamily.OLMO_THINK})
 
+# Families whose HF chat template accepts the ``enable_thinking`` kwarg.
+# Other thinking-capable families (e.g. OLMo, DeepSeek) always think and don't expose this knob.
+_ENABLE_THINKING_KWARG_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ})
+
+# Families whose chat template has no system-role slot.
+# Providers merge the system-message content into the first user message before tokenising.
+_NO_SYSTEM_PROMPT_FAMILIES = frozenset({ModelFamily.DEEPSEEK})
+
+# Families that require explicit <think>\n prefix-forcing to engage reasoning
+# (as opposed to Qwen3/QwQ which toggle it via the enable_thinking kwarg).
+# use_thinking=True  → append "<think>\n"          (prime the model to reason)
+# use_thinking=False → append "<think>\n\n</think>\n"  (suppress reasoning)
+_THINK_PREFIX_FAMILIES = frozenset({ModelFamily.DEEPSEEK})
+
+# Families that tend to under-use tools; an extra tool-use nudge is injected
+# into the system prompt when tools are enabled for these models.
+_TOOL_ENCOURAGEMENT_FAMILIES = frozenset({ModelFamily.DEEPSEEK})
+
 # Per-family tool-call output format.  Unlisted families default to JSON.
 _TOOL_CALL_FORMAT: Dict[ModelFamily, ToolCallFormat] = {
     ModelFamily.OLMO_THINK: ToolCallFormat.PYTHONIC,
@@ -55,6 +73,24 @@ _TOOL_CALL_FORMAT: Dict[ModelFamily, ToolCallFormat] = {
 def get_tool_call_format(family: ModelFamily) -> ToolCallFormat:
     """Return the tool-call format for *family* (defaults to JSON)."""
     return _TOOL_CALL_FORMAT.get(family, ToolCallFormat.JSON)
+
+
+def merge_system_into_user(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Fold a leading system message into the first user message.
+
+    For families whose chat template has no system-role slot (e.g. DeepSeek R1),
+    prepend the system content to the first user turn separated by a blank line.
+    Returns the original list unchanged when there is no leading system message.
+    """
+    if not msgs or msgs[0].get("role") != "system":
+        return msgs
+    system_content = msgs[0]["content"]
+    result = list(msgs[1:])
+    for i, msg in enumerate(result):
+        if msg.get("role") == "user":
+            result[i] = {**msg, "content": system_content + "\n\n" + msg["content"]}
+            return result
+    return result
 
 
 class ModelConfig(BaseModel):
@@ -112,6 +148,7 @@ class ModelConfig(BaseModel):
     backend: str = "vllm"  # "vllm", "mlx", "openai", "anthropic"
 
     _FAMILY_DEFAULTS: ClassVar[Dict[str, Dict[str, Any]]] = {
+        "deepseek":      {"temperature": 0.6, "top_p": 0.95, "max_tokens": 32768},
         "olmo-think":    {"temperature": 0.6, "top_p": 0.95, "max_tokens": 32768},
         "olmo-instruct": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 32768},
     }

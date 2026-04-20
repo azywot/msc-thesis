@@ -7,11 +7,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from vllm import LLM, SamplingParams
 
-from .base import BaseModelProvider, GenerationResult, ModelConfig, ModelFamily, ToolCallFormat, get_tool_call_format
-
-# Families whose HF chat template accepts the ``enable_thinking`` kwarg.
-# Other thinking-capable families (e.g. OLMo) always think and don't expose this knob.
-_ENABLE_THINKING_KWARG_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ})
+from .base import (
+    BaseModelProvider, GenerationResult, ModelConfig, ModelFamily, ToolCallFormat,
+    get_tool_call_format, _ENABLE_THINKING_KWARG_FAMILIES,
+    _NO_SYSTEM_PROMPT_FAMILIES, _THINK_PREFIX_FAMILIES, merge_system_into_user,
+)
 
 # Stop token to inject after a tool call, keyed by tool-call format.
 _TOOL_CALL_STOP_TOKEN: Dict[ToolCallFormat, str] = {
@@ -284,18 +284,31 @@ class VLLMProvider(BaseModelProvider):
         """Apply the tokenizer chat template to a messages list.
 
         For Qwen3/QwQ, passes ``enable_thinking`` so the template can suppress
-        the reasoning block when thinking is disabled.  For other families
-        (e.g. OLMo) the kwarg is not part of their template and must be omitted;
-        thinking-capable variants in those families always produce <think> output.
+        the reasoning block when thinking is disabled.  For DeepSeek R1 (and
+        similar families), the system message is merged into the first user turn
+        and a ``Think step by step.<think>\\n`` or ``<think>\\n\\n</think>\\n`` prefix
+        is appended after generation-prompt insertion to force/suppress the reasoning block.
         """
+        if self.config.family in _NO_SYSTEM_PROMPT_FAMILIES:
+            msgs = merge_system_into_user(msgs)
+
         if self.config.family in _ENABLE_THINKING_KWARG_FAMILIES:
-            return self.tokenizer.apply_chat_template(
+            rendered = self.tokenizer.apply_chat_template(
                 msgs, tokenize=False, add_generation_prompt=True,
                 enable_thinking=(use_thinking and self.config.supports_thinking),
             )
-        return self.tokenizer.apply_chat_template(
-            msgs, tokenize=False, add_generation_prompt=True,
-        )
+        else:
+            rendered = self.tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True,
+            )
+
+        if self.config.family in _THINK_PREFIX_FAMILIES:
+            if use_thinking and self.config.supports_thinking:
+                rendered += "Think step by step.<think>\n"
+            else:
+                rendered += "<think>\n\n</think>\n"
+
+        return rendered
 
     def _make_result(self, output: Any, messages: Optional[List[Dict[str, Any]]]) -> GenerationResult:
         """Build a GenerationResult from a single vLLM output object."""

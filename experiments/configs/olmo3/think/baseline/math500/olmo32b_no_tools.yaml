@@ -1,7 +1,7 @@
-# AIME — OLMo-3.1-32B-Think, direct tools
+# MATH500 — OLMo-3.1-32B-Think, no tools
 
-name: "OLMo_Think_baseline_aime_olmo32b_direct_tools"
-description: "[OLMo-Think Baseline; NO image_inspector, NO mindmap] AIME train with OLMo-3.1-32B-Think, direct tools"
+name: "OLMo_Think_baseline_math500_olmo32b_no_tools"
+description: "[OLMo-Think Baseline; NO image_inspector, NO mindmap] MATH500 test_subset_200 with OLMo-3.1-32B-Think, no tools"
 
 slurm:
   partition: "gpu_h100"
@@ -20,20 +20,18 @@ models:
     tensor_parallel_size: 2  # TP must divide num attention heads.
 
 tools:
-  enabled_tools:
-    - web_search
-    - code_generator
+  enabled_tools: []
   direct_tool_call: true
 
 dataset:
-  name: "aime"
-  split: "train"
+  name: "math500"
+  split: "test_subset_200"
   data_dir: "./data"
   subset_num: -1
 
 seed: 0
 baseline: true
-output_dir: "./experiments/results/olmo/think/baseline/aime/olmo32b_direct_tools"
+output_dir: "./experiments/results/olmo/think/baseline/math500/olmo32b_no_tools"
 use_wandb: true
 wandb_project: "benchmarks"
 

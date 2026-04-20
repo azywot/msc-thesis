@@ -1,7 +1,7 @@
-# MuSiQue — OLMo-3.1-32B-Instruct, direct tools
+# MATH500 — OLMo-3.1-32B-Instruct, direct tools
 
-name: "OLMo_Instruct_baseline_musique_olmo_instruct32b_direct_tools"
-description: "[OLMo-Instruct Baseline; NO image_inspector, NO mindmap] MuSiQue validation_subset_200 with OLMo-3.1-32B-Instruct, direct tools"
+name: "OLMo_Instruct_baseline_math500_olmo_instruct32b_direct_tools"
+description: "[OLMo-Instruct Baseline; NO image_inspector, NO mindmap] MATH500 test_subset_200 with OLMo-3.1-32B-Instruct, direct tools"
 
 slurm:
   partition: "gpu_h100"
@@ -26,14 +26,14 @@ tools:
   direct_tool_call: true
 
 dataset:
-  name: "musique"
-  split: "validation_subset_200"
+  name: "math500"
+  split: "test_subset_200"
   data_dir: "./data"
   subset_num: -1
 
 seed: 0
 baseline: true
-output_dir: "./experiments/results/olmo/instruct/baseline/musique/olmo_instruct32b_direct_tools"
+output_dir: "./experiments/results/olmo/instruct/baseline/math500/olmo_instruct32b_direct_tools"
 use_wandb: true
 wandb_project: "benchmarks"
 

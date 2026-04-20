@@ -17,7 +17,7 @@ models:
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-32B"
     role: "orchestrator"
-    tensor_parallel_size: 2  # TP must divide num attention heads.
+    tensor_parallel_size: 2  # 64 heads; TP must divide 64.
   web_search:
     name: "Qwen3-1.7B"
     family: "qwen3"
