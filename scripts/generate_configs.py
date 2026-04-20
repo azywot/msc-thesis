@@ -9,13 +9,17 @@ Run from the repo root:
         (leave-one-out no_<tool> ablations; 8B only; single-tool datasets skip empty ablation)
     python scripts/generate_configs.py --suite structured_memory_ablation
         (8B: subagent tools + orch thinking + baseline: true — no query analysis / structured memory)
-    python scripts/generate_configs.py --suite olmo-think
-    python scripts/generate_configs.py --suite olmo-instruct
+    python scripts/generate_configs.py --suite olmo-think-baseline
+    python scripts/generate_configs.py --suite olmo-think-agentflow
+    python scripts/generate_configs.py --suite olmo-instruct-baseline
+    python scripts/generate_configs.py --suite olmo-instruct-agentflow
 
 Config output layout:
     experiments/configs/qwen3/<suite>/<dataset>/<variant>.yaml
-    experiments/configs/olmo3/think/<dataset>/<variant>.yaml
-    experiments/configs/olmo3/instruct/<dataset>/<variant>.yaml
+    experiments/configs/olmo3/think/baseline/<dataset>/<variant>.yaml
+    experiments/configs/olmo3/think/agentflow/<dataset>/<variant>.yaml
+    experiments/configs/olmo3/instruct/baseline/<dataset>/<variant>.yaml
+    experiments/configs/olmo3/instruct/agentflow/<dataset>/<variant>.yaml
 """
 import argparse
 from pathlib import Path
@@ -43,6 +47,11 @@ DATASETS = {
     "aime": {
         "display": "AIME",
         "split": "train",
+        "tools": ["web_search", "code_generator"],
+    },
+    "math500": {
+        "display": "MATH500",
+        "split": "test_subset_200",
         "tools": ["web_search", "code_generator"],
     },
     "musique": {
@@ -199,6 +208,41 @@ VARIANTS_OLMO_INSTRUCT = [
     ("olmo_instruct32b_subagent_tools", "olmo-instruct-32b", False, "tools", "NO"),
 ]
 
+# ── olmo variants mirroring full qwen3 grid (no thinking_mode distinctions) ───
+# These omit thinking_mode from the YAML entirely; stems have no thinking suffix.
+# Baseline: direct_tool_call=True only (mirrors VARIANTS_ALL_BASELINE).
+VARIANTS_OLMO_THINK_BASELINE = [
+    ("olmo7b_no_tools",      "olmo-7b",   True,  "none",  "NO"),
+    ("olmo7b_direct_tools",  "olmo-7b",   True,  "tools", "NO"),
+    ("olmo32b_no_tools",     "olmo-32b",  True,  "none",  "NO"),
+    ("olmo32b_direct_tools", "olmo-32b",  True,  "tools", "NO"),
+]
+
+# AgentFlow: subagent_tools for 7B only.
+VARIANTS_OLMO_THINK_AGENTFLOW = [
+    ("olmo7b_subagent_tools", "olmo-7b", False, "tools", "NO"),
+]
+
+VARIANTS_OLMO_INSTRUCT_BASELINE = [
+    ("olmo_instruct7b_no_tools",      "olmo-instruct-7b",   True,  "none",  "NO"),
+    ("olmo_instruct7b_direct_tools",  "olmo-instruct-7b",   True,  "tools", "NO"),
+    ("olmo_instruct32b_no_tools",     "olmo-instruct-32b",  True,  "none",  "NO"),
+    ("olmo_instruct32b_direct_tools", "olmo-instruct-32b",  True,  "tools", "NO"),
+]
+
+# AgentFlow: subagent_tools for 7B only.
+VARIANTS_OLMO_INSTRUCT_AGENTFLOW = [
+    ("olmo_instruct7b_subagent_tools", "olmo-instruct-7b", False, "tools", "NO"),
+]
+
+# BigCodeBench in agentflow: only 7B sub-agent tools (mirrors VARIANTS_QWEN8B_SUBAGENT_TOOLS_ONLY).
+VARIANTS_OLMO_THINK_7B_SUBAGENT_ONLY = [
+    v for v in VARIANTS_OLMO_THINK_AGENTFLOW if v[0] == "olmo7b_subagent_tools"
+]
+VARIANTS_OLMO_INSTRUCT_7B_SUBAGENT_ONLY = [
+    v for v in VARIANTS_OLMO_INSTRUCT_AGENTFLOW if v[0] == "olmo_instruct7b_subagent_tools"
+]
+
 
 # ── human-readable labels ──────────────────────────────────────────────────────
 THINKING_LABELS = {
@@ -237,10 +281,7 @@ SUITES = {
         "config_subdir":   "qwen3/agentflow",
         "baseline":        False,
         "force_num_gpus":  True,
-        "variants":        VARIANTS_ALL,
-        "variants_by_dataset": {
-            "bigcodebench": VARIANTS_QWEN8B_SUBAGENT_TOOLS_ONLY,
-        },
+        "variants":        VARIANTS_QWEN8B_SUBAGENT_TOOLS_ONLY,
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
         "split_overrides": {},
@@ -286,26 +327,60 @@ SUITES = {
         "wandb_project":   "benchmarks",
         "split_overrides": {},
     },
-    "olmo-think": {
-        "description_tag": "[OLMo-Think; NO image_inspector, NO mindmap]",
-        "name_prefix":     "OLMo_Think",
-        "output_dir_root": "./experiments/results/olmo/think",
-        "config_subdir":   "olmo3/think",
-        "baseline":        False,
-        "variants":        VARIANTS_OLMO_THINK,
-        "datasets":        ["gaia", "hle", "gpqa", "aime", "musique"],
+    "olmo-think-baseline": {
+        "description_tag": "[OLMo-Think Baseline; NO image_inspector, NO mindmap]",
+        "name_prefix":     "OLMo_Think_baseline",
+        "output_dir_root": "./experiments/results/olmo/think/baseline",
+        "config_subdir":   "olmo3/think/baseline",
+        "baseline":        True,
+        "force_num_gpus":  True,
+        "no_thinking_mode": True,
+        "variants":        VARIANTS_OLMO_THINK_BASELINE,
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
         "split_overrides": {},
     },
-    "olmo-instruct": {
-        "description_tag": "[OLMo-Instruct; NO image_inspector, NO mindmap]",
-        "name_prefix":     "OLMo_Instruct",
-        "output_dir_root": "./experiments/results/olmo/instruct",
-        "config_subdir":   "olmo3/instruct",
+    "olmo-think-agentflow": {
+        "description_tag": "[OLMo-Think AgentFlow; NO image_inspector, NO mindmap]",
+        "name_prefix":     "OLMo_Think_AF",
+        "output_dir_root": "./experiments/results/olmo/think/agentflow",
+        "config_subdir":   "olmo3/think/agentflow",
         "baseline":        False,
-        "variants":        VARIANTS_OLMO_INSTRUCT,
-        "datasets":        ["gaia", "hle", "gpqa", "aime", "musique"],
+        "force_num_gpus":  True,
+        "no_thinking_mode": True,
+        "variants":        VARIANTS_OLMO_THINK_AGENTFLOW,
+        "variants_by_dataset": {
+            "bigcodebench": VARIANTS_OLMO_THINK_7B_SUBAGENT_ONLY,
+        },
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+    },
+    "olmo-instruct-baseline": {
+        "description_tag": "[OLMo-Instruct Baseline; NO image_inspector, NO mindmap]",
+        "name_prefix":     "OLMo_Instruct_baseline",
+        "output_dir_root": "./experiments/results/olmo/instruct/baseline",
+        "config_subdir":   "olmo3/instruct/baseline",
+        "baseline":        True,
+        "force_num_gpus":  True,
+        "no_thinking_mode": True,
+        "variants":        VARIANTS_OLMO_INSTRUCT_BASELINE,
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+    },
+    "olmo-instruct-agentflow": {
+        "description_tag": "[OLMo-Instruct AgentFlow; NO image_inspector, NO mindmap]",
+        "name_prefix":     "OLMo_Instruct_AF",
+        "output_dir_root": "./experiments/results/olmo/instruct/agentflow",
+        "config_subdir":   "olmo3/instruct/agentflow",
+        "baseline":        False,
+        "force_num_gpus":  True,
+        "no_thinking_mode": True,
+        "variants":        VARIANTS_OLMO_INSTRUCT_AGENTFLOW,
+        "variants_by_dataset": {
+            "bigcodebench": VARIANTS_OLMO_INSTRUCT_7B_SUBAGENT_ONLY,
+        },
         "num_gpus":        2,
         "wandb_project":   "benchmarks",
         "split_overrides": {},
@@ -402,18 +477,30 @@ def make_config(
                 tool_desc = f"{base} (enabled: {', '.join(enabled)})"
         else:
             tool_desc = base
-    think_desc = THINKING_LABELS[thinking]
-    comment_line = f"# {ds['display']} — {m['name']}, {tool_desc}, {think_desc}"
+
+    no_thinking_mode = suite.get("no_thinking_mode", False)
+    if no_thinking_mode:
+        comment_line = f"# {ds['display']} — {m['name']}, {tool_desc}"
+    else:
+        think_desc = THINKING_LABELS[thinking]
+        comment_line = f"# {ds['display']} — {m['name']}, {tool_desc}, {think_desc}"
 
     exp_name = f"{suite['name_prefix']}_{dataset}_{stem}"
-    description = (
-        f"{suite['description_tag']} "
-        f"{ds['display']} {ds['split']} with {m['name']}, "
-        f"{tool_desc}, {think_desc}"
-    )
+    if no_thinking_mode:
+        description = (
+            f"{suite['description_tag']} "
+            f"{ds['display']} {ds['split']} with {m['name']}, {tool_desc}"
+        )
+    else:
+        description = (
+            f"{suite['description_tag']} "
+            f"{ds['display']} {ds['split']} with {m['name']}, "
+            f"{tool_desc}, {think_desc}"
+        )
     output_dir = f"{suite['output_dir_root']}/{dataset}/{stem}"
 
     baseline_line = "baseline: true\n" if suite["baseline"] else ""
+    thinking_line = "" if no_thinking_mode else f'thinking_mode: "{thinking}"\n'
     num_gpus = suite["num_gpus"] if suite.get("force_num_gpus", False) else m.get("gpus", suite["num_gpus"])
     wandb_project = suite["wandb_project"]
     # BigCodeBench evaluation is done externally via test harness; the tool must
@@ -430,7 +517,7 @@ slurm:
   num_gpus: {num_gpus}
   ntasks: 1
   cpus_per_task: 8
-  time: "16:00:00"
+  time: "24:00:00"
   conda_env: "agent_engine"
 
 {_model_block(model_key)}
@@ -444,8 +531,7 @@ dataset:
   subset_num: -1
 
 seed: 0
-thinking_mode: "{thinking}"
-{baseline_line}output_dir: "{output_dir}"
+{thinking_line}{baseline_line}output_dir: "{output_dir}"
 use_wandb: true
 wandb_project: "{wandb_project}"
 
@@ -503,7 +589,7 @@ slurm:
   num_gpus: {num_gpus}
   ntasks: 1
   cpus_per_task: 8
-  time: "16:00:00"
+  time: "24:00:00"
   conda_env: "agent_engine"
 
 {models_block}

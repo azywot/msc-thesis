@@ -7,11 +7,18 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from vllm import LLM, SamplingParams
 
-from .base import BaseModelProvider, GenerationResult, ModelConfig, ModelFamily
+from .base import BaseModelProvider, GenerationResult, ModelConfig, ModelFamily, ToolCallFormat, get_tool_call_format
 
 # Families whose HF chat template accepts the ``enable_thinking`` kwarg.
 # Other thinking-capable families (e.g. OLMo) always think and don't expose this knob.
 _ENABLE_THINKING_KWARG_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ})
+
+# Stop token to inject after a tool call, keyed by tool-call format.
+_TOOL_CALL_STOP_TOKEN: Dict[ToolCallFormat, str] = {
+    ToolCallFormat.JSON: "</tool_call>",
+    ToolCallFormat.PYTHONIC: "</function_calls>",
+}
+
 from .llm_shared import get_llm_lock
 from ..utils.logging import get_logger, format_messages_as_chat
 
@@ -229,10 +236,12 @@ class VLLMProvider(BaseModelProvider):
                 )
 
             valid_prompts.append(rendered)
-            # Pause generation after a tool call
+            # Pause generation after a tool call; token depends on the family's format.
             stop_kwargs: Dict[str, Any] = {}
             if self.config.role == "orchestrator":
-                stop_kwargs = {"stop": ["</tool_call>"], "include_stop_str_in_output": True}
+                fmt = get_tool_call_format(self.config.family)
+                stop_token = _TOOL_CALL_STOP_TOKEN[fmt]
+                stop_kwargs = {"stop": [stop_token], "include_stop_str_in_output": True}
             params = SamplingParams(
                 max_tokens=safe_max_tokens,
                 temperature=self.config.temperature,
