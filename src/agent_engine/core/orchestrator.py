@@ -10,7 +10,7 @@ import re
 import inspect
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 
-from ..models.base import BaseModelProvider
+from ..models.base import BaseModelProvider, _THINK_PREFIX_FAMILIES
 from ..utils.logging import get_logger
 from ..utils.parsing import extract_answer, parse_tool_call, strip_thinking_tags
 from ..utils.reasoning_context import get_attachment_context_for_code
@@ -123,6 +123,11 @@ class AgenticOrchestrator:
         self.tool_limits = tool_limits or {"web_search": 10}
         self.use_thinking = use_thinking and model_provider.config.supports_thinking
         self.baseline = baseline
+        # Force tool-call prefix injection on action turns for families (DeepSeek)
+        # that hallucinate tool use in their thinking blocks instead of emitting <tool_call>.
+        self._force_tool_call = (
+            bool(tool_registry) and model_provider.config.family in _THINK_PREFIX_FAMILIES
+        )
 
         logger.info(f"Orchestrator initialized with {len(self.tools)} tools")
         logger.info(f"Thinking mode: {'enabled' if self.use_thinking else 'disabled'}")
@@ -174,7 +179,11 @@ class AgenticOrchestrator:
 
             try:
                 prompt_msgs = state.messages if self.baseline else self._build_memory_prompt(state, system_prompt)
-                prompt = self.model.apply_chat_template(prompt_msgs, use_thinking=self.use_thinking)
+                prompt = self.model.apply_chat_template(
+                    prompt_msgs,
+                    use_thinking=self.use_thinking,
+                    force_tool_call=self._force_tool_call,
+                )
                 gen_result = self.model.generate([prompt])[0]
                 state.current_output = gen_result.text
                 _accumulate_usage(state, gen_result.usage)
@@ -292,6 +301,7 @@ class AgenticOrchestrator:
             self.model.apply_chat_template(
                 s.messages if self.baseline else self._build_memory_prompt(s, system_prompt),
                 use_thinking=self.use_thinking,
+                force_tool_call=self._force_tool_call,
             )
             for s in active
         ]

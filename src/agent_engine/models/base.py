@@ -226,13 +226,19 @@ class BaseModelProvider(ABC):
     def apply_chat_template(
         self,
         messages: List[Dict[str, str]],
-        use_thinking: bool = False
+        use_thinking: bool = False,
+        force_tool_call: bool = False,
     ) -> str:
         """Apply model-specific chat template.
 
         Args:
             messages: List of message dicts with 'role' and 'content' keys
             use_thinking: Whether to enable thinking mode (for Qwen3)
+            force_tool_call: For families that need prefix forcing (DeepSeek),
+                             inject a closed think block + ``<sub_goal>`` suffix
+                             so the model is forced to complete a tool call rather
+                             than answering in its reasoning block.  Has no effect
+                             on other families.
 
         Returns:
             Formatted prompt string ready for generation

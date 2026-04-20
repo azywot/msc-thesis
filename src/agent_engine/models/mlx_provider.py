@@ -61,19 +61,21 @@ class MLXProvider(BaseModelProvider):
         for idx, prompt in enumerate(prompts):
             msgs: Optional[List[Dict[str, Any]]] = None
             use_thinking = False
+            force_tool_call = False
             if isinstance(prompt, str):
                 try:
                     payload = json.loads(prompt)
                     if isinstance(payload, dict) and "messages" in payload:
                         msgs = payload["messages"]
                         use_thinking = payload.get("use_thinking", False)
+                        force_tool_call = payload.get("force_tool_call", False)
                     elif isinstance(payload, list):
                         msgs = payload
                 except (json.JSONDecodeError, TypeError):
                     pass
 
             if msgs is not None:
-                rendered = self._render_messages(msgs, use_thinking)
+                rendered = self._render_messages(msgs, use_thinking, force_tool_call)
                 logger.debug(
                     "MLX request (prompt %d/%d):\n%s",
                     idx + 1, len(prompts), format_messages_as_chat(msgs),
@@ -161,10 +163,11 @@ class MLXProvider(BaseModelProvider):
         self,
         messages: List[Dict[str, str]],
         use_thinking: bool = False,
+        force_tool_call: bool = False,
     ) -> str:
         """Serialize messages as JSON payload (same contract as VLLMProvider)."""
         return json.dumps(
-            {"messages": messages, "use_thinking": use_thinking},
+            {"messages": messages, "use_thinking": use_thinking, "force_tool_call": force_tool_call},
             ensure_ascii=False,
         )
 
@@ -177,7 +180,9 @@ class MLXProvider(BaseModelProvider):
             del self.tokenizer
             self.tokenizer = None
 
-    def _render_messages(self, msgs: List[Dict[str, Any]], use_thinking: bool) -> str:
+    def _render_messages(
+        self, msgs: List[Dict[str, Any]], use_thinking: bool, force_tool_call: bool = False
+    ) -> str:
         """Apply tokenizer chat template, matching VLLMProvider behaviour."""
         if self.config.family in _NO_SYSTEM_PROMPT_FAMILIES:
             msgs = merge_system_into_user(msgs)
@@ -193,8 +198,10 @@ class MLXProvider(BaseModelProvider):
             )
 
         if self.config.family in _THINK_PREFIX_FAMILIES:
-            if use_thinking and self.config.supports_thinking:
-                rendered += "Think step by step.<think>\n"
+            if force_tool_call:
+                rendered += "<think>\nI need to call a tool to answer this question.\n</think>\n<sub_goal>"
+            elif use_thinking and self.config.supports_thinking:
+                rendered += "<think>\n"
             else:
                 rendered += "<think>\n\n</think>\n"
 

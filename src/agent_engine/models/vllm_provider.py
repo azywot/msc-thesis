@@ -137,7 +137,8 @@ class VLLMProvider(BaseModelProvider):
                 if isinstance(payload, dict) and "messages" in payload:
                     msgs = payload["messages"]
                     use_thinking = payload.get("use_thinking", False)
-                    raw_prompt = self._render_messages(msgs, use_thinking)
+                    force_tool_call = payload.get("force_tool_call", False)
+                    raw_prompt = self._render_messages(msgs, use_thinking, force_tool_call)
             except (json.JSONDecodeError, TypeError):
                 pass
             rendered_prompts.append({**p, "prompt": raw_prompt})
@@ -192,11 +193,13 @@ class VLLMProvider(BaseModelProvider):
             # Decode JSON payload from apply_chat_template; fall back to plain string.
             msgs: Optional[List[Dict[str, Any]]] = None
             use_thinking = False
+            force_tool_call = False
             try:
                 payload = json.loads(prompt)
                 if isinstance(payload, dict) and "messages" in payload:
                     msgs = payload["messages"]
                     use_thinking = payload.get("use_thinking", False)
+                    force_tool_call = payload.get("force_tool_call", False)
                 elif isinstance(payload, list):
                     msgs = payload
             except (json.JSONDecodeError, TypeError):
@@ -206,7 +209,7 @@ class VLLMProvider(BaseModelProvider):
 
             # Apply the tokenizer chat template to get the rendered string.
             if msgs is not None:
-                rendered = self._render_messages(msgs, use_thinking)
+                rendered = self._render_messages(msgs, use_thinking, force_tool_call)
                 logger.debug(
                     "vLLM request (prompt %d/%d):\n%s",
                     idx + 1, len(prompts), format_messages_as_chat(msgs),
@@ -264,7 +267,8 @@ class VLLMProvider(BaseModelProvider):
     def apply_chat_template(
         self,
         messages: List[Dict[str, str]],
-        use_thinking: bool = False
+        use_thinking: bool = False,
+        force_tool_call: bool = False,
     ) -> str:
         """Serialize messages for generate().
 
@@ -272,7 +276,10 @@ class VLLMProvider(BaseModelProvider):
         messages list (for logging and result attachment). The tokenizer
         template is applied inside _generate_text.
         """
-        return json.dumps({"messages": messages, "use_thinking": use_thinking}, ensure_ascii=False)
+        return json.dumps(
+            {"messages": messages, "use_thinking": use_thinking, "force_tool_call": force_tool_call},
+            ensure_ascii=False,
+        )
 
     def cleanup(self):
         """Release GPU memory."""
@@ -280,14 +287,22 @@ class VLLMProvider(BaseModelProvider):
             del self.llm
             self.llm = None
 
-    def _render_messages(self, msgs: List[Dict[str, Any]], use_thinking: bool) -> str:
+    def _render_messages(
+        self, msgs: List[Dict[str, Any]], use_thinking: bool, force_tool_call: bool = False
+    ) -> str:
         """Apply the tokenizer chat template to a messages list.
 
         For Qwen3/QwQ, passes ``enable_thinking`` so the template can suppress
         the reasoning block when thinking is disabled.  For DeepSeek R1 (and
         similar families), the system message is merged into the first user turn
-        and a ``Think step by step.<think>\\n`` or ``<think>\\n\\n</think>\\n`` prefix
-        is appended after generation-prompt insertion to force/suppress the reasoning block.
+        and one of three suffixes is appended after the generation-prompt token:
+
+        * ``force_tool_call=True``:  a brief closed ``<think>`` block followed by
+          ``<sub_goal>`` to prime the model into emitting a tool call rather than
+          reasoning to a direct answer.  Works regardless of *use_thinking*.
+        * ``use_thinking=True`` (no force): ``<think>\\n`` to open a free reasoning
+          block.
+        * otherwise: ``<think>\\n\\n</think>\\n`` to suppress reasoning.
         """
         if self.config.family in _NO_SYSTEM_PROMPT_FAMILIES:
             msgs = merge_system_into_user(msgs)
@@ -303,8 +318,13 @@ class VLLMProvider(BaseModelProvider):
             )
 
         if self.config.family in _THINK_PREFIX_FAMILIES:
-            if use_thinking and self.config.supports_thinking:
-                rendered += "Think step by step.<think>\n"
+            if force_tool_call:
+                # Inject a minimal closed think block so the model's reasoning is
+                # bypassed, then open <sub_goal> to force prefix-completion of a
+                # tool call.  The stop token </tool_call> terminates generation.
+                rendered += "<think>\nI need to call a tool to answer this question.\n</think>\n<sub_goal>"
+            elif use_thinking and self.config.supports_thinking:
+                rendered += "<think>\n"
             else:
                 rendered += "<think>\n\n</think>\n"
 
