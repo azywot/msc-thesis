@@ -148,7 +148,7 @@ def extract_answer(text: str) -> Optional[str]:
     # Fallback: fenced code block (for code-generation tasks like BigCodeBench).
     # Use the LAST match so that a final implementation block is preferred over
     # any example/intermediate snippets earlier in the response.
-    code_blocks = re.findall(r'```(?:python)?\n?(.*?)\n?```', stripped, re.DOTALL)
+    code_blocks = re.findall(r'```(?:\w+)?\n(.*?)\n?```', stripped, re.DOTALL)
     if code_blocks:
         return code_blocks[-1].strip()
 

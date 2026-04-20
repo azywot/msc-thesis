@@ -743,12 +743,37 @@ class AgenticOrchestrator:
         tool = self.tools.get(tool_name)
 
         if not tool:
-            logger.error(f"Tool not found: {tool_name}")
-            return ToolResult(success=False, output="", metadata={}, error=f"Tool '{tool_name}' not found")
+            available = self.tools.list_tools()
+            msg = (
+                f"Error: tool '{tool_name}' does not exist. "
+                f"Available tools: {available}. Only call tools from this list."
+            )
+            logger.error("Tool not found: %s. Available: %s", tool_name, available)
+            return ToolResult(success=False, output=msg, metadata={}, error=f"Tool '{tool_name}' not found")
 
         if not self._check_tool_limit(tool_name, state):
             logger.warning(f"Tool limit exceeded for: {tool_name}")
             return ToolResult(success=False, output=f"Tool usage limit reached for {tool_name}", metadata={}, error="Limit exceeded")
+
+        # Detect repeated identical tool calls to break stuck loops.
+        # Any tool called with the exact same arguments as a previous call
+        # gets a redirect message instead of re-executing and returning the same result.
+        args = tool_call.get("arguments") or {}
+        prev_args_list = [
+            tc.get("arguments") or {}
+            for tc in state.tool_calls
+            if tc["name"] == tool_name
+        ]
+        if args in prev_args_list:
+            logger.warning("Repeated tool call detected: %s %s", tool_name, args)
+            return ToolResult(
+                success=False,
+                output=(
+                    f"You already called '{tool_name}' with these exact arguments and received the same result. "
+                    "Do not repeat this call. Try a different approach or use different arguments."
+                ),
+                metadata={"repeated_call": True},
+            )
 
         try:
             arguments = dict(tool_call.get("arguments") or {})
