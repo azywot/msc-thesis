@@ -1,0 +1,38 @@
+# BigCodeBench — DeepSeek-R1-Distill-Qwen-7B, no tools, orchestrator thinking
+
+name: "DS_baseline_bigcodebench_ds7b_no_tools_orchestrator"
+description: "[DeepSeek-R1 Baseline; NO image_inspector, NO mindmap] BigCodeBench v0.1.4_subset_200 with DeepSeek-R1-Distill-Qwen-7B, no tools, orchestrator thinking"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "24:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "DeepSeek-R1-Distill-Qwen-7B"
+    family: "deepseek"
+    path_or_id: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+    role: "orchestrator"
+
+tools:
+  enabled_tools: []
+  direct_tool_call: true
+
+dataset:
+  name: "bigcodebench"
+  split: "v0.1.4_subset_200"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "ORCHESTRATOR_ONLY"
+baseline: true
+output_dir: "./experiments/results/deepseek/baseline/bigcodebench/ds7b_no_tools_orchestrator"
+use_wandb: true
+wandb_project: "benchmarks"
+
+cache_dir: "./cache"
