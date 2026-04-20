@@ -7,11 +7,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from vllm import LLM, SamplingParams
 
-from .base import (
-    BaseModelProvider, GenerationResult, ModelConfig, ModelFamily, ToolCallFormat,
-    get_tool_call_format, _ENABLE_THINKING_KWARG_FAMILIES,
-    _NO_SYSTEM_PROMPT_FAMILIES, _THINK_PREFIX_FAMILIES, merge_system_into_user,
-)
+from .base import BaseModelProvider, GenerationResult, ModelConfig, ModelFamily, ToolCallFormat, get_tool_call_format
+
+# Families whose HF chat template accepts the ``enable_thinking`` kwarg.
+# Other thinking-capable families (e.g. OLMo) always think and don't expose this knob.
+_ENABLE_THINKING_KWARG_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ})
 
 # Stop token to inject after a tool call, keyed by tool-call format.
 _TOOL_CALL_STOP_TOKEN: Dict[ToolCallFormat, str] = {

@@ -68,7 +68,6 @@ class PromptBuilder:
         direct_tool_call: bool = True,
         baseline: bool = False,
         tool_call_format: ToolCallFormat = ToolCallFormat.JSON,
-        encourage_tool_use: bool = False,
     ) -> str:
         """Build system prompt with tools and instructions.
 
@@ -109,7 +108,6 @@ class PromptBuilder:
                 self._format_tool_schemas(
                     tool_schemas, max_search_limit, direct_tool_call,
                     baseline=baseline, tool_call_format=tool_call_format,
-                    encourage_tool_use=encourage_tool_use,
                 )
             )
 
@@ -171,7 +169,6 @@ class PromptBuilder:
         direct_tool_call: bool = False,
         baseline: bool = False,
         tool_call_format: ToolCallFormat = ToolCallFormat.JSON,
-        encourage_tool_use: bool = False,
     ) -> str:
         """Format tool schemas and call-format instructions."""
         if not schemas:
@@ -195,16 +192,6 @@ class PromptBuilder:
             "continue your reasoning with the new information."
         )
 
-        # DeepSeek-specific hard rule: the model must call a tool before answering.
-        # Activated via encourage_tool_use=True (derived from _TOOL_ENCOURAGEMENT_FAMILIES).
-        tool_nudge = (
-            "\n\nCRITICAL RULE: You MUST call at least one tool before providing your final answer. "
-            "Do NOT answer from memory or prior knowledge — always use tools to retrieve and verify "
-            "information. Never output \\boxed{...} without having first executed a tool call and "
-            "received a <tool_response>. Guessing without using a tool is INCORRECT."
-            if encourage_tool_use else ""
-        )
-
         if baseline:
             return (
                 header
@@ -212,7 +199,6 @@ class PromptBuilder:
                 f"{open_tag}{close_tag} XML tags:\n"
                 f"{open_tag}\n{placeholder}\n{close_tag}\n\n"
                 + tail
-                + tool_nudge
             )
 
         direct_mode_rule = (
@@ -229,7 +215,6 @@ class PromptBuilder:
             f"{open_tag}\n{placeholder}\n{close_tag}\n\n"
             + tail
             + direct_mode_rule
-            + tool_nudge
         )
 
     def _select_and_format_example(

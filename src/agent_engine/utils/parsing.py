@@ -86,18 +86,6 @@ def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
             if result:
                 return result
 
-    # ── Fallback: JSON tool call in a fenced code block (```json / ```xml / ```) ──
-    # DeepSeek and some other models wrap the JSON payload in a code fence instead
-    # of <tool_call> tags.  Accept any fence language tag (or none).
-    for fence_match in re.finditer(r'```(?:\w+)?\s*(\{.*?\})\s*```', text, re.DOTALL):
-        try:
-            tool_call = json.loads(fence_match.group(1).strip())
-            if isinstance(tool_call, dict) and "name" in tool_call:
-                tool_call.setdefault("arguments", {})
-                return tool_call
-        except json.JSONDecodeError:
-            continue
-
     return None
 
 
