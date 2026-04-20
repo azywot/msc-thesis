@@ -182,7 +182,7 @@ class AgenticOrchestrator:
                 prompt = self.model.apply_chat_template(
                     prompt_msgs,
                     use_thinking=self.use_thinking,
-                    force_tool_call=self._force_tool_call,
+                    force_tool_call=self._force_tool_call and state.turn == 1,
                 )
                 gen_result = self.model.generate([prompt])[0]
                 state.current_output = gen_result.text
@@ -301,7 +301,7 @@ class AgenticOrchestrator:
             self.model.apply_chat_template(
                 s.messages if self.baseline else self._build_memory_prompt(s, system_prompt),
                 use_thinking=self.use_thinking,
-                force_tool_call=self._force_tool_call,
+                force_tool_call=self._force_tool_call and s.turn == 1,
             )
             for s in active
         ]
