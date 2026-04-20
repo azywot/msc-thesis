@@ -195,10 +195,13 @@ class PromptBuilder:
             "continue your reasoning with the new information."
         )
 
+        # DeepSeek-specific hard rule: the model must call a tool before answering.
+        # Activated via encourage_tool_use=True (derived from _TOOL_ENCOURAGEMENT_FAMILIES).
         tool_nudge = (
-            "\n\nIMPORTANT: You are expected to use the tools above to answer the question. "
-            "If the question requires factual information, current data, or computation, "
-            "call a tool rather than guessing. Do not skip tool calls when they would improve your answer."
+            "\n\nCRITICAL RULE: You MUST call at least one tool before providing your final answer. "
+            "Do NOT answer from memory or prior knowledge — always use tools to retrieve and verify "
+            "information. Never output \\boxed{...} without having first executed a tool call and "
+            "received a <tool_response>. Guessing without using a tool is INCORRECT."
             if encourage_tool_use else ""
         )
 

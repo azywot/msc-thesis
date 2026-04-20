@@ -711,8 +711,9 @@ class AgenticOrchestrator:
                     "Planning turn for Q%s produced tool call (discarded); analysis: %.100s...",
                     s.question_id, analysis,
                 )
-            # Edge case: model produced a final answer
-            elif "\\boxed{" in text or "\\boxed " in text:
+            # Edge case: model produced a final answer (only short-circuit when no tools
+            # are configured — with tools the action loop must run so they can be used)
+            elif ("\\boxed{" in text or "\\boxed " in text) and len(self.tools) == 0:
                 s.query_analysis = strip_thinking_tags(text)
                 s.finished = True
                 s.answer = extract_answer(text)
