@@ -10,7 +10,8 @@ from vllm import LLM, SamplingParams
 from .base import (
     BaseModelProvider, GenerationResult, ModelConfig, ModelFamily, ToolCallFormat, get_tool_call_format,
     _ENABLE_THINKING_KWARG_FAMILIES, _NO_SYSTEM_PROMPT_FAMILIES, _THINK_PREFIX_FAMILIES,
-    merge_system_into_user,
+    _TOOL_ROLE_AS_ENVIRONMENT_FAMILIES, _SUPPRESS_NO_FUNCTIONS_SUFFIX_FAMILIES,
+    merge_system_into_user, rewrite_tool_role_to_environment, suppress_no_functions_suffix,
 )
 
 # Stop token to inject after a tool call, keyed by tool-call format.
@@ -316,6 +317,14 @@ class VLLMProvider(BaseModelProvider):
         """
         if self.config.family in _NO_SYSTEM_PROMPT_FAMILIES:
             msgs = merge_system_into_user(msgs)
+
+        # OLMo 3 Think: rename role=tool → environment (template drops ``tool``).
+        if self.config.family in _TOOL_ROLE_AS_ENVIRONMENT_FAMILIES:
+            msgs = rewrite_tool_role_to_environment(msgs)
+
+        # OLMo 3 Think: inject functions="" to kill the "no functions" suffix.
+        if self.config.family in _SUPPRESS_NO_FUNCTIONS_SUFFIX_FAMILIES:
+            msgs = suppress_no_functions_suffix(msgs)
 
         if self.config.family in _ENABLE_THINKING_KWARG_FAMILIES:
             rendered = self.tokenizer.apply_chat_template(

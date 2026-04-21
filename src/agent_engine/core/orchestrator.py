@@ -357,6 +357,22 @@ class AgenticOrchestrator:
         tool = self.tools.get(tool_name)
         args = tool_call.get("arguments") or {}
 
+        # Dedup guard: block any tool call whose (name, arguments) pair was already
+        # executed this episode, regardless of which execution path it takes below.
+        prev_args_list = [tc.get("arguments") or {} for tc in state.tool_calls if tc["name"] == tool_name]
+        if args in prev_args_list:
+            logger.warning("Repeated tool call detected: %s %s", tool_name, args)
+            tr = ToolResult(
+                success=False,
+                output=(
+                    f"You already called '{tool_name}' with these exact arguments. "
+                    "Do not repeat this call. Try a different approach or use different arguments."
+                ),
+                metadata={"repeated_call": True},
+            )
+            immediate_results.append(_ImmediateResult(state, tool_call, tr))
+            return
+
         # Index reasoning into the mind map graph before tool execution.
         # Handles web_search, code_generator, and mind_map (mirrors MAT).
         self._index_reasoning_in_mind_map(output_text, tool_name, state)

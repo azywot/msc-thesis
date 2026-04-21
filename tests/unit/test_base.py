@@ -12,10 +12,14 @@ from agent_engine.models.base import (
     ToolCallFormat,
     _ENABLE_THINKING_KWARG_FAMILIES,
     _NO_SYSTEM_PROMPT_FAMILIES,
+    _SUPPRESS_NO_FUNCTIONS_SUFFIX_FAMILIES,
     _THINK_PREFIX_FAMILIES,
     _THINKING_FAMILIES,
+    _TOOL_ROLE_AS_ENVIRONMENT_FAMILIES,
     get_tool_call_format,
     merge_system_into_user,
+    rewrite_tool_role_to_environment,
+    suppress_no_functions_suffix,
 )
 
 
@@ -169,6 +173,138 @@ class TestMergeSystemIntoUser:
         result = merge_system_into_user(msgs)
         assert result == []  # system removed but no user to merge into
 
+    def test_olmo_think_in_tool_role_as_environment(self):
+        assert ModelFamily.OLMO_THINK in _TOOL_ROLE_AS_ENVIRONMENT_FAMILIES
+
+    def test_olmo_instruct_in_tool_role_as_environment(self):
+        # No-op for Instruct (template already aliases), but included for uniformity.
+        assert ModelFamily.OLMO_INSTRUCT in _TOOL_ROLE_AS_ENVIRONMENT_FAMILIES
+
+    def test_olmo_think_in_suppress_no_functions(self):
+        assert ModelFamily.OLMO_THINK in _SUPPRESS_NO_FUNCTIONS_SUFFIX_FAMILIES
+
+    def test_olmo_instruct_not_in_suppress_no_functions(self):
+        # Instruct template does NOT add the suffix to user-supplied system
+        # messages, so it must not be in this set.
+        assert ModelFamily.OLMO_INSTRUCT not in _SUPPRESS_NO_FUNCTIONS_SUFFIX_FAMILIES
+
+    def test_deepseek_not_in_tool_role_as_environment(self):
+        # DeepSeek uses its own merged-system-into-user path; not an OLMo quirk.
+        assert ModelFamily.DEEPSEEK not in _TOOL_ROLE_AS_ENVIRONMENT_FAMILIES
+
+
+# ---------------------------------------------------------------------------
+# OLMo 3 family defaults
+# ---------------------------------------------------------------------------
+
+class TestOlmoDefaults:
+    def _make(self, family):
+        return ModelConfig(
+            name="test", family=family, path_or_id="allenai/Olmo-3-7B-X", role="orchestrator"
+        )
+
+    def test_olmo_think_temperature(self):
+        assert self._make(ModelFamily.OLMO_THINK).temperature == 0.6
+
+    def test_olmo_think_top_p(self):
+        assert self._make(ModelFamily.OLMO_THINK).top_p == 0.95
+
+    def test_olmo_think_max_tokens(self):
+        assert self._make(ModelFamily.OLMO_THINK).max_tokens == 32768
+
+    def test_olmo_think_top_k_disabled(self):
+        # HF card recipe does not set top_k; -1 means "disabled" in vLLM.
+        assert self._make(ModelFamily.OLMO_THINK).top_k == -1
+
+    def test_olmo_think_repetition_penalty_noop(self):
+        # HF card recipe does not set repetition_penalty; 1.0 is the no-op value.
+        assert self._make(ModelFamily.OLMO_THINK).repetition_penalty == 1.0
+
+    def test_olmo_instruct_top_k_disabled(self):
+        assert self._make(ModelFamily.OLMO_INSTRUCT).top_k == -1
+
+    def test_olmo_instruct_repetition_penalty_noop(self):
+        assert self._make(ModelFamily.OLMO_INSTRUCT).repetition_penalty == 1.0
+
+    def test_olmo_think_supports_thinking(self):
+        assert self._make(ModelFamily.OLMO_THINK).supports_thinking is True
+
+    def test_olmo_instruct_does_not_support_thinking(self):
+        assert self._make(ModelFamily.OLMO_INSTRUCT).supports_thinking is False
+
+
+# ---------------------------------------------------------------------------
+# rewrite_tool_role_to_environment (OLMo 3 Think)
+# ---------------------------------------------------------------------------
+
+class TestRewriteToolRoleToEnvironment:
+    def test_renames_single_tool_message(self):
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "<function_calls>\nf()\n</function_calls>"},
+            {"role": "tool", "tool_name": "f", "content": "result"},
+        ]
+        result = rewrite_tool_role_to_environment(msgs)
+        assert result[-1]["role"] == "environment"
+        assert result[-1]["content"] == "result"
+
+    def test_preserves_tool_name_metadata(self):
+        msgs = [{"role": "tool", "tool_name": "web_search", "content": "snippets"}]
+        assert rewrite_tool_role_to_environment(msgs)[0]["tool_name"] == "web_search"
+
+    def test_does_not_mutate_input(self):
+        msgs = [{"role": "tool", "content": "x"}]
+        rewrite_tool_role_to_environment(msgs)
+        assert msgs[0]["role"] == "tool"
+
+    def test_no_tool_messages_returns_same_list(self):
+        msgs = [{"role": "user", "content": "hi"}]
+        assert rewrite_tool_role_to_environment(msgs) is msgs
+
+    def test_rewrites_multiple_tool_turns(self):
+        msgs = [
+            {"role": "tool", "content": "a"},
+            {"role": "assistant", "content": "b"},
+            {"role": "tool", "content": "c"},
+        ]
+        result = rewrite_tool_role_to_environment(msgs)
+        assert [m["role"] for m in result] == ["environment", "assistant", "environment"]
+
+
+# ---------------------------------------------------------------------------
+# suppress_no_functions_suffix (OLMo 3 Think)
+# ---------------------------------------------------------------------------
+
+class TestSuppressNoFunctionsSuffix:
+    def test_injects_empty_functions_on_system(self):
+        msgs = [
+            {"role": "system", "content": "You may call tools X, Y, Z..."},
+            {"role": "user", "content": "q"},
+        ]
+        result = suppress_no_functions_suffix(msgs)
+        assert result[0]["functions"] == ""
+        assert result[0]["content"] == msgs[0]["content"]
+
+    def test_preserves_existing_functions_key(self):
+        msgs = [{"role": "system", "content": "x", "functions": "existing"}]
+        result = suppress_no_functions_suffix(msgs)
+        assert result[0]["functions"] == "existing"
+
+    def test_no_system_message_unchanged(self):
+        msgs = [{"role": "user", "content": "q"}]
+        assert suppress_no_functions_suffix(msgs) is msgs
+
+    def test_empty_list_unchanged(self):
+        assert suppress_no_functions_suffix([]) == []
+
+    def test_does_not_mutate_input(self):
+        msgs = [{"role": "system", "content": "x"}]
+        suppress_no_functions_suffix(msgs)
+        assert "functions" not in msgs[0]
+
+
+class TestMergeSystemIntoUserPreservesOrder:
     def test_preserves_subsequent_messages(self):
         msgs = [
             {"role": "system", "content": "sys"},
