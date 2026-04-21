@@ -309,7 +309,6 @@ SUITES = {
         "baseline":        False,
         "variant_type":    "orch_capacity",
         "variants":        VARIANTS_ORCH_CAPACITY,
-        "datasets":        ["gaia"],
         # num_gpus is computed per-combo in make_config_orch_capacity
         "wandb_project":   "benchmarks",
         "split_overrides": {},

@@ -1,0 +1,52 @@
+# GPQA — orch Qwen3-32B / sub-agent Qwen3-32B, sub-agent tools, orchestrator thinking
+
+name: "OC_gpqa_orch32b_sub32b_orchestrator"
+description: "[OrchestratorCapacity; NO image_inspector, NO mindmap] GPQA diamond with orch Qwen3-32B / sub-agent Qwen3-32B, sub-agent tools, orchestrator thinking"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "24:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "Qwen3-32B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"
+    role: "orchestrator"
+    tensor_parallel_size: 2  # 64 heads; TP must divide 64.
+  web_search:
+    name: "Qwen3-32B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"
+    role: "web_search"
+    tensor_parallel_size: 2  # 64 heads; TP must divide 64.
+  code_generator:
+    name: "Qwen3-32B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"
+    role: "code_generator"
+    tensor_parallel_size: 2  # 64 heads; TP must divide 64.
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+  direct_tool_call: false
+
+dataset:
+  name: "gpqa"
+  split: "diamond"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "ORCHESTRATOR_ONLY"
+output_dir: "./experiments/results/orchestrator_capacity/gpqa/orch32b_sub32b_orchestrator"
+use_wandb: true
+wandb_project: "benchmarks"
+
+cache_dir: "./cache"
