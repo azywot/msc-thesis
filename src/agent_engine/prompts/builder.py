@@ -130,6 +130,21 @@ class PromptBuilder:
         return "\n\n".join(sections)
 
     @staticmethod
+    def _json_tool_call_to_single(tool_call_json: str) -> str:
+        """Wrap a JSON tool-call string in the DeepSeek ``{"tool_call": {...}}`` format.
+
+        ``'{"name": "web_search", "arguments": {"query": "foo"}}'``
+        → ``'{"tool_call": {"name": "web_search", "arguments": {"query": "foo"}}}'``
+
+        Falls back gracefully on parse failure.
+        """
+        try:
+            obj = json.loads(tool_call_json)
+            return json.dumps({"tool_call": obj}, ensure_ascii=False)
+        except (json.JSONDecodeError, AttributeError):
+            return f'{{"tool_call": {tool_call_json}}}'
+
+    @staticmethod
     def _json_tool_call_to_pythonic(tool_call_json: str) -> str:
         """Convert a JSON tool-call string to OLMo 3 pythonic format.
 
@@ -152,14 +167,17 @@ class PromptBuilder:
     _CALL_TAG_OPEN: Dict[ToolCallFormat, str] = {
         ToolCallFormat.JSON: "<tool_call>",
         ToolCallFormat.PYTHONIC: "<function_calls>",
+        ToolCallFormat.JSON_SINGLE: "",  # no XML tags for pure-JSON format
     }
     _CALL_TAG_CLOSE: Dict[ToolCallFormat, str] = {
         ToolCallFormat.JSON: "</tool_call>",
         ToolCallFormat.PYTHONIC: "</function_calls>",
+        ToolCallFormat.JSON_SINGLE: "",
     }
     _CALL_PLACEHOLDER: Dict[ToolCallFormat, str] = {
         ToolCallFormat.JSON: '{"name": <function-name>, "arguments": <args-json-object>}',
         ToolCallFormat.PYTHONIC: 'function_name(arg1="value1", arg2="value2")',
+        ToolCallFormat.JSON_SINGLE: '{"tool_call": {"name": "<function-name>", "arguments": {"arg1": "value1"}}}',
     }
 
     def _format_tool_schemas(
@@ -191,6 +209,33 @@ class PromptBuilder:
             "After receiving tool results in <tool_response></tool_response> tags, "
             "continue your reasoning with the new information."
         )
+
+        # ── DeepSeek JSON_SINGLE: sub_goal kept for AF tracking; JSON replaces <tool_call> ──
+        if tool_call_format == ToolCallFormat.JSON_SINGLE:
+            direct_mode_rule = (
+                "\nAfter every <tool_response>...</tool_response>, "
+                "write at least one sentence of reasoning before making another tool call.\n"
+                if direct_tool_call else ""
+            )
+            if baseline:
+                return (
+                    header
+                    + "When calling a tool, output ONLY a valid JSON object with this exact structure:\n"
+                    f"{placeholder}\n\n"
+                    + tail
+                )
+            return (
+                header
+                + "For each function call, first state your specific sub-goal for this step "
+                "within <sub_goal></sub_goal> tags, then output ONLY a valid JSON object with this exact structure:\n"
+                f"<sub_goal>A specific, actionable goal for this step</sub_goal>\n"
+                f"{placeholder}\n\n"
+                "Rules:\n"
+                "- Call at most one tool per turn\n"
+                "- The JSON must have a \"tool_call\" key with \"name\" and \"arguments\"\n\n"
+                + tail
+                + direct_mode_rule
+            )
 
         if baseline:
             return (
@@ -272,14 +317,19 @@ class PromptBuilder:
                         lines.append("")
 
                 if "tool_call" in step_data:
-                    call_content = (
-                        self._json_tool_call_to_pythonic(step_data["tool_call"])
-                        if tool_call_format == ToolCallFormat.PYTHONIC
-                        else step_data["tool_call"]
-                    )
-                    lines.append(open_tag)
-                    lines.append(call_content)
-                    lines.append(close_tag)
+                    if tool_call_format == ToolCallFormat.PYTHONIC:
+                        call_content = self._json_tool_call_to_pythonic(step_data["tool_call"])
+                    elif tool_call_format == ToolCallFormat.JSON_SINGLE:
+                        call_content = self._json_tool_call_to_single(step_data["tool_call"])
+                    else:
+                        call_content = step_data["tool_call"]
+
+                    if tool_call_format == ToolCallFormat.JSON_SINGLE:
+                        lines.append(call_content)
+                    else:
+                        lines.append(open_tag)
+                        lines.append(call_content)
+                        lines.append(close_tag)
                     lines.append("")
 
                 if "tool_response" in step_data:

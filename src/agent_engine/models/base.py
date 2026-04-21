@@ -33,13 +33,16 @@ class ModelFamily(Enum):
 class ToolCallFormat(Enum):
     """Format a model family uses to emit tool calls.
 
-    JSON      — ``<tool_call>{"name": ..., "arguments": {...}}</tool_call>``
-                (Qwen3, most families)
-    PYTHONIC  — ``<function_calls>\\ntool(arg=val)\\n</function_calls>``
-                (OLMo 3; also accepts JSON boolean/null literals)
+    JSON       — ``<tool_call>{"name": ..., "arguments": {...}}</tool_call>``
+                 (Qwen3, most families)
+    PYTHONIC   — ``<function_calls>\\ntool(arg=val)\\n</function_calls>``
+                 (OLMo 3; also accepts JSON boolean/null literals)
+    JSON_SINGLE — ``{"tool_call": {"name": ..., "arguments": {...}}}``
+                  (DeepSeek R1; pure JSON, single call per turn, no XML wrapping)
     """
     JSON = "json"
     PYTHONIC = "pythonic"
+    JSON_SINGLE = "json_single"
 
 
 # Families whose models natively support extended <think> output.
@@ -67,6 +70,7 @@ _TOOL_ENCOURAGEMENT_FAMILIES = frozenset({ModelFamily.DEEPSEEK})
 _TOOL_CALL_FORMAT: Dict[ModelFamily, ToolCallFormat] = {
     ModelFamily.OLMO_THINK: ToolCallFormat.PYTHONIC,
     ModelFamily.OLMO_INSTRUCT: ToolCallFormat.PYTHONIC,
+    ModelFamily.DEEPSEEK: ToolCallFormat.JSON_SINGLE,
 }
 
 

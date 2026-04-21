@@ -14,9 +14,11 @@ from .base import (
 )
 
 # Stop token to inject after a tool call, keyed by tool-call format.
-_TOOL_CALL_STOP_TOKEN: Dict[ToolCallFormat, str] = {
+# None means no stop token (full output is generated; parse_tool_call handles extraction).
+_TOOL_CALL_STOP_TOKEN: Dict[ToolCallFormat, Optional[str]] = {
     ToolCallFormat.JSON: "</tool_call>",
     ToolCallFormat.PYTHONIC: "</function_calls>",
+    ToolCallFormat.JSON_SINGLE: None,
 }
 
 from .llm_shared import get_llm_lock
@@ -240,11 +242,13 @@ class VLLMProvider(BaseModelProvider):
 
             valid_prompts.append(rendered)
             # Pause generation after a tool call; token depends on the family's format.
+            # JSON_ARRAY format (DeepSeek) has no stop token — full output is parsed.
             stop_kwargs: Dict[str, Any] = {}
             if self.config.role == "orchestrator":
                 fmt = get_tool_call_format(self.config.family)
-                stop_token = _TOOL_CALL_STOP_TOKEN[fmt]
-                stop_kwargs = {"stop": [stop_token], "include_stop_str_in_output": True}
+                stop_token = _TOOL_CALL_STOP_TOKEN.get(fmt)
+                if stop_token:
+                    stop_kwargs = {"stop": [stop_token], "include_stop_str_in_output": True}
             params = SamplingParams(
                 max_tokens=safe_max_tokens,
                 temperature=self.config.temperature,
@@ -319,9 +323,7 @@ class VLLMProvider(BaseModelProvider):
 
         if self.config.family in _THINK_PREFIX_FAMILIES:
             if force_tool_call:
-                # Inject a minimal closed think block so the model's reasoning is
-                # bypassed, then open <sub_goal> to force prefix-completion of a
-                # tool call.  The stop token </tool_call> terminates generation.
+                # Closed think block + open <sub_goal> tag for prefix-completion.
                 rendered += "<think>\nI need to call a tool to answer this question.\n</think>\n<sub_goal>"
             elif use_thinking and self.config.supports_thinking:
                 rendered += "<think>\n"

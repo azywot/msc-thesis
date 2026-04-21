@@ -714,7 +714,16 @@ class AgenticOrchestrator:
             # Edge case: model produced a tool call — use text before it as analysis
             tool_call = parse_tool_call(text)
             if tool_call:
-                before_tool = text.split("<tool_call>")[0].strip()
+                # Find the start of the tool call in the raw output.
+                # Works for <tool_call> XML (Qwen3) and {"tool_call":...} JSON (DeepSeek).
+                idx = text.find("<tool_call>")
+                if idx == -1:
+                    for marker in ('{"tool_call"', '{"name"'):
+                        j = text.find(marker)
+                        if j != -1:
+                            idx = j
+                            break
+                before_tool = text[:idx].strip() if idx > 0 else ""
                 analysis = strip_thinking_tags(before_tool) if before_tool else strip_thinking_tags(text)
                 s.query_analysis = analysis
                 logger.info(
@@ -886,7 +895,8 @@ class AgenticOrchestrator:
         if tool is None or getattr(tool, "direct_mode", True):
             return
         tool.set_current_question(state.question_id)
-        reasoning = re.sub(r"<tool_call>.*?</tool_call>", "", output_text, flags=re.DOTALL).strip()
+        reasoning = re.sub(r"<tool_call>.*?</tool_call>", "", output_text, flags=re.DOTALL)
+        reasoning = re.sub(r'\{"tool_call"\s*:\s*\{.*?\}\s*\}', "", reasoning, flags=re.DOTALL).strip()
         if reasoning:
             tool.add_entry(reasoning, state.question_id)
 
