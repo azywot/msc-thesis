@@ -62,10 +62,6 @@ _NO_SYSTEM_PROMPT_FAMILIES = frozenset({ModelFamily.DEEPSEEK})
 # use_thinking=False → append "<think>\n\n</think>\n"  (suppress reasoning)
 _THINK_PREFIX_FAMILIES = frozenset({ModelFamily.DEEPSEEK})
 
-# Families that tend to under-use tools; an extra tool-use nudge is injected
-# into the system prompt when tools are enabled for these models.
-_TOOL_ENCOURAGEMENT_FAMILIES = frozenset({ModelFamily.DEEPSEEK})
-
 # Per-family tool-call output format.  Unlisted families default to JSON.
 _TOOL_CALL_FORMAT: Dict[ModelFamily, ToolCallFormat] = {
     ModelFamily.OLMO_THINK: ToolCallFormat.PYTHONIC,

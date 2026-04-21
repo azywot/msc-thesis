@@ -15,10 +15,15 @@ from .base import (
 
 # Stop token to inject after a tool call, keyed by tool-call format.
 # None means no stop token (full output is generated; parse_tool_call handles extraction).
+# JSON_SINGLE has no natural closing tag, so we stop on ``<tool_response>`` — the
+# marker the model is prone to hallucinate after its own tool call. The real
+# tool result is appended by the orchestrator, never produced by the model, so
+# this is safe while preventing fabricated tool responses from leaking into
+# subsequent turns (critical for DeepSeek baseline mode).
 _TOOL_CALL_STOP_TOKEN: Dict[ToolCallFormat, Optional[str]] = {
     ToolCallFormat.JSON: "</tool_call>",
     ToolCallFormat.PYTHONIC: "</function_calls>",
-    ToolCallFormat.JSON_SINGLE: None,
+    ToolCallFormat.JSON_SINGLE: "<tool_response>",
 }
 
 from .llm_shared import get_llm_lock
@@ -242,7 +247,8 @@ class VLLMProvider(BaseModelProvider):
 
             valid_prompts.append(rendered)
             # Pause generation after a tool call; token depends on the family's format.
-            # JSON_ARRAY format (DeepSeek) has no stop token — full output is parsed.
+            # For JSON_SINGLE (DeepSeek) we stop on ``<tool_response>`` to prevent the
+            # model from hallucinating a fake tool response after its own tool call.
             stop_kwargs: Dict[str, Any] = {}
             if self.config.role == "orchestrator":
                 fmt = get_tool_call_format(self.config.family)

@@ -49,6 +49,9 @@ msc-thesis/
 │   │   │   └── gaia/  gpqa/  hle/  aime/  musique/
 │   │   ├── baseline/              # Baseline suite (32B, no planning/structured memory)
 │   │   ├── 1_milestone_no_img_no_mindmap_AgentFlow/  # AgentFlow suite (8B + 32B)
+│   │   ├── qwen3/             # Qwen3 suite (baseline/, agentflow/, ablations)
+│   │   ├── deepseek/          # DeepSeek-R1-Distill-Qwen 7B/32B (baseline/, agentflow/)
+│   │   ├── olmo3/             # OLMo 3 think/instruct
 │   │   ├── local/             # MacBook/MLX configs (Qwen3-0.6B, 4B)
 │   │   └── template.yml       # Annotated template for new configs
 │   └── results/               # Default output root
@@ -404,6 +407,21 @@ See `experiments/configs/template.yml` for a fully annotated version. Schema and
 | `baseline` | `true` / `false` | When `true`, skips the planning turn and uses a growing conversation instead of structured AgentFlow memory. Used for the vanilla LLM-with-tools comparison. Defaults to `false`. |
 
 If multiple roles share the same `path_or_id`, the runner reuses the loaded vLLM instance and serialises access with per-model locks — no duplicate GPU memory.
+
+### Supported model families
+
+Set `models.orchestrator.family` to one of the values below (same applies to sub-agent models). Sampling defaults, thinking behaviour, and tool-call format are derived from the family — see `src/agent_engine/models/base.py`.
+
+| `family` | Examples | Thinking | Tool-call format | Notes |
+|---|---|---|---|---|
+| `qwen3` | `Qwen/Qwen3-{0.6B,4B,8B,14B,32B}` | toggleable (`enable_thinking` kwarg) | `<tool_call>JSON</tool_call>` | Default reference family |
+| `qwq` | `Qwen/QwQ-32B` | always | `<tool_call>JSON</tool_call>` | |
+| `deepseek` | `deepseek-ai/DeepSeek-R1-Distill-Qwen-{7B,32B}` | always (forced `<think>` prefix) | `{"tool_call": {...}}` (JSON_SINGLE) | No system-role in chat template — system prompt is merged into the first user turn. Stop token is `<tool_response>` to prevent hallucinated tool results. Force-tool-call prefix is applied in AgentFlow mode only. |
+| `olmo-think` / `olmo-instruct` | `allenai/OLMo-3-32B-*` | think: always | `<function_calls>tool(arg=val)</function_calls>` | Pythonic tool calls (see `src/agent_engine/utils/parsing.py`) |
+| `qwen2.5`, `llama3`, `mistral` | generic HF models | off | `<tool_call>JSON</tool_call>` | |
+| `gpt4`, `claude` | OpenAI / Anthropic API | n/a | n/a | Served via API, no local GPU |
+
+For DeepSeek-R1-Distill, see `thorough_plan.md` for the full as-built integration record.
 
 ---
 

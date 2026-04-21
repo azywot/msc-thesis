@@ -4,9 +4,12 @@ This module provides utilities to parse tool calls from model outputs and
 extract final answers from responses.
 
 Supported tool-call formats:
-  - Qwen3/baseline: ``<tool_call>{"name": ..., "arguments": {...}}</tool_call>``
+  - Qwen3 / default: ``<tool_call>{"name": ..., "arguments": {...}}</tool_call>``
   - OLMo 3: ``<function_calls>\\ntool_name(arg=value)\\n</function_calls>``
     (pythonic; JSON boolean/null literals allowed alongside Python ones)
+  - DeepSeek R1 (JSON_SINGLE): ``{"tool_call": {"name": ..., "arguments": {...}}}``
+    single JSON object per turn, no XML wrapper; the parser also accepts
+    code-fenced JSON and bare ``{"name": ..., "arguments": {...}}`` as fallbacks.
 """
 
 import ast

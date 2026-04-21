@@ -125,8 +125,13 @@ class AgenticOrchestrator:
         self.baseline = baseline
         # Force tool-call prefix injection on action turns for families (DeepSeek)
         # that hallucinate tool use in their thinking blocks instead of emitting <tool_call>.
+        # Disabled in baseline mode: the forced prefix injects a <sub_goal> tag which
+        # the baseline system prompt never teaches, contaminating the "pure baseline"
+        # comparison. Baseline relies on the system prompt alone to get tool calls out.
         self._force_tool_call = (
-            bool(tool_registry) and model_provider.config.family in _THINK_PREFIX_FAMILIES
+            bool(tool_registry)
+            and not baseline
+            and model_provider.config.family in _THINK_PREFIX_FAMILIES
         )
 
         logger.info(f"Orchestrator initialized with {len(self.tools)} tools")
