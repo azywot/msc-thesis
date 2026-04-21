@@ -4,9 +4,17 @@ This module provides utilities to parse tool calls from model outputs and
 extract final answers from responses.
 
 Supported tool-call formats:
-  - Qwen3/baseline: ``<tool_call>{"name": ..., "arguments": {...}}</tool_call>``
-  - OLMo 3: ``<function_calls>\\ntool_name(arg=value)\\n</function_calls>``
-    (pythonic; JSON boolean/null literals allowed alongside Python ones)
+  - Qwen3 / default: ``<tool_call>{"name": ..., "arguments": {...}}</tool_call>``
+  - OLMo 3 (Instruct + Think): ``<function_calls>\\ntool(arg=value)\\n</function_calls>``
+    pythonic calls, newline-delimited for parallel invocations.  The parser
+    accepts both Python literals (``True``/``False``/``None``) and JSON
+    literals (``true``/``false``/``null``).  When multiple calls are emitted
+    we return only the first; the orchestrator dispatches one tool per turn.
+    Matches the format documented by ``--tool-call-parser olmo3`` in vLLM
+    and the official allenai/Olmo-3-{7B,32B}-{Instruct,Think} model cards.
+  - DeepSeek R1 (JSON_SINGLE): ``{"tool_call": {"name": ..., "arguments": {...}}}``
+    single JSON object per turn, no XML wrapper; the parser also accepts
+    code-fenced JSON and bare ``{"name": ..., "arguments": {...}}`` as fallbacks.
 """
 
 import ast
@@ -50,12 +58,17 @@ def _parse_pythonic_call(line: str) -> Optional[Dict[str, Any]]:
 def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
     """Parse the first/last tool call from model output.
 
-    Tries two formats in order:
+    Tries formats in order:
 
     1. **Qwen3 format** — ``<tool_call>…</tool_call>`` with a JSON payload.
        When multiple tags are present the last one wins.
     2. **OLMo 3 format** — ``<function_calls>…</function_calls>`` containing
        newline-delimited pythonic calls.  The first parseable call is returned.
+    3. **DeepSeek JSON_SINGLE** — ``{"tool_call": {"name": ..., "arguments": {...}}}``.
+       Thinking tags are stripped first to avoid matching hallucinated calls inside
+       ``<think>`` blocks.  The first occurrence wins (single-call-per-turn contract).
+    4. **Code-fenced JSON** — JSON payload inside any `` ``` `` fence.
+    5. **Raw JSON** — bare ``{"name": ..., "arguments": {...}}`` object.
 
     Args:
         text: Raw model output text.
@@ -85,6 +98,51 @@ def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
             result = _parse_pythonic_call(line)
             if result:
                 return result
+
+    # For all remaining fallbacks strip thinking tags first so that tool calls
+    # hallucinated inside <think> blocks (DeepSeek pattern) are not matched.
+    stripped = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    if '</think>' in stripped:
+        stripped = re.sub(r'^.*?</think>', '', stripped, flags=re.DOTALL)
+    stripped = stripped.strip()
+
+    # ── DeepSeek JSON_SINGLE: {"tool_call": {"name": ..., "arguments": {...}}} ──
+    # Use raw_decode so nested braces in arguments are handled correctly.
+    # Take the FIRST occurrence (per-turn single-call contract).
+    _decoder = json.JSONDecoder()
+    for tc_match in re.finditer(r'\{"tool_call"\s*:', stripped):
+        try:
+            obj, _ = _decoder.raw_decode(stripped, tc_match.start())
+            tc = obj.get("tool_call")
+            if isinstance(tc, dict) and "name" in tc:
+                tc.setdefault("arguments", {})
+                return tc
+        except json.JSONDecodeError:
+            continue
+
+    # ── Fallback: JSON tool call in a fenced code block (```json / ```xml / ```) ──
+    # DeepSeek and some other models wrap the JSON payload in a code fence instead
+    # of <tool_call> tags.  Accept any fence language tag (or none).
+    for fence_match in re.finditer(r'```(?:\w+)?\s*(\{.*?\})\s*```', stripped, re.DOTALL):
+        try:
+            tool_call = json.loads(fence_match.group(1).strip())
+            if isinstance(tool_call, dict) and "name" in tool_call:
+                tool_call.setdefault("arguments", {})
+                return tool_call
+        except json.JSONDecodeError:
+            continue
+
+    # ── Fallback: raw JSON tool call with no wrapping tags or fences ──────────
+    # DeepSeek sometimes emits {"name": ..., "arguments": ...} as bare text.
+    # Search for the last occurrence to prefer the most recent tool call intent.
+    for raw_match in reversed(list(re.finditer(r'\{[^{}]*"name"[^{}]*"arguments"[^{}]*\{.*?\}[^{}]*\}', stripped, re.DOTALL))):
+        try:
+            tool_call = json.loads(raw_match.group(0).strip())
+            if isinstance(tool_call, dict) and "name" in tool_call:
+                tool_call.setdefault("arguments", {})
+                return tool_call
+        except json.JSONDecodeError:
+            continue
 
     return None
 
@@ -136,7 +194,7 @@ def extract_answer(text: str) -> Optional[str]:
     # Fallback: fenced code block (for code-generation tasks like BigCodeBench).
     # Use the LAST match so that a final implementation block is preferred over
     # any example/intermediate snippets earlier in the response.
-    code_blocks = re.findall(r'```(?:python)?\n?(.*?)\n?```', stripped, re.DOTALL)
+    code_blocks = re.findall(r'```(?:\w+)?\n(.*?)\n?```', stripped, re.DOTALL)
     if code_blocks:
         return code_blocks[-1].strip()
 

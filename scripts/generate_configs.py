@@ -86,6 +86,7 @@ MODELS = {
         "family": "qwen3",
         "path_or_id": "Qwen/Qwen3-32B",
         "tp": 2,
+        "tp_comment": "64 heads; TP must divide 64.",
     },
     "olmo-7b": {
         "name": "OLMo-3-7B-Think",
@@ -112,6 +113,20 @@ MODELS = {
         "name": "OLMo-3.1-32B-Instruct",
         "family": "olmo-instruct",
         "path_or_id": "allenai/Olmo-3.1-32B-Instruct",
+        "tp": 2,
+        "gpus": 2,
+    },
+    "deepseek-7b": {
+        "name": "DeepSeek-R1-Distill-Qwen-7B",
+        "family": "deepseek",
+        "path_or_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+        "tp": None,
+        "gpus": 1,
+    },
+    "deepseek-32b": {
+        "name": "DeepSeek-R1-Distill-Qwen-32B",
+        "family": "deepseek",
+        "path_or_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
         "tp": 2,
         "gpus": 2,
     },
@@ -413,7 +428,8 @@ def _model_block(key: str) -> str:
         '    role: "orchestrator"',
     ]
     if m["tp"]:
-        lines.append(f"    tensor_parallel_size: {m['tp']}  # 64 heads; TP must divide 64.")
+        comment = m.get("tp_comment", "TP must divide num attention heads.")
+        lines.append(f"    tensor_parallel_size: {m['tp']}  # {comment}")
     return "\n".join(lines)
 
 
@@ -430,7 +446,8 @@ def _model_block_with_subagent(orch_key: str, sub_key: str, tool_roles: list[str
         '    role: "orchestrator"',
     ]
     if orch["tp"]:
-        lines.append(f"    tensor_parallel_size: {orch['tp']}  # TP must divide num attention heads.")
+        comment = orch.get("tp_comment", "TP must divide num attention heads.")
+        lines.append(f"    tensor_parallel_size: {orch['tp']}  # {comment}")
     for role in tool_roles:
         lines += [
             f"  {role}:",
@@ -440,7 +457,8 @@ def _model_block_with_subagent(orch_key: str, sub_key: str, tool_roles: list[str
             f'    role: "{role}"',
         ]
         if sub["tp"]:
-            lines.append(f"    tensor_parallel_size: {sub['tp']}  # TP must divide num attention heads.")
+            comment = sub.get("tp_comment", "TP must divide num attention heads.")
+            lines.append(f"    tensor_parallel_size: {sub['tp']}  # {comment}")
     return "\n".join(lines)
 
 

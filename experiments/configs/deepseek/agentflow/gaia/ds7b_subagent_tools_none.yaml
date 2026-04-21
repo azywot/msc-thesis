@@ -1,0 +1,40 @@
+# GAIA — DeepSeek-R1-Distill-Qwen-7B, sub-agent tools, thinking disabled
+
+name: "DS_AF_gaia_ds7b_subagent_tools_none"
+description: "[DeepSeek-R1 AgentFlow; NO image_inspector, NO mindmap] GAIA all_validation with DeepSeek-R1-Distill-Qwen-7B, sub-agent tools, thinking disabled"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "24:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "DeepSeek-R1-Distill-Qwen-7B"
+    family: "deepseek"
+    path_or_id: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+    role: "orchestrator"
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+  direct_tool_call: false
+
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "NO"
+output_dir: "./experiments/results/deepseek/agentflow/gaia/ds7b_subagent_tools_none"
+use_wandb: true
+wandb_project: "benchmarks"
+
+cache_dir: "./cache"

@@ -332,6 +332,7 @@ def run_experiment(args):
     try:
         # Capture the common system prompt once for this run (same for all questions).
         tool_schemas = tools.get_all_schemas()
+        orch_family = config.get_model("orchestrator").family
         system_prompt_for_config = prompt_builder.build_system_prompt(
             dataset_name=config.dataset.name,
             tool_schemas=tool_schemas,

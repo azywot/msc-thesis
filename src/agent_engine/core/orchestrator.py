@@ -10,7 +10,7 @@ import re
 import inspect
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 
-from ..models.base import BaseModelProvider
+from ..models.base import BaseModelProvider, _THINK_PREFIX_FAMILIES
 from ..utils.logging import get_logger
 from ..utils.parsing import extract_answer, parse_tool_call, strip_thinking_tags
 from ..utils.reasoning_context import get_attachment_context_for_code
@@ -123,6 +123,16 @@ class AgenticOrchestrator:
         self.tool_limits = tool_limits or {"web_search": 10}
         self.use_thinking = use_thinking and model_provider.config.supports_thinking
         self.baseline = baseline
+        # Force tool-call prefix injection on action turns for families (DeepSeek)
+        # that hallucinate tool use in their thinking blocks instead of emitting <tool_call>.
+        # Disabled in baseline mode: the forced prefix injects a <sub_goal> tag which
+        # the baseline system prompt never teaches, contaminating the "pure baseline"
+        # comparison. Baseline relies on the system prompt alone to get tool calls out.
+        self._force_tool_call = (
+            bool(tool_registry)
+            and not baseline
+            and model_provider.config.family in _THINK_PREFIX_FAMILIES
+        )
 
         logger.info(f"Orchestrator initialized with {len(self.tools)} tools")
         logger.info(f"Thinking mode: {'enabled' if self.use_thinking else 'disabled'}")
@@ -174,7 +184,11 @@ class AgenticOrchestrator:
 
             try:
                 prompt_msgs = state.messages if self.baseline else self._build_memory_prompt(state, system_prompt)
-                prompt = self.model.apply_chat_template(prompt_msgs, use_thinking=self.use_thinking)
+                prompt = self.model.apply_chat_template(
+                    prompt_msgs,
+                    use_thinking=self.use_thinking,
+                    force_tool_call=self._force_tool_call and state.turn == 1,
+                )
                 gen_result = self.model.generate([prompt])[0]
                 state.current_output = gen_result.text
                 _accumulate_usage(state, gen_result.usage)
@@ -292,6 +306,7 @@ class AgenticOrchestrator:
             self.model.apply_chat_template(
                 s.messages if self.baseline else self._build_memory_prompt(s, system_prompt),
                 use_thinking=self.use_thinking,
+                force_tool_call=self._force_tool_call and s.turn == 1,
             )
             for s in active
         ]
@@ -341,6 +356,22 @@ class AgenticOrchestrator:
         tool_name = tool_call["name"]
         tool = self.tools.get(tool_name)
         args = tool_call.get("arguments") or {}
+
+        # Dedup guard: block any tool call whose (name, arguments) pair was already
+        # executed this episode, regardless of which execution path it takes below.
+        prev_args_list = [tc.get("arguments") or {} for tc in state.tool_calls if tc["name"] == tool_name]
+        if args in prev_args_list:
+            logger.warning("Repeated tool call detected: %s %s", tool_name, args)
+            tr = ToolResult(
+                success=False,
+                output=(
+                    f"You already called '{tool_name}' with these exact arguments. "
+                    "Do not repeat this call. Try a different approach or use different arguments."
+                ),
+                metadata={"repeated_call": True},
+            )
+            immediate_results.append(_ImmediateResult(state, tool_call, tr))
+            return
 
         # Index reasoning into the mind map graph before tool execution.
         # Handles web_search, code_generator, and mind_map (mirrors MAT).
@@ -704,15 +735,25 @@ class AgenticOrchestrator:
             # Edge case: model produced a tool call — use text before it as analysis
             tool_call = parse_tool_call(text)
             if tool_call:
-                before_tool = text.split("<tool_call>")[0].strip()
+                # Find the start of the tool call in the raw output.
+                # Works for <tool_call> XML (Qwen3) and {"tool_call":...} JSON (DeepSeek).
+                idx = text.find("<tool_call>")
+                if idx == -1:
+                    for marker in ('{"tool_call"', '{"name"'):
+                        j = text.find(marker)
+                        if j != -1:
+                            idx = j
+                            break
+                before_tool = text[:idx].strip() if idx > 0 else ""
                 analysis = strip_thinking_tags(before_tool) if before_tool else strip_thinking_tags(text)
                 s.query_analysis = analysis
                 logger.info(
                     "Planning turn for Q%s produced tool call (discarded); analysis: %.100s...",
                     s.question_id, analysis,
                 )
-            # Edge case: model produced a final answer
-            elif "\\boxed{" in text or "\\boxed " in text:
+            # Edge case: model produced a final answer (only short-circuit when no tools
+            # are configured — with tools the action loop must run so they can be used)
+            elif ("\\boxed{" in text or "\\boxed " in text) and len(self.tools) == 0:
                 s.query_analysis = strip_thinking_tags(text)
                 s.finished = True
                 s.answer = extract_answer(text)
@@ -732,12 +773,37 @@ class AgenticOrchestrator:
         tool = self.tools.get(tool_name)
 
         if not tool:
-            logger.error(f"Tool not found: {tool_name}")
-            return ToolResult(success=False, output="", metadata={}, error=f"Tool '{tool_name}' not found")
+            available = self.tools.list_tools()
+            msg = (
+                f"Error: tool '{tool_name}' does not exist. "
+                f"Available tools: {available}. Only call tools from this list."
+            )
+            logger.error("Tool not found: %s. Available: %s", tool_name, available)
+            return ToolResult(success=False, output=msg, metadata={}, error=f"Tool '{tool_name}' not found")
 
         if not self._check_tool_limit(tool_name, state):
             logger.warning(f"Tool limit exceeded for: {tool_name}")
             return ToolResult(success=False, output=f"Tool usage limit reached for {tool_name}", metadata={}, error="Limit exceeded")
+
+        # Detect repeated identical tool calls to break stuck loops.
+        # Any tool called with the exact same arguments as a previous call
+        # gets a redirect message instead of re-executing and returning the same result.
+        args = tool_call.get("arguments") or {}
+        prev_args_list = [
+            tc.get("arguments") or {}
+            for tc in state.tool_calls
+            if tc["name"] == tool_name
+        ]
+        if args in prev_args_list:
+            logger.warning("Repeated tool call detected: %s %s", tool_name, args)
+            return ToolResult(
+                success=False,
+                output=(
+                    f"You already called '{tool_name}' with these exact arguments. "
+                    "Do not repeat this call. Try a different approach or use different arguments."
+                ),
+                metadata={"repeated_call": True},
+            )
 
         try:
             arguments = dict(tool_call.get("arguments") or {})
@@ -850,7 +916,8 @@ class AgenticOrchestrator:
         if tool is None or getattr(tool, "direct_mode", True):
             return
         tool.set_current_question(state.question_id)
-        reasoning = re.sub(r"<tool_call>.*?</tool_call>", "", output_text, flags=re.DOTALL).strip()
+        reasoning = re.sub(r"<tool_call>.*?</tool_call>", "", output_text, flags=re.DOTALL)
+        reasoning = re.sub(r'\{"tool_call"\s*:\s*\{.*?\}\s*\}', "", reasoning, flags=re.DOTALL).strip()
         if reasoning:
             tool.add_entry(reasoning, state.question_id)
 

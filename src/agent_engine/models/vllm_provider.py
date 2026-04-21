@@ -7,16 +7,24 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from vllm import LLM, SamplingParams
 
-from .base import BaseModelProvider, GenerationResult, ModelConfig, ModelFamily, ToolCallFormat, get_tool_call_format
-
-# Families whose HF chat template accepts the ``enable_thinking`` kwarg.
-# Other thinking-capable families (e.g. OLMo) always think and don't expose this knob.
-_ENABLE_THINKING_KWARG_FAMILIES = frozenset({ModelFamily.QWEN3, ModelFamily.QWQ})
+from .base import (
+    BaseModelProvider, GenerationResult, ModelConfig, ModelFamily, ToolCallFormat, get_tool_call_format,
+    _ENABLE_THINKING_KWARG_FAMILIES, _NO_SYSTEM_PROMPT_FAMILIES, _THINK_PREFIX_FAMILIES,
+    _TOOL_ROLE_AS_ENVIRONMENT_FAMILIES, _SUPPRESS_NO_FUNCTIONS_SUFFIX_FAMILIES,
+    merge_system_into_user, rewrite_tool_role_to_environment, suppress_no_functions_suffix,
+)
 
 # Stop token to inject after a tool call, keyed by tool-call format.
-_TOOL_CALL_STOP_TOKEN: Dict[ToolCallFormat, str] = {
+# None means no stop token (full output is generated; parse_tool_call handles extraction).
+# JSON_SINGLE has no natural closing tag, so we stop on ``<tool_response>`` — the
+# marker the model is prone to hallucinate after its own tool call. The real
+# tool result is appended by the orchestrator, never produced by the model, so
+# this is safe while preventing fabricated tool responses from leaking into
+# subsequent turns (critical for DeepSeek baseline mode).
+_TOOL_CALL_STOP_TOKEN: Dict[ToolCallFormat, Optional[str]] = {
     ToolCallFormat.JSON: "</tool_call>",
     ToolCallFormat.PYTHONIC: "</function_calls>",
+    ToolCallFormat.JSON_SINGLE: "<tool_response>",
 }
 
 from .llm_shared import get_llm_lock
@@ -137,7 +145,8 @@ class VLLMProvider(BaseModelProvider):
                 if isinstance(payload, dict) and "messages" in payload:
                     msgs = payload["messages"]
                     use_thinking = payload.get("use_thinking", False)
-                    raw_prompt = self._render_messages(msgs, use_thinking)
+                    force_tool_call = payload.get("force_tool_call", False)
+                    raw_prompt = self._render_messages(msgs, use_thinking, force_tool_call)
             except (json.JSONDecodeError, TypeError):
                 pass
             rendered_prompts.append({**p, "prompt": raw_prompt})
@@ -192,11 +201,13 @@ class VLLMProvider(BaseModelProvider):
             # Decode JSON payload from apply_chat_template; fall back to plain string.
             msgs: Optional[List[Dict[str, Any]]] = None
             use_thinking = False
+            force_tool_call = False
             try:
                 payload = json.loads(prompt)
                 if isinstance(payload, dict) and "messages" in payload:
                     msgs = payload["messages"]
                     use_thinking = payload.get("use_thinking", False)
+                    force_tool_call = payload.get("force_tool_call", False)
                 elif isinstance(payload, list):
                     msgs = payload
             except (json.JSONDecodeError, TypeError):
@@ -206,7 +217,7 @@ class VLLMProvider(BaseModelProvider):
 
             # Apply the tokenizer chat template to get the rendered string.
             if msgs is not None:
-                rendered = self._render_messages(msgs, use_thinking)
+                rendered = self._render_messages(msgs, use_thinking, force_tool_call)
                 logger.debug(
                     "vLLM request (prompt %d/%d):\n%s",
                     idx + 1, len(prompts), format_messages_as_chat(msgs),
@@ -237,11 +248,14 @@ class VLLMProvider(BaseModelProvider):
 
             valid_prompts.append(rendered)
             # Pause generation after a tool call; token depends on the family's format.
+            # For JSON_SINGLE (DeepSeek) we stop on ``<tool_response>`` to prevent the
+            # model from hallucinating a fake tool response after its own tool call.
             stop_kwargs: Dict[str, Any] = {}
             if self.config.role == "orchestrator":
                 fmt = get_tool_call_format(self.config.family)
-                stop_token = _TOOL_CALL_STOP_TOKEN[fmt]
-                stop_kwargs = {"stop": [stop_token], "include_stop_str_in_output": True}
+                stop_token = _TOOL_CALL_STOP_TOKEN.get(fmt)
+                if stop_token:
+                    stop_kwargs = {"stop": [stop_token], "include_stop_str_in_output": True}
             params = SamplingParams(
                 max_tokens=safe_max_tokens,
                 temperature=self.config.temperature,
@@ -264,7 +278,8 @@ class VLLMProvider(BaseModelProvider):
     def apply_chat_template(
         self,
         messages: List[Dict[str, str]],
-        use_thinking: bool = False
+        use_thinking: bool = False,
+        force_tool_call: bool = False,
     ) -> str:
         """Serialize messages for generate().
 
@@ -272,7 +287,10 @@ class VLLMProvider(BaseModelProvider):
         messages list (for logging and result attachment). The tokenizer
         template is applied inside _generate_text.
         """
-        return json.dumps({"messages": messages, "use_thinking": use_thinking}, ensure_ascii=False)
+        return json.dumps(
+            {"messages": messages, "use_thinking": use_thinking, "force_tool_call": force_tool_call},
+            ensure_ascii=False,
+        )
 
     def cleanup(self):
         """Release GPU memory."""
@@ -280,22 +298,54 @@ class VLLMProvider(BaseModelProvider):
             del self.llm
             self.llm = None
 
-    def _render_messages(self, msgs: List[Dict[str, Any]], use_thinking: bool) -> str:
+    def _render_messages(
+        self, msgs: List[Dict[str, Any]], use_thinking: bool, force_tool_call: bool = False
+    ) -> str:
         """Apply the tokenizer chat template to a messages list.
 
         For Qwen3/QwQ, passes ``enable_thinking`` so the template can suppress
-        the reasoning block when thinking is disabled.  For other families
-        (e.g. OLMo) the kwarg is not part of their template and must be omitted;
-        thinking-capable variants in those families always produce <think> output.
+        the reasoning block when thinking is disabled.  For DeepSeek R1 (and
+        similar families), the system message is merged into the first user turn
+        and one of three suffixes is appended after the generation-prompt token:
+
+        * ``force_tool_call=True``:  a brief closed ``<think>`` block followed by
+          ``<sub_goal>`` to prime the model into emitting a tool call rather than
+          reasoning to a direct answer.  Works regardless of *use_thinking*.
+        * ``use_thinking=True`` (no force): ``<think>\\n`` to open a free reasoning
+          block.
+        * otherwise: ``<think>\\n\\n</think>\\n`` to suppress reasoning.
         """
+        if self.config.family in _NO_SYSTEM_PROMPT_FAMILIES:
+            msgs = merge_system_into_user(msgs)
+
+        # OLMo 3 Think: rename role=tool → environment (template drops ``tool``).
+        if self.config.family in _TOOL_ROLE_AS_ENVIRONMENT_FAMILIES:
+            msgs = rewrite_tool_role_to_environment(msgs)
+
+        # OLMo 3 Think: inject functions="" to kill the "no functions" suffix.
+        if self.config.family in _SUPPRESS_NO_FUNCTIONS_SUFFIX_FAMILIES:
+            msgs = suppress_no_functions_suffix(msgs)
+
         if self.config.family in _ENABLE_THINKING_KWARG_FAMILIES:
-            return self.tokenizer.apply_chat_template(
+            rendered = self.tokenizer.apply_chat_template(
                 msgs, tokenize=False, add_generation_prompt=True,
                 enable_thinking=(use_thinking and self.config.supports_thinking),
             )
-        return self.tokenizer.apply_chat_template(
-            msgs, tokenize=False, add_generation_prompt=True,
-        )
+        else:
+            rendered = self.tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True,
+            )
+
+        if self.config.family in _THINK_PREFIX_FAMILIES:
+            if force_tool_call:
+                # Closed think block + open <sub_goal> tag for prefix-completion.
+                rendered += "<think>\nI need to call a tool to answer this question.\n</think>\n<sub_goal>"
+            elif use_thinking and self.config.supports_thinking:
+                rendered += "<think>\n"
+            else:
+                rendered += "<think>\n\n</think>\n"
+
+        return rendered
 
     def _make_result(self, output: Any, messages: Optional[List[Dict[str, Any]]]) -> GenerationResult:
         """Build a GenerationResult from a single vLLM output object."""
