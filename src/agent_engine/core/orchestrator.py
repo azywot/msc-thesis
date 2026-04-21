@@ -799,7 +799,7 @@ class AgenticOrchestrator:
             return ToolResult(
                 success=False,
                 output=(
-                    f"You already called '{tool_name}' with these exact arguments and received the same result. "
+                    f"You already called '{tool_name}' with these exact arguments. "
                     "Do not repeat this call. Try a different approach or use different arguments."
                 ),
                 metadata={"repeated_call": True},
