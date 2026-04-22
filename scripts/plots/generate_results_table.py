@@ -20,7 +20,7 @@ from pathlib import Path
 
 # ─────────────────────────── paths ───────────────────────────────────────────
 ROOT     = Path(__file__).resolve().parent.parent.parent
-CSV_PATH = ROOT / "data/results/main_results.csv"
+CSV_PATH = ROOT / "data/results/wandb/main_results.csv"
 OUT_PNG  = ROOT / "data/results/plots/main_results_table.png"
 
 # ─────────────────────────── table structure ─────────────────────────────────
