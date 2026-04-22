@@ -695,17 +695,17 @@ _LAT_CMAP = LinearSegmentedColormap.from_list(
 
 # Table geometry (inches) — mirrors generate_results_table.py column layout.
 _TBL_COL = [
-    (0.08, 1.10),   # 0  Model
-    (1.18, 1.00),   # 1  Tools      (+0.20 wider)
-    (2.18, 1.15),   # 2  Thinking
-    (3.33, 0.82),   # 3  GAIA
-    (4.15, 0.82),   # 4  GPQA
-    (4.97, 0.82),   # 5  AIME
-    (5.79, 0.92),   # 6  MuSiQue
-    (6.71, 0.82),   # 7  HLE
-    (7.53, 0.82),   # 8  Avg
+    (0.08, 1.35),   # 0  Model
+    (1.43, 1.20),   # 1  Tools
+    (2.63, 1.45),   # 2  Thinking
+    (4.08, 0.82),   # 3  GAIA
+    (4.90, 0.82),   # 4  GPQA
+    (5.72, 0.82),   # 5  AIME
+    (6.54, 0.92),   # 6  MuSiQue
+    (7.46, 0.82),   # 7  HLE
+    (8.28, 0.82),   # 8  Avg
 ]
-_TBL_FIG_W = 8.43
+_TBL_FIG_W = 9.20
 _ROW_H     = 0.400   # matches main results table ROW_H
 _HDR_H     = 0.33
 _LEG_H     = 0.40
@@ -854,7 +854,7 @@ def plot_latency_heatmap(data: dict[str, list[dict]]) -> None:
     yl    = y_bot - _LEG_H / 2
     bar_w = 1.20
     bar_h = 0.10
-    bar_x = _LR_PAD + 1.70
+    bar_x = _LR_PAD + 2.0
     ax.text(_LR_PAD, yl, "Latency (s/query):", ha="left", va="center",
             fontsize=_SMALL_SZ)
     ax.text(bar_x - 0.07, yl, "Fast", ha="right", va="center",
@@ -950,7 +950,8 @@ def generate_tool_call_latex(data: dict[str, list[dict]]) -> None:
 
     lines += [r"\bottomrule", r"\end{tabular}"]
 
-    out_path = OUT_DIR / "tool_calls_table.tex"
+    out_path = ROOT / "data/results/tables/tool_calls_table.tex"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n")
     print(f"  Saved → {out_path}")
 
@@ -970,7 +971,6 @@ def main() -> None:
     print("\nGenerating plots…")
     plot_token_breakdown(data)
     plot_latency_breakdown(data, with_footnote=False)   # avg, clean
-    plot_latency_breakdown(data, with_footnote=True)    # avg, annotated
     plot_latency_heatmap(data)                          # per-dataset heatmap table
     plot_tool_calls(data)
     generate_tool_call_latex(data)
