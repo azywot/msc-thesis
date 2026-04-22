@@ -760,9 +760,8 @@ class AgenticOrchestrator:
         user_content = state.messages[1]["content"] if len(state.messages) > 1 else state.question
         parts: List[str] = [f"**Original Question:**\n{user_content}"]
 
-        if state.query_analysis:
-            parts.append(f"**Query Analysis:**\n{state.query_analysis}")
-
+        # Intentionally omit `state.query_analysis` from the shared block.
+        # See `docs/subagent_shared_memory_plan.md` §2.1 for the full rationale.
         last_k = max(0, int(self.subagent_shared_memory_last_k))
         if last_k > 0 and state.action_history:
             # Absolute step numbering → slice and re-compute start offset.

@@ -94,8 +94,11 @@ class TestBuildSubagentSharedContext:
 
         assert "**Original Question:**" in ctx
         assert "Solve X." in ctx
-        assert "**Query Analysis:**" in ctx
-        assert "Decompose into A and B." in ctx
+        # query_analysis is intentionally *not* rendered (stale + redundant
+        # with action_history; see orchestrator._build_subagent_shared_context
+        # docstring and docs/subagent_shared_memory_plan.md §2).
+        assert "**Query Analysis:**" not in ctx
+        assert "Decompose into A and B." not in ctx
         assert "**Previous Steps (last 2):**" in ctx
         assert "Action Step 1:" in ctx
         assert "Action Step 2:" in ctx
@@ -130,13 +133,14 @@ class TestBuildSubagentSharedContext:
     def test_last_k_zero_drops_previous_steps_block(self):
         orch = _make_orchestrator(enabled=True, last_k=0)
         state = _make_state(
-            query_analysis="qa",
+            query_analysis="qa",  # populated but intentionally not rendered
             action_history=[{"tool_name": "x", "sub_goal": "y", "command": "{}", "result": ""}],
             current_output="<sub_goal>cur</sub_goal>",
         )
         ctx = orch._build_subagent_shared_context(state, current_output=state.current_output)
         assert "**Previous Steps" not in ctx
-        assert "**Query Analysis:**" in ctx
+        assert "**Query Analysis:**" not in ctx
+        assert "**Original Question:**" in ctx
         assert "**Current Sub-goal:**" in ctx
 
     def test_missing_optional_sections_collapse_cleanly(self):

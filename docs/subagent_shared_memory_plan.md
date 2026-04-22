@@ -50,7 +50,7 @@ Risks / things that are genuinely new work:
 | Decision                   | Choice                                                                                                              |
 |----------------------------|---------------------------------------------------------------------------------------------------------------------|
 | Scope                      | All task-directed sub-agents: `web_search`, `code_generator`, `text_inspector`, `image_inspector`                    |
-| Context payload            | **Lightweight**: original question (+ attachment note) + `query_analysis` + `action_history` with **results AND commands stripped** (`tool_name` + `sub_goal` only — the raw JSON tool_call is noisy, and sub_goal already captures intent) |
+| Context payload            | **Lightweight**: original question (+ attachment note) + `action_history` with **results AND commands stripped** (`tool_name` + `sub_goal` only — the raw JSON tool_call is noisy, and sub_goal already captures intent) + current turn's sub-goal. **`query_analysis` is intentionally excluded** — see §2.1 for the rationale. |
 | Current-turn reasoning     | **Include** the current turn's `<sub_goal>` (the one that triggered *this* tool call) as a separate "Current sub-goal" field |
 | `web_search` analysis cache| **Bypass** when the flag is ON (simplest + correct)                                                                  |
 | Interaction with `baseline`| **Config error** — `tools.subagent_shared_memory=true` with `baseline: true` is rejected by the config loader        |
@@ -58,6 +58,55 @@ Risks / things that are genuinely new work:
 | Truncation                 | Keep **last K action steps** (default `K = 5`), configurable via `tools.subagent_shared_memory_last_k`               |
 | Config location            | `tools.subagent_shared_memory: bool = False` (+ `tools.subagent_shared_memory_last_k: int = 5`)                      |
 | Default                    | **Disabled** everywhere unless explicitly turned on                                                                  |
+
+### 2.1 Why `query_analysis` is excluded from the shared block
+
+An earlier draft included `state.query_analysis` (the orchestrator's turn-0
+planning output) in the shared-context block. We subsequently decided to
+**drop it**. The decision is worth recording because it shapes the semantics
+of the ablation and the interpretation of its results.
+
+1. **Staleness.** `query_analysis` is produced once, at turn 0, *before* any
+   tool runs. By turn 3+ the orchestrator has often pivoted — a dead-end
+   search, an unexpected attachment, a failing code run. Replaying the
+   turn-0 plan into a sub-agent at turn 5 risks anchoring it on an outdated
+   strategy and undercutting the very adaptivity we want to measure.
+
+2. **Redundancy with realized trace.** `query_analysis` is a *predicted*
+   decomposition; `action_history` + `current_sub_goal` are the *realized*
+   decomposition. The realized trace dominates the predicted one in
+   information value once ≥2 turns have elapsed, which is the regime where
+   shared memory is expected to matter most.
+
+3. **Token cost.** Typical `query_analysis` output is 200–500 tokens of
+   prose. Across a 50-question × up-to-10-turn × up-to-3-sub-agent-call
+   run, reproducing it in every sub-agent prompt adds a non-trivial slice
+   of the `subagent_shared_memory_tokens` budget to content the sub-agent
+   barely uses.
+
+4. **Cleaner ablation semantics.** This is the deciding reason. The
+   intervention we want to measure is:
+
+   > *"Does giving task-directed sub-agents the evolving execution trace
+   > improve their answers?"*
+
+   If the shared block bundled planning memory + execution memory, any
+   observed delta could not be attributed to either. Keeping only
+   question + previous actions + current sub-goal yields a single-axis
+   intervention. If planning-memory transfer ever becomes interesting in
+   its own right, it can be added as a separate, orthogonal flag without
+   polluting the current result.
+
+5. **Locality of sub-agent tasks.** A `web_search` sub-agent given
+   `"VAT rate France 2024"` needs (i) the original question for
+   disambiguation, (ii) what was already tried, (iii) why this query
+   matters right now. It almost never needs *"the orchestrator planned
+   to decompose this into 5 steps using …"*. Empirically the analysis
+   block was the section sub-agents had the least to do with.
+
+The companion code comment lives in
+`AgenticOrchestrator._build_subagent_shared_context` and points back to
+this section.
 
 ---
 
@@ -71,8 +120,10 @@ sub-agent sees something familiar and so we don't fork formatting logic.
 **Original Question:**
 <state.messages[1]["content"]>   # includes the "[Attachment]" note if any
 
-**Query Analysis:**
-<state.query_analysis>           # omitted if empty
+# NOTE: `state.query_analysis` is intentionally *not* rendered here.
+# See §2.1 for the rationale (staleness, redundancy, token cost, ablation
+# cleanliness). If you ever want to re-enable it, do so behind a separate
+# flag so the two signals remain separately ablatable.
 
 **Previous Steps (last K):**
 # Step numbering is ABSOLUTE — matches the orchestrator's own memory prompt.
@@ -96,8 +147,8 @@ Action Step 8:
 # immediately relevant intent is the last thing the model reads before the task.
 ```
 
-Missing fields (e.g. empty `query_analysis`, empty `action_history`) collapse
-cleanly — no empty headings are rendered.
+Missing fields (e.g. empty `action_history`, missing `<sub_goal>` tag in the
+current turn's output) collapse cleanly — no empty headings are rendered.
 
 The block is produced by a new helper in `src/agent_engine/core/orchestrator.py`:
 
@@ -293,8 +344,6 @@ INFO  Sub-agent shared-memory block (tool=web_search q_id=42 turn=3):
       --- BEGIN shared_context ---
       **Original Question:**
       ...
-      **Query Analysis:**
-      ...
       **Previous Steps (last 5):**
       Action Step 4:
         - Tool: code_generator
@@ -423,7 +472,7 @@ VARIANTS_SUBAGENT_SHARED_MEMORY_ABLATION = [
 SUITES["subagent_shared_memory_ablation"] = {
     "description_tag": (
         "[Sub-agent shared-memory ablation: AgentFlow + subagent tools + orch thinking, "
-        "sub-agents receive question + query_analysis + last-K stripped action_history; "
+        "sub-agents receive question + last-K stripped action_history + current sub-goal; "
         "NO image_inspector, NO mindmap]"
     ),
     "name_prefix":     "AF_subagent_shared_mem",
@@ -452,9 +501,10 @@ cleaner.
 
 - Update `CLAUDE.md` "Config essentials" section with a line:
   `tools.subagent_shared_memory: true` — pass the orchestrator's structured
-  memory (question + query_analysis + last-K action steps w/o results +
-  current sub-goal) to every task-directed sub-agent. Requires
-  `direct_tool_call: false`. Incompatible with `baseline: true`.
+  memory (question + last-K action steps w/o results + current sub-goal) to
+  every task-directed sub-agent. `query_analysis` is intentionally excluded;
+  see §2.1 for the rationale. Requires `direct_tool_call: false`.
+  Incompatible with `baseline: true`.
 - This document (`docs/subagent_shared_memory_plan.md`) stays as the design
   record.
 
@@ -466,12 +516,14 @@ New unit tests under `tests/`:
 
 1. `tests/core/test_shared_memory_context.py`
    - `_build_subagent_shared_context` returns `""` when flag is off.
-   - With `query_analysis` + 3-step `action_history` + current sub-goal, the
-     rendered block contains all four sections and no `- Result:` / `- Command:` lines.
+   - With a 3-step `action_history` + current sub-goal, the rendered block
+     contains Original Question + Previous Steps + Current Sub-goal sections
+     and no `- Result:` / `- Command:` lines.
+   - Even when `state.query_analysis` is populated, it is **not** rendered
+     (regression guard for §2.1).
    - `last_k=2` truncates to the last 2 steps.
    - `last_k=0` drops the "Previous Steps" block entirely but keeps the others.
-   - Empty `action_history` / empty `query_analysis` / missing sub-goal each
-     collapse cleanly.
+   - Empty `action_history` / missing sub-goal each collapse cleanly.
 
 2. `tests/tools/test_subagent_shared_context_injection.py`
    - `WebSearchTool.build_analysis_prompt(..., shared_context="CTX")` contains
@@ -596,9 +648,6 @@ per turn) is:
 **Original Question:**
 In the 2008 paper by Smith & Lee, what is the Hall coefficient reported for sample A3 at 77 K? Report the answer in SI units.
 
-**Query Analysis:**
-Identify the Smith & Lee 2008 paper, locate the Hall-coefficient table, read the value for sample A3 at 77 K, and convert to SI units (m³/C).
-
 **Previous Steps (last 2):**
 Action Step 1:
   - Tool: web_search
@@ -618,9 +667,6 @@ read the Hall-coefficient value for sample A3 at 77 K
 
 **Original Question:**
 In the 2008 paper by Smith & Lee, what is the Hall coefficient reported for sample A3 at 77 K? Report the answer in SI units.
-
-**Query Analysis:**
-Identify the Smith & Lee 2008 paper, locate the Hall-coefficient table, read the value for sample A3 at 77 K, and convert to SI units (m³/C).
 
 **Previous Steps (last 2):**
 Action Step 1:
@@ -669,9 +715,6 @@ Shared context:
 **Original Question:**
 In the 2008 paper by Smith & Lee, what is the Hall coefficient reported for sample A3 at 77 K? Report the answer in SI units.
 
-**Query Analysis:**
-Identify the Smith & Lee 2008 paper, locate the Hall-coefficient table, read the value for sample A3 at 77 K, and convert to SI units (m³/C).
-
 **Previous Steps (last 2):**
 Action Step 1:
   - Tool: web_search
@@ -710,9 +753,6 @@ Shared context:
 
 **Original Question:**
 In the 2008 paper by Smith & Lee, what is the Hall coefficient reported for sample A3 at 77 K? Report the answer in SI units.
-
-**Query Analysis:**
-Identify the Smith & Lee 2008 paper, locate the Hall-coefficient table, read the value for sample A3 at 77 K, and convert to SI units (m³/C).
 
 **Previous Steps (last 2):**
 Action Step 1:
