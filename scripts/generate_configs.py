@@ -172,6 +172,14 @@ VARIANTS_STRUCTURED_MEMORY_ABLATION = [
     ("qwen8B_subagent_orch_baseline_chat", "8B", False, "tools", "ORCHESTRATOR_ONLY"),
 ]
 
+# Sub-agent shared-memory ablation: AF setup (subagent tools + orch thinking) with
+# the sub-agent-shared-memory flag toggled ON vs OFF for a direct 1:1 comparison.
+# Variant tuple: (stem, model_key, direct, tools_key, thinking, shared_memory_on)
+VARIANTS_SUBAGENT_SHARED_MEMORY_ABLATION = [
+    ("qwen8B_subagent_tools_shared_mem_off", "8B", False, "tools", "ORCHESTRATOR_ONLY", False),
+    ("qwen8B_subagent_tools_shared_mem_on",  "8B", False, "tools", "ORCHESTRATOR_ONLY", True),
+]
+
 # ── orchestrator-capacity variants ─────────────────────────────────────────────
 # (filename_stem, orch_key, sub_key, thinking_mode)
 # Always sub-agent tool mode (direct_tool_call: false) with full tools.
@@ -327,6 +335,23 @@ SUITES = {
         "wandb_project":   "benchmarks",
         "split_overrides": {},
     },
+    "subagent_shared_memory_ablation": {
+        "description_tag": (
+            "[Sub-agent shared-memory ablation: AgentFlow + subagent tools + orch thinking; "
+            "task-directed sub-agents receive question + query_analysis + last-K stripped "
+            "action_history + current sub-goal when ON; NO image_inspector, NO mindmap]"
+        ),
+        "name_prefix":     "AF_subagent_shared_mem",
+        "output_dir_root": "./experiments/results/subagent_shared_memory_ablation",
+        "config_subdir":   "qwen3/subagent_shared_memory_ablation",
+        "baseline":        False,
+        "force_num_gpus":  True,
+        "variant_type":    "subagent_shared_memory",
+        "variants":        VARIANTS_SUBAGENT_SHARED_MEMORY_ABLATION,
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+    },
     "structured_memory_ablation": {
         "description_tag": (
             "[Structured-memory ablation: subagent tools + orch thinking, baseline chat "
@@ -404,15 +429,25 @@ SUITES = {
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
-def _tools_block(direct: bool, enabled: list[str], return_code: bool = False) -> str:
+def _tools_block(
+    direct: bool,
+    enabled: list[str],
+    return_code: bool = False,
+    extra_lines: Optional[List[str]] = None,
+) -> str:
     if not enabled:
-        return "tools:\n  enabled_tools: []\n  direct_tool_call: true"
+        base = "tools:\n  enabled_tools: []\n  direct_tool_call: true"
+        if extra_lines:
+            base += "\n" + "\n".join(f"  {line}" for line in extra_lines)
+        return base
     lines = ["tools:", "  enabled_tools:"]
     for t in enabled:
         lines.append(f"    - {t}")
     lines.append(f"  direct_tool_call: {'true' if direct else 'false'}")
     if return_code:
         lines.append("  return_code: true")
+    if extra_lines:
+        lines.extend(f"  {line}" for line in extra_lines)
     return "\n".join(lines)
 
 
@@ -471,6 +506,7 @@ def make_config(
     thinking: str,
     *,
     enabled_tools_override: Optional[List[str]] = None,
+    tools_extra_lines: Optional[List[str]] = None,
 ) -> str:
     ds = {**DATASETS[dataset], **suite["split_overrides"].get(dataset, {})}
     m = MODELS[model_key]
@@ -539,7 +575,7 @@ slurm:
 
 {_model_block(model_key)}
 
-{_tools_block(direct, enabled, return_code=return_code)}
+{_tools_block(direct, enabled, return_code=return_code, extra_lines=tools_extra_lines)}
 
 dataset:
   name: "{dataset}"
@@ -650,6 +686,19 @@ def generate_suite(suite_name: str) -> None:
             for stem, orch_key, sub_key, thinking in suite["variants"]:
                 content = make_config_orch_capacity(
                     suite, dataset, stem, orch_key, sub_key, thinking
+                )
+                path = dataset_dir / f"{stem}.yaml"
+                path.write_text(content)
+                print(f"  wrote {path.relative_to(CONFIGS_ROOT.parent)}")
+                created += 1
+        elif variant_type == "subagent_shared_memory":
+            for stem, model_key, direct, tools_key, thinking, shared_mem_on in suite["variants"]:
+                extra = [
+                    f"subagent_shared_memory: {'true' if shared_mem_on else 'false'}",
+                ]
+                content = make_config(
+                    suite, dataset, stem, model_key, direct, tools_key, thinking,
+                    tools_extra_lines=extra,
                 )
                 path = dataset_dir / f"{stem}.yaml"
                 path.write_text(content)

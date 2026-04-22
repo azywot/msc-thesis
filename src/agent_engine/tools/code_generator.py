@@ -171,12 +171,15 @@ class CodeGeneratorTool(BaseTool):
                 }
             }
 
-    def execute(self, code: str = None, task: str = None) -> ToolResult:
+    def execute(self, code: str = None, task: str = None, shared_context: str = "") -> ToolResult:
         """Execute Python code (direct) or generate then execute (sub-agent).
 
         Args:
             code: Python code string to execute (direct mode)
             task: Task description for code generation (sub-agent mode)
+            shared_context: Optional orchestrator shared-memory block passed
+                through to the sub-agent generation prompt (ignored in direct
+                mode). Empty string disables the feature.
 
         Returns:
             ToolResult with execution output or error
@@ -187,7 +190,7 @@ class CodeGeneratorTool(BaseTool):
             # Sub-agent mode: either generate from ``task`` (single-tool call path)
             # or accept pre-generated ``code`` (batched orchestrator path after LLM).
             if task:
-                code = self.generate_code(task)
+                code = self.generate_code(task, shared_context=shared_context)
                 if not code:
                     return ToolResult(
                         success=False,
@@ -230,16 +233,33 @@ class CodeGeneratorTool(BaseTool):
 
         return self.execute_code(code)
 
-    def build_task_prompt(self, task: str, context: str = "") -> str:
+    def build_task_prompt(
+        self,
+        task: str,
+        attachment_context: str = "",
+        shared_context: str = "",
+    ) -> str:
         """Build the sub-agent LLM prompt for code generation.
 
         This is used by both single and batched sub-agent execution.
-        context: Previous reasoning and optional attachment info (MAT-style).
+        attachment_context: MAT-style ``[ATTACHED_FILE_PATH] ...`` block plus
+            any prior ``text_inspector`` output for the current question,
+            produced by ``get_attachment_context_for_code(state)``. Empty
+            string when the question has no text attachment.
+        shared_context: Orchestrator shared-memory block. When non-empty it is
+            prepended above the attachment context as a clearly delimited
+            "Shared context" section. Empty string reproduces the
+            pre-ablation prompt byte-for-byte.
 
         When ``self.return_code`` is True (e.g. BigCodeBench) the sub-agent is
         asked to implement a *function body*, not a standalone executable script.
         """
-        context_block = f"Context:\n\n{context}\n\n" if context else ""
+        shared_block = (
+            "Shared context:\n\n"
+            f"{shared_context}\n\n---\n\n"
+        ) if shared_context else ""
+        context_block = f"Context:\n\n{attachment_context}\n\n" if attachment_context else ""
+        context_block = shared_block + context_block
 
         if self.return_code:
             # Code-generation benchmark mode: produce a complete function
@@ -277,14 +297,14 @@ class CodeGeneratorTool(BaseTool):
         """Extract Python code from the LLM response (robust to markdown fences)."""
         return self._extract_code_from_response(response_text)
 
-    def generate_code(self, task: str) -> str:
+    def generate_code(self, task: str, shared_context: str = "") -> str:
         """Generate Python code from a task (sub-agent mode).
 
         In batched mode, the orchestrator should call `build_task_prompt(...)`,
         batch `model_provider.generate(prompts)`, then call
         `extract_code_from_llm_response(...)`.
         """
-        prompt = self.build_task_prompt(task)
+        prompt = self.build_task_prompt(task, shared_context=shared_context)
         result = self.model_provider.generate([prompt])[0]
 
         output = strip_thinking_tags(result.text)

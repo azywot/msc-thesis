@@ -113,7 +113,7 @@ class WebSearchTool(BaseTool):
             }
         }
 
-    def execute(self, query: str) -> ToolResult:
+    def execute(self, query: str, shared_context: str = "") -> ToolResult:
         """Execute web search.
 
         Flow:
@@ -127,6 +127,9 @@ class WebSearchTool(BaseTool):
 
         Args:
             query: Search query string
+            shared_context: Optional orchestrator shared-memory block passed
+                through to the sub-agent analysis prompt (ignored in direct
+                mode). Empty string disables the feature.
 
         Returns:
             ToolResult with formatted search results (direct mode) or
@@ -148,7 +151,7 @@ class WebSearchTool(BaseTool):
             if self.direct_mode:
                 output, usage = formatted, None
             else:
-                output, usage = self._analyze_with_llm(query, formatted)
+                output, usage = self._analyze_with_llm(query, formatted, shared_context=shared_context)
             return ToolResult(
                 success=True,
                 output=output,
@@ -187,7 +190,7 @@ class WebSearchTool(BaseTool):
                     metadata={"cached": False, "num_results": len(results), "query": query, "mode": "direct"},
                 )
 
-            output, usage = self._analyze_with_llm(query, formatted_results)
+            output, usage = self._analyze_with_llm(query, formatted_results, shared_context=shared_context)
             return ToolResult(
                 success=True,
                 output=output,
@@ -255,17 +258,19 @@ class WebSearchTool(BaseTool):
         self,
         query: str,
         search_results: str,
+        shared_context: str = "",
     ) -> Tuple[str, Optional[Dict[str, int]]]:
         """Use LLM to analyze search results (sub-agent mode).
 
         Args:
             query: Original search query
             search_results: Formatted search results
+            shared_context: Optional orchestrator shared-memory block.
 
         Returns:
             Tuple of (LLM-analyzed summary, token usage dict or None)
         """
-        prompt = self.build_analysis_prompt(query, search_results)
+        prompt = self.build_analysis_prompt(query, search_results, shared_context=shared_context)
         result = self.model_provider.generate([prompt])[0]
         output = strip_thinking_tags(result.text)
         return output, result.usage
@@ -274,9 +279,21 @@ class WebSearchTool(BaseTool):
         self,
         query: str,
         formatted_results: str,
+        shared_context: str = "",
     ) -> str:
-        """Build the sub-agent prompt for web-page analysis."""
-        instruction = f"""**Task Instruction:**
+        """Build the sub-agent prompt for web-page analysis.
+
+        When ``shared_context`` is non-empty, prepend it as a
+        "Shared context" block so the sub-agent has awareness of the
+        broader question and previous steps. Empty string reproduces the
+        pre-ablation prompt byte-for-byte.
+        """
+        context_prefix = (
+            "**Shared context:**\n\n"
+            f"{shared_context}\n\n---\n\n"
+        ) if shared_context else ""
+
+        instruction = context_prefix + f"""**Task Instruction:**
 
 You are tasked with reading and analyzing web pages based on the following inputs: **Current Search Query** and **Searched Web Pages**. Your objective is to extract relevant and helpful information for the **Current Search Query** from the **Searched Web Pages**.
 

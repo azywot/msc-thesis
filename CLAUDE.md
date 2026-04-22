@@ -85,6 +85,7 @@ python scripts/generate_configs.py
 
 - `baseline: true` — skip planning turn, growing conversation (vanilla LLM baseline)
 - `tools.direct_tool_call: true` — return raw tool output; `false` = sub-agent analyses it first
+- `tools.subagent_shared_memory: true` — (default `false`) task-directed sub-agents (`web_search`, `code_generator`, `text_inspector`, `image_inspector`) receive an extra "Shared context" block containing the original question + `query_analysis` + last-K stripped `action_history` + current `<sub_goal>`. Requires `direct_tool_call: false`; incompatible with `baseline: true`. Tunable via `tools.subagent_shared_memory_last_k` (default `5`). Cumulative added input tokens land in `state.subagent_shared_memory_tokens`. Bypasses the per-run `web_search` analysis cache when ON. See `docs/subagent_shared_memory_plan.md`.
 - `tools.return_code: true` — `code_generator` returns generated code instead of executing it (required for BigCodeBench)
 - `thinking_mode` — `NO` / `ORCHESTRATOR_ONLY` / `SUBAGENTS_ONLY` / `ALL`
 - `batch_size` — questions per batch (`-1` = all; `1` = no batching)

@@ -350,6 +350,8 @@ def run_experiment(args):
             use_thinking=config.use_orchestrator_thinking(),
             cache_manager=cache_manager,
             baseline=config.baseline,
+            subagent_shared_memory=config.tools.subagent_shared_memory,
+            subagent_shared_memory_last_k=config.tools.subagent_shared_memory_last_k,
         )
 
         raw_batch = getattr(config, "batch_size", -1) or -1

@@ -1,0 +1,41 @@
+# GAIA — Qwen3-8B, sub-agent tools, orchestrator thinking
+
+name: "AF_subagent_shared_mem_gaia_qwen8B_subagent_tools_shared_mem_on"
+description: "[Sub-agent shared-memory ablation: AgentFlow + subagent tools + orch thinking; task-directed sub-agents receive question + query_analysis + last-K stripped action_history + current sub-goal when ON; NO image_inspector, NO mindmap] GAIA all_validation with Qwen3-8B, sub-agent tools, orchestrator thinking"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "24:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "Qwen3-8B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-8B"
+    role: "orchestrator"
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+  direct_tool_call: false
+  subagent_shared_memory: true
+
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "ORCHESTRATOR_ONLY"
+output_dir: "./experiments/results/subagent_shared_memory_ablation/gaia/qwen8B_subagent_tools_shared_mem_on"
+use_wandb: true
+wandb_project: "benchmarks"
+
+cache_dir: "./cache"

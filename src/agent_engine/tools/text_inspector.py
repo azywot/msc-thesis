@@ -128,12 +128,21 @@ class TextInspectorTool(BaseTool):
                 }
             }
 
-    def execute(self, full_file_path: str, question: Optional[str] = None) -> ToolResult:
+    def execute(
+        self,
+        full_file_path: str,
+        question: Optional[str] = None,
+        shared_context: str = "",
+    ) -> ToolResult:
         """Read text from file.
 
         Args:
             full_file_path: Path to text file (injected by orchestrator from attachments)
             question: Optional question about the file (non-direct mode only)
+            shared_context: Optional orchestrator shared-memory block passed
+                through to the sub-agent analysis prompt (ignored in direct
+                mode or when no question is provided). Empty string disables
+                the feature.
 
         Returns:
             ToolResult with file content or LLM analysis
@@ -233,7 +242,7 @@ class TextInspectorTool(BaseTool):
                 )
             else:
                 # Non-direct mode with question: use LLM analysis
-                analysis, usage = self._analyze_with_llm(content, question)
+                analysis, usage = self._analyze_with_llm(content, question, shared_context=shared_context)
 
                 return ToolResult(
                     success=True,
@@ -260,12 +269,19 @@ class TextInspectorTool(BaseTool):
                 error=msg,
             )
 
-    def _analyze_with_llm(self, file_content: str, question: str) -> tuple[str, Optional[Dict[str, int]]]:
+    def _analyze_with_llm(
+        self,
+        file_content: str,
+        question: str,
+        shared_context: str = "",
+    ) -> tuple[str, Optional[Dict[str, int]]]:
         """Use LLM to analyze file content and answer question (sub-agent mode).
 
         Args:
             file_content: Content of the file
             question: Question about the file
+            shared_context: Optional orchestrator shared-memory block prepended
+                to the user prompt.
 
         Returns:
             Tuple of (analysis text, token usage dict or None)
@@ -277,7 +293,11 @@ class TextInspectorTool(BaseTool):
             "You are given the content of a plain-text file attached to the user's question. "
             "Answer the question using only the file content. If the file does not contain the answer, say so."
         )
-        user_prompt = f"File content:\n\n{file_content}\n\nQuestion:\n{question}\n"
+        shared_block = (
+            "Shared context:\n\n"
+            f"{shared_context}\n\n---\n\n"
+        ) if shared_context else ""
+        user_prompt = f"{shared_block}File content:\n\n{file_content}\n\nQuestion:\n{question}\n"
 
         prompt_messages = [
             {"role": "system", "content": system_prompt},

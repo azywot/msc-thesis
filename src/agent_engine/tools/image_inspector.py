@@ -5,7 +5,7 @@ Only enabled in non-direct mode (requires VLM).
 """
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
 
@@ -76,12 +76,19 @@ class ImageInspectorTool(BaseTool):
             }
         }
 
-    def execute(self, question: str, full_file_path: str) -> ToolResult:
+    def execute(
+        self,
+        question: str,
+        full_file_path: str,
+        shared_context: str = "",
+    ) -> ToolResult:
         """Analyze image file using VLM.
 
         Args:
             question: Question about the image
             full_file_path: Path to image file (injected by framework from attachments)
+            shared_context: Optional orchestrator shared-memory block prepended
+                to the VLM user prompt. Empty string disables the feature.
 
         Returns:
             ToolResult with VLM analysis
@@ -131,7 +138,7 @@ class ImageInspectorTool(BaseTool):
 
         try:
             image = self._load_image_rgb(path)
-            analysis, usage = self._analyze_with_vlm(image, question)
+            analysis, usage = self._analyze_with_vlm(image, question, shared_context=shared_context)
 
             return ToolResult(
                 success=True,
@@ -177,12 +184,19 @@ class ImageInspectorTool(BaseTool):
         except Exception as e:
             raise ValueError(f"Failed to load/convert image: {e}")
 
-    def _analyze_with_vlm(self, image: Image.Image, question: str) -> Tuple[str, Optional[Dict[str, int]]]:
+    def _analyze_with_vlm(
+        self,
+        image: Image.Image,
+        question: str,
+        shared_context: str = "",
+    ) -> Tuple[str, Optional[Dict[str, int]]]:
         """Use vision-language model to analyze image and answer question.
 
         Args:
             image: PIL Image object
             question: Question about the image
+            shared_context: Optional orchestrator shared-memory block inserted
+                as an extra text turn before the question.
 
         Returns:
             Tuple of (VLM analysis/answer, token usage dict or None)
@@ -196,15 +210,21 @@ class ImageInspectorTool(BaseTool):
             "If the image does not contain enough information, say so."
         )
 
+        user_content: List[Dict[str, Any]] = []
+        if shared_context:
+            user_content.append({
+                "type": "text",
+                "text": (
+                    "Shared context:\n\n"
+                    f"{shared_context}\n\n---\n\n"
+                ),
+            })
+        user_content.append({"type": "image"})
+        user_content.append({"type": "text", "text": f"Question:\n{question}\n"})
+
         prompt_messages = [
             {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": f"Question:\n{question}\n"},
-                ],
-            },
+            {"role": "user", "content": user_content},
         ]
 
         try:
