@@ -758,6 +758,15 @@ class AgenticOrchestrator:
         # `baseline=true`, so reaching this branch guarantees the index-1
         # lookup is safe; the `state.question` fallback is purely defensive.
         user_content = state.messages[1]["content"] if len(state.messages) > 1 else state.question
+        # Strip the [Attachment] block appended by _format_attachment_note.
+        # That block contains orchestrator-facing instructions ("call the tool
+        # `text_inspector`", "do NOT guess file paths") that are meaningless —
+        # and actively misleading — when forwarded into a sub-agent's prompt,
+        # because the sub-agent has no tools available and already receives the
+        # file content directly.
+        attachment_marker = "\n\n[Attachment]"
+        if attachment_marker in user_content:
+            user_content = user_content[:user_content.index(attachment_marker)]
         parts: List[str] = [f"**Original Question:**\n{user_content}"]
 
         # Intentionally omit `state.query_analysis` from the shared block.

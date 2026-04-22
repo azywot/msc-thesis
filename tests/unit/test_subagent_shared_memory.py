@@ -153,6 +153,44 @@ class TestBuildSubagentSharedContext:
         assert "**Previous Steps" not in ctx
         assert "**Current Sub-goal:**" not in ctx
 
+    def test_attachment_block_is_stripped_from_original_question(self):
+        """The [Attachment] scaffold appended by _format_attachment_note must not
+        leak into the sub-agent shared context.
+
+        The block contains orchestrator-facing instructions ("call the tool
+        `text_inspector`", "do NOT guess file paths") that are misleading when
+        forwarded to a sub-agent LLM that has no tools available.
+        """
+        orch = _make_orchestrator(enabled=True)
+        question_with_attachment = (
+            "Who did not give a gift?\n\n"
+            "[Attachment]\n"
+            "- There is an attached file for this question: gift.docx\n"
+            "- To read the file, call the tool `text_inspector` (optionally with a question).\n"
+            "- Important: do NOT guess or provide file paths; inspectors use the attached file automatically.\n"
+        )
+        state = ExecutionState(
+            question_id=7,
+            question="Who did not give a gift?",
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": question_with_attachment},
+            ],
+            query_analysis="",
+            action_history=[],
+            current_output="",
+        )
+        state.turn = 0
+        ctx = orch._build_subagent_shared_context(state, current_output="<sub_goal>check doc</sub_goal>")
+
+        # The clean question text must appear.
+        assert "Who did not give a gift?" in ctx
+        # The entire [Attachment] scaffolding block must be absent.
+        assert "[Attachment]" not in ctx
+        assert "text_inspector" not in ctx
+        assert "do NOT guess or provide file paths" not in ctx
+        assert "gift.docx" not in ctx
+
 
 # ---------------------------------------------------------------------------
 # 2. Prompt-builder injection
