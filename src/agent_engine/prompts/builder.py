@@ -68,6 +68,7 @@ class PromptBuilder:
         direct_tool_call: bool = True,
         baseline: bool = False,
         tool_call_format: ToolCallFormat = ToolCallFormat.JSON,
+        template_name_override: Optional[str] = None,
     ) -> str:
         """Build system prompt with tools and instructions.
 
@@ -76,19 +77,25 @@ class PromptBuilder:
         *tool_call_format* controls the syntax used in format instructions and
         examples: :attr:`ToolCallFormat.JSON` (default, Qwen3-style) or
         :attr:`ToolCallFormat.PYTHONIC` (OLMo 3-style).
+        *template_name_override* bypasses the dataset-name routing and loads
+        the named template directly (used for upstream-compat comparison runs,
+        e.g. ``"hle_mat"``).
         """
         try:
-            # GAIA, HLE, and MuSiQue share the same single‑QA prompt template.
-            # AIME, MATH500, AMC share the math template.
-            template_name = dataset_name
-            if dataset_name.lower() in ("gaia", "hle", "musique"):
-                template_name = "gaia_baseline" if baseline else "gaia"
-            elif dataset_name.lower() in ("aime", "math500", "amc"):
-                template_name = "math_baseline" if baseline else "math"
-            elif dataset_name.lower() == "gpqa":
-                template_name = "gpqa_baseline" if baseline else "gpqa"
-            elif dataset_name.lower() == "bigcodebench":
-                template_name = "bigcodebench_baseline" if baseline else "bigcodebench"
+            if template_name_override:
+                template_name = template_name_override
+            else:
+                # GAIA, HLE, and MuSiQue share the same single‑QA prompt template.
+                # AIME, MATH500, AMC share the math template.
+                template_name = dataset_name
+                if dataset_name.lower() in ("gaia", "hle", "musique"):
+                    template_name = "gaia_baseline" if baseline else "gaia"
+                elif dataset_name.lower() in ("aime", "math500", "amc"):
+                    template_name = "math_baseline" if baseline else "math"
+                elif dataset_name.lower() == "gpqa":
+                    template_name = "gpqa_baseline" if baseline else "gpqa"
+                elif dataset_name.lower() == "bigcodebench":
+                    template_name = "bigcodebench_baseline" if baseline else "bigcodebench"
 
             template = self.load_template(template_name)
         except FileNotFoundError:
@@ -203,7 +210,22 @@ class PromptBuilder:
             "You are provided with function signatures within <tools></tools> XML tags:\n"
             f"<tools>\n{tools_json}\n</tools>\n\n"
         )
+
+        # Mirror the upstream ``multi-agent-tools`` disclosure: tell the model
+        # about the web_search cap explicitly. Only emitted when web_search is
+        # actually enabled and a positive cap is configured.
+        has_web_search = any(
+            s.get("function", {}).get("name") == "web_search" for s in schemas
+        )
+        limit_line = (
+            f"You can repeat calling the tools multiple times if necessary. "
+            f"The maximum number of web_search attempts is limited to {max_search_limit}. "
+            f"Other tool attempts are unlimited.\n\n"
+            if has_web_search and max_search_limit and max_search_limit > 0 else ""
+        )
+
         tail = (
+            limit_line +
             "Important: You may call tools zero, one, or multiple times as needed. "
             "Only call a tool when it would help answer the question. "
             "After receiving tool results in <tool_response></tool_response> tags, "

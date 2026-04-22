@@ -104,6 +104,12 @@ class ExperimentConfig(BaseModel):
         wandb_project: W&B project name (required when ``use_wandb=True``).
         cache_dir: Root directory for search and URL caches.
         slurm: SLURM resource configuration for HPC job submission.
+        prompt_template_override: Optional YAML template basename (without
+            extension) under ``prompts/templates/system/``. When set,
+            :meth:`PromptBuilder.build_system_prompt` loads this template
+            directly instead of routing by ``dataset.name``. Used for
+            upstream-compat runs (e.g. ``"hle_mat"`` to mirror the
+            ``multi-agent-tools`` hard-question prompt shape on HLE).
     """
 
     name: str
@@ -121,6 +127,7 @@ class ExperimentConfig(BaseModel):
     wandb_project: Optional[str] = None
     cache_dir: Path = Path("./cache")
     slurm: SlurmConfig = SlurmConfig()
+    prompt_template_override: Optional[str] = None
 
     @field_validator("output_dir", "cache_dir", mode="before")
     @classmethod

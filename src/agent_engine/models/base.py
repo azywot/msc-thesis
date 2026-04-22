@@ -198,6 +198,15 @@ class ModelConfig(BaseModel):
 
     backend: str = "vllm"  # "vllm", "mlx", "openai", "anthropic"
 
+    # Upstream-compat knob: when set, this Jinja string is passed to
+    # ``tokenizer.apply_chat_template(chat_template=...)`` instead of the
+    # tokenizer's native template. Also suppresses any family-specific
+    # post-render suffix (e.g. the DeepSeek ``<think>\n`` prefix injection),
+    # so the prompt is bit-identical to what the external codebase renders.
+    # Intended for comparison runs only; leaving this ``None`` keeps the
+    # native-template path (recommended for production use).
+    chat_template_override: Optional[str] = None
+
     # OLMo 3 HF cards specify T=0.6, top_p=0.95, max_tokens=32768 and do not
     # set top_k or repetition_penalty; -1 disables top_k in vLLM and 1.0 is
     # the no-op repetition_penalty.
