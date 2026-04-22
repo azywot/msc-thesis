@@ -202,10 +202,11 @@ class TestPromptInjection:
         # Patch out the internal file-reading by calling _analyze_with_llm directly.
         tool = TextInspectorTool(model_provider=self._mock_model())
         captured = {}
-        tool.model_provider.generate = lambda prompts: (
-            captured.setdefault("prompt", prompts[0])
-            or [MagicMock(text="ANS", usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})]
-        )
+        def _gen(prompts):
+            captured["prompt"] = prompts[0]
+            return [MagicMock(text="ANS", usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})]
+
+        tool.model_provider.generate = _gen
         out, _ = tool._analyze_with_llm(
             "FILE_CONTENT", "What?", shared_context="SHARED_CTX_TOKEN"
         )
