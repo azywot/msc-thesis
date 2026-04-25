@@ -357,21 +357,7 @@ class AgenticOrchestrator:
         tool = self.tools.get(tool_name)
         args = tool_call.get("arguments") or {}
 
-        # Dedup guard: block any tool call whose (name, arguments) pair was already
-        # executed this episode, regardless of which execution path it takes below.
-        prev_args_list = [tc.get("arguments") or {} for tc in state.tool_calls if tc["name"] == tool_name]
-        if args in prev_args_list:
-            logger.warning("Repeated tool call detected: %s %s", tool_name, args)
-            tr = ToolResult(
-                success=False,
-                output=(
-                    f"You already called '{tool_name}' with these exact arguments. "
-                    "Do not repeat this call. Try a different approach or use different arguments."
-                ),
-                metadata={"repeated_call": True},
-            )
-            immediate_results.append(_ImmediateResult(state, tool_call, tr))
-            return
+        # dedup guard disabled — let repeated tool calls execute normally (tool_limits is the only safeguard).
 
         # Index reasoning into the mind map graph before tool execution.
         # Handles web_search, code_generator, and mind_map (mirrors MAT).
@@ -751,9 +737,7 @@ class AgenticOrchestrator:
                     "Planning turn for Q%s produced tool call (discarded); analysis: %.100s...",
                     s.question_id, analysis,
                 )
-            # Edge case: model produced a final answer (only short-circuit when no tools
-            # are configured — with tools the action loop must run so they can be used)
-            elif ("\\boxed{" in text or "\\boxed " in text) and len(self.tools) == 0:
+            elif "\\boxed{" in text or "\\boxed " in text:
                 s.query_analysis = strip_thinking_tags(text)
                 s.finished = True
                 s.answer = extract_answer(text)
@@ -785,26 +769,7 @@ class AgenticOrchestrator:
             logger.warning(f"Tool limit exceeded for: {tool_name}")
             return ToolResult(success=False, output=f"Tool usage limit reached for {tool_name}", metadata={}, error="Limit exceeded")
 
-        # Detect repeated identical tool calls to break stuck loops.
-        # Any tool called with the exact same arguments as a previous call
-        # gets a redirect message instead of re-executing and returning the same result.
-        args = tool_call.get("arguments") or {}
-        prev_args_list = [
-            tc.get("arguments") or {}
-            for tc in state.tool_calls
-            if tc["name"] == tool_name
-        ]
-        if args in prev_args_list:
-            logger.warning("Repeated tool call detected: %s %s", tool_name, args)
-            return ToolResult(
-                success=False,
-                output=(
-                    f"You already called '{tool_name}' with these exact arguments. "
-                    "Do not repeat this call. Try a different approach or use different arguments."
-                ),
-                metadata={"repeated_call": True},
-            )
-
+        # let repeated tool calls execute normally (tool_limits is the only safeguard).
         try:
             arguments = dict(tool_call.get("arguments") or {})
             inject_error = self._inject_attachment_path(tool_name, state, arguments)
