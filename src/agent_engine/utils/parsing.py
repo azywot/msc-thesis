@@ -150,12 +150,6 @@ def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
 def extract_answer(text: str) -> Optional[str]:
     """Extract the final answer from model output.
 
-    Strips ``<think>…</think>`` blocks first so that candidate answers the
-    model explored during reasoning (and later rejected) do not shadow the
-    committed answer in the post-think summary. The system prompt instructs
-    the model to end its response with ``\\boxed{YOUR_ANSWER}`` outside of
-    any thinking block, so requiring the match to live there is intentional.
-
     Tries the following patterns in order of priority:
 
     1. ``\\boxed{answer}`` — LaTeX format used by math reasoning models.
@@ -169,28 +163,23 @@ def extract_answer(text: str) -> Optional[str]:
     Returns:
         Extracted answer string, or ``None`` if no pattern matched.
     """
-    # Strip thinking tags so we only match patterns in the post-think summary.
-    # (No code-block fallback — that belonged to BigCodeBench and was harmful
-    # on GAIA/HLE/math, where it returned trailing code snippets as answers.)
-    stripped = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
-
     boxed_pattern = r'\\+boxed\{([^}]+)\}'
-    match = re.search(boxed_pattern, stripped, re.IGNORECASE)
+    match = re.search(boxed_pattern, text, re.IGNORECASE)
     if match:
         return match.group(1).strip()
 
     pattern1 = r'Final Answer:\s*(.+?)(?:\n|$)'
-    match = re.search(pattern1, stripped, re.IGNORECASE)
+    match = re.search(pattern1, text, re.IGNORECASE)
     if match:
         return match.group(1).strip()
 
     pattern2 = r'(?<!Final )Answer:\s*(.+?)(?:\n|$)'
-    match = re.search(pattern2, stripped, re.IGNORECASE)
+    match = re.search(pattern2, text, re.IGNORECASE)
     if match:
         return match.group(1).strip()
 
     pattern3 = r'The answer is[:\s]+(.+?)(?:\n|$)'
-    match = re.search(pattern3, stripped, re.IGNORECASE)
+    match = re.search(pattern3, text, re.IGNORECASE)
     if match:
         return match.group(1).strip()
 

@@ -357,8 +357,7 @@ class AgenticOrchestrator:
         tool = self.tools.get(tool_name)
         args = tool_call.get("arguments") or {}
 
-        # REVERT (A/B isolation §2.2): dedup guard disabled — let repeated
-        # tool calls execute normally (tool_limits is the only safeguard).
+        # dedup guard disabled — let repeated tool calls execute normally (tool_limits is the only safeguard).
 
         # Index reasoning into the mind map graph before tool execution.
         # Handles web_search, code_generator, and mind_map (mirrors MAT).
@@ -738,9 +737,6 @@ class AgenticOrchestrator:
                     "Planning turn for Q%s produced tool call (discarded); analysis: %.100s...",
                     s.question_id, analysis,
                 )
-            # REVERT (A/B isolation §2.3): restore turn-0 short-circuit when
-            # the planning output already contains a boxed answer, regardless
-            # of whether tools are configured.
             elif "\\boxed{" in text or "\\boxed " in text:
                 s.query_analysis = strip_thinking_tags(text)
                 s.finished = True
@@ -773,9 +769,7 @@ class AgenticOrchestrator:
             logger.warning(f"Tool limit exceeded for: {tool_name}")
             return ToolResult(success=False, output=f"Tool usage limit reached for {tool_name}", metadata={}, error="Limit exceeded")
 
-        # REVERT (A/B isolation §2.2): dedup guard disabled — let repeated
-        # tool calls execute normally (tool_limits is the only safeguard).
-
+        # let repeated tool calls execute normally (tool_limits is the only safeguard).
         try:
             arguments = dict(tool_call.get("arguments") or {})
             inject_error = self._inject_attachment_path(tool_name, state, arguments)
