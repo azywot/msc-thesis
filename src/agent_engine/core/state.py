@@ -59,6 +59,12 @@ class ExecutionState(BaseModel):
     query_analysis: str = ""
     action_history: List[Dict[str, str]] = []
 
+    # Cumulative count of approximate *extra* prompt tokens introduced by the
+    # sub-agent shared-memory block across all sub-agent calls in this episode.
+    # Stays at 0 when tools.subagent_shared_memory is disabled. Measured using
+    # the orchestrator model's tokenizer (falls back to chars//4 if unavailable).
+    subagent_shared_memory_tokens: int = 0
+
     # Metadata
     metadata: Dict[str, Any] = {}
 

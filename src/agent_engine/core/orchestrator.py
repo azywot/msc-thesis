@@ -42,6 +42,13 @@ def _accumulate_usage(state: "ExecutionState", usage: Optional[Dict[str, int]]) 
 # Mirrors MAT: reasoning before search, code, and mind_map calls is inserted.
 _MIND_MAP_INDEXED_TOOLS = frozenset({"web_search", "code_generator", "mind_map"})
 
+# Task-directed sub-agents eligible for the shared-memory ablation.
+# mind_map is intentionally excluded (its sub-agent is GraphRAG entity extraction,
+# not a task-directed call).
+_SHARED_MEMORY_TOOLS = frozenset({
+    "web_search", "code_generator", "text_inspector", "image_inspector",
+})
+
 _IMAGE_EXTS: frozenset = frozenset({".jpg", ".jpeg", ".png"})
 _TEXT_EXTS: frozenset = frozenset({
     ".txt", ".md", ".log", ".json", ".jsonl", ".xml",
@@ -60,6 +67,7 @@ class _WebJob(NamedTuple):
     tool: Any
     query: str
     payload: Dict[str, Any]
+    shared_context: str  # "" when sub-agent shared memory is disabled
 
 
 class _CodeJob(NamedTuple):
@@ -99,6 +107,8 @@ class AgenticOrchestrator:
         use_thinking: bool = False,
         cache_manager=None,
         baseline: bool = False,
+        subagent_shared_memory: bool = False,
+        subagent_shared_memory_last_k: int = 5,
     ):
         """Initialize the orchestrator.
 
@@ -115,6 +125,16 @@ class AgenticOrchestrator:
             baseline: When ``True`` the planning turn is skipped and each turn
                       uses the raw growing conversation (``state.messages``)
                       instead of the structured AgentFlow memory prompt.
+            subagent_shared_memory: When ``True`` each task-directed sub-agent
+                      call (web_search, code_generator, text_inspector,
+                      image_inspector) is prefixed with the orchestrator's
+                      structured memory (original question + query_analysis +
+                      last-K stripped action steps + current sub-goal). The
+                      web_search per-run analysis cache is bypassed when this
+                      is enabled. Disabled by default.
+            subagent_shared_memory_last_k: How many most recent action steps
+                      to include in the shared context (default 5). Only used
+                      when ``subagent_shared_memory=True``.
         """
         self.model = model_provider
         self.tools = tool_registry
@@ -123,6 +143,8 @@ class AgenticOrchestrator:
         self.tool_limits = tool_limits or {"web_search": 10}
         self.use_thinking = use_thinking and model_provider.config.supports_thinking
         self.baseline = baseline
+        self.subagent_shared_memory = subagent_shared_memory
+        self.subagent_shared_memory_last_k = subagent_shared_memory_last_k
         # Force tool-call prefix injection on action turns for families (DeepSeek)
         # that hallucinate tool use in their thinking blocks instead of emitting <tool_call>.
         # Disabled in baseline mode: the forced prefix injects a <sub_goal> tag which
@@ -138,6 +160,13 @@ class AgenticOrchestrator:
         logger.info(f"Thinking mode: {'enabled' if self.use_thinking else 'disabled'}")
         if self.baseline:
             logger.info("Baseline mode enabled: planning turn skipped, growing conversation used")
+        if self.subagent_shared_memory:
+            logger.info(
+                "Sub-agent shared memory ENABLED (last_k=%d): task-directed sub-agents "
+                "will receive question + query_analysis + last-K stripped action steps "
+                "+ current sub-goal. web_search analysis cache bypassed.",
+                self.subagent_shared_memory_last_k,
+            )
 
     # ------------------------------------------------------------------ #
     # Public interface                                                     #
@@ -392,8 +421,11 @@ class AgenticOrchestrator:
             immediate_results.append(_ImmediateResult(state, tool_call, tr))
             return
 
+        # Bypass the per-run analysis cache when shared memory is on: identical
+        # (query) calls at different turns now see different context and must
+        # re-run the sub-agent to stay correct.
         analysis_cache = self._get_analysis_cache(tool)
-        if query in analysis_cache:
+        if not self.subagent_shared_memory and query in analysis_cache:
             logger.info("Tool call: %s, %s", tool_call["name"], tool_call.get("arguments", {}))
             tr = ToolResult(success=True, output=analysis_cache[query], metadata={"cached": True, "query": query, "mode": "sub-agent"})
             immediate_results.append(_ImmediateResult(state, tool_call, tr))
@@ -401,7 +433,13 @@ class AgenticOrchestrator:
 
         try:
             payload = tool.search_and_format(query)
-            web_jobs.append(_WebJob(state, tool_call, tool, query, payload))
+            shared_context = self._maybe_attach_shared_context(
+                tool_name="web_search",
+                state=state,
+                current_output=state.current_output,
+                task_payload=query,
+            )
+            web_jobs.append(_WebJob(state, tool_call, tool, query, payload, shared_context))
         except Exception as exc:
             immediate_results.append(_ImmediateResult(state, tool_call, ToolResult(success=False, output="", metadata={"query": query}, error=str(exc))))
 
@@ -423,7 +461,13 @@ class AgenticOrchestrator:
 
         try:
             att_ctx = get_attachment_context_for_code(state)
-            prompt = tool.build_task_prompt(task, context=att_ctx)
+            shared_context = self._maybe_attach_shared_context(
+                tool_name="code_generator",
+                state=state,
+                current_output=state.current_output,
+                task_payload=task,
+            )
+            prompt = tool.build_task_prompt(task, attachment_context=att_ctx, shared_context=shared_context)
             code_jobs.append(_CodeJob(state, tool_call, tool, prompt))
         except Exception as exc:
             immediate_results.append(_ImmediateResult(state, tool_call, ToolResult(success=False, output="", metadata={}, error=str(exc))))
@@ -490,6 +534,7 @@ class AgenticOrchestrator:
             job.tool.build_analysis_prompt(
                 job.query,
                 job.tool._format_results(job.payload.get("results", []), job.query),
+                shared_context=job.shared_context,
             )
             for job in jobs
         ]
@@ -498,7 +543,10 @@ class AgenticOrchestrator:
         for job, out in zip(jobs, gen_outputs):
             _accumulate_usage(job.state, out.usage)
             text = strip_thinking_tags(out.text)
-            analysis_cache[job.query] = text
+            # Only populate the per-run analysis cache when shared memory is off;
+            # otherwise the cached output would be stale for future turns.
+            if not self.subagent_shared_memory:
+                analysis_cache[job.query] = text
             self._commit_tool_result(job.state, job.tool_call, text)
 
     # ------------------------------------------------------------------ #
@@ -653,6 +701,162 @@ class AgenticOrchestrator:
             lines.append("")
         return "\n".join(lines)
 
+    # ------------------------------------------------------------------ #
+    # Sub-agent shared memory (ablation)                                  #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _format_action_history_lightweight(action_history: List[Dict[str, str]]) -> str:
+        """Format action history for sub-agents: tool + sub-goal only.
+
+        Drops both ``result`` (echo avoidance) and ``command`` (the raw JSON
+        tool call adds noise without much signal at the sub-agent level).
+        Step numbering is *absolute* (matches the orchestrator's own memory
+        prompt), so a tail slice starting at index ``i`` renders as
+        ``Action Step i+1``.
+        """
+        lines = []
+        for i, action in enumerate(action_history, 1):
+            lines.append(f"Action Step {i}:")
+            lines.append(f"  - Tool: {action.get('tool_name', 'unknown')}")
+            lines.append(f"  - Sub-goal: {action.get('sub_goal', '')}")
+            lines.append("")
+        return "\n".join(lines)
+
+    def _build_subagent_shared_context(
+        self,
+        state: ExecutionState,
+        current_output: Optional[str] = None,
+    ) -> str:
+        """Render the shared-memory block passed to task-directed sub-agents.
+
+        Returns ``""`` when the ablation flag is off, or when the state has
+        nothing meaningful to share (defensive: should be rare in AgentFlow).
+        Otherwise returns a plain-text block following the layout documented
+        in ``docs/subagent_shared_memory_plan.md``.
+        """
+        if not self.subagent_shared_memory:
+            return ""
+
+        # Invariant: messages[0] is the system prompt and messages[1] is the
+        # original user question in all non-baseline AgentFlow runs. The config
+        # validator forbids `subagent_shared_memory=true` together with
+        # `baseline=true`, so reaching this branch guarantees the index-1
+        # lookup is safe; the `state.question` fallback is purely defensive.
+        user_content = state.messages[1]["content"] if len(state.messages) > 1 else state.question
+        # Strip the [Attachment] block appended by _format_attachment_note.
+        # That block contains orchestrator-facing instructions ("call the tool
+        # `text_inspector`", "do NOT guess file paths") that are meaningless —
+        # and actively misleading — when forwarded into a sub-agent's prompt,
+        # because the sub-agent has no tools available and already receives the
+        # file content directly.
+        attachment_marker = "\n\n[Attachment]"
+        if attachment_marker in user_content:
+            user_content = user_content[:user_content.index(attachment_marker)]
+        parts: List[str] = [f"**Original Question:**\n{user_content}"]
+
+        # Intentionally omit `state.query_analysis` from the shared block.
+        # See `docs/subagent_shared_memory_plan.md` §2.1 for the full rationale.
+        last_k = max(0, int(self.subagent_shared_memory_last_k))
+        if last_k > 0 and state.action_history:
+            # Absolute step numbering → slice and re-compute start offset.
+            tail = state.action_history[-last_k:]
+            start_idx = len(state.action_history) - len(tail)
+            numbered = []
+            for offset, action in enumerate(tail):
+                step_num = start_idx + offset + 1
+                numbered.append(f"Action Step {step_num}:")
+                numbered.append(f"  - Tool: {action.get('tool_name', 'unknown')}")
+                numbered.append(f"  - Sub-goal: {action.get('sub_goal', '')}")
+                numbered.append("")
+            header = f"**Previous Steps (last {len(tail)}):**"
+            parts.append(header + "\n" + "\n".join(numbered).rstrip())
+
+        current_sub_goal = self._extract_sub_goal(current_output or "")
+        if current_sub_goal:
+            parts.append(f"**Current Sub-goal:**\n{current_sub_goal}")
+
+        return "\n\n".join(parts)
+
+    def _count_tokens(self, text: str) -> int:
+        """Approximate token count using the orchestrator model's tokenizer.
+
+        Falls back to ``len(text) // 4`` when the provider does not expose a
+        tokenizer (e.g. API-only backends). Empty strings always return 0.
+        """
+        if not text:
+            return 0
+        tokenizer = getattr(self.model, "tokenizer", None)
+        encode = getattr(tokenizer, "encode", None) if tokenizer else None
+        if encode is not None:
+            try:
+                return len(encode(text))
+            except Exception:
+                pass
+        return max(1, len(text) // 4)
+
+    def _log_subagent_shared_context(
+        self,
+        *,
+        tool_name: str,
+        state: ExecutionState,
+        shared_context: str,
+        task_payload: str,
+    ) -> int:
+        """Log the shared-memory block attached to a sub-agent call.
+
+        Emits two INFO lines (metadata summary + full block) and returns the
+        approximate token count of the block so callers can accumulate it.
+        No-op (returns 0) when the flag is off or the context is empty.
+        """
+        if not self.subagent_shared_memory or not shared_context:
+            return 0
+
+        approx_tokens = self._count_tokens(shared_context)
+        logger.info(
+            "Sub-agent shared-memory injection | tool=%s q_id=%s turn=%s "
+            "shared_ctx_chars=%d shared_ctx_tokens~%d task_payload_chars=%d",
+            tool_name, state.question_id, state.turn,
+            len(shared_context), approx_tokens, len(task_payload or ""),
+        )
+        logger.info(
+            "Sub-agent shared-memory block (tool=%s q_id=%s turn=%s):\n"
+            "--- BEGIN shared_context ---\n%s\n--- END shared_context ---\n"
+            "task_payload: %s",
+            tool_name, state.question_id, state.turn,
+            shared_context, task_payload,
+        )
+        return approx_tokens
+
+    def _maybe_attach_shared_context(
+        self,
+        *,
+        tool_name: str,
+        state: ExecutionState,
+        current_output: Optional[str],
+        task_payload: str,
+    ) -> str:
+        """Build, log, and account for the shared-memory block for one call.
+
+        Returns the rendered block (``""`` when the flag is off or the tool is
+        not in the shared-memory scope). Also increments
+        ``state.subagent_shared_memory_tokens`` by the approximate token
+        count. This is the single choke-point all injection sites go through.
+        """
+        if not self.subagent_shared_memory or tool_name not in _SHARED_MEMORY_TOOLS:
+            return ""
+        shared_context = self._build_subagent_shared_context(state, current_output=current_output)
+        if not shared_context:
+            return ""
+        added = self._log_subagent_shared_context(
+            tool_name=tool_name,
+            state=state,
+            shared_context=shared_context,
+            task_payload=task_payload or "",
+        )
+        state.subagent_shared_memory_tokens += int(added)
+        return shared_context
+
     @staticmethod
     def _extract_sub_goal(output_text: str) -> str:
         """Extract the explicit sub-goal from assistant output (AF-aligned).
@@ -776,8 +980,31 @@ class AgenticOrchestrator:
             if inject_error:
                 return ToolResult(success=False, output="", metadata={}, error=inject_error)
 
+            # Sub-agent shared-memory injection for single-call sub-agent paths.
+            # Sits before sanitisation so _sanitize_tool_arguments keeps the
+            # kwarg (each target tool's execute() now declares shared_context).
+            if self.subagent_shared_memory and tool_name in _SHARED_MEMORY_TOOLS:
+                # Choose the most informative field as the task_payload for logging.
+                payload_for_log = (
+                    arguments.get("query")
+                    or arguments.get("task")
+                    or arguments.get("question")
+                    or ""
+                )
+                shared_context = self._maybe_attach_shared_context(
+                    tool_name=tool_name,
+                    state=state,
+                    current_output=state.current_output,
+                    task_payload=str(payload_for_log),
+                )
+                if shared_context:
+                    arguments["shared_context"] = shared_context
+
             arguments = self._sanitize_tool_arguments(tool, arguments)
-            logger.info("Tool call: %s, %s", tool_name, arguments)
+            # Keep the generic tool-call log concise: the shared-memory block
+            # is already logged verbatim by _log_subagent_shared_context above.
+            loggable_args = {k: v for k, v in arguments.items() if k != "shared_context"}
+            logger.info("Tool call: %s, %s", tool_name, loggable_args)
             return tool.execute(**arguments)
         except Exception as e:
             logger.exception("Tool execution error")

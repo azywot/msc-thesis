@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from ..models.base import ModelConfig
 
@@ -49,6 +49,19 @@ class ToolsConfig(BaseModel):
     max_search_limit: int = 10
     top_k_results: int = 5
     max_doc_len: int = 3000
+
+    # --- Sub-agent shared memory (ablation) ------------------------------------
+    # When True, task-directed sub-agents (web_search, code_generator,
+    # text_inspector, image_inspector) receive, in addition to their task
+    # argument, the orchestrator's structured memory: the original question,
+    # query_analysis, the last-K action steps with results stripped, and the
+    # current turn's <sub_goal>. Disabled by default.
+    #
+    # Requires direct_tool_call=False (no sub-agents run in direct mode).
+    # Incompatible with ExperimentConfig.baseline=True (no structured memory
+    # is produced in baseline mode).
+    subagent_shared_memory: bool = False
+    subagent_shared_memory_last_k: int = 5
 
 
 class DatasetConfig(BaseModel):
@@ -128,6 +141,32 @@ class ExperimentConfig(BaseModel):
         if isinstance(v, str):
             return Path(v)
         return v
+
+    @model_validator(mode="after")
+    def _validate_subagent_shared_memory(self):
+        """Enforce the invariants of the sub-agent shared-memory ablation.
+
+        The flag only makes sense when (a) sub-agents actually run
+        (``direct_tool_call=False``) and (b) the orchestrator produces
+        structured memory (``baseline=False``).
+        """
+        if self.tools.subagent_shared_memory:
+            if self.baseline:
+                raise ValueError(
+                    "tools.subagent_shared_memory=true is incompatible with baseline=true "
+                    "(baseline mode produces no query_analysis or action_history)."
+                )
+            if self.tools.direct_tool_call:
+                raise ValueError(
+                    "tools.subagent_shared_memory=true requires tools.direct_tool_call=false "
+                    "(no sub-agents run in direct mode; the flag would be a no-op)."
+                )
+        if self.tools.subagent_shared_memory_last_k < 0:
+            raise ValueError(
+                "tools.subagent_shared_memory_last_k must be >= 0 "
+                f"(got {self.tools.subagent_shared_memory_last_k})."
+            )
+        return self
 
     def get_model(self, role: str) -> Optional[ModelConfig]:
         """Return the :class:`ModelConfig` for *role*, or ``None`` if not configured."""
