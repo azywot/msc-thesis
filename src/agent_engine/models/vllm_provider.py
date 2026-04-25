@@ -314,6 +314,12 @@ class VLLMProvider(BaseModelProvider):
         * ``use_thinking=True`` (no force): ``<think>\\n`` to open a free reasoning
           block.
         * otherwise: ``<think>\\n\\n</think>\\n`` to suppress reasoning.
+
+        When ``config.chat_template_override`` is set, the Jinja string is used
+        verbatim in place of the tokenizer's native template AND the
+        family-specific post-render suffix (the ``<think>`` prefix injection
+        above) is skipped. This is the upstream-compat path used by the
+        ``hle_mat`` comparison configs.
         """
         if self.config.family in _NO_SYSTEM_PROMPT_FAMILIES:
             msgs = merge_system_into_user(msgs)
@@ -325,6 +331,16 @@ class VLLMProvider(BaseModelProvider):
         # OLMo 3 Think: inject functions="" to kill the "no functions" suffix.
         if self.config.family in _SUPPRESS_NO_FUNCTIONS_SUFFIX_FAMILIES:
             msgs = suppress_no_functions_suffix(msgs)
+
+        template_override = self.config.chat_template_override
+        if template_override:
+            rendered = self.tokenizer.apply_chat_template(
+                msgs,
+                chat_template=template_override,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            return rendered
 
         if self.config.family in _ENABLE_THINKING_KWARG_FAMILIES:
             rendered = self.tokenizer.apply_chat_template(

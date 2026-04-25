@@ -340,6 +340,7 @@ def run_experiment(args):
             direct_tool_call=config.tools.direct_tool_call,
             baseline=getattr(config, "baseline", False),
             tool_call_format=get_tool_call_format(config.get_model("orchestrator").family),
+            template_name_override=getattr(config, "prompt_template_override", None),
         )
 
         orchestrator = AgenticOrchestrator(

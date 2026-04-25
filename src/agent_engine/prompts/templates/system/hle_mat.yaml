@@ -1,0 +1,85 @@
+# HLE system prompt aligned with the ``multi-agent-tools`` upstream codebase.
+#
+# Mirrors the wording of ``get_hard_question_instruction`` combined with
+# ``get_task_instruction_openqa`` (scripts/prompts.py) but adapted to the
+# thesis's tool-call machinery:
+#
+#   * Tools are still advertised via the standard ``<tools>...</tools>`` JSON
+#     schema block (DS-R1-Distill is hard-wired to ``ToolCallFormat.JSON_SINGLE``
+#     in the thesis; the upstream text-delimiter syntax cannot be reproduced
+#     verbatim without a new ToolCallFormat). The persona text, the search-limit
+#     disclosure, the "continue your reasoning" nudge, and the worked biotech
+#     example all come directly from upstream.
+#   * The biotech example is translated from the upstream
+#     ``<|begin_code_query|>``/``<|begin_search_query|>`` delimiter form to
+#     JSON_SINGLE ``code_generator``/``web_search`` sub-agent tool calls
+#     (``code_generator`` takes a natural-language ``task`` because the
+#     DS-32B × HLE × subagent config uses ``direct_tool_call: false``).
+#
+# Selected via ``prompt_template_override: hle_mat`` in the experiment YAML.
+# See ``experiments/configs/deepseek/baseline/hle/ds32b_subagent_tools_aligned.yaml``.
+
+base_instruction: |
+  You are a reasoning assistant. Answer the user's question accurately.
+
+base_instruction_tools: |
+  You are a reasoning assistant with the ability to perform web searches and execute code to help you answer the user's question accurately. You have special tools available.
+
+final_instructions: |
+  Please answer the question. You should think step by step to solve it.
+  Provide your final answer in the format \boxed{YOUR_ANSWER}.
+
+final_instructions_tools: |
+  Once you have all the information you need, continue your reasoning.
+  When done searching and calculating, finish with your final answer in the format \boxed{YOUR_ANSWER}.
+
+example_search_code_subagent:
+  question: "Company Alpha is a biological technology company reported an annual revenue growth rate of 8% and currently has a revenue of $100 million. Determine whether its revenue exceeds the industry average 5 years later."
+  steps:
+    - step: 1
+      tool_call: '{"name": "code_generator", "arguments": {"task": "Calculate the projected revenue over 5 years for Company Alpha with a current revenue of $100 million and an annual growth rate of 8%, using the compound growth formula Future Revenue = Current Revenue * (1 + growth_rate)^years."}}'
+      tool_response: "Company Alpha projected revenue after 5 years: $146,932,807.68"
+    - step: 2
+      tool_call: '{"name": "web_search", "arguments": {"query": "average revenue for biological technology companies"}}'
+      tool_response: "**Final Information**\n\nRecent industry reports indicate that the average revenue for biological technology companies is approximately $110 million."
+    - step: 3
+      tool_call: '{"name": "web_search", "arguments": {"query": "average revenue growth rate for biological technology companies"}}'
+      tool_response: "**Final Information**\n\nRecent industry reports indicate that the average revenue growth rate for biological technology companies is approximately 6%."
+    - step: 4
+      tool_call: '{"name": "code_generator", "arguments": {"task": "Calculate the projected average revenue over 5 years for biological technology companies with a current average revenue of $110 million and an average annual growth rate of 6%, using the compound growth formula Future Revenue = Current Revenue * (1 + growth_rate)^years."}}'
+      tool_response: "Industry average revenue for biological technology companies after 5 years: $147,204,813.54"
+    - step: 5
+      tool_call: '{"name": "code_generator", "arguments": {"task": "Compare Company Alpha''s projected revenue after 5 years ($146,932,807.68) with the industry average revenue for biological technology companies after 5 years ($147,204,813.54). Report which is larger and by how much."}}'
+      tool_response: "Company Alpha's projected revenue after 5 years ($146,932,807.68) is lower than the industry average ($147,204,813.54) by $272,005.86."
+    - step: final
+      answer: "Company Alpha's revenue does not exceed the industry average 5 years later. \\boxed{No}"
+
+example_search_code_direct:
+  question: "Company Alpha is a biological technology company reported an annual revenue growth rate of 8% and currently has a revenue of $100 million. Determine whether its revenue exceeds the industry average 5 years later."
+  steps:
+    - step: 1
+      tool_call: '{"name": "code_generator", "arguments": {"code": "future = 100_000_000 * (1 + 0.08) ** 5\nprint(f\"Company Alpha projected revenue after 5 years: ${future:,.2f}\")\n"}}'
+      tool_response: "Company Alpha projected revenue after 5 years: $146,932,807.68"
+    - step: 2
+      tool_call: '{"name": "web_search", "arguments": {"query": "average revenue for biological technology companies"}}'
+      tool_response: "**Final Information**\n\nRecent industry reports indicate that the average revenue for biological technology companies is approximately $110 million."
+    - step: 3
+      tool_call: '{"name": "web_search", "arguments": {"query": "average revenue growth rate for biological technology companies"}}'
+      tool_response: "**Final Information**\n\nRecent industry reports indicate that the average revenue growth rate for biological technology companies is approximately 6%."
+    - step: 4
+      tool_call: '{"name": "code_generator", "arguments": {"code": "future_industry = 110_000_000 * (1 + 0.06) ** 5\nprint(f\"Industry average after 5 years: ${future_industry:,.2f}\")\n"}}'
+      tool_response: "Industry average after 5 years: $147,204,813.54"
+    - step: 5
+      tool_call: '{"name": "code_generator", "arguments": {"code": "alpha = 146_932_807.68\nindustry = 147_204_813.54\nprint(\"Alpha exceeds industry?\" , alpha > industry, \"diff=\", alpha - industry)\n"}}'
+      tool_response: "Alpha exceeds industry? False diff= -272005.86"
+    - step: final
+      answer: "Company Alpha's revenue does not exceed the industry average 5 years later. \\boxed{No}"
+
+example_search_only:
+  question: "Who won the first Nobel Prize in Physics?"
+  steps:
+    - step: 1
+      tool_call: '{"name": "web_search", "arguments": {"query": "first Nobel Prize in Physics winner 1901"}}'
+      tool_response: "**Final Information**\n\nThe first Nobel Prize in Physics was awarded in 1901 to Wilhelm Conrad Röntgen for his discovery of X-rays."
+    - step: final
+      answer: "The winner of the first Nobel Prize in Physics in 1901 was \\boxed{Wilhelm Conrad Röntgen}."
