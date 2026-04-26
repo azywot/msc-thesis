@@ -53,6 +53,8 @@ This target cuts across the three largest actionable failure modes:
 
 The intervention intentionally does **not** try to solve modality/tool-coverage failures. Many of those failures come from image or video requirements while image inspection was disabled. Fine-tuning can teach graceful refusal later, but it cannot create missing visual tools.
 
+The AIME no-coder ablation also fits this framing. Removing the coder improves AIME from 55.0% to 60.0%, but the full AIME run made **zero** `code_generator` calls. Therefore, this is not evidence that the coder sub-agent returned bad code. It is evidence that tool availability can change the orchestrator's direct reasoning trajectory even when the tool is unused. The narrowed SFT plan should address this as an orchestrator-control issue: the model should learn when computation is actually needed, when to call `code_generator` with a precise verification sub-goal, and when to answer directly without being distracted by the mere presence of tools. A detailed analysis is provided in `docs/failure_mode_and_fine_tuning/coding_failures.md`.
+
 ---
 
 ## Core Research Question
@@ -116,7 +118,7 @@ This policy decomposes into five operational rules.
 | Rule | Desired behavior |
 |---|---|
 | Evidence requirement detection | If the question asks for a source-specific fact, external lookup, file content, exact count, or computation, do not answer directly. |
-| First-action selection | Choose the first tool/sub-agent that can obtain the missing evidence or computation. |
+| First-action selection | Choose the first tool/sub-agent that can obtain the missing evidence or computation; for finite enumeration or arithmetic-heavy checks, prefer a precise `code_generator` verification sub-goal. |
 | Evidence sufficiency check | After a tool result, check whether it directly answers the original question. |
 | Verification before stopping | If the tool result is partial, generic, empty, contradictory, or off-format, continue rather than finalize. |
 | Final answer gating | Emit a final answer only after the evidence is sufficient and the requested format is satisfied. |
@@ -483,7 +485,7 @@ This single approach intentionally leaves several issues unresolved.
 |---|---|
 | Full RL optimization | Too much infrastructure and reward-design complexity for two months |
 | Image/video recovery | The tools were disabled or unavailable in the analyzed run |
-| Deep computational reasoning repair | Requires richer code traces and problem-specific verification |
+| Deep computational reasoning repair | Requires richer code traces and problem-specific verification; the two-month plan only teaches when to delegate or verify with `code_generator`, not how to make the coder itself better |
 | Full retrieval pipeline redesign | Requires changes to search/document tools, not only orchestrator fine-tuning |
 | Sub-agent fine-tuning | The thesis scope fine-tunes the orchestrator only |
 | All benchmark failures | Many GPQA/HLE failures are domain knowledge or reasoning failures, not pure orchestration failures |
