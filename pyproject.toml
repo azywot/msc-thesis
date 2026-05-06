@@ -61,6 +61,15 @@ dev = [
     "isort>=5.12.0",
     "mypy>=1.0.0",
 ]
+# RL fine-tuning dependencies (training env only — see jobs/environment_train.yml)
+# Install with: pip install -e ".[training]"
+# Note: torch, vllm, flash-attn, verl versions are pinned in environment_train.yml
+training = [
+    "verl==0.5.0",
+    "filelock>=3.13.0",
+    "omegaconf>=2.3.0",
+    "codetiming>=1.4.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/yourusername/agent-engine"
