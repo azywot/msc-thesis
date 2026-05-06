@@ -20,15 +20,20 @@ logger = get_logger(__name__)
 class OpenAIProvider(BaseModelProvider):
     """OpenAI API provider for GPT models."""
 
-    def __init__(self, config: ModelConfig, api_key: str = None):
+    def __init__(self, config: ModelConfig, api_key: str = None, base_url: str = None):
         """Initialize OpenAI provider.
 
         Args:
             config: ModelConfig with model ID and generation settings
             api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
+            base_url: Optional base URL for OpenAI-compatible APIs (e.g. vLLM server).
+                      When set, overrides the default openai.com endpoint.
         """
         super().__init__(config)
-        self.client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
+        self.client = OpenAI(
+            api_key=api_key or os.getenv("OPENAI_API_KEY", "EMPTY"),
+            base_url=base_url,
+        )
 
     def generate(self, prompts: List[str]) -> List[GenerationResult]:
         """Generate completions using OpenAI API with concurrent requests.
