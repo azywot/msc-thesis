@@ -57,6 +57,8 @@ def main():
     test_temperature = float(str(env.get("TEST_TEMPERATURE", 0.0)))
     max_turns = int(str(env.get("TOOL_STEPS", 5)))
     max_tokens = int(str(python_args.get("data.max_response_length", 2048)))
+    thinking_mode = str(env.get("THINKING_MODE", "NO")).upper()
+    use_thinking = thinking_mode in ("ORCHESTRATOR_ONLY", "ALL")
     experiment_name = str(env.get("EXPERIMENT_NAME", "cosmas-train"))
     output_dir = Path("experiments/results/training") / experiment_name
 
@@ -94,6 +96,7 @@ def main():
         test_temperature=test_temperature,
         max_turns=max_turns,
         max_tokens=max_tokens,
+        use_thinking=use_thinking,
     )
 
     # ── 7. Start trainer ────────────────────────────────────────────────────

@@ -31,9 +31,12 @@ def main():
     # Build: python -m agentflow.verl key=value key=value ...
     command = [sys.executable, "-m", "agentflow.verl"]
     for key, value in config.get("python_args", {}).items():
-        if isinstance(value, str):
-            expanded = os.path.expandvars(value)
-            command.append(f"{key}={expanded}")
+        if isinstance(value, list):
+            # Hydra list syntax: key=[elem1,elem2]  (each element env-expanded)
+            elems = ",".join(os.path.expandvars(str(v)) for v in value)
+            command.append(f"{key}=[{elems}]")
+        elif isinstance(value, str):
+            command.append(f"{key}={os.path.expandvars(value)}")
         else:
             command.append(f"{key}={value}")
     command.extend(unknown)

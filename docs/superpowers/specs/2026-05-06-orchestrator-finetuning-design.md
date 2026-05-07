@@ -63,7 +63,7 @@ Inference (unchanged)
 | Algorithm | GRPO (n=8 rollouts per question) | Same as AgentFlow; no value network needed |
 | Model weights | LoRA rank-64, all-linear layers | ~130 MB checkpoints vs ~16 GB full FT; sufficient compute efficiency for thesis |
 | Training data | Search-R1 (NQ + HotpotQA) + DeepMath-103K | Same sources as AgentFlow's `combined_train.parquet` |
-| Validation | AIME24 | Fast per-epoch check; same as AgentFlow |
+| Validation | DeepMath val split (200 held-out questions) | AIME is an evaluation benchmark — using it for checkpoint selection would introduce selection bias in reported results; held-out DeepMath is in-distribution, never evaluated on |
 | Reward | Binary exact-match via `metrics.py` | Directly comparable to evaluation benchmark numbers |
 | Inference integration | Merge LoRA → HF model → `path_or_id` in YAML | Zero changes to `VLLMProvider` or any inference code |
 | Environments | Two separate conda envs (training / inference) | Avoids vLLM version conflict (training: 0.9.2, inference: 0.12.0) |
@@ -99,7 +99,8 @@ msc-thesis/
         ├── train/
         │   └── combined_train.parquet  # Search-R1 + DeepMath (prepared)
         └── val/
-            └── aime24.parquet          # Validation split
+            └── deepmath_val.parquet    # 200 held-out DeepMath questions (never in training set)
+            # NOTE: do NOT use aime24.parquet here — AIME is an evaluation benchmark
 ```
 
 ### Mapping from AgentFlow
@@ -158,10 +159,11 @@ Closely mirrors `AgentFlowRollout` + `Rollout` in `train/rollout.py`, but constr
 Routes reward computation to `metrics.py` based on `data_source`:
 
 ```
-data_source in {"nq", "hotpotqa"}  →  mode="qa"   (containment-based accuracy)
+data_source in {"nq", "hotpotqa"}   →  mode="qa"   (containment-based accuracy)
 data_source in {"math", "deepmath"} →  mode="gen"  (exact/near-exact match)
-data_source == "aime"               →  mode="gen"
 ```
+
+The `deepmath_val.parquet` validation split uses `data_source="deepmath"`, so the existing `mode="gen"` branch handles it without any additional routing.
 
 Returns `1.0` (correct) or `0.0` (incorrect). Binary reward, matching AgentFlow's `eval()` function.
 
@@ -181,10 +183,13 @@ Steps:
    {"data_source": str, "question": str, "result": str,
     "extra_info": {"idx": int, "groundtruth": str}}
    ```
-4. Subsample (default: 10k search + 10k math for fast runs; 50k + 50k for full)
-5. Shuffle combined set with fixed seed
-6. Write `data/training/train/combined_train.parquet`
-7. Write AIME24 val split to `data/training/val/aime24.parquet`
+4. Subsample DeepMath: carve out 200 questions first (fixed seed) as the validation split **before** subsampling the training portion; these 200 questions must never appear in `combined_train.parquet`
+5. Subsample remainder (default: 10k search + 10k math for fast runs; 50k + 50k for full)
+6. Shuffle combined set with fixed seed
+7. Write `data/training/train/combined_train.parquet`
+8. Write the 200 held-out DeepMath questions to `data/training/val/deepmath_val.parquet`
+
+**Why not AIME24?** AIME is one of the five evaluation benchmarks reported in the thesis. Using it for checkpoint selection would mean the best checkpoint is chosen based on the same questions you later report results on — selection bias. The held-out DeepMath slice is in-distribution with the math training data, never evaluated on, and gives a stable per-epoch learning curve.
 
 ---
 
@@ -237,7 +242,7 @@ python_args:
   agentflow.port: 9999
   algorithm.adv_estimator: 'grpo'
   data.train_files: '${BASE_DATA_DIR}/train/combined_train.parquet'
-  data.val_files:   '${BASE_DATA_DIR}/val/aime24.parquet'
+  data.val_files:   '${BASE_DATA_DIR}/val/deepmath_val.parquet'
   data.train_batch_size: 32
   actor_rollout_ref.rollout.n: 8
   actor_rollout_ref.actor.ppo_mini_batch_size: 8

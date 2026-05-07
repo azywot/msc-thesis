@@ -92,6 +92,7 @@ class OrchestratorRollout(LitAgent):
         test_temperature: float = 0.0,
         max_turns: int = 5,
         max_tokens: int = 2048,
+        use_thinking: bool = False,
     ):
         super().__init__()
         self.rollout_dir = Path(rollout_dir)
@@ -100,6 +101,7 @@ class OrchestratorRollout(LitAgent):
         self.test_temperature = test_temperature
         self.max_turns = max_turns
         self.max_tokens = max_tokens
+        self.use_thinking = use_thinking
         self._prompt_builder = PromptBuilder()
         self._tool_registry: Optional[ToolRegistry] = None
 
@@ -161,6 +163,7 @@ class OrchestratorRollout(LitAgent):
                 model_provider=provider,
                 tool_registry=tool_registry,
                 max_turns=self.max_turns,
+                use_thinking=self.use_thinking,
             )
             state = orchestrator.run(
                 question=prompt,
@@ -187,6 +190,7 @@ class OrchestratorRollout(LitAgent):
             ground_truth=ground_truth,
             answer=answer,
             reward=reward_value,
+            data_source=data_source,
             output_messages=output_messages,
             val=val,
         )
@@ -222,6 +226,7 @@ class OrchestratorRollout(LitAgent):
         ground_truth: str,
         answer: str,
         reward: float,
+        data_source: str,
         output_messages: list,
         val: bool,
     ) -> None:
@@ -239,6 +244,7 @@ class OrchestratorRollout(LitAgent):
         record = {
             "idx": idx,
             "rollout_id": rollout_id,
+            "data_source": data_source,
             "question": question,
             "groundtruth": ground_truth,
             "answer_extracted": answer,

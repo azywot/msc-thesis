@@ -1,0 +1,72 @@
+#!/bin/bash
+#SBATCH --job-name=FTOrchestrator
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=4
+#SBATCH --gres=gpu:a100:4
+#SBATCH --time=24:00:00
+#SBATCH --output=out/fine_tuning/ft_%A.log
+#SBATCH --error=out/fine_tuning/ft_%A.err
+
+# Full orchestrator fine-tuning run.
+#   5 epochs, 100k training questions, n=8 rollouts, thinking enabled.
+#   Checkpoint every 2 epochs; best checkpoint symlinked to checkpoint_best/.
+#
+# Prerequisites:
+#   - Job 008 completed (data/training/ prepared)
+#   - Job 009 passed    (smoke test verified pipeline is healthy)
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis — Orchestrator Fine-Tuning"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2023
+module load CUDA/12.1.1
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+source activate cosmas-train
+export PYTHONNOUSERSITE=1
+
+mkdir -p out/fine_tuning
+
+# ── 1. VERL server ───────────────────────────────────────────────────────────
+echo ""
+echo "Starting VERL server..."
+python scripts/launch_verl.py --config train/config.yaml \
+    > out/fine_tuning/ft_${SLURM_JOB_ID:-local}_verl.log 2>&1 &
+VERL_PID=$!
+
+echo "Waiting 60s for Ray + vLLM to be ready..."
+sleep 60
+
+# ── 2. Rollout workers ───────────────────────────────────────────────────────
+echo ""
+echo "Starting rollout workers..."
+python scripts/train_orchestrator.py --config train/config.yaml
+
+wait $VERL_PID
+
+# ── 3. Verify checkpoint ─────────────────────────────────────────────────────
+echo ""
+EXPERIMENT_NAME="qwen3-8b-grpo-search-math"
+CKPT_DIR="experiments/results/training/${EXPERIMENT_NAME}"
+echo "Checkpoints written to: $CKPT_DIR"
+ls -lh "$CKPT_DIR"/checkpoint_*/actor/lora_weights.pt 2>/dev/null || echo "No checkpoints found."
+
+echo ""
+echo "Training complete at: $(date)"
+echo ""
+echo "Next step — merge LoRA and evaluate:"
+echo "  python \$HOME/azywot/AgentFlow/util/model_merger.py \\"
+echo "    --base_model Qwen/Qwen3-8B \\"
+echo "    --lora_path $CKPT_DIR/checkpoint_best/actor/lora_weights.pt \\"
+echo "    --output_dir $CKPT_DIR/merged_model/"

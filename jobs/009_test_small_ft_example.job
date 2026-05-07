@@ -1,0 +1,82 @@
+#!/bin/bash
+#SBATCH --job-name=SmokeFT
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=4
+#SBATCH --gres=gpu:a100:4
+#SBATCH --time=02:00:00
+#SBATCH --output=out/fine_tuning/smoke_%A.log
+#SBATCH --error=out/fine_tuning/smoke_%A.err
+
+# Smoke-test the fine-tuning pipeline end-to-end:
+#   1. Pre-flight checks (no GPU): imports, reward, config, parquet schema
+#   2. One epoch of GRPO training on 16 questions with config_smoke.yaml
+#   3. Verify checkpoint was written and W&B run exists
+#
+# Run AFTER job 008 (data must already be prepared).
+# If this passes, the full training job (010) is safe to submit.
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis — Fine-Tuning Smoke Test"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2023
+module load CUDA/12.1.1
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+source activate cosmas-train
+export PYTHONNOUSERSITE=1
+
+mkdir -p out/fine_tuning
+
+# ── 1. Pre-flight checks (CPU, no VERL needed) ───────────────────────────────
+echo ""
+echo "Running pre-flight checks..."
+python scripts/test_ft_smoke.py \
+    --data-dir data/training/smoke \
+    --config   train/config_smoke.yaml
+
+echo ""
+echo "Pre-flight checks passed. Starting training..."
+
+# ── 2. VERL server ───────────────────────────────────────────────────────────
+echo ""
+echo "Starting VERL server (config_smoke.yaml)..."
+python scripts/launch_verl.py --config train/config_smoke.yaml \
+    > out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_verl.log 2>&1 &
+VERL_PID=$!
+
+echo "Waiting 90s for Ray + vLLM to be ready..."
+sleep 90
+
+# ── 3. Rollout workers ───────────────────────────────────────────────────────
+echo ""
+echo "Starting rollout workers..."
+python scripts/train_orchestrator.py --config train/config_smoke.yaml
+
+wait $VERL_PID
+
+# ── 4. Verify checkpoint was written ─────────────────────────────────────────
+echo ""
+echo "Verifying checkpoint..."
+CKPT_DIR="experiments/results/training/qwen3-8b-grpo-smoke"
+if ls "$CKPT_DIR"/checkpoint_step_*/actor/lora_weights.pt 1>/dev/null 2>&1; then
+    echo "PASS — checkpoint found:"
+    ls -lh "$CKPT_DIR"/checkpoint_step_*/actor/lora_weights.pt
+else
+    echo "FAIL — no checkpoint found under $CKPT_DIR"
+    exit 1
+fi
+
+echo ""
+echo "Smoke test complete at: $(date)"
+echo "Submit 010_ft_orchestrator.job for the full training run."

@@ -1,20 +1,29 @@
-# train/config.yaml
-# Training configuration for CoSMAS orchestrator RL fine-tuning.
-# Mirrors AgentFlow's train/config.yaml structure.
+# train/config_smoke.yaml
+# Minimal smoke-test config — verifies the full VERL pipeline end-to-end
+# on real hardware with tiny data (16 training samples, 2 rollouts, 1 epoch).
+#
+# Differences from config.yaml:
+#   - data dir: data/training/smoke  (prepared by 009 job with --n-search 50 --n-math 50)
+#   - train_max_samples: 16          (only 16 questions per epoch)
+#   - rollout.n: 2                   (2 rollouts per question instead of 8)
+#   - total_epochs: 1
+#   - TOOL_STEPS: 2                  (shorter episodes)
+#   - smaller batch / micro-batch sizes
+#   - logger includes wandb so W&B logging is also verified
 #
 # Launch with:
-#   python scripts/launch_verl.py --config train/config.yaml      (VERL server)
-#   python scripts/train_orchestrator.py --config train/config.yaml  (rollout workers)
+#   python scripts/launch_verl.py --config train/config_smoke.yaml
+#   python scripts/train_orchestrator.py --config train/config_smoke.yaml
 
 env:
   BASE_MODEL: 'Qwen/Qwen3-8B'
   N_GPUS: 4
   ROLLOUT_TP_SIZE: 2
-  EXPERIMENT_NAME: 'qwen3-8b-grpo-search-math'
-  PROJECT_NAME: 'cosmas-rl-finetuning'
-  BASE_DATA_DIR: 'data/training'
+  EXPERIMENT_NAME: 'qwen3-8b-grpo-smoke'
+  PROJECT_NAME: 'cosmas-rl-finetuning-smoke'
+  BASE_DATA_DIR: 'data/training/smoke'
   ENABLE_TOOLS: ["web_search", "code_generator"]
-  TOOL_STEPS: 5
+  TOOL_STEPS: 2
   THINKING_MODE: 'ORCHESTRATOR_ONLY'
   TRAIN_TEMPERATURE: 0.7
   TEST_TEMPERATURE: 0.0
@@ -28,15 +37,15 @@ python_args:
   data.val_files:                                           # two files → VERL logs val_0 (search) and val_1 (math) separately in W&B
     - '${BASE_DATA_DIR}/val/val_search.parquet'
     - '${BASE_DATA_DIR}/val/val_deepmath.parquet'
-  data.train_batch_size: 32
-  data.train_max_samples: 128
-  data.max_prompt_length: 18432
+  data.train_batch_size: 4
+  data.train_max_samples: 16
+  data.max_prompt_length: 8192
   data.max_response_length: 4096
   data.truncation: 'truncate'
-  actor_rollout_ref.rollout.n: 8
-  actor_rollout_ref.actor.ppo_mini_batch_size: 8
-  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 4
-  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu: 4
+  actor_rollout_ref.rollout.n: 2
+  actor_rollout_ref.actor.ppo_mini_batch_size: 4
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu: 1
   actor_rollout_ref.rollout.multi_turn.format: 'hermes'
   actor_rollout_ref.model.path: '${BASE_MODEL}'
   actor_rollout_ref.model.lora_rank: 64
@@ -59,9 +68,9 @@ python_args:
   trainer.logger: ['console', 'wandb']
   trainer.project_name: '${PROJECT_NAME}'
   trainer.experiment_name: '${EXPERIMENT_NAME}'
-  trainer.save_freq: 2
-  trainer.test_freq: 2
-  trainer.total_epochs: 5
+  trainer.save_freq: 1
+  trainer.test_freq: 1
+  trainer.total_epochs: 1
   trainer.val_before_train: true
   trainer.critic_warmup: 0
   algorithm.use_kl_in_reward: false

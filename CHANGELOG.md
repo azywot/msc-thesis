@@ -13,7 +13,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `FinetuningConfig` dataclass (LoRA, GRPO, training hyperparams)
   - `OrchestratorReward` — binary reward via `evaluate_answer()` from `metrics.py`
   - `OrchestratorRollout(LitAgent)` — wraps `AgenticOrchestrator` as a VERL rollout worker
-  - `data/prepare.py` — downloads Search-R1 + DeepMath-103K and converts to VERL parquet schema
+  - `data/prepare.py` — downloads Search-R1 + DeepMath-103K, carves out held-out DeepMath val split, converts to VERL parquet schema
 - `scripts/launch_verl.py` — starts VERL training server (mirrors AgentFlow `train_agent.py`)
 - `scripts/train_orchestrator.py` — starts rollout workers with `NullTracer` (no AgentOps required)
 - `train/config.yaml` — VERL + AgentFlow config for Qwen3-8B GRPO with LoRA rank-64, 4×A100
@@ -21,7 +21,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `jobs/environment_train.yml` — conda env pinned to AgentFlow stack (verl==0.5.0, vllm==0.9.2)
 - `OpenAIProvider`: optional `base_url` parameter for vLLM-compatible API endpoints
 - Design spec and implementation plan in `docs/superpowers/`
+- `docs/failure_modes_fine_tuning_alignment.md` — analysis linking thesis failure modes to fine-tuning design
 - `pyproject.toml`: `[training]` optional extras group
+
+### Changed
+- `train/config.yaml`: validation set switched from `aime24.parquet` to `deepmath_val.parquet` — AIME is an evaluation benchmark and must not be used for checkpoint selection (selection bias)
+- `train/config.yaml`: `ENABLE_TOOLS` now includes both `web_search` and `code_generator` (was `web_search` only)
+- `train/config.yaml`: `data.max_response_length` increased from 2048 to 4096 — msc-thesis runs a full multi-turn orchestrator loop per rollout vs. AgentFlow's single planning step, requiring a larger response budget
+- `train/config.yaml`: `THINKING_MODE: ORCHESTRATOR_ONLY` — training matches the evaluation condition; `OrchestratorRollout` and `train_orchestrator.py` wired to forward this to `AgenticOrchestrator(use_thinking=...)`
+- `data/prepare.py`: both training domains now get held-out val splits carved out before the training subsample — `val_search.parquet` (200 Search-R1), `val_deepmath.parquet` (200 DeepMath), `val_combined.parquet` (merged, for offline analysis); added `--n-val-search` CLI arg; AIME download removed
+- `train/config.yaml`, `train/config_smoke.yaml`: `data.val_files` is now a two-element list — VERL logs `val_0/reward_mean` (search) and `val_1/reward_mean` (math) separately in W&B
+- `scripts/launch_verl.py`: list values in `python_args` are now converted to Hydra list syntax (`key=[elem1,elem2]`) so multi-file `data.val_files` reaches VERL correctly
+- `rollout.py`: `data_source` added to every saved rollout JSON record for offline per-domain analysis
 
 ---
 

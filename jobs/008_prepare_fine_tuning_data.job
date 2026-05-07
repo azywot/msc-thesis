@@ -1,0 +1,75 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=PrepareFTData
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=02:00:00
+#SBATCH --output=out/fine_tuning/prepare_data_%A.log
+
+# Download Search-R1 + DeepMath-103K and write VERL parquet files.
+# Writes:
+#   data/training/train/combined_train.parquet  (50k search + 50k math)
+#   data/training/val/deepmath_val.parquet       (200 held-out DeepMath questions)
+#
+# Also writes a small smoke-test subset to data/training/smoke/ for job 009.
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis — Prepare Fine-Tuning Data"
+echo "=========================================="
+echo "Start time: $(date)"
+echo ""
+
+module purge
+module load 2023
+module load CUDA/12.1.1
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+source activate cosmas-train
+export PYTHONNOUSERSITE=1
+
+mkdir -p out/fine_tuning
+
+# ── 1. Full training data ────────────────────────────────────────────────────
+echo ""
+echo "Preparing full training data (50k search + 50k math)..."
+python src/fine_tuning/data/prepare.py \
+    --n-search    50000 \
+    --n-math      50000 \
+    --n-val-search  200 \
+    --n-val-math    200 \
+    --output-dir data/training \
+    --seed 42
+
+echo ""
+echo "Full data written:"
+ls -lh data/training/train/combined_train.parquet
+ls -lh data/training/val/val_search.parquet
+ls -lh data/training/val/val_deepmath.parquet
+ls -lh data/training/val/val_combined.parquet
+
+# ── 2. Smoke-test subset ─────────────────────────────────────────────────────
+echo ""
+echo "Preparing smoke-test subset (50 search + 50 math)..."
+python src/fine_tuning/data/prepare.py \
+    --n-search    50 \
+    --n-math      50 \
+    --n-val-search 20 \
+    --n-val-math   20 \
+    --output-dir data/training/smoke \
+    --seed 42
+
+echo ""
+echo "Smoke data written:"
+ls -lh data/training/smoke/train/combined_train.parquet
+ls -lh data/training/smoke/val/val_search.parquet
+ls -lh data/training/smoke/val/val_deepmath.parquet
+ls -lh data/training/smoke/val/val_combined.parquet
+
+echo ""
+echo "Done at: $(date)"
