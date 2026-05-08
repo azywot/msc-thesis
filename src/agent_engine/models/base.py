@@ -307,9 +307,7 @@ class BaseModelProvider(ABC):
         pass
 
     def __enter__(self):
-        """Mind map entry."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Mind map exit - cleanup resources."""
         self.cleanup()

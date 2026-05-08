@@ -86,13 +86,6 @@ def contains_match(prediction: str, ground_truth: str) -> bool:
     return normalize_answer(ground_truth) in normalize_answer(prediction)
 
 
-def numeric_match(prediction: str, ground_truth: str, tolerance: float = 1e-6) -> bool:
-    try:
-        return abs(float(prediction.strip()) - float(ground_truth.strip())) <= tolerance
-    except (ValueError, TypeError):
-        return False
-
-
 def token_f1(prediction: str, ground_truth: str) -> float:
     """SQuAD-style token-level F1 on normalised tokens."""
     pred_tokens = normalize_answer(prediction).split()
