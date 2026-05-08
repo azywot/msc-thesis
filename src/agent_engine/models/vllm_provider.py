@@ -74,7 +74,7 @@ class VLLMProvider(BaseModelProvider):
                 tensor_parallel_size=tensor_parallel_size,
                 max_model_len=config.max_model_len,
                 gpu_memory_utilization=config.gpu_memory_utilization if config.gpu_memory_utilization is not None else 0.95,
-                seed=config.seed,
+                seed=config.seed if config.seed is not None else 0,
                 download_dir=hf_hub_cache,
                 enforce_eager=True,
                 trust_remote_code=True,
@@ -262,7 +262,7 @@ class VLLMProvider(BaseModelProvider):
                 top_p=self.config.top_p,
                 top_k=self.config.top_k,
                 repetition_penalty=self.config.repetition_penalty,
-                seed=self.config.seed,
+                seed=self.config.seed if self.config.seed is not None else 0,
                 **stop_kwargs,
             )
             sampling_params_list.append(params)

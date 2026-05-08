@@ -194,7 +194,7 @@ class ModelConfig(BaseModel):
     gpu_memory_utilization: Optional[float] = None
     gpu_ids: Optional[List[int]] = None
 
-    seed: int = 0
+    seed: Optional[int] = None
 
     backend: str = "vllm"  # "vllm", "mlx", "openai", "anthropic"
 
