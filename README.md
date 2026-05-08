@@ -25,22 +25,37 @@ CoSMAS is a configuration-driven multi-agent research framework for investigatin
 
 ```
 msc-thesis/
-├── src/agent_engine/          # Main Python package
-│   ├── config/                # YAML schema + loader
-│   ├── core/                  # Orchestrator + tool-calling loop
-│   ├── models/                # vLLM + MLX + API providers + locking/reuse
-│   ├── tools/                 # web_search, code_generator, mind_map, inspectors
-│   ├── datasets/              # loaders + evaluators + metrics
-│   ├── prompts/               # prompt templates + builders
-│   ├── external/              # Serper, Tavily + URL fetching utilities
-│   ├── caching/               # cache manager(s)
-│   └── utils/                 # parsing/logging helpers
+├── src/
+│   ├── agent_engine/          # Inference + evaluation package
+│   │   ├── config/            # YAML schema + loader
+│   │   ├── core/              # Orchestrator + tool-calling loop
+│   │   ├── models/            # vLLM + MLX + API providers + locking/reuse
+│   │   ├── tools/             # web_search, code_generator, mind_map, inspectors
+│   │   ├── datasets/          # loaders + evaluators + metrics
+│   │   ├── prompts/           # prompt templates + builders
+│   │   ├── external/          # Serper, Tavily + URL fetching utilities
+│   │   ├── caching/           # cache manager(s)
+│   │   └── utils/             # parsing/logging helpers
+│   │
+│   └── fine_tuning/           # RL fine-tuning pipeline (orchestrator only)
+│       ├── config.py          # FinetuningConfig dataclass
+│       ├── reward.py          # OrchestratorReward — binary via metrics.py
+│       ├── rollout.py         # OrchestratorRollout(LitAgent) — VERL rollout worker
+│       └── data/
+│           └── prepare.py     # Download Search-R1 + DeepMath → VERL parquet files
 │
 ├── scripts/
 │   ├── run_experiment.py      # Main runner (requires --config)
-│   ├── analyze_results.py     # Metrics + breakdowns (WIP)
+│   ├── analyze_results.py     # Metrics + breakdowns
 │   ├── download_datasets.py   # Fetch/prepare datasets
-│   └── export_prompts.py      # Dump prompt templates + tool schemas to JSON
+│   ├── export_prompts.py      # Dump prompt templates + tool schemas to JSON
+│   ├── launch_verl.py         # Start VERL training server
+│   ├── train_orchestrator.py  # Start rollout workers (connects to VERL)
+│   └── test_ft_smoke.py       # Pre-flight checks for training pipeline (no GPU needed)
+│
+├── train/
+│   ├── config.yaml            # Full training config (5 epochs, 4×A100)
+│   └── config_smoke.yaml      # Smoke-test config (1 epoch, 16 samples)
 │
 ├── experiments/
 │   ├── configs/               # Experiment YAMLs organised by suite
@@ -56,11 +71,27 @@ msc-thesis/
 │   │   └── template.yml       # Annotated template for new configs
 │   └── results/               # Default output root
 │
+├── docs/
+│   ├── fine_tuning_README.md                          # Full fine-tuning guide
+│   ├── failure_modes_fine_tuning_alignment.md         # Failure modes → FT design linkage
+│   └── superpowers/specs/
+│       └── 2026-05-06-orchestrator-finetuning-design.md
+│
 ├── jobs/                      # SLURM job scripts + HPC tooling
+│   ├── 008_prepare_fine_tuning_data.job   # Download + write training parquet files
+│   ├── 009_test_small_ft_example.job      # Smoke-test the training pipeline
+│   ├── 010_ft_orchestrator.job            # Full training run (24h, 4×A100)
+│   ├── environment_train.yml              # cosmas-train conda env (VERL + vLLM 0.9.2)
+│   └── environment.yml                    # agent_engine conda env (inference, vLLM 0.12.0)
+│
+├── data/training/             # Created by job 008
+│   ├── train/combined_train.parquet
+│   └── val/val_search.parquet  val_deepmath.parquet  val_combined.parquet
+│
 ├── examples/                  # Small runnable single-tool examples
 ├── pyproject.toml
 ├── requirements.txt
-└── environment.yml            # Conda env for HPC
+└── environment.yml            # Conda env for inference/evaluation (agent_engine)
 ```
 
 **Common navigation:**
@@ -74,6 +105,8 @@ msc-thesis/
 | Dataset loaders + metrics | `src/agent_engine/datasets/` |
 | SLURM job scripts | `jobs/` |
 | Single-tool sanity checks | `examples/` |
+| Fine-tuning the orchestrator | `docs/fine_tuning_README.md` |
+| Fine-tuning ↔ failure mode analysis | `docs/failure_modes_fine_tuning_alignment.md` |
 
 ---
 
@@ -159,6 +192,9 @@ Log: `out/test/example_subagent_<job_id>.log`
 | `jobs/004_export_env.job` | Export conda env YAMLs | `out/export_env/export_env_<job_id>.log` |
 | `jobs/005_export_prompts.job` | Export prompt templates + tool schemas | `out/export_prompts/export_prompts_<job_id>.log` |
 | `jobs/006_create_configs.job` | Regenerate all experiment configs | `out/create_configs/create_configs_<job_id>.log` |
+| `jobs/008_prepare_fine_tuning_data.job` | Download + write training parquet files | `out/fine_tuning/prepare_data_<job_id>.log` |
+| `jobs/009_test_small_ft_example.job` | Pre-flight checks + 1-epoch smoke test | `out/fine_tuning/smoke_<job_id>.log` |
+| `jobs/010_ft_orchestrator.job` | Full orchestrator training run (24h) | `out/fine_tuning/ft_<job_id>.log` |
 
 Optional overrides (via `sbatch --export=ALL,...`): `ENV_NAME`, `PROJECT_DIR`, `DATA_DIR`.
 
@@ -522,7 +558,7 @@ The `web_search` tool supports two providers via `web_tool_provider` config:
 | AIME | `aime` | `train` | Competition mathematics |
 | MuSiQue | `musique` | `validation_subset_200` | Multi-hop reasoning |
 
-**Additional datasets — loaders available, not yet in experiment configs:**
+<!-- **Additional datasets — loaders available, not yet in experiment configs:**
 
 | Name | Key |
 |---|---|
@@ -532,7 +568,7 @@ The `web_search` tool supports two providers via `web_tool_provider` config:
 | TriviaQA | `triviaqa` |
 | HotpotQA | `hotpotqa` |
 | Bamboogle | `bamboogle` |
-| 2WikiMultiHopQA | `2wiki` |
+| 2WikiMultiHopQA | `2wiki` | -->
 
 **Download datasets before running:**
 
