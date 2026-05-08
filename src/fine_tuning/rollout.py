@@ -24,7 +24,7 @@ from agent_engine.core.tool import ToolRegistry
 from agent_engine.models.api_provider import OpenAIProvider
 from agent_engine.models.base import ModelConfig, ModelFamily
 from agent_engine.prompts.builder import PromptBuilder
-from agent_engine.tools import WebSearchTool
+from agent_engine.tools import WebSearchTool, CodeGeneratorTool
 
 from .reward import OrchestratorReward
 
@@ -43,24 +43,50 @@ async def _reward_fn(
     return _reward_fn_instance(prediction, ground_truth, data_source)
 
 
-def _build_tool_registry() -> ToolRegistry:
-    """Build a minimal ToolRegistry for rollout workers.
+def _build_tool_registry(endpoint: str) -> ToolRegistry:
+    """Build the ToolRegistry for rollout workers.
 
-    Uses WebSearchTool in direct mode (model_provider=None). Requires
-    SERPER_API_KEY or TAVILY_API_KEY in the environment.
+    Mirrors AgentFlow's training setup: sub-agents call the SAME VERL vLLM
+    endpoint as the orchestrator.  No separate frozen server is needed — all
+    vLLM calls share one endpoint; only the orchestrator's token generations
+    are in the GRPO training trajectory.
+
+    - WebSearchTool:     query → API results → sub-agent LLM analyses them
+    - CodeGeneratorTool: task description → sub-agent LLM writes code → exec
+
+    This matches the evaluation architecture (direct_tool_call=False) so the
+    orchestrator is trained with the same tool interfaces it sees at eval time.
+
+    Requires SERPER_API_KEY or TAVILY_API_KEY in the environment.
     """
     api_key = os.environ.get("SERPER_API_KEY") or os.environ.get("TAVILY_API_KEY")
     if not api_key:
         raise EnvironmentError(
             "SERPER_API_KEY (or TAVILY_API_KEY) must be set for rollout workers."
         )
-    provider = (
+    search_provider = (
         "tavily"
         if os.environ.get("TAVILY_API_KEY") and not os.environ.get("SERPER_API_KEY")
         else "serper"
     )
+    # Sub-agent provider: same VERL endpoint, greedy decoding, thinking off.
+    # Sub-agents share the trained model's weights (same as AgentFlow's
+    # vllm-local-<BASE_MODEL> pointing at the shared VERL vLLM).
+    subagent_config = _make_model_config(
+        model_id=os.environ.get("BASE_MODEL", "Qwen/Qwen3-8B"),
+        temperature=0.0,
+        max_tokens=2048,
+    )
+    subagent_provider = OpenAIProvider(subagent_config, api_key="EMPTY", base_url=endpoint)
+
     registry = ToolRegistry()
-    registry.register(WebSearchTool(api_key=api_key, provider=provider, top_k=5))
+    registry.register(WebSearchTool(
+        api_key=api_key,
+        provider=search_provider,
+        top_k=5,
+        model_provider=subagent_provider,
+    ))
+    registry.register(CodeGeneratorTool(model_provider=subagent_provider))
     return registry
 
 
@@ -153,11 +179,11 @@ class OrchestratorRollout(LitAgent):
         output_messages: list = []
         try:
             provider = self._build_provider(endpoint, temperature)
-            tool_registry = self._get_or_build_tools()
+            tool_registry = self._get_or_build_tools(endpoint)
             system_prompt = self._prompt_builder.build_system_prompt(
                 dataset_name="gaia",
                 tool_schemas=tool_registry.get_all_schemas(),
-                direct_tool_call=True,
+                direct_tool_call=False,
             )
             orchestrator = AgenticOrchestrator(
                 model_provider=provider,
@@ -208,9 +234,9 @@ class OrchestratorRollout(LitAgent):
         )
         return OpenAIProvider(config, api_key="EMPTY", base_url=endpoint)
 
-    def _get_or_build_tools(self) -> ToolRegistry:
+    def _get_or_build_tools(self, endpoint: str) -> ToolRegistry:
         if self._tool_registry is None:
-            self._tool_registry = _build_tool_registry()
+            self._tool_registry = _build_tool_registry(endpoint)
         return self._tool_registry
 
     # ------------------------------------------------------------------ #

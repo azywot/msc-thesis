@@ -8,7 +8,7 @@
 
 ## 1. Objective
 
-Fine-tune the orchestrator (Qwen3-8B) in the CoSMAS multi-agent system using reinforcement learning, following the AgentFlow training methodology. Only the orchestrator is trained; sub-agents (web search analyser, code generator) remain frozen.
+Fine-tune the orchestrator (Qwen3-8B) in the CoSMAS multi-agent system using reinforcement learning, following the AgentFlow training methodology. Only the orchestrator is gradient-trained; sub-agent token generations (web search analyser, code generator) are treated as environment interactions by VERL and do not enter the GRPO objective. Sub-agents share the same VERL vLLM endpoint as the orchestrator — their weights co-evolve but are never directly optimised.
 
 The pipeline replicates AgentFlow's GRPO-based RL loop, using:
 - [`shin-ee-chen/AgentFlow`](https://github.com/shin-ee-chen/AgentFlow) as a library (installed from the local clone)
@@ -63,6 +63,7 @@ Inference (unchanged)
 | Algorithm | GRPO (n=8 rollouts per question) | Same as AgentFlow; no value network needed |
 | Model weights | LoRA rank-64, all-linear layers | ~130 MB checkpoints vs ~16 GB full FT; sufficient compute efficiency for thesis |
 | Training data | Search-R1 (NQ + HotpotQA) + DeepMath-103K | Same sources as AgentFlow's `combined_train.parquet` |
+| Sub-agent setup | Share VERL endpoint; not gradient-trained | Matches AgentFlow: `vllm-local-<BASE_MODEL>` resolves to same endpoint; sub-agent tokens are environment context, not GRPO trajectory |
 | Validation | DeepMath val split (200 held-out questions) | AIME is an evaluation benchmark — using it for checkpoint selection would introduce selection bias in reported results; held-out DeepMath is in-distribution, never evaluated on |
 | Reward | Binary exact-match via `metrics.py` | Directly comparable to evaluation benchmark numbers |
 | Inference integration | Merge LoRA → HF model → `path_or_id` in YAML | Zero changes to `VLLMProvider` or any inference code |

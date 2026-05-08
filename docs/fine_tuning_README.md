@@ -1,6 +1,6 @@
 # Fine-Tuning the CoSMAS Orchestrator
 
-**Target:** Qwen3-8B orchestrator only. Sub-agents (web search analyser, code generator) remain frozen throughout.
+**Target:** Qwen3-8B orchestrator only. Sub-agents (web search analyser, code generator) are not gradient-trained — their token generations are treated as environment interactions by VERL and do not enter the GRPO objective. Their weights evolve indirectly because they share the same VERL endpoint as the orchestrator, matching AgentFlow's training setup exactly.
 
 **Method:** GRPO reinforcement learning via the AgentFlow training stack (VERL backend, LoRA adapters).
 
@@ -46,8 +46,10 @@ Training time
           │  OrchestratorRollout (LitAgent)                  │
           │  ├── AgenticOrchestrator  ← model being trained  │
           │  │     thinking_mode: ORCHESTRATOR_ONLY          │
-          │  ├── web_search  (direct mode, frozen)           │
-          │  ├── code_generator  (direct mode, frozen)       │
+          │  ├── WebSearchTool  → sub-agent LLM @ :9999        │
+          │  ├── CodeGeneratorTool → sub-agent LLM @ :9999   │
+          │  │   (sub-agents share VERL endpoint — same as    │
+          │  │    AgentFlow's vllm-local-<BASE_MODEL>)        │
           │  └── OrchestratorReward  ← binary via metrics.py │
           └──────────────────────────────────────────────────┘
 
@@ -67,12 +69,19 @@ Inference (unchanged after training)
 
 ### Conda environments
 
-Two separate environments are required to avoid a vLLM version conflict:
+Two separate environments are required and intentionally kept separate:
 
 | Environment | Purpose | vLLM |
 |---|---|---|
 | `cosmas-train` | Training (VERL, rollout workers) | 0.9.2 |
 | `agent_engine` | Inference and evaluation | 0.12.0 |
+
+The version split is a hard constraint, not a convenience choice. VERL 0.5.0 requires
+vLLM ~0.9.x, but the inference stack pins vLLM 0.12.0. AgentFlow adds a third
+constraint (its requirements declare vllm==0.8.5), making a three-way compatibility
+fix necessary to consolidate. The latest VERL (0.7.1) may support newer vLLM, but
+upgrading risks breaking AgentFlow's internal VERL wrappers (`agentflow.verl.*`) in
+untested ways.
 
 Create the training environment:
 ```bash
@@ -419,6 +428,20 @@ These are the two domains where tool use is demonstrably necessary:
 - **DeepMath**: competition math with exact numerical answers. Arithmetic drift in natural-language reasoning → reward = 0. GRPO pushes toward `code_generator`.
 
 Both directly target the dominant failure mode (direct reasoning without action) in the domains where it is correctable. GPQA/HLE expert-science failures are structurally different (web search doesn't help on google-proof questions) and are not the primary training target.
+
+### Why do sub-agents share the VERL endpoint rather than using a separate frozen server?
+
+This directly replicates AgentFlow's training setup. In `AgentFlow/train/config.yaml`:
+```yaml
+TOOL_ENGINE:  ["vllm-local-Qwen/Qwen3-0.6B", "Default"]
+MODEL_ENGINE: ["trainable", "vllm-local-Qwen/Qwen3-0.6B", "vllm-local-Qwen/Qwen3-0.6B", "vllm-local-Qwen/Qwen3-0.6B"]
+```
+
+`vllm-local-<BASE_MODEL>` resolves to the same VERL vLLM endpoint as the trainable model — there is no separate frozen server. All agents (Planner, Verifier, Executor, Coder tool) call the same vLLM. Only the Planner's token generations flow through GRPO gradient computation; the others are treated as environment interactions.
+
+The msc-thesis equivalent: the orchestrator is trained via GRPO; web search analyser and code generator sub-agents call the same VERL endpoint at temperature=0.0, but their token generations are environment context, not gradient-contributing model output.
+
+The training environment therefore exactly matches evaluation (`direct_tool_call=False`): the orchestrator delegates a task description to a sub-agent, which formulates the query or writes the code, and the result comes back. This is the interface the trained model will see at eval time.
 
 ### Why is thinking enabled during training?
 
