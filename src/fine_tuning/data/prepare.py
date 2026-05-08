@@ -30,6 +30,10 @@ import random
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+# HuggingFace dataset id (Search-R1 NQ + HotpotQA). Older Hub name
+# PeterJinGo/SearchR1-nq_hotpotqa_train was removed; use nq_hotpotqa_train.
+SEARCH_R1_HF_DATASET = "PeterJinGo/nq_hotpotqa_train"
+
 
 # ---------------------------------------------------------------------------
 # Row normalisers
@@ -38,31 +42,73 @@ from typing import Any, Dict, List, Tuple
 def normalise_search_r1_row(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
     """Convert a Search-R1 row to VERL schema.
 
-    Search-R1 (PeterJinGo/SearchR1-nq_hotpotqa_train) columns:
-        question, answer (or answers list), dataset (one of "nq", "hotpotqa")
+    Search-R1 (`SEARCH_R1_HF_DATASET`) columns:
+        question, golden_answers, data_source (one of "nq", "hotpotqa")
+
+    Legacy / alternate tables may use answer(s), dataset, reward_model, or
+    extra_info. Keep those aliases as fallbacks so fixtures and forks work.
     """
-    answer = raw.get("answer") or raw.get("answers") or ""
-    if isinstance(answer, list):
-        answer = answer[0] if answer else ""
-    answer = str(answer)
+    answer_val = (
+        raw.get("golden_answers")
+        or raw.get("answer")
+        or raw.get("answers")
+        or raw.get("ground_truth")
+        or raw.get("groundtruth")
+    )
+    if answer_val is None and isinstance(raw.get("reward_model"), dict):
+        reward_model = raw["reward_model"]
+        answer_val = (
+            reward_model.get("ground_truth")
+            or reward_model.get("groundtruth")
+            or reward_model.get("answer")
+        )
+    if answer_val is None and isinstance(raw.get("extra_info"), dict):
+        extra_info = raw["extra_info"]
+        answer_val = (
+            extra_info.get("ground_truth")
+            or extra_info.get("groundtruth")
+            or extra_info.get("answer")
+        )
+
+    aliases = answer_val if isinstance(answer_val, list) else []
+    if isinstance(answer_val, list):
+        answer_val = next((a for a in answer_val if str(a).strip()), "")
+    answer = str(answer_val) if answer_val is not None else ""
+
+    data_source = raw.get("data_source") or raw.get("dataset") or "nq"
 
     return {
-        "data_source": str(raw.get("dataset", "nq")).lower(),
+        "data_source": str(data_source).lower(),
         "question": str(raw.get("question", "")),
         "result": answer,
-        "extra_info": {"idx": idx, "groundtruth": answer},
+        "extra_info": {
+            "idx": idx,
+            "groundtruth": answer,
+            "golden_answers": [str(a) for a in aliases],
+        },
     }
 
 
 def normalise_deepmath_row(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
     """Convert a DeepMath-103K row to VERL schema.
 
-    DeepMath (zwhe99/DeepMath-103K) columns: problem, answer, source (optional)
+    zwhe99/DeepMath-103K (HF) uses ``question`` + ``final_answer``.
+    Legacy / alternate tables may use ``problem`` + ``answer`` — those are kept as
+    fallbacks so unit tests and forks keep working.
     """
-    answer = str(raw.get("answer", ""))
+    answer_val = raw.get("final_answer")
+    if answer_val is None:
+        answer_val = raw.get("answer", "")
+    answer = str(answer_val) if answer_val is not None else ""
+
+    q_val = raw.get("question")
+    if q_val is None or (isinstance(q_val, str) and not q_val.strip()):
+        q_val = raw.get("problem") or raw.get("instruction") or ""
+    question = str(q_val) if q_val is not None else ""
+
     return {
         "data_source": "deepmath",
-        "question": str(raw.get("problem", "")),
+        "question": question,
         "result": answer,
         "extra_info": {"idx": idx, "groundtruth": answer},
     }
@@ -86,6 +132,12 @@ def validate_parquet_schema(df) -> None:
 # Download helpers
 # ---------------------------------------------------------------------------
 
+def _is_valid_norm(row: Dict[str, Any]) -> bool:
+    return bool(str(row.get("question", "")).strip()) and bool(
+        str(row.get("result", "")).strip()
+    )
+
+
 def _download_search_r1(
     n_train: int, n_val: int, seed: int
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -93,24 +145,65 @@ def _download_search_r1(
 
     Val rows are taken first (indices 0..n_val-1 after shuffling) so they
     are guaranteed to be excluded from the training set regardless of n_train.
+
+    Uses *streaming* loading: the Hub dataset mixes NQ and HotpotQA parquet shards
+    with incompatible nested Arrow schemas; a single non-streaming load forces a
+    unified cast and fails (``DatasetGenerationError`` / type mismatch).
     """
     from datasets import load_dataset  # lazy import — not needed for unit tests
-    ds = load_dataset("PeterJinGo/SearchR1-nq_hotpotqa_train", split="train")
-    ds = ds.shuffle(seed=seed)
 
     total_needed = n_val + n_train
-    if total_needed < len(ds):
-        ds = ds.select(range(total_needed))
+    buffer_size = min(max(total_needed * 4, 10_000), 500_000)
 
-    val_rows = [
-        normalise_search_r1_row(dict(row), idx=i)
-        for i, row in enumerate(ds.select(range(n_val)))
-    ]
-    train_rows = [
-        normalise_search_r1_row(dict(row), idx=i)
-        for i, row in enumerate(ds.select(range(n_val, n_val + n_train)))
-    ]
+    ds = load_dataset(
+        SEARCH_R1_HF_DATASET,
+        split="train",
+        streaming=True,
+    )
+    ds = ds.shuffle(seed=seed, buffer_size=buffer_size)
+
+    val_rows: List[Dict[str, Any]] = []
+    train_rows: List[Dict[str, Any]] = []
+    skipped = 0
+    scanned = 0
+
+    for sample in ds:
+        scanned += 1
+        if len(val_rows) >= n_val and len(train_rows) >= n_train:
+            break
+
+        if len(val_rows) < n_val:
+            idx = len(val_rows)
+            target = val_rows
+        else:
+            idx = len(train_rows)
+            target = train_rows
+
+        norm = normalise_search_r1_row(dict(sample), idx=idx)
+        if not _is_valid_norm(norm):
+            skipped += 1
+            continue
+        target.append(norm)
+
+    if len(val_rows) != n_val or len(train_rows) != n_train:
+        raise RuntimeError(
+            f"Search-R1: only collected val={len(val_rows)}/{n_val}, "
+            f"train={len(train_rows)}/{n_train} valid rows after scanning "
+            f"{scanned} shuffled examples (skipped {skipped} with empty "
+            f"question/result). Dataset may have changed schema or be too small."
+        )
+
+    if skipped:
+        print(
+            f"Search-R1: skipped {skipped} example(s) with empty question or "
+            f"answer after normalisation."
+        )
+
     return train_rows, val_rows
+
+
+def _is_valid_deepmath_norm(row: Dict[str, Any]) -> bool:
+    return _is_valid_norm(row)
 
 
 def _download_deepmath(
@@ -118,25 +211,54 @@ def _download_deepmath(
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Download DeepMath-103K and split into train and val.
 
-    Val rows are taken first (indices 0..n_val-1 after shuffling) so they
-    are guaranteed to be excluded from the training set regardless of n_train.
+    Val rows are filled first by scanning the shuffled dataset in order, then
+    train rows. Rows with empty normalised ``question`` or ``result`` are
+    skipped (the Hub corpus occasionally contains bad rows).
+
+    Raises if the dataset cannot yield ``n_val + n_train`` valid rows after a
+    full pass (possible schema mismatch or pervasive corruption).
     """
     from datasets import load_dataset
     ds = load_dataset("zwhe99/DeepMath-103K", split="train")
     ds = ds.shuffle(seed=seed)
 
-    total_needed = n_val + n_train
-    if total_needed < len(ds):
-        ds = ds.select(range(total_needed))
+    val_rows: List[Dict[str, Any]] = []
+    train_rows: List[Dict[str, Any]] = []
+    skipped = 0
+    scanned = 0
 
-    val_rows = [
-        normalise_deepmath_row(dict(row), idx=i)
-        for i, row in enumerate(ds.select(range(n_val)))
-    ]
-    train_rows = [
-        normalise_deepmath_row(dict(row), idx=i)
-        for i, row in enumerate(ds.select(range(n_val, n_val + n_train)))
-    ]
+    for row in ds:
+        scanned += 1
+        if len(val_rows) >= n_val and len(train_rows) >= n_train:
+            break
+
+        if len(val_rows) < n_val:
+            idx = len(val_rows)
+            target = val_rows
+        else:
+            idx = len(train_rows)
+            target = train_rows
+
+        norm = normalise_deepmath_row(dict(row), idx=idx)
+        if not _is_valid_deepmath_norm(norm):
+            skipped += 1
+            continue
+        target.append(norm)
+
+    if len(val_rows) != n_val or len(train_rows) != n_train:
+        raise RuntimeError(
+            f"DeepMath: only collected val={len(val_rows)}/{n_val}, "
+            f"train={len(train_rows)}/{n_train} valid rows after scanning "
+            f"{scanned} shuffled examples (skipped {skipped} with empty "
+            f"question/result). Dataset may have changed schema or be too small."
+        )
+
+    if skipped:
+        print(
+            f"DeepMath: skipped {skipped} example(s) with empty question or "
+            f"answer after normalisation (Hub noise)."
+        )
+
     return train_rows, val_rows
 
 

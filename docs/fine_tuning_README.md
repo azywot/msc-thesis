@@ -46,10 +46,10 @@ Training time
           │  OrchestratorRollout (LitAgent)                  │
           │  ├── AgenticOrchestrator  ← model being trained  │
           │  │     thinking_mode: ORCHESTRATOR_ONLY          │
-          │  ├── WebSearchTool  → sub-agent LLM @ :9999        │
+          │  ├── WebSearchTool  → sub-agent LLM @ :9999      │
           │  ├── CodeGeneratorTool → sub-agent LLM @ :9999   │
-          │  │   (sub-agents share VERL endpoint — same as    │
-          │  │    AgentFlow's vllm-local-<BASE_MODEL>)        │
+          │  │   (sub-agents share VERL endpoint — same as   │
+          │  │    AgentFlow's vllm-local-<BASE_MODEL>)       │
           │  └── OrchestratorReward  ← binary via metrics.py │
           └──────────────────────────────────────────────────┘
 
@@ -61,7 +61,7 @@ Inference (unchanged after training)
                                      VLLMProvider (no changes)
 ```
 
-**Key point:** only the orchestrator's weights change. Everything else — sub-agents, tools, evaluation scripts, experiment configs — is untouched. After training, merge the LoRA adapter and point any existing YAML at the merged model path.
+**Key point:** only the orchestrator path is directly optimized by GRPO (LoRA updates on the actor policy). Sub-agents are not separately gradient-trained, though their runtime outputs can change indirectly because they call the same shared VERL endpoint during training. Tools, evaluation scripts, and experiment configs are untouched. After training, merge the LoRA adapter and point any existing YAML at the merged model path.
 
 ---
 
@@ -131,7 +131,7 @@ python src/fine_tuning/data/prepare.py \
     --output-dir data/training --seed 42
 ```
 
-This downloads Search-R1 (PeterJinGo/SearchR1-nq_hotpotqa_train) and DeepMath-103K (zwhe99/DeepMath-103K) from HuggingFace and writes:
+This downloads Search-R1 (`PeterJinGo/nq_hotpotqa_train`) and DeepMath-103K (zwhe99/DeepMath-103K) from HuggingFace and writes:
 
 ```
 data/training/
@@ -182,14 +182,21 @@ python scripts/launch_verl.py --config train/config.yaml
 python scripts/train_orchestrator.py --config train/config.yaml
 ```
 
-Training runs for 5 epochs. Checkpoints every 2 epochs:
+Training runs for 5 epochs. Checkpoints every epoch:
 ```
 experiments/results/training/qwen3-8b-grpo-search-math/
 ├── config.yaml                        copy of config at run start
+├── checkpoint_step_1/actor/lora_weights.pt
 ├── checkpoint_step_2/actor/lora_weights.pt
+├── checkpoint_step_3/actor/lora_weights.pt
 ├── checkpoint_step_4/actor/lora_weights.pt
+├── checkpoint_step_5/actor/lora_weights.pt
 └── checkpoint_best/                   → symlink to best val checkpoint
 ```
+
+The SLURM launcher (`jobs/010_ft_orchestrator.job`) then prunes checkpoint payloads at the end to keep only:
+- latest checkpoint step (`checkpoint_step_<max_epoch>/`)
+- best validation checkpoint target (`checkpoint_best` symlink target)
 
 ### Step 4 — Merge LoRA and evaluate
 
@@ -288,8 +295,8 @@ msc-thesis/
 | `actor_rollout_ref.model.lora_rank` | `64` | LoRA rank (~130 MB checkpoints) |
 | `actor_rollout_ref.actor.kl_loss_coef` | `0.001` | KL penalty weight (keeps policy close to reference) |
 | `trainer.total_epochs` | `5` | Training epochs |
-| `trainer.save_freq` | `2` | Save checkpoint every N epochs |
-| `trainer.test_freq` | `2` | Run validation every N epochs |
+| `trainer.save_freq` | `1` | Save checkpoint every epoch |
+| `trainer.test_freq` | `1` | Run validation every epoch |
 | `trainer.val_before_train` | `true` | Runs validation before epoch 1 (baseline measurement) |
 
 ### Smoke test differences (`train/config_smoke.yaml`)

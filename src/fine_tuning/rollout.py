@@ -1,8 +1,8 @@
 """OrchestratorRollout — AgentFlow LitAgent wrapping AgenticOrchestrator.
 
 Runs the full msc-thesis orchestration loop as a VERL rollout worker.
-Connects to the VERL-served vLLM endpoint for model generation and uses
-WebSearchTool in direct mode for web search during training.
+Connects to the VERL-served vLLM endpoint for model generation and routes
+tool use through the same sub-agent interfaces used by thesis inference.
 """
 
 from __future__ import annotations
@@ -103,6 +103,38 @@ def _make_model_config(model_id: str, temperature: float, max_tokens: int = 2048
     )
 
 
+def _get_task_metadata(task: Any) -> tuple[str, str, str, int]:
+    """Extract rollout fields from VERL task rows.
+
+    The parquet schema stores ``data_source`` at the top level. Some older
+    records may carry it in ``extra_info``, so keep that fallback for smoke
+    fixtures and generated data while preferring the shipped schema.
+    """
+    question_text = str(task.get("question", ""))
+    ground_truth = str(task.get("result", ""))
+    extra = task.get("extra_info", {}) or {}
+    if not isinstance(extra, dict):
+        extra = {}
+    data_source = str(task.get("data_source") or extra.get("data_source") or "nq").lower()
+    idx = int(extra.get("idx", 0))
+    return question_text, ground_truth, data_source, idx
+
+
+def _prompt_dataset_for_data_source(data_source: str) -> str:
+    """Map training data source to the closest inference prompt family."""
+    return "deepmath" if data_source.lower() == "deepmath" else "gaia"
+
+
+def _build_rollout_question(question_text: str) -> str:
+    """Return the exact user question passed to the thesis orchestrator.
+
+    Do not append AgentFlow's ``<answer>`` suffix here: thesis inference relies
+    on dataset system prompts for final-answer formatting, so RL should see the
+    same user-question surface.
+    """
+    return question_text
+
+
 class OrchestratorRollout(LitAgent):
     """AgentFlow LitAgent that runs AgenticOrchestrator as the rollout agent.
 
@@ -162,18 +194,8 @@ class OrchestratorRollout(LitAgent):
         endpoint: str,
         val: bool,
     ) -> None:
-        question_text = task.get("question", "")
-        ground_truth = str(task.get("result", ""))
-        extra = task.get("extra_info", {}) or {}
-        data_source = str(extra.get("data_source", "nq"))
-        idx = extra.get("idx", 0)
-
-        # Append output format instruction (mirrors AgentFlow rollout)
-        output_fmt = (
-            " When ready, output the final answer enclosed in "
-            "<answer> and </answer> tags."
-        )
-        prompt = question_text + output_fmt
+        question_text, ground_truth, data_source, idx = _get_task_metadata(task)
+        prompt = _build_rollout_question(question_text)
 
         answer = "None"
         output_messages: list = []
@@ -181,7 +203,7 @@ class OrchestratorRollout(LitAgent):
             provider = self._build_provider(endpoint, temperature)
             tool_registry = self._get_or_build_tools(endpoint)
             system_prompt = self._prompt_builder.build_system_prompt(
-                dataset_name="gaia",
+                dataset_name=_prompt_dataset_for_data_source(data_source),
                 tool_schemas=tool_registry.get_all_schemas(),
                 direct_tool_call=False,
             )

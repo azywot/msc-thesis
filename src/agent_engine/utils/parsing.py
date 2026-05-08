@@ -163,6 +163,10 @@ def extract_answer(text: str) -> Optional[str]:
     Returns:
         Extracted answer string, or ``None`` if no pattern matched.
     """
+    if not text:
+        return None
+    text = strip_thinking_tags(text)
+
     boxed_pattern = r'\\+boxed\{([^}]+)\}'
     match = re.search(boxed_pattern, text, re.IGNORECASE)
     if match:

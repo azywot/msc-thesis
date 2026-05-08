@@ -23,15 +23,41 @@ echo "Start time: $(date)"
 echo ""
 
 module purge
-module load 2023
-module load CUDA/12.1.1
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
 
 PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
 cd "$PROJECT_DIR" || exit 1
 echo "Project directory: $PROJECT_DIR"
 
+# # flash-attn / pip download prebuilt wheels into TMPDIR, then hardlink/rename into
+# # ~/.cache/pip. Node-local /tmp vs GPFS home → Errno 18 Invalid cross-device link.
+# mkdir -p "${HOME}/.tmp"
+# export TMPDIR="${HOME}/.tmp"
+
+# # Recreate training environment from scratch on every run.
+# if conda env list | awk '{print $1}' | rg -x "cosmas-train" >/dev/null 2>&1; then
+#     echo "Removing existing conda env: cosmas-train"
+#     conda env remove -n cosmas-train -y
+# fi
+
+# echo "Creating conda env: cosmas-train (jobs/environment_train.yml)"
+# export PIP_NO_BUILD_ISOLATION=1
+# conda env create -f jobs/environment_train.yml
+
 source activate cosmas-train
 export PYTHONNOUSERSITE=1
+
+# # flash-attn must build after torch is importable in this env; conda pip -r can still
+# # use an isolated build env where torch is missing. Install explicitly with no isolation.
+# echo "Installing flash-attn (needs torch + CUDA modules already loaded)..."
+# pip install --no-build-isolation 'flash-attn==2.8.1'
+
+# echo "Installing msc-thesis package..."
+# pip install -e .
+# bash jobs/cosmas_train_pip_reconcile.sh
 
 mkdir -p out/fine_tuning
 

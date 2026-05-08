@@ -79,11 +79,11 @@ class PromptBuilder:
         """
         try:
             # GAIA, HLE, and MuSiQue share the same single‑QA prompt template.
-            # AIME, MATH500, AMC share the math template.
+            # AIME, MATH500, AMC, DeepMath (RL prep) share the math template.
             template_name = dataset_name
             if dataset_name.lower() in ("gaia", "hle", "musique"):
                 template_name = "gaia_baseline" if baseline else "gaia"
-            elif dataset_name.lower() in ("aime", "math500", "amc"):
+            elif dataset_name.lower() in ("aime", "math500", "amc", "deepmath"):
                 template_name = "math_baseline" if baseline else "math"
             elif dataset_name.lower() == "gpqa":
                 template_name = "gpqa_baseline" if baseline else "gpqa"

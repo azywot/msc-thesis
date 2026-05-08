@@ -3,7 +3,7 @@
 # on real hardware with tiny data (16 training samples, 2 rollouts, 1 epoch).
 #
 # Differences from config.yaml:
-#   - data dir: data/training/smoke  (prepared by 009 job with --n-search 50 --n-math 50)
+#   - data dir: data/training/smoke  (prepared by job 008 with --n-search 50 --n-math 50)
 #   - train_max_samples: 16          (only 16 questions per epoch)
 #   - rollout.n: 2                   (2 rollouts per question instead of 8)
 #   - total_epochs: 1

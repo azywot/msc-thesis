@@ -36,6 +36,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `scripts/launch_verl.py`: list values in `python_args` are now converted to Hydra list syntax (`key=[elem1,elem2]`) so multi-file `data.val_files` reaches VERL correctly
 - `rollout.py`: `data_source` added to every saved rollout JSON record for offline per-domain analysis
 
+### Fixed
+- **`data/prepare.py` Search-R1 schema** — `PeterJinGo/nq_hotpotqa_train` exposes answers as `golden_answers` and the source as `data_source`; normalization now reads those Hub fields, keeps the first answer as `result` / `extra_info.groundtruth`, and preserves the full answer-alias list in `extra_info.golden_answers`. The Search-R1 downloader now skips empty normalized rows and raises only if it cannot fill the requested val/train counts.
+- **`data/prepare.py` DeepMath schema** — `zwhe99/DeepMath-103K` exposes `question` and `final_answer`; normalization previously used non-existent `problem` / `answer`, producing empty DeepMath rows in parquets. Rows now prefer `question` + `final_answer`, with legacy fallbacks for `problem` / `answer` / `instruction`. `_download_deepmath` scans the shuffled split and skips the rare Hub row with an empty normalized question or answer instead of failing the whole job; it raises only if the dataset runs out before filling the requested val/train counts (schema mismatch or pervasive corruption). Unit tests cover Hub-shaped and legacy rows.
+
 ---
 
 ## [0.5.0] — 2026-04-26

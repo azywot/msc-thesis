@@ -177,7 +177,7 @@ CLI script: `python src/fine_tuning/data/prepare.py [options]`
 Arguments: `--n-search INT`, `--n-math INT`, `--output-dir PATH`, `--seed INT`
 
 Steps:
-1. Download `PeterJinGo/SearchR1-nq_hotpotqa_train` from HuggingFace
+1. Download `PeterJinGo/nq_hotpotqa_train` from HuggingFace
 2. Download `zwhe99/DeepMath-103K` from HuggingFace
 3. Normalise both to the VERL schema:
    ```python

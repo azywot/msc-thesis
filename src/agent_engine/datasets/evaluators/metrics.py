@@ -135,14 +135,27 @@ MATH_TOKEN_PATTERN = re.compile(
 
 
 def is_math_answer(s: str) -> bool:
-    # 1) Try number
+    """Return True if *s* should be scored with Math-Verify / symbolic rules.
+
+    Numeric strings and expressions with operators, digits, or LaTeX use the math
+    path. Multi-letter alphabetic-only strings (e.g. *Paris*, *yes*) are treated
+    as plain-text QA answers so they are not mis-routed to Math-Verify.
+
+    Single-letter tokens (e.g. *x*, *n*) keep the math path for short symbolic
+    gold answers.
+    """
+    s = s.strip()
+    if not s:
+        return False
     try:
-        float(s.strip())
+        float(s)
         return True
     except ValueError:
         pass
 
-    # 2) Check math token pattern
+    if len(s) >= 2 and re.fullmatch(r"[A-Za-z]+", s) is not None:
+        return False
+
     return bool(MATH_TOKEN_PATTERN.match(s))
 
 
@@ -209,6 +222,11 @@ def evaluate_answer(
         score = float(question_scorer(pred, gt))
         em_score = float(exact_match(pred, gt, case_sensitive=False))
         f1_score = token_f1(pred, gt)
+
+    if choices is None and contains_match(pred, gt):
+        score = max(score, 1.0)
+        em_score = max(em_score, 1.0)
+        f1_score = max(f1_score, token_f1(pred, gt))
 
     return {
         "correct": score > 0,

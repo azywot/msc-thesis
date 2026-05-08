@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=SmokeFT
-#SBATCH --partition=gpu
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
-#SBATCH --gres=gpu:a100:4
-#SBATCH --time=02:00:00
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=4
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=04:00:00
 #SBATCH --output=out/fine_tuning/smoke_%A.log
 #SBATCH --error=out/fine_tuning/smoke_%A.err
 
@@ -13,7 +13,7 @@
 #   2. One epoch of GRPO training on 16 questions with config_smoke.yaml
 #   3. Verify checkpoint was written and W&B run exists
 #
-# Run AFTER job 008 (data must already be prepared).
+# Run AFTER job 008 (creates cosmas-train + data — must already be prepared).
 # If this passes, the full training job (010) is safe to submit.
 
 set -euo pipefail
@@ -26,17 +26,81 @@ echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
 echo ""
 
 module purge
-module load 2023
-module load CUDA/12.1.1
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
 
 PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
 cd "$PROJECT_DIR" || exit 1
 echo "Project directory: $PROJECT_DIR"
 
+if [[ -f ".env" ]]; then
+    echo "Loading environment variables from .env..."
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${SERPER_API_KEY:-}" && -z "${TAVILY_API_KEY:-}" ]]; then
+    echo "ERROR: SERPER_API_KEY or TAVILY_API_KEY must be set for rollout workers."
+    exit 1
+fi
+
+if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    echo "Warning: WANDB_API_KEY is not set; W&B logging may fail."
+fi
+
+# cosmas-train is created once by jobs/008_prepare_fine_tuning_data.job.
+if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
+    echo "ERROR: conda env 'cosmas-train' not found."
+    echo "Run jobs/008_prepare_fine_tuning_data.job first (creates env + training data)."
+    exit 1
+fi
+
 source activate cosmas-train
 export PYTHONNOUSERSITE=1
 
+AGENTFLOW_ROOT="${AGENTFLOW_ROOT:-$HOME/azywot/AgentFlow}"
+AGENTFLOW_REPO="${AGENTFLOW_REPO:-https://github.com/shin-ee-chen/AgentFlow.git}"
+if [[ ! -d "$AGENTFLOW_ROOT/agentflow" ]]; then
+    echo "AgentFlow clone not found at $AGENTFLOW_ROOT; cloning..."
+    if [[ -e "$AGENTFLOW_ROOT" ]]; then
+        echo "ERROR: $AGENTFLOW_ROOT exists but does not contain an agentflow/ package."
+        exit 1
+    fi
+    git clone "$AGENTFLOW_REPO" "$AGENTFLOW_ROOT"
+fi
+
+echo "Installing AgentFlow and msc-thesis packages..."
+pip install --no-deps -e "$AGENTFLOW_ROOT/agentflow"
+pip install -e .
+bash jobs/cosmas_train_pip_reconcile.sh
+python -c "import agentflow, agent_engine, fine_tuning, verl, vllm; print('Training imports OK')"
+
 mkdir -p out/fine_tuning
+
+for required_file in \
+    data/training/smoke/train/combined_train.parquet \
+    data/training/smoke/val/val_search.parquet \
+    data/training/smoke/val/val_deepmath.parquet
+do
+    if [[ ! -f "$required_file" ]]; then
+        echo "ERROR: Missing required smoke data file: $required_file"
+        echo "Run jobs/008_prepare_fine_tuning_data.job first."
+        exit 1
+    fi
+done
+
+VERL_PID=""
+cleanup() {
+    if [[ -n "${VERL_PID:-}" ]] && kill -0 "$VERL_PID" >/dev/null 2>&1; then
+        echo "Stopping VERL server (pid=$VERL_PID)..."
+        kill "$VERL_PID" || true
+        wait "$VERL_PID" || true
+    fi
+}
+trap cleanup EXIT
 
 # ── 1. Pre-flight checks (CPU, no VERL needed) ───────────────────────────────
 echo ""
@@ -57,6 +121,10 @@ VERL_PID=$!
 
 echo "Waiting 90s for Ray + vLLM to be ready..."
 sleep 90
+if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
+    echo "FAIL — VERL server exited during startup. See out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_verl.log"
+    wait "$VERL_PID"
+fi
 
 # ── 3. Rollout workers ───────────────────────────────────────────────────────
 echo ""

@@ -16,7 +16,7 @@ class TestSearchDomain:
 
     def test_containment_nq(self):
         # GAIA scorer: prediction containing the ground truth → correct
-        assert reward_fn("The capital is Paris, France", "Paris", "nq") == 1.0
+        assert reward_fn("The capital is \\boxed{Paris}", "Paris", "nq") == 1.0
 
     def test_wrong_nq(self):
         assert reward_fn("London", "Paris", "nq") == 0.0
