@@ -157,7 +157,7 @@ python scripts/train_orchestrator.py --config experiments/configs/train/config_s
 
 wait $VERL_PID
 
-# ── 4. Verify checkpoint was written ─────────────────────────────────────────
+# ── 5. Verify checkpoint was written ─────────────────────────────────────────
 echo ""
 echo "Verifying checkpoint..."
 CKPT_DIR="experiments/results/training/qwen3-8b-grpo-smoke"

@@ -30,7 +30,7 @@ env:
   BASE_DATA_DIR: 'data/training/smoke'
   ENABLE_TOOLS: ["web_search", "code_generator"]
   TOOL_STEPS: 2
-  THINKING_MODE: 'ORCHESTRATOR_ONLY'
+  THINKING_MODE: 'NO'
   TRAIN_TEMPERATURE: 0.7
   TEST_TEMPERATURE: 0.0
   N_WORKERS: 1

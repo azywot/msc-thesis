@@ -1,6 +1,6 @@
 # Fine-Tuning the CoSMAS Orchestrator
 
-**Target:** Qwen3-8B orchestrator only. Sub-agents (web search analyser, code generator) are not gradient-trained — their token generations are treated as environment interactions by VERL and do not enter the GRPO objective. Their weights evolve indirectly because they share the same VERL endpoint as the orchestrator, matching AgentFlow's training setup exactly.
+**Target:** Qwen3-8B orchestrator only. Sub-agents (web search analyser, code generator) are not gradient-trained — their token generations are treated as environment interactions by VERL and do not enter the GRPO objective. Sub-agents run on a **separate, frozen vLLM server** (`Qwen/Qwen3-1.7B`, port 9998) that is started before training and never updated, eliminating train/eval distribution shift for sub-agents.
 
 **Method:** GRPO reinforcement learning via the AgentFlow training stack (VERL backend, LoRA adapters).
 
@@ -46,10 +46,10 @@ Training time
           │  OrchestratorRollout (LitAgent)                  │
           │  ├── AgenticOrchestrator  ← model being trained  │
           │  │     thinking_mode: ORCHESTRATOR_ONLY          │
-          │  ├── WebSearchTool  → sub-agent LLM @ :9999      │
-          │  ├── CodeGeneratorTool → sub-agent LLM @ :9999   │
-          │  │   (sub-agents share VERL endpoint — same as   │
-          │  │    AgentFlow's vllm-local-<BASE_MODEL>)       │
+          │  ├── WebSearchTool  → sub-agent LLM @ :9998      │
+          │  ├── CodeGeneratorTool → sub-agent LLM @ :9998   │
+          │  │   (sub-agents use a SEPARATE frozen server:   │
+          │  │    Qwen3-1.7B, never updated during training)  │
           │  └── OrchestratorReward  ← binary via metrics.py │
           └──────────────────────────────────────────────────┘
 
@@ -61,7 +61,7 @@ Inference (unchanged after training)
                                      VLLMProvider (no changes)
 ```
 
-**Key point:** only the orchestrator path is directly optimized by GRPO (LoRA updates on the actor policy). Sub-agents are not separately gradient-trained, though their runtime outputs can change indirectly because they call the same shared VERL endpoint during training. Tools, evaluation scripts, and experiment configs are untouched. After training, merge the LoRA adapter and point any existing YAML at the merged model path.
+**Key point:** only the orchestrator path is directly optimized by GRPO (LoRA updates on the actor policy). Sub-agents run on a separate frozen vLLM server (`Qwen/Qwen3-1.7B`) that never changes during training — the orchestrator is always evaluated against the same stable tool interface. Tools, evaluation scripts, and experiment configs are untouched. After training, merge the LoRA adapter and point any existing YAML at the merged model path.
 
 ---
 
@@ -157,14 +157,14 @@ sbatch jobs/009_test_small_ft_example.job
 
 The job runs in two phases:
 1. **Pre-flight checks** (CPU, no VERL): imports, reward routing for all data sources, config parsing, parquet schema validation, `OrchestratorRollout` instantiation.
-2. **Mini training run**: 1 epoch on `train/config_smoke.yaml`. Asserts a checkpoint was written. W&B is enabled (project `cosmas-rl-finetuning-smoke`) so logging is verified too.
+2. **Mini training run**: 1 epoch on `experiments/configs/train/config_smoke.yaml`. Asserts a checkpoint was written. W&B is enabled (project `cosmas-rl-finetuning-smoke`) so logging is verified too.
 
 Run the pre-flight checks locally at any time (no GPU, no VERL needed):
 ```bash
 conda activate cosmas-train
 python scripts/test_ft_smoke.py \
     --data-dir data/training/smoke \
-    --config   train/config_smoke.yaml
+    --config   experiments/configs/train/config_smoke.yaml
 ```
 
 ### Step 3 — Full training run
@@ -173,13 +173,17 @@ python scripts/test_ft_smoke.py \
 sbatch jobs/010_ft_orchestrator.job
 ```
 
-Or manually (two terminals, after activating `cosmas-train` in both):
+Or manually (three terminals, after activating `cosmas-train` in all):
 ```bash
-# Terminal 1 — VERL server
-python scripts/launch_verl.py --config train/config.yaml
+# Terminal 1 — frozen sub-agent server (start first, never needs restarting)
+vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.15
+export SUBAGENT_ENDPOINT=http://localhost:9998/v1
 
-# Terminal 2 — rollout workers (start after ~60s when vLLM is up)
-python scripts/train_orchestrator.py --config train/config.yaml
+# Terminal 2 — VERL server (start after sub-agent server is up)
+python scripts/launch_verl.py --config experiments/configs/train/config.yaml
+
+# Terminal 3 — rollout workers (start after VERL vLLM is up, ~120s)
+python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml
 ```
 
 Training runs for 5 epochs. Checkpoints every epoch:
@@ -235,11 +239,11 @@ msc-thesis/
 │       └── prepare.py           download + split + write parquet files
 │
 ├── scripts/
-│   ├── launch_verl.py           starts VERL server (reads train/config.yaml)
-│   ├── train_orchestrator.py    starts rollout workers (connects to VERL)
+│   ├── launch_verl.py           starts VERL server (reads experiments/configs/train/config.yaml)
+│   ├── train_orchestrator.py    starts rollout workers (connects to VERL + frozen sub-agent server)
 │   └── test_ft_smoke.py         pre-flight checks — runs without GPU or VERL
 │
-├── train/
+├── experiments/configs/train/
 │   ├── config.yaml              full training config (5 epochs, 4×A100)
 │   └── config_smoke.yaml        smoke-test config (1 epoch, 16 samples)
 │
@@ -247,8 +251,7 @@ msc-thesis/
 │   ├── 008_prepare_fine_tuning_data.job   SLURM: prepare data/training/
 │   ├── 009_test_small_ft_example.job      SLURM: smoke test
 │   ├── 010_ft_orchestrator.job            SLURM: full training run
-│   ├── environment_train.yml              conda env spec (cosmas-train)
-│   └── train_orchestrator.sh             legacy single-script launcher
+│   └── environment_train.yml              conda env spec (cosmas-train)
 │
 ├── data/training/               created by job 008
 │   ├── train/combined_train.parquet
@@ -266,11 +269,13 @@ msc-thesis/
 
 ## 5. Config Reference
 
-### `train/config.yaml` — `env` block
+### `experiments/configs/train/config.yaml` — `env` block
 
 | Key | Value | Notes |
 |---|---|---|
 | `BASE_MODEL` | `Qwen/Qwen3-8B` | HuggingFace model ID or local path |
+| `SUBAGENT_MODEL` | `Qwen/Qwen3-1.7B` | Frozen sub-agent model (separate vLLM server at port 9998) |
+| `SUBAGENT_ENDPOINT` | `http://localhost:9998/v1` | URL of the frozen sub-agent vLLM server |
 | `N_GPUS` | `4` | Must match `#SBATCH --gres=gpu:a100:4` |
 | `ROLLOUT_TP_SIZE` | `2` | Tensor parallelism for rollout vLLM (2 GPUs per shard) |
 | `EXPERIMENT_NAME` | `qwen3-8b-grpo-search-math` | Checkpoint dir name and W&B run name |
@@ -283,7 +288,7 @@ msc-thesis/
 | `TEST_TEMPERATURE` | `0.0` | Greedy decoding for validation rollouts |
 | `N_WORKERS` | `1` | Number of parallel rollout worker processes |
 
-### `train/config.yaml` — `python_args` block (key parameters)
+### `experiments/configs/train/config.yaml` — `python_args` block (key parameters)
 
 | Key | Value | Notes |
 |---|---|---|
@@ -299,7 +304,7 @@ msc-thesis/
 | `trainer.test_freq` | `1` | Run validation every epoch |
 | `trainer.val_before_train` | `true` | Runs validation before epoch 1 (baseline measurement) |
 
-### Smoke test differences (`train/config_smoke.yaml`)
+### Smoke test differences (`experiments/configs/train/config_smoke.yaml`)
 
 | Parameter | Full config | Smoke config |
 |---|---|---|
@@ -412,6 +417,7 @@ python scripts/analyze_results.py experiments/results/<run>/raw_results.json --b
 | Problem | Diagnostic | Fix |
 |---|---|---|
 | `EnvironmentError: SERPER_API_KEY must be set` | Missing search API key | Export `SERPER_API_KEY` before launching rollout workers |
+| `EnvironmentError: SUBAGENT_ENDPOINT must be set` | Frozen sub-agent server not started | Start `vllm serve Qwen/Qwen3-1.7B --port 9998` and export `SUBAGENT_ENDPOINT=http://localhost:9998/v1` |
 | Rollout workers fail to connect to VERL | VERL not ready yet | Increase sleep in job script from 60 to 120s; check `*_verl.log` |
 | `ModuleNotFoundError: agentflow` | Wrong conda env | `source activate cosmas-train` |
 | `ModuleNotFoundError: verl` | Wrong vLLM version env | Inference env (`agent_engine`) doesn't have verl — use `cosmas-train` for training |
@@ -436,19 +442,14 @@ These are the two domains where tool use is demonstrably necessary:
 
 Both directly target the dominant failure mode (direct reasoning without action) in the domains where it is correctable. GPQA/HLE expert-science failures are structurally different (web search doesn't help on google-proof questions) and are not the primary training target.
 
-### Why do sub-agents share the VERL endpoint rather than using a separate frozen server?
+### Why do sub-agents use a separate frozen server rather than sharing the VERL endpoint?
 
-This directly replicates AgentFlow's training setup. In `AgentFlow/train/config.yaml`:
-```yaml
-TOOL_ENGINE:  ["vllm-local-Qwen/Qwen3-0.6B", "Default"]
-MODEL_ENGINE: ["trainable", "vllm-local-Qwen/Qwen3-0.6B", "vllm-local-Qwen/Qwen3-0.6B", "vllm-local-Qwen/Qwen3-0.6B"]
-```
+**Train/eval consistency.** At evaluation time, sub-agents run the base `Qwen/Qwen3-1.7B` model through the standard `VLLMProvider`. If sub-agents instead shared the VERL endpoint during training, they would call the evolving actor snapshot at each step, meaning the orchestrator is trained against an unstable, constantly-shifting tool interface. By locking sub-agents to a separate frozen server, the tool interface the orchestrator trains against is identical to the tool interface it sees at eval time — the base model behaviour.
 
-`vllm-local-<BASE_MODEL>` resolves to the same VERL vLLM endpoint as the trainable model — there is no separate frozen server. All agents (Planner, Verifier, Executor, Coder tool) call the same vLLM. Only the Planner's token generations flow through GRPO gradient computation; the others are treated as environment interactions.
+**Memory efficiency.** A 1.7B frozen sub-agent server uses ~3–4 GB of GPU memory (with `--gpu-memory-utilization 0.15` on a 40 GB A100). This fits alongside the VERL actor/rollout stack for 8B without OOM. Using the full 8B VERL endpoint would not add any quality benefit for the narrow sub-agent tasks (retrieve-and-summarise, write-and-execute).
 
-The msc-thesis equivalent: the orchestrator is trained via GRPO; web search analyser and code generator sub-agents call the same VERL endpoint at temperature=0.0, but their token generations are environment context, not gradient-contributing model output.
-
-The training environment therefore exactly matches evaluation (`direct_tool_call=False`): the orchestrator delegates a task description to a sub-agent, which formulates the query or writes the code, and the result comes back. This is the interface the trained model will see at eval time.
+**Why not replicate AgentFlow's shared-endpoint design?**
+AgentFlow's `vllm-local-<BASE_MODEL>` points all agents (Planner, Verifier, Executor, Coder) to the same VERL vLLM. This creates a train/eval mismatch for sub-agents: at eval time they use the base model; during training they used the evolving snapshot. The msc-thesis design eliminates this mismatch by freezing sub-agents at a fixed checkpoint from day one.
 
 ### Why is thinking enabled during training?
 

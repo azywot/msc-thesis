@@ -53,13 +53,18 @@ sbatch jobs/train_orchestrator.sh
 Or manually (two terminals):
 
 ```bash
-# Terminal 1 — VERL server
+# Terminal 1 — frozen sub-agent server (start first)
 conda activate cosmas-train
-python scripts/launch_verl.py --config train/config.yaml
+vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.15
+export SUBAGENT_ENDPOINT=http://localhost:9998/v1
 
-# Terminal 2 — rollout workers (after vLLM is up, ~60s)
+# Terminal 2 — VERL server (after sub-agent server is up)
 conda activate cosmas-train
-python scripts/train_orchestrator.py --config train/config.yaml
+python scripts/launch_verl.py --config experiments/configs/train/config.yaml
+
+# Terminal 3 — rollout workers (after VERL vLLM is up, ~120s)
+conda activate cosmas-train
+python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml
 ```
 
 ### 3. Merge LoRA and evaluate
@@ -127,7 +132,7 @@ the model away from long thinking traces — the opposite of what you want.
 **How to detect:** in the first epoch, watch `val/reward_mean` on the DeepMath
 val split in W&B. If it drops or stays near zero while training reward is rising,
 truncation is likely. Fix: increase `data.max_response_length` to `8192` in
-`train/config.yaml` and relaunch.
+`experiments/configs/train/config.yaml` and relaunch.
 
 ---
 
@@ -135,6 +140,7 @@ truncation is likely. Fix: increase `data.max_response_length` to `8192` in
 
 | Variable | Where to set |
 |---|---|
-| `SERPER_API_KEY` or `TAVILY_API_KEY` | Snellius login script or `train/config.yaml` env block |
+| `SERPER_API_KEY` or `TAVILY_API_KEY` | Snellius login script or `experiments/configs/train/config.yaml` env block |
+| `SUBAGENT_ENDPOINT` | Set to `http://localhost:9998/v1` after starting the frozen sub-agent server |
 | `WANDB_API_KEY` | Snellius login script |
 | `HF_TOKEN` | Snellius login script (for gated datasets) |
