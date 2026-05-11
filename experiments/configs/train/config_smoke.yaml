@@ -23,8 +23,8 @@ env:
   BASE_MODEL: 'Qwen/Qwen3-8B'
   SUBAGENT_MODEL: 'Qwen/Qwen3-1.7B'
   SUBAGENT_ENDPOINT: 'http://localhost:9998/v1'
-  N_GPUS: 4
-  ROLLOUT_TP_SIZE: 2
+  N_GPUS: 2
+  ROLLOUT_TP_SIZE: 1
   EXPERIMENT_NAME: 'qwen3-8b-grpo-smoke'
   PROJECT_NAME: 'cosmas-rl-finetuning-smoke'
   BASE_DATA_DIR: 'data/training/smoke'
