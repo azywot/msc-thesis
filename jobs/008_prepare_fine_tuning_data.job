@@ -8,14 +8,15 @@
 #SBATCH --output=out/fine_tuning/prepare_data_%A.log
 
 # Download Search-R1 + DeepMath-103K and write VERL parquet files.
-# Writes:
-#   data/training/train/combined_train.parquet  (1k search + 1k math, curated)
-#   data/training/val/val_search.parquet         (200 held-out Search-R1)
-#   data/training/val/val_deepmath.parquet        (200 held-out DeepMath)
-#   data/training/val/val_combined.parquet        (400 combined, used by VERL)
+# Splits (proportions held constant across all three):
+#   data/training/train/combined_train.parquet  (900 search + 900 math = 1800 train)
+#   data/training/val/val_*.parquet             (100 search + 100 math = 200 val)
+#   data/training/test/test_*.parquet           (100 search + 100 math = 200 test)
 #
 # Search-R1 composition: 85% HotpotQA (multi-hop) + 15% NQ.
 # DeepMath: difficulty >= 5 only (cleaner GRPO signal, avoids trivial problems).
+# Row order: test carved first, then val, then train — no cross-split contamination.
+#
 # Also writes a small smoke-test subset to data/training/smoke/ for job 009.
 
 set -euo pipefail
@@ -67,14 +68,16 @@ mkdir -p out/fine_tuning
 
 # ── 1. Full training data ────────────────────────────────────────────────────
 echo ""
-echo "Preparing curated training data (1k search + 1k math)..."
+echo "Preparing curated training data (1800 train / 200 val / 200 test)..."
 python src/fine_tuning/data/prepare.py \
-    --n-search    1000 \
-    --n-math      1000 \
-    --n-val-search  200 \
-    --n-val-math    200 \
-    --search-source both \
-    --hotpot-ratio  0.85 \
+    --n-search       900 \
+    --n-math         900 \
+    --n-val-search   100 \
+    --n-val-math     100 \
+    --n-test-search  100 \
+    --n-test-math    100 \
+    --search-source  both \
+    --hotpot-ratio   0.85 \
     --deepmath-min-difficulty 5 \
     --output-dir data/training \
     --seed 42
@@ -85,6 +88,9 @@ ls -lh data/training/train/combined_train.parquet
 ls -lh data/training/val/val_search.parquet
 ls -lh data/training/val/val_deepmath.parquet
 ls -lh data/training/val/val_combined.parquet
+ls -lh data/training/test/test_search.parquet
+ls -lh data/training/test/test_deepmath.parquet
+ls -lh data/training/test/test_combined.parquet
 
 # ── 2. Smoke-test subset ─────────────────────────────────────────────────────
 echo ""

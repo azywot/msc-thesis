@@ -27,24 +27,34 @@ medium-hard and hard problems.
 
 Usage:
     python src/fine_tuning/data/prepare.py \\
-        --n-search 1000 --n-math 1000 \\
+        --n-search 900 --n-math 900 \\
+        --n-val-search 100 --n-val-math 100 \\
+        --n-test-search 100 --n-test-math 100 \\
         --search-source both --hotpot-ratio 0.85 \\
         --deepmath-min-difficulty 5 \\
         --output-dir data/training --seed 42
 
-Validation sets:
-    Both domains get a held-out val split carved out BEFORE the training
-    subsample, guaranteeing no overlap with combined_train.parquet.
+Splits:
+    Three non-overlapping splits are carved from the streamed data in order:
+    test first, then val, then train.  This guarantees no contamination
+    regardless of how large n_train is.
 
-    Files written under <output-dir>/val/:
-        val_search.parquet      — held-out Search-R1 (NQ + HotpotQA)
-        val_deepmath.parquet    — held-out DeepMath
-        val_combined.parquet    — both merged and shuffled (used by VERL)
+    Proportions (hotpot/nq ratio within Search-R1, search/math ratio) are
+    held constant across all three splits so that val and test statistics are
+    representative of the training distribution.
 
-    VERL's data.val_files points at val_combined.parquet so the reported
-    val/reward_mean covers both domains.  Per-domain breakdown is available
-    offline from val_search.parquet / val_deepmath.parquet and from the
-    rollout JSON files saved during training (each record includes data_source).
+    Files written:
+        <output-dir>/train/combined_train.parquet  — train (search + math)
+        <output-dir>/val/val_search.parquet        — val Search-R1
+        <output-dir>/val/val_deepmath.parquet      — val DeepMath
+        <output-dir>/val/val_combined.parquet      — val merged (used by VERL)
+        <output-dir>/test/test_search.parquet      — test Search-R1
+        <output-dir>/test/test_deepmath.parquet    — test DeepMath
+        <output-dir>/test/test_combined.parquet    — test merged (final eval)
+
+    VERL's data.val_files points at val_combined.parquet.  The test split is
+    held out entirely and used only for final reporting — never for checkpoint
+    selection.
 
     AIME is an evaluation benchmark and must not be used here —
     see docs/failure_modes_fine_tuning_alignment.md §6.3.
@@ -168,14 +178,17 @@ def _is_valid_norm(row: Dict[str, Any]) -> bool:
 def _download_search_r1(
     n_train: int,
     n_val: int,
+    n_test: int,
     seed: int,
     search_source: str = "both",
     hotpot_ratio: float = 0.85,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Download Search-R1 and split into train and val.
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Download Search-R1 and split into train, val, and test.
 
-    Val rows are taken first to guarantee no overlap with train regardless
-    of n_train.
+    Rows are assigned in order: test first, then val, then train.  This
+    guarantees no contamination between splits regardless of n_train.
+    The same hotpot_ratio is applied to each split so all three have
+    identical source proportions.
 
     search_source controls which sources are included:
       "hotpotqa" — multi-hop questions only (preferred for retrieval-policy learning)
@@ -188,26 +201,29 @@ def _download_search_r1(
     """
     from datasets import load_dataset  # lazy import — not needed for unit tests
 
-    # Compute per-source quotas for val and train independently
+    hotpot_test_quota, nq_test_quota = _search_source_quotas(n_test, search_source, hotpot_ratio)
     hotpot_val_quota, nq_val_quota = _search_source_quotas(n_val, search_source, hotpot_ratio)
     hotpot_train_quota, nq_train_quota = _search_source_quotas(n_train, search_source, hotpot_ratio)
 
-    total_needed = n_val + n_train
+    total_needed = n_test + n_val + n_train
     buffer_size = min(max(total_needed * 4, 10_000), 500_000)
 
     ds = load_dataset(SEARCH_R1_HF_DATASET, split="train", streaming=True)
     ds = ds.shuffle(seed=seed, buffer_size=buffer_size)
 
+    test_rows: List[Dict[str, Any]] = []
     val_rows: List[Dict[str, Any]] = []
     train_rows: List[Dict[str, Any]] = []
-    val_hotpot = val_nq = train_hotpot = train_nq = 0
+    test_hotpot = test_nq = val_hotpot = val_nq = train_hotpot = train_nq = 0
     skipped = 0
     scanned = 0
 
     for sample in ds:
         scanned += 1
         if (
-            val_hotpot >= hotpot_val_quota
+            test_hotpot >= hotpot_test_quota
+            and test_nq >= nq_test_quota
+            and val_hotpot >= hotpot_val_quota
             and val_nq >= nq_val_quota
             and train_hotpot >= hotpot_train_quota
             and train_nq >= nq_train_quota
@@ -223,7 +239,11 @@ def _download_search_r1(
         is_hotpot = src == "hotpotqa"
 
         if is_hotpot:
-            if val_hotpot < hotpot_val_quota:
+            if test_hotpot < hotpot_test_quota:
+                norm["extra_info"]["idx"] = len(test_rows)
+                test_rows.append(norm)
+                test_hotpot += 1
+            elif val_hotpot < hotpot_val_quota:
                 norm["extra_info"]["idx"] = len(val_rows)
                 val_rows.append(norm)
                 val_hotpot += 1
@@ -232,7 +252,11 @@ def _download_search_r1(
                 train_rows.append(norm)
                 train_hotpot += 1
         else:
-            if val_nq < nq_val_quota:
+            if test_nq < nq_test_quota:
+                norm["extra_info"]["idx"] = len(test_rows)
+                test_rows.append(norm)
+                test_nq += 1
+            elif val_nq < nq_val_quota:
                 norm["extra_info"]["idx"] = len(val_rows)
                 val_rows.append(norm)
                 val_nq += 1
@@ -241,12 +265,12 @@ def _download_search_r1(
                 train_rows.append(norm)
                 train_nq += 1
 
-    if len(val_rows) != n_val or len(train_rows) != n_train:
+    if len(test_rows) != n_test or len(val_rows) != n_val or len(train_rows) != n_train:
         raise RuntimeError(
-            f"Search-R1: only collected val={len(val_rows)}/{n_val}, "
-            f"train={len(train_rows)}/{n_train} valid rows after scanning "
-            f"{scanned} shuffled examples (skipped {skipped} with empty "
-            f"question/result). "
+            f"Search-R1: only collected test={len(test_rows)}/{n_test}, "
+            f"val={len(val_rows)}/{n_val}, train={len(train_rows)}/{n_train} "
+            f"valid rows after scanning {scanned} shuffled examples "
+            f"(skipped {skipped} with empty question/result). "
             f"source={search_source!r}, hotpot_ratio={hotpot_ratio}. "
             f"Dataset may be too small or have changed schema."
         )
@@ -257,7 +281,7 @@ def _download_search_r1(
             f"answer after normalisation."
         )
 
-    return train_rows, val_rows
+    return train_rows, val_rows, test_rows
 
 
 def _is_valid_deepmath_norm(row: Dict[str, Any]) -> bool:
@@ -299,26 +323,28 @@ def _passes_difficulty_filter(raw: Dict[str, Any], min_difficulty: int) -> bool:
 def _download_deepmath(
     n_train: int,
     n_val: int,
+    n_test: int,
     seed: int,
     min_difficulty: int = 5,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Download DeepMath-103K and split into train and val.
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Download DeepMath-103K and split into train, val, and test.
 
-    Val rows are filled first by scanning the shuffled dataset in order, then
-    train rows.  Rows failing the difficulty threshold or with empty normalised
-    ``question`` / ``result`` are skipped.
+    Rows are assigned in order: test first, then val, then train, guaranteeing
+    no contamination.  Rows failing the difficulty threshold or with empty
+    normalised ``question`` / ``result`` are skipped.
 
     min_difficulty filters on the ``difficulty`` integer field of DeepMath-103K
     (range 1–9).  Default 5 retains medium-hard and hard problems, which
     provide cleaner RL signal for GRPO — harder problems reduce spurious reward
     and encourage longer, more deliberate reasoning trajectories.
 
-    Raises if the filtered dataset cannot yield n_val + n_train valid rows.
+    Raises if the filtered dataset cannot yield n_test + n_val + n_train valid rows.
     """
     from datasets import load_dataset
     ds = load_dataset("zwhe99/DeepMath-103K", split="train")
     ds = ds.shuffle(seed=seed)
 
+    test_rows: List[Dict[str, Any]] = []
     val_rows: List[Dict[str, Any]] = []
     train_rows: List[Dict[str, Any]] = []
     skipped = 0
@@ -326,14 +352,17 @@ def _download_deepmath(
 
     for row in ds:
         scanned += 1
-        if len(val_rows) >= n_val and len(train_rows) >= n_train:
+        if len(test_rows) >= n_test and len(val_rows) >= n_val and len(train_rows) >= n_train:
             break
 
         if not _passes_difficulty_filter(dict(row), min_difficulty):
             skipped += 1
             continue
 
-        if len(val_rows) < n_val:
+        if len(test_rows) < n_test:
+            idx = len(test_rows)
+            target = test_rows
+        elif len(val_rows) < n_val:
             idx = len(val_rows)
             target = val_rows
         else:
@@ -346,12 +375,12 @@ def _download_deepmath(
             continue
         target.append(norm)
 
-    if len(val_rows) != n_val or len(train_rows) != n_train:
+    if len(test_rows) != n_test or len(val_rows) != n_val or len(train_rows) != n_train:
         raise RuntimeError(
-            f"DeepMath: only collected val={len(val_rows)}/{n_val}, "
-            f"train={len(train_rows)}/{n_train} valid rows after scanning "
-            f"{scanned} examples (skipped {skipped} with difficulty < "
-            f"{min_difficulty} or empty question/result). "
+            f"DeepMath: only collected test={len(test_rows)}/{n_test}, "
+            f"val={len(val_rows)}/{n_val}, train={len(train_rows)}/{n_train} "
+            f"valid rows after scanning {scanned} examples (skipped {skipped} "
+            f"with difficulty < {min_difficulty} or empty question/result). "
             f"Try lowering --deepmath-min-difficulty or the dataset is too small."
         )
 
@@ -361,7 +390,7 @@ def _download_deepmath(
             f"{min_difficulty} or with empty question/answer."
         )
 
-    return train_rows, val_rows
+    return train_rows, val_rows, test_rows
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +466,38 @@ def build_val_files(
     return {"search": search_path, "deepmath": deepmath_path, "combined": combined_path}
 
 
+def build_test_files(
+    search_test_rows: List[Dict[str, Any]],
+    deepmath_test_rows: List[Dict[str, Any]],
+    output_dir: Path,
+    seed: int,
+) -> Dict[str, Path]:
+    """Write three test parquet files under <output_dir>/test/.
+
+    Returns a dict with keys "search", "deepmath", "combined".
+
+    test_search.parquet   — Search-R1 held-out (NQ + HotpotQA)
+    test_deepmath.parquet — DeepMath held-out
+    test_combined.parquet — both merged and shuffled; used for final reporting only,
+                            never for checkpoint selection.
+    """
+    test_dir = output_dir / "test"
+
+    search_path = _write_val(search_test_rows, test_dir / "test_search.parquet")
+    deepmath_path = _write_val(deepmath_test_rows, test_dir / "test_deepmath.parquet")
+
+    combined = []
+    for i, row in enumerate(search_test_rows + deepmath_test_rows):
+        row = dict(row)
+        row["extra_info"] = {**row["extra_info"], "idx": i}
+        combined.append(row)
+    rng = random.Random(seed)
+    rng.shuffle(combined)
+    combined_path = _write_val(combined, test_dir / "test_combined.parquet")
+
+    return {"search": search_path, "deepmath": deepmath_path, "combined": combined_path}
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -450,26 +511,34 @@ def main():
         ),
     )
     parser.add_argument(
-        "--n-search", type=int, default=1_000,
+        "--n-search", type=int, default=900,
         help=(
-            "Number of Search-R1 training rows (default: 1000). "
-            "GRPO reward plateaus early — 1K curated examples is typically sufficient."
+            "Number of Search-R1 training rows (default: 900). "
+            "GRPO reward plateaus early — ~1K curated examples is typically sufficient."
         ),
     )
     parser.add_argument(
-        "--n-math", type=int, default=1_000,
+        "--n-math", type=int, default=900,
         help=(
-            "Number of DeepMath training rows (default: 1000). "
+            "Number of DeepMath training rows (default: 900). "
             "Filtered by --deepmath-min-difficulty before sampling."
         ),
     )
     parser.add_argument(
-        "--n-val-search", type=int, default=200,
-        help="Number of Search-R1 rows held out for validation (default: 200)",
+        "--n-val-search", type=int, default=100,
+        help="Number of Search-R1 rows held out for validation (default: 100)",
     )
     parser.add_argument(
-        "--n-val-math", type=int, default=200,
-        help="Number of DeepMath rows held out for validation (default: 200)",
+        "--n-val-math", type=int, default=100,
+        help="Number of DeepMath rows held out for validation (default: 100)",
+    )
+    parser.add_argument(
+        "--n-test-search", type=int, default=100,
+        help="Number of Search-R1 rows held out for test (default: 100)",
+    )
+    parser.add_argument(
+        "--n-test-math", type=int, default=100,
+        help="Number of DeepMath rows held out for test (default: 100)",
     )
     parser.add_argument(
         "--search-source", choices=["hotpotqa", "nq", "both"], default="both",
@@ -509,12 +578,13 @@ def main():
 
     print(
         f"Downloading Search-R1 "
-        f"({args.n_val_search} val + {args.n_search} train, "
+        f"({args.n_test_search} test + {args.n_val_search} val + {args.n_search} train, "
         f"source={args.search_source!r}, hotpot_ratio={args.hotpot_ratio})..."
     )
-    search_train_rows, search_val_rows = _download_search_r1(
+    search_train_rows, search_val_rows, search_test_rows = _download_search_r1(
         args.n_search,
         args.n_val_search,
+        args.n_test_search,
         args.seed,
         search_source=args.search_source,
         hotpot_ratio=args.hotpot_ratio,
@@ -522,18 +592,20 @@ def main():
 
     print(
         f"Downloading DeepMath "
-        f"({args.n_val_math} val + {args.n_math} train, "
+        f"({args.n_test_math} test + {args.n_val_math} val + {args.n_math} train, "
         f"min_difficulty={args.deepmath_min_difficulty})..."
     )
-    math_train_rows, math_val_rows = _download_deepmath(
+    math_train_rows, math_val_rows, math_test_rows = _download_deepmath(
         args.n_math,
         args.n_val_math,
+        args.n_test_math,
         args.seed,
         min_difficulty=args.deepmath_min_difficulty,
     )
 
     build_combined_train(search_train_rows, math_train_rows, output_dir, args.seed)
     build_val_files(search_val_rows, math_val_rows, output_dir, args.seed)
+    build_test_files(search_test_rows, math_test_rows, output_dir, args.seed)
     print("Done.")
 
 
