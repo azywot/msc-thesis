@@ -85,8 +85,13 @@ msc-thesis/
 │   └── environment.yml                    # agent_engine conda env (inference, vLLM 0.12.0)
 │
 ├── data/training/             # Created by job 008
-│   ├── train/combined_train.parquet
-│   └── val/val_search.parquet  val_deepmath.parquet  val_combined.parquet
+│   ├── train/combined_train.parquet           (1800 rows, shuffled)
+│   ├── val/val_search.parquet                 (100 held-out Search-R1)
+│   │   val/val_deepmath.parquet               (100 held-out DeepMath, difficulty ≥ 5)
+│   │   val/val_combined.parquet               (200 merged — offline analysis)
+│   └── test/test_search.parquet               (100 held-out Search-R1)
+│        test/test_deepmath.parquet             (100 held-out DeepMath)
+│        test/test_combined.parquet             (200 merged — final reporting only)
 │
 ├── examples/                  # Small runnable single-tool examples
 ├── pyproject.toml

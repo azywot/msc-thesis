@@ -32,6 +32,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `rollout.py`: sub-agents now run during training via a shared VERL endpoint, matching AgentFlow's `vllm-local-<BASE_MODEL>` pattern — sub-agent tokens are environment context (not GRPO trajectory); `direct_tool_call=False` to match evaluation interface; `CodeGeneratorTool` registered with sub-agent provider (was missing entirely)
 - Two conda environments (`cosmas-train` vLLM 0.9.2 / `agent_engine` vLLM 0.12.0) intentionally kept separate — consolidation investigated but blocked by a three-way VERL 0.5.0 / vLLM / AgentFlow version constraint; `docs/fine_tuning_README.md` documents the rationale
 - `data/prepare.py`: both training domains now get held-out val splits carved out before the training subsample — `val_search.parquet` (200 Search-R1), `val_deepmath.parquet` (200 DeepMath), `val_combined.parquet` (merged, for offline analysis); added `--n-val-search` CLI arg; AIME download removed
+- **Dataset curation for GRPO** (`data/prepare.py`)
+  - Three non-overlapping splits: **1800 train / 200 val / 200 test** (test → val → train carve order guarantees no contamination)
+  - `--search-source {hotpotqa,nq,both}` (default `both`) — controls which Search-R1 sources are included
+  - `--hotpot-ratio` (default `0.85`) — HotpotQA fraction within Search-R1; same ratio applied identically to train, val, and test so source proportions are stratified
+  - `--deepmath-min-difficulty` (default `5`) — filters DeepMath-103K to difficulty ≥ threshold (range 1–9); hard problems produce cleaner GRPO signal
+  - `--n-search` / `--n-math` defaults lowered to **900** (from 10 000); `--n-val-*` defaults to **100** (from 200); new `--n-test-search` / `--n-test-math` args (default **100**)
+  - `build_test_files()` — writes `test/test_search.parquet`, `test/test_deepmath.parquet`, `test/test_combined.parquet`
+  - `_search_source_quotas(n, source, hotpot_ratio)` — pure helper; unit-tested
+  - `_passes_difficulty_filter(raw, min_difficulty)` — pure helper; fail-open for missing field; unit-tested
+  - `extra_info.difficulty` stored on DeepMath rows (int, coerced from string if needed; absent when field not in Hub row)
+  - `jobs/008_prepare_fine_tuning_data.job` updated to `900/900` train + `100/100` val + `100/100` test with all new flags explicit
 - `train/config.yaml`, `train/config_smoke.yaml`: `data.val_files` is now a two-element list — VERL logs `val_0/reward_mean` (search) and `val_1/reward_mean` (math) separately in W&B
 - `scripts/launch_verl.py`: list values in `python_args` are now converted to Hydra list syntax (`key=[elem1,elem2]`) so multi-file `data.val_files` reaches VERL correctly
 - `rollout.py`: `data_source` added to every saved rollout JSON record for offline per-domain analysis

@@ -29,20 +29,28 @@ fine_tuning/
 ```bash
 conda activate cosmas-train
 python src/fine_tuning/data/prepare.py \
-    --n-search 50000 --n-math 50000 \
+    --n-search 900 --n-math 900 \
+    --n-val-search 100 --n-val-math 100 \
+    --n-test-search 100 --n-test-math 100 \
+    --search-source both --hotpot-ratio 0.85 \
+    --deepmath-min-difficulty 5 \
     --output-dir data/training --seed 42
 ```
 
 This writes:
-- `data/training/train/combined_train.parquet` — 100k mixed questions (Search-R1 + DeepMath)
-- `data/training/val/val_search.parquet` — 200 held-out Search-R1 questions (NQ + HotpotQA)
-- `data/training/val/val_deepmath.parquet` — 200 held-out DeepMath questions
-- `data/training/val/val_combined.parquet` — both merged (for offline analysis)
+- `data/training/train/combined_train.parquet` — 1800 mixed questions (900 Search-R1 + 900 DeepMath, shuffled)
+- `data/training/val/val_search.parquet` — 100 held-out Search-R1 (NQ + HotpotQA)
+- `data/training/val/val_deepmath.parquet` — 100 held-out DeepMath (difficulty ≥ 5)
+- `data/training/val/val_combined.parquet` — both merged (offline analysis only)
+- `data/training/test/test_search.parquet` — 100 held-out Search-R1 (same proportions as train)
+- `data/training/test/test_deepmath.parquet` — 100 held-out DeepMath (difficulty ≥ 5)
+- `data/training/test/test_combined.parquet` — both merged (final reporting only, never used during training)
+
+Source proportions (85% HotpotQA / 15% NQ; 50/50 search/math) are identical across all three splits.
+Rows are carved in order — test first, then val, then train — so there is zero cross-split contamination.
 
 **Note:** AIME is an evaluation benchmark and must not be used for checkpoint selection (selection bias).
-Both val splits are carved out before the training subsample, guaranteeing no overlap.
-
-For a fast smoke-test run use `--n-search 1000 --n-math 1000`.
+The test split is held out entirely and used only once, for final metric reporting after checkpoint selection.
 
 ### 2. Start training (Snellius)
 
@@ -91,7 +99,9 @@ model:
 |---|---|---|
 | Algorithm | GRPO, n=8 rollouts | No value network; same as AgentFlow |
 | Training data | Search-R1 (NQ+HotpotQA) + DeepMath-103K | Targets the two dominant failure modes: direct reasoning without action on retrieval tasks and math tasks |
-| Validation | 200 held-out Search-R1 + 200 held-out DeepMath | AIME is an eval benchmark — must not be used for checkpoint selection; two separate val files so W&B logs `val_0/reward_mean` (search) and `val_1/reward_mean` (math) independently |
+| Training data mix | 85% HotpotQA / 15% NQ within Search-R1; 50/50 search/math overall | HotpotQA requires multi-hop evidence aggregation → stronger retrieval-policy signal than single-hop NQ; DeepMath difficulty ≥ 5 → harder problems produce cleaner GRPO reward signal |
+| Validation | 100 held-out Search-R1 + 100 held-out DeepMath | AIME is an eval benchmark — must not be used for checkpoint selection; two separate val files so W&B logs `val_0/reward_mean` (search) and `val_1/reward_mean` (math) independently |
+| Test split | 100 held-out Search-R1 + 100 held-out DeepMath | Held out entirely; used only for final reporting after checkpoint selection via val; same source proportions as train and val |
 | Reward | Binary exact-match via `metrics.py` | Directly comparable to benchmark numbers |
 | Model weights | LoRA rank-64, all-linear | ~130 MB checkpoints vs ~16 GB full fine-tune |
 | Thinking mode | `THINKING_MODE: ORCHESTRATOR_ONLY` | Matches the evaluation condition; exposes the "direct reasoning without action" failure to the gradient signal (model reasons internally, skips tool call, gets reward=0) |
