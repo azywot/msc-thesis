@@ -139,58 +139,89 @@ def _is_valid_norm(row: Dict[str, Any]) -> bool:
 
 
 def _download_search_r1(
-    n_train: int, n_val: int, seed: int
+    n_train: int,
+    n_val: int,
+    seed: int,
+    search_source: str = "both",
+    hotpot_ratio: float = 0.85,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Download Search-R1 and split into train and val.
 
-    Val rows are taken first (indices 0..n_val-1 after shuffling) so they
-    are guaranteed to be excluded from the training set regardless of n_train.
+    Val rows are taken first to guarantee no overlap with train regardless
+    of n_train.
 
-    Uses *streaming* loading: the Hub dataset mixes NQ and HotpotQA parquet shards
-    with incompatible nested Arrow schemas; a single non-streaming load forces a
-    unified cast and fails (``DatasetGenerationError`` / type mismatch).
+    search_source controls which sources are included:
+      "hotpotqa" — multi-hop questions only (preferred for retrieval-policy learning)
+      "nq"       — open-domain factual questions only
+      "both"     — mix; hotpot_ratio controls the HotpotQA fraction
+
+    Uses *streaming* loading: the Hub dataset mixes NQ and HotpotQA parquet
+    shards with incompatible nested Arrow schemas; a single non-streaming load
+    forces a unified cast and fails (DatasetGenerationError / type mismatch).
     """
     from datasets import load_dataset  # lazy import — not needed for unit tests
+
+    # Compute per-source quotas for val and train independently
+    hotpot_val_quota, nq_val_quota = _search_source_quotas(n_val, search_source, hotpot_ratio)
+    hotpot_train_quota, nq_train_quota = _search_source_quotas(n_train, search_source, hotpot_ratio)
 
     total_needed = n_val + n_train
     buffer_size = min(max(total_needed * 4, 10_000), 500_000)
 
-    ds = load_dataset(
-        SEARCH_R1_HF_DATASET,
-        split="train",
-        streaming=True,
-    )
+    ds = load_dataset(SEARCH_R1_HF_DATASET, split="train", streaming=True)
     ds = ds.shuffle(seed=seed, buffer_size=buffer_size)
 
     val_rows: List[Dict[str, Any]] = []
     train_rows: List[Dict[str, Any]] = []
+    val_hotpot = val_nq = train_hotpot = train_nq = 0
     skipped = 0
     scanned = 0
 
     for sample in ds:
         scanned += 1
-        if len(val_rows) >= n_val and len(train_rows) >= n_train:
+        if (
+            val_hotpot >= hotpot_val_quota
+            and val_nq >= nq_val_quota
+            and train_hotpot >= hotpot_train_quota
+            and train_nq >= nq_train_quota
+        ):
             break
 
-        if len(val_rows) < n_val:
-            idx = len(val_rows)
-            target = val_rows
-        else:
-            idx = len(train_rows)
-            target = train_rows
-
-        norm = normalise_search_r1_row(dict(sample), idx=idx)
+        norm = normalise_search_r1_row(dict(sample), idx=0)  # idx patched below
         if not _is_valid_norm(norm):
             skipped += 1
             continue
-        target.append(norm)
+
+        src = norm["data_source"]  # "hotpotqa" or "nq"
+        is_hotpot = src == "hotpotqa"
+
+        if is_hotpot:
+            if val_hotpot < hotpot_val_quota:
+                norm["extra_info"]["idx"] = len(val_rows)
+                val_rows.append(norm)
+                val_hotpot += 1
+            elif train_hotpot < hotpot_train_quota:
+                norm["extra_info"]["idx"] = len(train_rows)
+                train_rows.append(norm)
+                train_hotpot += 1
+        else:
+            if val_nq < nq_val_quota:
+                norm["extra_info"]["idx"] = len(val_rows)
+                val_rows.append(norm)
+                val_nq += 1
+            elif train_nq < nq_train_quota:
+                norm["extra_info"]["idx"] = len(train_rows)
+                train_rows.append(norm)
+                train_nq += 1
 
     if len(val_rows) != n_val or len(train_rows) != n_train:
         raise RuntimeError(
             f"Search-R1: only collected val={len(val_rows)}/{n_val}, "
             f"train={len(train_rows)}/{n_train} valid rows after scanning "
             f"{scanned} shuffled examples (skipped {skipped} with empty "
-            f"question/result). Dataset may have changed schema or be too small."
+            f"question/result). "
+            f"source={search_source!r}, hotpot_ratio={hotpot_ratio}. "
+            f"Dataset may be too small or have changed schema."
         )
 
     if skipped:
