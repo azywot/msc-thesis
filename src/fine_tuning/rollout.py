@@ -43,22 +43,29 @@ async def _reward_fn(
     return _reward_fn_instance(prediction, ground_truth, data_source)
 
 
-def _build_tool_registry(endpoint: str) -> ToolRegistry:
-    """Build the ToolRegistry for rollout workers.
+def _build_tool_registry(subagent_endpoint: str, subagent_model: str) -> ToolRegistry:
+    """Build the ToolRegistry for rollout workers using a frozen sub-agent server.
 
-    Mirrors AgentFlow's training setup: sub-agents call the SAME VERL vLLM
-    endpoint as the orchestrator.  No separate frozen server is needed — all
-    vLLM calls share one endpoint; only the orchestrator's token generations
-    are in the GRPO training trajectory.
+    Sub-agents connect to a SEPARATE, fixed vLLM endpoint (not the VERL training
+    endpoint).  This keeps sub-agent weights frozen throughout training so the
+    orchestrator is evaluated against a stable tool interface at every rollout —
+    matching eval-time behaviour where sub-agents run the base model, not an
+    evolving snapshot.
 
     - WebSearchTool:     query → API results → sub-agent LLM analyses them
     - CodeGeneratorTool: task description → sub-agent LLM writes code → exec
 
-    This matches the evaluation architecture (direct_tool_call=False) so the
-    orchestrator is trained with the same tool interfaces it sees at eval time.
-
-    Requires SERPER_API_KEY or TAVILY_API_KEY in the environment.
+    Requires:
+      - SERPER_API_KEY or TAVILY_API_KEY in the environment.
+      - subagent_endpoint: URL of a separately-launched frozen vLLM server
+        (e.g. "http://localhost:9998/v1").
     """
+    if not subagent_endpoint:
+        raise EnvironmentError(
+            "SUBAGENT_ENDPOINT must be set to the URL of a frozen sub-agent vLLM "
+            "server (e.g. http://localhost:9998/v1).  Start it separately with:\n"
+            "  vllm serve <SUBAGENT_MODEL> --port 9998"
+        )
     api_key = os.environ.get("SERPER_API_KEY") or os.environ.get("TAVILY_API_KEY")
     if not api_key:
         raise EnvironmentError(
@@ -69,15 +76,13 @@ def _build_tool_registry(endpoint: str) -> ToolRegistry:
         if os.environ.get("TAVILY_API_KEY") and not os.environ.get("SERPER_API_KEY")
         else "serper"
     )
-    # Sub-agent provider: same VERL endpoint, greedy decoding, thinking off.
-    # Sub-agents share the trained model's weights (same as AgentFlow's
-    # vllm-local-<BASE_MODEL> pointing at the shared VERL vLLM).
+    # Sub-agent provider: frozen separate endpoint, greedy decoding, thinking off.
     subagent_config = _make_model_config(
-        model_id=os.environ.get("BASE_MODEL", "Qwen/Qwen3-8B"),
+        model_id=subagent_model,
         temperature=0.0,
         max_tokens=2048,
     )
-    subagent_provider = OpenAIProvider(subagent_config, api_key="EMPTY", base_url=endpoint)
+    subagent_provider = OpenAIProvider(subagent_config, api_key="EMPTY", base_url=subagent_endpoint)
 
     registry = ToolRegistry()
     registry.register(WebSearchTool(
@@ -151,6 +156,8 @@ class OrchestratorRollout(LitAgent):
         max_turns: int = 5,
         max_tokens: int = 2048,
         use_thinking: bool = False,
+        subagent_endpoint: str = "",
+        subagent_model: str = "Qwen/Qwen3-1.7B",
     ):
         super().__init__()
         self.rollout_dir = Path(rollout_dir)
@@ -160,6 +167,8 @@ class OrchestratorRollout(LitAgent):
         self.max_turns = max_turns
         self.max_tokens = max_tokens
         self.use_thinking = use_thinking
+        self.subagent_endpoint = subagent_endpoint
+        self.subagent_model = subagent_model
         self._prompt_builder = PromptBuilder()
         self._tool_registry: Optional[ToolRegistry] = None
 
@@ -201,7 +210,7 @@ class OrchestratorRollout(LitAgent):
         output_messages: list = []
         try:
             provider = self._build_provider(endpoint, temperature)
-            tool_registry = self._get_or_build_tools(endpoint)
+            tool_registry = self._get_or_build_tools()
             system_prompt = self._prompt_builder.build_system_prompt(
                 dataset_name=_prompt_dataset_for_data_source(data_source),
                 tool_schemas=tool_registry.get_all_schemas(),
@@ -256,9 +265,11 @@ class OrchestratorRollout(LitAgent):
         )
         return OpenAIProvider(config, api_key="EMPTY", base_url=endpoint)
 
-    def _get_or_build_tools(self, endpoint: str) -> ToolRegistry:
+    def _get_or_build_tools(self) -> ToolRegistry:
         if self._tool_registry is None:
-            self._tool_registry = _build_tool_registry(endpoint)
+            self._tool_registry = _build_tool_registry(
+                self.subagent_endpoint, self.subagent_model
+            )
         return self._tool_registry
 
     # ------------------------------------------------------------------ #

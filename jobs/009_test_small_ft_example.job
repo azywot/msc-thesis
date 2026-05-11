@@ -4,7 +4,7 @@
 #SBATCH --gpus=4
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --time=04:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=out/fine_tuning/smoke_%A.log
 #SBATCH --error=out/fine_tuning/smoke_%A.err
 
@@ -93,11 +93,17 @@ do
 done
 
 VERL_PID=""
+SUBAGENT_PID=""
 cleanup() {
     if [[ -n "${VERL_PID:-}" ]] && kill -0 "$VERL_PID" >/dev/null 2>&1; then
         echo "Stopping VERL server (pid=$VERL_PID)..."
         kill "$VERL_PID" || true
         wait "$VERL_PID" || true
+    fi
+    if [[ -n "${SUBAGENT_PID:-}" ]] && kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+        echo "Stopping frozen sub-agent server (pid=$SUBAGENT_PID)..."
+        kill "$SUBAGENT_PID" || true
+        wait "$SUBAGENT_PID" || true
     fi
 }
 trap cleanup EXIT
@@ -107,15 +113,33 @@ echo ""
 echo "Running pre-flight checks..."
 python scripts/test_ft_smoke.py \
     --data-dir data/training/smoke \
-    --config   train/config_smoke.yaml
+    --config   experiments/configs/train/config_smoke.yaml
 
 echo ""
 echo "Pre-flight checks passed. Starting training..."
 
-# ── 2. VERL server ───────────────────────────────────────────────────────────
+# ── 2. Frozen sub-agent vLLM server (separate from VERL, never updated) ──────
+echo ""
+echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998)..."
+vllm serve Qwen/Qwen3-1.7B \
+    --port 9998 \
+    --tensor-parallel-size 1 \
+    --gpu-memory-utilization 0.15 \
+    > out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
+SUBAGENT_PID=$!
+export SUBAGENT_ENDPOINT="http://localhost:9998/v1"
+
+echo "Waiting 60s for sub-agent vLLM to be ready..."
+sleep 60
+if ! kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+    echo "FAIL — sub-agent server exited during startup. See out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_subagent.log"
+    wait "$SUBAGENT_PID"
+fi
+
+# ── 3. VERL server ───────────────────────────────────────────────────────────
 echo ""
 echo "Starting VERL server (config_smoke.yaml)..."
-python scripts/launch_verl.py --config train/config_smoke.yaml \
+python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml \
     > out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_verl.log 2>&1 &
 VERL_PID=$!
 
@@ -126,10 +150,10 @@ if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
     wait "$VERL_PID"
 fi
 
-# ── 3. Rollout workers ───────────────────────────────────────────────────────
+# ── 4. Rollout workers ───────────────────────────────────────────────────────
 echo ""
 echo "Starting rollout workers..."
-python scripts/train_orchestrator.py --config train/config_smoke.yaml
+python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke.yaml
 
 wait $VERL_PID
 

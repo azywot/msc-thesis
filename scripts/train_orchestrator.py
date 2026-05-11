@@ -1,13 +1,14 @@
 """Start OrchestratorRollout workers and connect them to the VERL daemon.
 
 Usage:
-    python scripts/train_orchestrator.py --config train/config.yaml
+    python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml
 
 This script:
-  1. Reads train/config.yaml and sets environment variables
-  2. Copies the config to output_dir for reproducibility
-  3. Starts agentflow.Trainer with a NullTracer (no AgentOps required)
-  4. Runs OrchestratorRollout workers connected to the VERL daemon
+  1. Reads the training config and sets environment variables
+  2. Validates SUBAGENT_ENDPOINT (frozen sub-agent vLLM server must be running)
+  3. Copies the config to output_dir for reproducibility
+  4. Starts agentflow.Trainer with a NullTracer (no AgentOps required)
+  5. Runs OrchestratorRollout workers connected to the VERL daemon
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ def _get_git_hash() -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="Start OrchestratorRollout workers.")
-    parser.add_argument("--config", type=str, default="train/config.yaml")
+    parser.add_argument("--config", type=str, default="experiments/configs/train/config.yaml")
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
@@ -59,22 +60,37 @@ def main():
     max_tokens = int(str(python_args.get("data.max_response_length", 2048)))
     thinking_mode = str(env.get("THINKING_MODE", "NO")).upper()
     use_thinking = thinking_mode in ("ORCHESTRATOR_ONLY", "ALL")
+    subagent_endpoint = str(env.get("SUBAGENT_ENDPOINT", os.environ.get("SUBAGENT_ENDPOINT", "")))
+    subagent_model = str(env.get("SUBAGENT_MODEL", os.environ.get("SUBAGENT_MODEL", "Qwen/Qwen3-1.7B")))
     experiment_name = str(env.get("EXPERIMENT_NAME", "cosmas-train"))
     output_dir = Path("experiments/results/training") / experiment_name
 
-    # ── 3. Save config to output dir ────────────────────────────────────────
+    # ── 3. Validate sub-agent endpoint ──────────────────────────────────────
+    if not subagent_endpoint:
+        print(
+            "ERROR: SUBAGENT_ENDPOINT is not set.\n"
+            "  Sub-agents must use a separate frozen vLLM server (not the VERL endpoint).\n"
+            "  Start one first:\n"
+            f"    vllm serve {subagent_model} --port 9998\n"
+            "  Then export SUBAGENT_ENDPOINT=http://localhost:9998/v1  (or set it in the config)."
+        )
+        sys.exit(1)
+
+    # ── 4. Save config to output dir ────────────────────────────────────────
     output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(args.config, output_dir / "config.yaml")
 
-    # ── 4. Log reproducibility info (captured by SLURM log) ─────────────────
+    # ── 5. Log reproducibility info (captured by SLURM log) ─────────────────
     #       W&B is initialised by VERL's Tracking class, not by this script.
     print(
         f"git_commit={_get_git_hash()}  "
         f"slurm_job_id={os.environ.get('SLURM_JOB_ID', 'local')}  "
-        f"config={args.config}"
+        f"config={args.config}  "
+        f"subagent_model={subagent_model}  "
+        f"subagent_endpoint={subagent_endpoint}"
     )
 
-    # ── 5. Build NullTracer ─────────────────────────────────────────────────
+    # ── 6. Build NullTracer ─────────────────────────────────────────────────
     from agentflow.tracer.base import BaseTracer
 
     class NullTracer(BaseTracer):
@@ -84,7 +100,7 @@ def main():
         def init_worker(self, worker_id): pass
         def teardown_worker(self, worker_id): pass
 
-    # ── 6. Instantiate rollout agent ────────────────────────────────────────
+    # ── 7. Instantiate rollout agent ────────────────────────────────────────
     from fine_tuning.rollout import OrchestratorRollout
     from agentflow import Trainer
 
@@ -97,9 +113,11 @@ def main():
         max_turns=max_turns,
         max_tokens=max_tokens,
         use_thinking=use_thinking,
+        subagent_endpoint=subagent_endpoint,
+        subagent_model=subagent_model,
     )
 
-    # ── 7. Start trainer ────────────────────────────────────────────────────
+    # ── 8. Start trainer ────────────────────────────────────────────────────
     trainer = Trainer(n_workers=n_workers, tracer=NullTracer())
     print(f"Connecting to VERL daemon at http://localhost:{port}/")
     trainer.fit(agent, f"http://localhost:{port}/")

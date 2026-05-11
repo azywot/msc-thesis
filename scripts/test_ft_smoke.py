@@ -107,7 +107,12 @@ def check_config(config_path: str):
     env = raw.get("env", {})
     assert "BASE_MODEL" in env, "BASE_MODEL missing from env block"
     assert "THINKING_MODE" in env, "THINKING_MODE missing from env block"
-    return f"YAML valid, BASE_MODEL={env['BASE_MODEL']}, THINKING_MODE={env['THINKING_MODE']}"
+    assert "SUBAGENT_MODEL" in env, "SUBAGENT_MODEL missing from env block"
+    return (
+        f"YAML valid, BASE_MODEL={env['BASE_MODEL']}, "
+        f"THINKING_MODE={env['THINKING_MODE']}, "
+        f"SUBAGENT_MODEL={env['SUBAGENT_MODEL']}"
+    )
 
 
 @check("OrchestratorRollout — instantiation (no GPU)")
@@ -121,10 +126,14 @@ def check_rollout_init():
         max_turns=2,
         max_tokens=512,
         use_thinking=True,
+        subagent_endpoint="http://localhost:9998/v1",
+        subagent_model="Qwen/Qwen3-1.7B",
     )
     assert agent.use_thinking is True
     assert agent.max_turns == 2
-    return "OrchestratorRollout instantiated with use_thinking=True"
+    assert agent.subagent_model == "Qwen/Qwen3-1.7B"
+    assert agent.subagent_endpoint == "http://localhost:9998/v1"
+    return "OrchestratorRollout instantiated with frozen subagent_endpoint"
 
 
 @check("data parquet schema — smoke training data")
@@ -158,7 +167,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data/training/smoke",
                         help="Directory containing smoke train/val parquet files")
-    parser.add_argument("--config", default="train/config_smoke.yaml",
+    parser.add_argument("--config", default="experiments/configs/train/config_smoke.yaml",
                         help="Smoke training config YAML to validate")
     args = parser.parse_args()
 

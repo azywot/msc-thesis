@@ -1,10 +1,10 @@
 """Launch the VERL training server.
 
-Mirrors AgentFlow's train/train_agent.py: reads train/config.yaml, sets
+Mirrors AgentFlow's train/train_agent.py: reads the training config, sets
 environment variables, and spawns `python -m agentflow.verl key=value ...`.
 
 Usage:
-    python scripts/launch_verl.py --config train/config.yaml
+    python scripts/launch_verl.py --config experiments/configs/train/config.yaml
 """
 
 import argparse
@@ -17,7 +17,7 @@ import yaml
 
 def main():
     parser = argparse.ArgumentParser(description="Launch VERL training server.")
-    parser.add_argument("--config", type=str, default="train/config.yaml")
+    parser.add_argument("--config", type=str, default="experiments/configs/train/config.yaml")
     args, unknown = parser.parse_known_args()
 
     with open(args.config, "r") as f:
