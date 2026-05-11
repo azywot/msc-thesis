@@ -155,34 +155,35 @@ CKPT_DIR="experiments/results/training/${EXPERIMENT_NAME}"
 echo "Checkpoints written to: $CKPT_DIR"
 ls -lh "$CKPT_DIR"/checkpoint_*/actor/lora_weights.pt 2>/dev/null || echo "No checkpoints found."
 
-# ── 5. Prune checkpoints (keep latest + best) ────────────────────────────────
-echo ""
-echo "Pruning checkpoints: keeping latest and best..."
+# #  NOTE: Checkpoint pruning is disabled for now.
+# # ── 5. Prune checkpoints (keep latest + best) ────────────────────────────────
+# echo ""
+# echo "Pruning checkpoints: keeping latest and best..."
 
-mapfile -t STEP_DIRS < <(compgen -G "$CKPT_DIR/checkpoint_step_*" || true)
-if ((${#STEP_DIRS[@]} == 0)); then
-    echo "No step checkpoints found; skipping prune."
-else
-    LATEST_STEP_DIR="$(printf '%s\n' "${STEP_DIRS[@]}" | sort -V | tail -n 1)"
-    BEST_TARGET="$(readlink -f "$CKPT_DIR/checkpoint_best" 2>/dev/null || true)"
+# mapfile -t STEP_DIRS < <(compgen -G "$CKPT_DIR/checkpoint_step_*" || true)
+# if ((${#STEP_DIRS[@]} == 0)); then
+#     echo "No step checkpoints found; skipping prune."
+# else
+#     LATEST_STEP_DIR="$(printf '%s\n' "${STEP_DIRS[@]}" | sort -V | tail -n 1)"
+#     BEST_TARGET="$(readlink -f "$CKPT_DIR/checkpoint_best" 2>/dev/null || true)"
 
-    echo "Latest checkpoint: $LATEST_STEP_DIR"
-    if [[ -n "$BEST_TARGET" ]]; then
-        echo "Best checkpoint target: $BEST_TARGET"
-    else
-        echo "Best checkpoint target not resolved; will keep latest only."
-    fi
+#     echo "Latest checkpoint: $LATEST_STEP_DIR"
+#     if [[ -n "$BEST_TARGET" ]]; then
+#         echo "Best checkpoint target: $BEST_TARGET"
+#     else
+#         echo "Best checkpoint target not resolved; will keep latest only."
+#     fi
 
-    for d in "${STEP_DIRS[@]}"; do
-        KEEP=0
-        [[ "$d" == "$LATEST_STEP_DIR" ]] && KEEP=1
-        [[ -n "$BEST_TARGET" && "$d" == "$BEST_TARGET" ]] && KEEP=1
-        if ((KEEP == 0)); then
-            echo "Removing old checkpoint: $d"
-            rm -rf "$d"
-        fi
-    done
-fi
+#     for d in "${STEP_DIRS[@]}"; do
+#         KEEP=0
+#         [[ "$d" == "$LATEST_STEP_DIR" ]] && KEEP=1
+#         [[ -n "$BEST_TARGET" && "$d" == "$BEST_TARGET" ]] && KEEP=1
+#         if ((KEEP == 0)); then
+#             echo "Removing old checkpoint: $d"
+#             rm -rf "$d"
+#         fi
+#     done
+# fi
 
 echo "Remaining checkpoint payloads:"
 ls -lh "$CKPT_DIR"/checkpoint_*/actor/lora_weights.pt 2>/dev/null || echo "No checkpoints found."

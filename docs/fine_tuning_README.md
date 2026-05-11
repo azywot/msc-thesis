@@ -305,7 +305,7 @@ msc-thesis/
 | Key | Value | Notes |
 |---|---|---|
 | `data.train_batch_size` | `32` | Questions per training step |
-| `data.train_max_samples` | `128` | Questions used per epoch — a random subset of the 1800 available training rows. 5 epochs × 128 = 640 unique questions seen; the rest are never used. Increase to `900` or `1800` to use the full dataset. |
+| `data.train_max_samples` | `1800` | Cap on questions drawn per epoch from `combined_train.parquet` (~1800 rows). At `1800` each epoch uses the full training split; with `trainer.total_epochs: 5` the run performs five full passes (order/sharding depends on VERL). Lower to subsample for faster iteration. |
 | `data.max_prompt_length` | `18432` | Max prompt tokens (system prompt + memory + question) |
 | `data.max_response_length` | `4096` | Max response tokens per rollout; doubled from AgentFlow default to cover multi-turn orchestrator trajectories + thinking traces |
 | `actor_rollout_ref.rollout.n` | `8` | Rollouts per question (GRPO group size) |
@@ -320,7 +320,7 @@ msc-thesis/
 
 | Parameter | Full config | Smoke config |
 |---|---|---|
-| `data.train_max_samples` | 128 | 16 |
+| `data.train_max_samples` | 1800 | 16 |
 | `rollout.n` | 8 | 2 |
 | `total_epochs` | 5 | 1 |
 | `TOOL_STEPS` | 5 | 2 |
