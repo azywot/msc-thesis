@@ -2,7 +2,7 @@
 
 Dataset curation rationale
 --------------------------
-GRPO is highly sample-efficient: reward improvements plateau early and adding
+GRPO reward improvements plateau early and adding
 more data beyond ~1–3K examples provides diminishing returns.  Small, curated
 datasets reduce training time, enable rapid experimentation cycles, and lower
 the risk of GRPO collapse (pathological over-searching, reward hacking, looping)

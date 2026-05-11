@@ -9,9 +9,13 @@
 
 # Download Search-R1 + DeepMath-103K and write VERL parquet files.
 # Writes:
-#   data/training/train/combined_train.parquet  (50k search + 50k math)
-#   data/training/val/deepmath_val.parquet       (200 held-out DeepMath questions)
+#   data/training/train/combined_train.parquet  (1k search + 1k math, curated)
+#   data/training/val/val_search.parquet         (200 held-out Search-R1)
+#   data/training/val/val_deepmath.parquet        (200 held-out DeepMath)
+#   data/training/val/val_combined.parquet        (400 combined, used by VERL)
 #
+# Search-R1 composition: 85% HotpotQA (multi-hop) + 15% NQ.
+# DeepMath: difficulty >= 5 only (cleaner GRPO signal, avoids trivial problems).
 # Also writes a small smoke-test subset to data/training/smoke/ for job 009.
 
 set -euo pipefail
@@ -63,12 +67,15 @@ mkdir -p out/fine_tuning
 
 # ── 1. Full training data ────────────────────────────────────────────────────
 echo ""
-echo "Preparing full training data (50k search + 50k math)..."
+echo "Preparing curated training data (1k search + 1k math)..."
 python src/fine_tuning/data/prepare.py \
-    --n-search    50000 \
-    --n-math      50000 \
+    --n-search    1000 \
+    --n-math      1000 \
     --n-val-search  200 \
     --n-val-math    200 \
+    --search-source both \
+    --hotpot-ratio  0.85 \
+    --deepmath-min-difficulty 5 \
     --output-dir data/training \
     --seed 42
 
