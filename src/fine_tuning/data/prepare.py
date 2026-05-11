@@ -122,7 +122,6 @@ def normalise_search_r1_row(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
             "idx": idx,
             "groundtruth": answer,
             "golden_answers": [str(a) for a in aliases],
-            "data_source": data_source,
         },
     }
 
@@ -150,7 +149,7 @@ def normalise_deepmath_row(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
     except (TypeError, ValueError):
         difficulty = None
 
-    extra_info: Dict[str, Any] = {"idx": idx, "groundtruth": answer, "data_source": "deepmath"}
+    extra_info: Dict[str, Any] = {"idx": idx, "groundtruth": answer}
     if difficulty is not None:
         extra_info["difficulty"] = difficulty
 

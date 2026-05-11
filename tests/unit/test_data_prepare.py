@@ -58,11 +58,6 @@ class TestNormaliseSearchR1:
         row = normalise_search_r1_row(raw, idx=0)
         assert row["result"] == "A"
 
-    def test_data_source_stored_in_extra_info(self):
-        raw = {"question": "Q?", "golden_answers": ["A"], "data_source": "hotpotqa"}
-        row = normalise_search_r1_row(raw, idx=2)
-        assert row["extra_info"]["data_source"] == "hotpotqa"
-        assert row["data_source"] == row["extra_info"]["data_source"]
 
 
 class TestNormaliseDeepMath:
@@ -108,10 +103,6 @@ class TestNormaliseDeepMath:
         row = normalise_deepmath_row(raw, idx=0)
         assert "difficulty" not in row["extra_info"]
 
-    def test_data_source_stored_in_extra_info(self):
-        raw = {"question": "Problem", "final_answer": "1"}
-        row = normalise_deepmath_row(raw, idx=0)
-        assert row["extra_info"]["data_source"] == "deepmath"
 
     def test_validity_detects_blank_question_or_answer(self):
         ok = normalise_deepmath_row(
