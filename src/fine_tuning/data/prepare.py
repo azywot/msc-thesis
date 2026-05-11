@@ -112,16 +112,17 @@ def normalise_search_r1_row(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
         answer_val = next((a for a in answer_val if str(a).strip()), "")
     answer = str(answer_val) if answer_val is not None else ""
 
-    data_source = raw.get("data_source") or raw.get("dataset") or "nq"
+    data_source = str(raw.get("data_source") or raw.get("dataset") or "nq").lower()
 
     return {
-        "data_source": str(data_source).lower(),
+        "data_source": data_source,
         "question": str(raw.get("question", "")),
         "result": answer,
         "extra_info": {
             "idx": idx,
             "groundtruth": answer,
             "golden_answers": [str(a) for a in aliases],
+            "data_source": data_source,
         },
     }
 
@@ -143,11 +144,21 @@ def normalise_deepmath_row(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
         q_val = raw.get("problem") or raw.get("instruction") or ""
     question = str(q_val) if q_val is not None else ""
 
+    difficulty = raw.get("difficulty")
+    try:
+        difficulty = int(difficulty) if difficulty is not None else None
+    except (TypeError, ValueError):
+        difficulty = None
+
+    extra_info: Dict[str, Any] = {"idx": idx, "groundtruth": answer, "data_source": "deepmath"}
+    if difficulty is not None:
+        extra_info["difficulty"] = difficulty
+
     return {
         "data_source": "deepmath",
         "question": question,
         "result": answer,
-        "extra_info": {"idx": idx, "groundtruth": answer},
+        "extra_info": extra_info,
     }
 
 

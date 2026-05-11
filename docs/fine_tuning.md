@@ -6,21 +6,29 @@ For failure-mode motivation see `docs/failure_modes_fine_tuning_alignment.md`.
 
 ---
 
-## Validation Dataset
+## Validation and Test Datasets
 
 **AgentFlow's default:** AIME 2024.
-**This project:** held-out splits of Search-R1 (200 NQ/HotpotQA) + DeepMath (200 questions), carved out *before* the training subsample.
+**This project:** three non-overlapping splits of Search-R1 (NQ/HotpotQA) + DeepMath, carved in order — test first, then val, then train.
 
-AIME is one of the five evaluation benchmarks reported in the thesis. Using it for checkpoint selection introduces selection bias — the best checkpoint would be chosen on questions you later report results on, inflating the AIME numbers. The held-out DeepMath split is in-distribution with the math training data, never seen during training, and never part of the final benchmark runs. Search-R1 val gives a per-epoch signal on retrieval tool use.
+AIME is one of the five evaluation benchmarks reported in the thesis. Using it for checkpoint selection introduces selection bias — the best checkpoint would be chosen on questions you later report results on, inflating the AIME numbers. The held-out DeepMath val split is in-distribution with the math training data, never seen during training, and never part of the final benchmark runs. The test split is held out entirely and used only for final reporting after the best checkpoint is selected via val.
 
-Files written to `data/training/val/`:
+Files written to `data/training/`:
 ```
-val_search.parquet      200 rows  NQ + HotpotQA
-val_deepmath.parquet    200 rows  DeepMath-103K
-val_combined.parquet    400 rows  both merged — offline analysis only
+train/combined_train.parquet    1800 rows  (900 search + 900 math, shuffled)
+
+val/val_search.parquet           100 rows  NQ + HotpotQA
+val/val_deepmath.parquet         100 rows  DeepMath-103K (difficulty >= 5)
+val/val_combined.parquet         200 rows  both merged — offline analysis only
+
+test/test_search.parquet         100 rows  NQ + HotpotQA
+test/test_deepmath.parquet       100 rows  DeepMath-103K (difficulty >= 5)
+test/test_combined.parquet       200 rows  both merged — final reporting only
 ```
 
-VERL's `data.val_files` points at `val_search.parquet` and `val_deepmath.parquet` (two separate files) so W&B reports `val_0/reward_mean` and `val_1/reward_mean` separately. A combined file would hide per-domain divergence.
+Source proportions (85% HotpotQA / 15% NQ within Search-R1; 50/50 search/math overall) are identical across all three splits.
+
+VERL's `data.val_files` points at `val_search.parquet` and `val_deepmath.parquet` (two separate files) so W&B reports `val_0/reward_mean` and `val_1/reward_mean` separately. A combined file would hide per-domain divergence. The test split is never used by VERL during training.
 
 ---
 
@@ -114,13 +122,14 @@ For NQ and HotpotQA, questions often have 2–4 valid answers. A prediction matc
 
 ### Training mix sizes
 
-| Use case | `--n-search` | `--n-math` | `--n-val-search` | `--n-val-math` |
+All three splits share the same source proportions (85% HotpotQA / 15% NQ within Search-R1; 50/50 search/math overall). Rows are carved in order: test first, then val, then train — guaranteeing no cross-split contamination.
+
+| Use case | `--n-search` | `--n-math` | val per domain | test per domain |
 |---|---|---|---|---|
-| Full training | 50000 | 50000 | 200 | 200 |
-| Fast run | 10000 | 10000 | 200 | 200 |
+| Default (GRPO) | 900 | 900 | 100 | 100 |
 | Smoke test | 50 | 50 | 10 | 10 |
 
-Val rows are taken first (before train subsampling), guaranteeing no overlap.
+Total rows: 1800 train + 200 val + 200 test = 2200 drawn from each dataset.
 
 ### `data_source` routing in rollout prompts
 

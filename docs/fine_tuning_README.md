@@ -126,26 +126,33 @@ sbatch jobs/008_prepare_fine_tuning_data.job
 ```bash
 conda activate cosmas-train
 python src/fine_tuning/data/prepare.py \
-    --n-search 50000 --n-math 50000 \
-    --n-val-search 200 --n-val-math 200 \
+    --n-search 900 --n-math 900 \
+    --n-val-search 100 --n-val-math 100 \
+    --n-test-search 100 --n-test-math 100 \
+    --search-source both --hotpot-ratio 0.85 \
+    --deepmath-min-difficulty 5 \
     --output-dir data/training --seed 42
 ```
 
-This downloads Search-R1 (`PeterJinGo/nq_hotpotqa_train`) and DeepMath-103K (zwhe99/DeepMath-103K) from HuggingFace and writes:
+This downloads Search-R1 (`PeterJinGo/nq_hotpotqa_train`) and DeepMath-103K (`zwhe99/DeepMath-103K`) from HuggingFace and writes:
 
 ```
 data/training/
 ├── train/
-│   └── combined_train.parquet    100k rows  (50k search + 50k math, shuffled)
-└── val/
-    ├── val_search.parquet        200 rows   (held-out NQ + HotpotQA)
-    ├── val_deepmath.parquet      200 rows   (held-out DeepMath)
-    └── val_combined.parquet      400 rows   (both merged — for offline analysis)
+│   └── combined_train.parquet    1800 rows  (900 search + 900 math, shuffled)
+├── val/
+│   ├── val_search.parquet         100 rows  (held-out NQ + HotpotQA)
+│   ├── val_deepmath.parquet       100 rows  (held-out DeepMath, difficulty ≥ 5)
+│   └── val_combined.parquet       200 rows  (both merged — offline analysis only)
+└── test/
+    ├── test_search.parquet        100 rows  (held-out NQ + HotpotQA)
+    ├── test_deepmath.parquet      100 rows  (held-out DeepMath, difficulty ≥ 5)
+    └── test_combined.parquet      200 rows  (both merged — final reporting only)
 ```
 
-Job 008 also writes a 50+50 smoke subset to `data/training/smoke/` for use in Step 2.
+Job 008 also writes a smoke subset to `data/training/smoke/` for use in Step 2.
 
-**Critical:** val splits are carved out *before* the training subsample. There is zero overlap between `val_search.parquet` / `val_deepmath.parquet` and `combined_train.parquet`.
+**Critical:** rows are carved in order — test first, then val, then train. All three splits share the same source proportions (85% HotpotQA / 15% NQ; 50/50 search/math). There is zero overlap across splits.
 
 ### Step 2 — Run the smoke test
 
@@ -255,9 +262,12 @@ msc-thesis/
 │
 ├── data/training/               created by job 008
 │   ├── train/combined_train.parquet
-│   └── val/val_search.parquet
-│       val/val_deepmath.parquet
-│       val/val_combined.parquet
+│   ├── val/val_search.parquet
+│   │   val/val_deepmath.parquet
+│   │   val/val_combined.parquet
+│   └── test/test_search.parquet
+│        test/test_deepmath.parquet
+│        test/test_combined.parquet
 │
 └── docs/
     ├── fine_tuning_README.md              this file
@@ -460,6 +470,10 @@ More importantly: with thinking enabled, the "direct reasoning without action" f
 ### Why two separate val files?
 
 A single combined val file would report one `val/reward_mean` mixing search accuracy (qa mode) and math accuracy (gen mode). Using two separate files gives `val_0/reward_mean` and `val_1/reward_mean` in W&B, making it possible to see whether *both* tool types are being learned or just one. `val_combined.parquet` is kept for offline analysis only.
+
+### Why a separate test split?
+
+The val split is used for checkpoint selection (choosing which epoch to keep). Using the same data for both selection and final reporting would inflate the reported numbers — the selected checkpoint is the one that happened to score best on that held-out set. The test split is never seen by the training loop or the checkpoint selector; it is only used once, for final metric reporting after the best checkpoint is chosen. All three splits share the same source proportions so test statistics are representative of what the model was trained on.
 
 ### Why not AIME for validation?
 

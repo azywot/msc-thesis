@@ -58,6 +58,12 @@ class TestNormaliseSearchR1:
         row = normalise_search_r1_row(raw, idx=0)
         assert row["result"] == "A"
 
+    def test_data_source_stored_in_extra_info(self):
+        raw = {"question": "Q?", "golden_answers": ["A"], "data_source": "hotpotqa"}
+        row = normalise_search_r1_row(raw, idx=2)
+        assert row["extra_info"]["data_source"] == "hotpotqa"
+        assert row["data_source"] == row["extra_info"]["data_source"]
+
 
 class TestNormaliseDeepMath:
     def test_hub_question_final_answer_row(self):
@@ -86,6 +92,26 @@ class TestNormaliseDeepMath:
         raw = {"question": "Q", "final_answer": "correct", "answer": "wrong"}
         row = normalise_deepmath_row(raw, idx=0)
         assert row["result"] == "correct"
+
+    def test_difficulty_stored_in_extra_info(self):
+        raw = {"question": "Hard problem", "final_answer": "42", "difficulty": 7}
+        row = normalise_deepmath_row(raw, idx=0)
+        assert row["extra_info"]["difficulty"] == 7
+
+    def test_difficulty_coerced_from_string(self):
+        raw = {"question": "Hard problem", "final_answer": "42", "difficulty": "6"}
+        row = normalise_deepmath_row(raw, idx=0)
+        assert row["extra_info"]["difficulty"] == 6
+
+    def test_missing_difficulty_not_in_extra_info(self):
+        raw = {"question": "Problem", "final_answer": "1"}
+        row = normalise_deepmath_row(raw, idx=0)
+        assert "difficulty" not in row["extra_info"]
+
+    def test_data_source_stored_in_extra_info(self):
+        raw = {"question": "Problem", "final_answer": "1"}
+        row = normalise_deepmath_row(raw, idx=0)
+        assert row["extra_info"]["data_source"] == "deepmath"
 
     def test_validity_detects_blank_question_or_answer(self):
         ok = normalise_deepmath_row(
