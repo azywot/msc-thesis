@@ -98,6 +98,57 @@ class TestNormaliseDeepMath:
         assert not data_prepare._is_valid_deepmath_norm(no_a)
 
 
+class TestSearchSourceQuotas:
+    def test_both_splits_by_ratio(self):
+        from fine_tuning.data.prepare import _search_source_quotas
+        hotpot, nq = _search_source_quotas(n=1000, source="both", hotpot_ratio=0.85)
+        assert hotpot == 850
+        assert nq == 150
+
+    def test_hotpotqa_only(self):
+        from fine_tuning.data.prepare import _search_source_quotas
+        hotpot, nq = _search_source_quotas(n=1000, source="hotpotqa", hotpot_ratio=0.85)
+        assert hotpot == 1000
+        assert nq == 0
+
+    def test_nq_only(self):
+        from fine_tuning.data.prepare import _search_source_quotas
+        hotpot, nq = _search_source_quotas(n=1000, source="nq", hotpot_ratio=0.85)
+        assert hotpot == 0
+        assert nq == 1000
+
+    def test_quotas_sum_to_n(self):
+        from fine_tuning.data.prepare import _search_source_quotas
+        for n in [7, 100, 1000, 3333]:
+            hotpot, nq = _search_source_quotas(n=n, source="both", hotpot_ratio=0.85)
+            assert hotpot + nq == n
+
+
+class TestPassesDifficultyFilter:
+    def test_row_above_threshold_passes(self):
+        from fine_tuning.data.prepare import _passes_difficulty_filter
+        assert _passes_difficulty_filter({"difficulty": 7}, min_difficulty=5) is True
+
+    def test_row_at_threshold_passes(self):
+        from fine_tuning.data.prepare import _passes_difficulty_filter
+        assert _passes_difficulty_filter({"difficulty": 5}, min_difficulty=5) is True
+
+    def test_row_below_threshold_fails(self):
+        from fine_tuning.data.prepare import _passes_difficulty_filter
+        assert _passes_difficulty_filter({"difficulty": 3}, min_difficulty=5) is False
+
+    def test_row_without_difficulty_passes(self):
+        # If the Hub row has no difficulty field, don't filter it out — fail open.
+        from fine_tuning.data.prepare import _passes_difficulty_filter
+        assert _passes_difficulty_filter({}, min_difficulty=5) is True
+
+    def test_string_difficulty_coerced(self):
+        # Hub may return difficulty as a string.
+        from fine_tuning.data.prepare import _passes_difficulty_filter
+        assert _passes_difficulty_filter({"difficulty": "6"}, min_difficulty=5) is True
+        assert _passes_difficulty_filter({"difficulty": "4"}, min_difficulty=5) is False
+
+
 class TestValidateSchema:
     def test_valid_df_passes(self):
         df = pd.DataFrame([

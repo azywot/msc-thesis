@@ -206,6 +206,38 @@ def _is_valid_deepmath_norm(row: Dict[str, Any]) -> bool:
     return _is_valid_norm(row)
 
 
+def _search_source_quotas(n: int, source: str, hotpot_ratio: float) -> tuple:
+    """Return (hotpot_quota, nq_quota) for n total Search-R1 rows.
+
+    source must be one of "both", "hotpotqa", "nq".
+    hotpot_ratio is only used when source == "both".
+    """
+    if source == "hotpotqa":
+        return n, 0
+    if source == "nq":
+        return 0, n
+    # "both": split by ratio, rounding hotpot up so quotas always sum to n
+    hotpot = round(n * hotpot_ratio)
+    return hotpot, n - hotpot
+
+
+def _passes_difficulty_filter(raw: Dict[str, Any], min_difficulty: int) -> bool:
+    """Return True if the raw DeepMath row meets the minimum difficulty.
+
+    Rows with no difficulty field are accepted (fail-open) so that forks or
+    schema changes do not silently drop all data.
+    DeepMath-103K stores difficulty as an integer (1–9); Hub may return it as
+    a string, so coerce before comparing.
+    """
+    difficulty = raw.get("difficulty")
+    if difficulty is None:
+        return True
+    try:
+        return int(difficulty) >= min_difficulty
+    except (TypeError, ValueError):
+        return True
+
+
 def _download_deepmath(
     n_train: int, n_val: int, seed: int
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
