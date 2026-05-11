@@ -270,16 +270,23 @@ def _passes_difficulty_filter(raw: Dict[str, Any], min_difficulty: int) -> bool:
 
 
 def _download_deepmath(
-    n_train: int, n_val: int, seed: int
+    n_train: int,
+    n_val: int,
+    seed: int,
+    min_difficulty: int = 5,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Download DeepMath-103K and split into train and val.
 
     Val rows are filled first by scanning the shuffled dataset in order, then
-    train rows. Rows with empty normalised ``question`` or ``result`` are
-    skipped (the Hub corpus occasionally contains bad rows).
+    train rows.  Rows failing the difficulty threshold or with empty normalised
+    ``question`` / ``result`` are skipped.
 
-    Raises if the dataset cannot yield ``n_val + n_train`` valid rows after a
-    full pass (possible schema mismatch or pervasive corruption).
+    min_difficulty filters on the ``difficulty`` integer field of DeepMath-103K
+    (range 1–9).  Default 5 retains medium-hard and hard problems, which
+    provide cleaner RL signal for GRPO — harder problems reduce spurious reward
+    and encourage longer, more deliberate reasoning trajectories.
+
+    Raises if the filtered dataset cannot yield n_val + n_train valid rows.
     """
     from datasets import load_dataset
     ds = load_dataset("zwhe99/DeepMath-103K", split="train")
@@ -294,6 +301,10 @@ def _download_deepmath(
         scanned += 1
         if len(val_rows) >= n_val and len(train_rows) >= n_train:
             break
+
+        if not _passes_difficulty_filter(dict(row), min_difficulty):
+            skipped += 1
+            continue
 
         if len(val_rows) < n_val:
             idx = len(val_rows)
@@ -312,14 +323,15 @@ def _download_deepmath(
         raise RuntimeError(
             f"DeepMath: only collected val={len(val_rows)}/{n_val}, "
             f"train={len(train_rows)}/{n_train} valid rows after scanning "
-            f"{scanned} shuffled examples (skipped {skipped} with empty "
-            f"question/result). Dataset may have changed schema or be too small."
+            f"{scanned} examples (skipped {skipped} with difficulty < "
+            f"{min_difficulty} or empty question/result). "
+            f"Try lowering --deepmath-min-difficulty or the dataset is too small."
         )
 
     if skipped:
         print(
-            f"DeepMath: skipped {skipped} example(s) with empty question or "
-            f"answer after normalisation (Hub noise)."
+            f"DeepMath: skipped {skipped} example(s) below difficulty "
+            f"{min_difficulty} or with empty question/answer."
         )
 
     return train_rows, val_rows
