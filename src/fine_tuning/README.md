@@ -55,23 +55,20 @@ The test split is held out entirely and used only once, for final metric reporti
 ### 2. Start training (Snellius)
 
 ```bash
-sbatch jobs/train_orchestrator.sh
+sbatch jobs/010_ft_orchestrator.job
 ```
 
-Or manually (two terminals):
+Or manually (three terminals, after `conda activate cosmas-train` in each):
 
 ```bash
-# Terminal 1 — frozen sub-agent server (start first)
-conda activate cosmas-train
+# Terminal 1 — frozen sub-agent server (start first, never needs restarting)
 vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.15
-export SUBAGENT_ENDPOINT=http://localhost:9998/v1
 
 # Terminal 2 — VERL server (after sub-agent server is up)
-conda activate cosmas-train
 python scripts/launch_verl.py --config experiments/configs/train/config.yaml
 
 # Terminal 3 — rollout workers (after VERL vLLM is up, ~120s)
-conda activate cosmas-train
+# SUBAGENT_ENDPOINT is read from config.yaml env block (default: http://localhost:9998/v1)
 python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml
 ```
 
@@ -87,8 +84,10 @@ python $HOME/azywot/AgentFlow/util/model_merger.py \
 
 Then update any experiment YAML:
 ```yaml
-model:
-  path_or_id: /path/to/experiments/results/training/<run>/merged_model/
+models:
+  orchestrator:
+    path_or_id: /path/to/experiments/results/training/<run>/merged_model/
+    # all other fields (family, role, tensor_parallel_size, etc.) unchanged
 ```
 
 ---
@@ -104,7 +103,7 @@ model:
 | Test split | 100 held-out Search-R1 + 100 held-out DeepMath | Held out entirely; used only for final reporting after checkpoint selection via val; same source proportions as train and val |
 | Reward | Binary exact-match via `metrics.py` | Directly comparable to benchmark numbers |
 | Model weights | LoRA rank-64, all-linear | ~130 MB checkpoints vs ~16 GB full fine-tune |
-| Thinking mode | `THINKING_MODE: ORCHESTRATOR_ONLY` | Matches the evaluation condition; exposes the "direct reasoning without action" failure to the gradient signal (model reasons internally, skips tool call, gets reward=0) |
+| Thinking mode | `THINKING_MODE: NO` (current config) | **Verify before training.** Config is set to `NO`. The recommended value is `ORCHESTRATOR_ONLY` — it matches the evaluation condition and exposes the "direct reasoning without action" failure to the gradient (model reasons in `<think>`, skips tool call, gets reward=0). Training with `NO` removes that signal. |
 | Response budget | `max_response_length: 4096` | Full multi-turn orchestrator rollout is longer than AgentFlow's single-step Planner; thinking traces add ~500–1500 tokens per rollout |
 
 ---

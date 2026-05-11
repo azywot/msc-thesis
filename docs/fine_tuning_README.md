@@ -115,7 +115,7 @@ The `jobs/environment_train.yml` installs it from the local path automatically i
 
 ## 3. Step-by-Step Guide
 
-### Step 1 — Prepare training and validation data
+### Step 1 — Prepare training, validation, and test data
 
 **SLURM (recommended):**
 ```bash
@@ -184,12 +184,14 @@ Or manually (three terminals, after activating `cosmas-train` in all):
 ```bash
 # Terminal 1 — frozen sub-agent server (start first, never needs restarting)
 vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.15
-export SUBAGENT_ENDPOINT=http://localhost:9998/v1
 
 # Terminal 2 — VERL server (start after sub-agent server is up)
 python scripts/launch_verl.py --config experiments/configs/train/config.yaml
 
 # Terminal 3 — rollout workers (start after VERL vLLM is up, ~120s)
+# SUBAGENT_ENDPOINT is read from the config.yaml env block (default: http://localhost:9998/v1)
+# Override here only if using a non-default port:
+# export SUBAGENT_ENDPOINT=http://localhost:<port>/v1
 python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml
 ```
 
@@ -293,7 +295,7 @@ msc-thesis/
 | `BASE_DATA_DIR` | `data/training` | Root of train/val parquet files |
 | `ENABLE_TOOLS` | `["web_search", "code_generator"]` | Tools available to orchestrator during rollout |
 | `TOOL_STEPS` | `5` | Max tool calls per rollout episode |
-| `THINKING_MODE` | `ORCHESTRATOR_ONLY` | Must match eval condition — see §10 |
+| `THINKING_MODE` | `NO` | Current config value. **Note:** §10 argues for `ORCHESTRATOR_ONLY` to match eval condition and expose the dominant failure mode to the gradient. Change to `ORCHESTRATOR_ONLY` to enable thinking traces during training — verify this is intended before launching. |
 | `TRAIN_TEMPERATURE` | `0.7` | Sampling temperature for training rollouts |
 | `TEST_TEMPERATURE` | `0.0` | Greedy decoding for validation rollouts |
 | `N_WORKERS` | `1` | Number of parallel rollout worker processes |
@@ -303,7 +305,7 @@ msc-thesis/
 | Key | Value | Notes |
 |---|---|---|
 | `data.train_batch_size` | `32` | Questions per training step |
-| `data.train_max_samples` | `128` | Questions per epoch (subset of full dataset) |
+| `data.train_max_samples` | `128` | Questions used per epoch — a random subset of the 1800 available training rows. 5 epochs × 128 = 640 unique questions seen; the rest are never used. Increase to `900` or `1800` to use the full dataset. |
 | `data.max_prompt_length` | `18432` | Max prompt tokens (system prompt + memory + question) |
 | `data.max_response_length` | `4096` | Max response tokens per rollout; doubled from AgentFlow default to cover multi-turn orchestrator trajectories + thinking traces |
 | `actor_rollout_ref.rollout.n` | `8` | Rollouts per question (GRPO group size) |
@@ -356,7 +358,7 @@ VERL logs to the project set in `PROJECT_NAME`. `data.val_files` is a two-elemen
 | `actor/kl_divergence` spike | Policy diverging | Increase `kl_loss_coef` from `0.001` to `0.01` |
 | W&B run missing | `WANDB_API_KEY` not set | Set in login script before `sbatch` |
 
-Per-domain breakdown is also available offline from the rollout JSON files saved during training. Each record at `experiments/results/training/<run>/rollout_data/val/idx_*/rollout_*.json` contains a `data_source` field.
+Per-domain breakdown is also available offline from the rollout JSON files saved during training. Each record at `experiments/results/training/<run>/rollout_data/val/idx_*/rollout_*.json` contains `data_source`, `reward`, `output_messages`, and (for DeepMath) `extra_info.difficulty`. See `src/fine_tuning/README.md §Logging and Analysis` for the full list of plots computable from these files (reward-by-domain, pass@k, tool call counts, thinking trace lengths, reward-by-difficulty).
 
 ---
 
