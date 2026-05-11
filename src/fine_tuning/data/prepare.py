@@ -1,8 +1,35 @@
 """Data preparation: download Search-R1 + DeepMath and write VERL parquet files.
 
+Dataset curation rationale
+--------------------------
+GRPO is highly sample-efficient: reward improvements plateau early and adding
+more data beyond ~1–3K examples provides diminishing returns.  Small, curated
+datasets reduce training time, enable rapid experimentation cycles, and lower
+the risk of GRPO collapse (pathological over-searching, reward hacking, looping)
+that can emerge from overtraining on narrow distributions.
+
+Search source composition (default: 85% HotpotQA / 15% NQ)
+------------------------------------------------------------
+HotpotQA requires multi-hop reasoning and deliberate evidence aggregation —
+exactly the retrieval-policy behaviour we want to reinforce.  NQ questions are
+mostly single-hop factual lookups that produce shallow retrieval trajectories
+and provide weaker RL signal for learning *when* and *how* to search.  A small
+NQ fraction (~15%) preserves diversity without diluting the multi-hop signal.
+
+DeepMath difficulty filtering (default: difficulty >= 5)
+--------------------------------------------------------
+Hard mathematical reasoning problems produce cleaner RL signals for GRPO:
+the model must reason deeply before converging on an answer, which encourages
+long-horizon thinking traces.  Easy problems are solved trivially in one step,
+contributing near-zero gradient signal.  The ``difficulty`` field in
+zwhe99/DeepMath-103K is an integer 1–9; the default threshold of 5 retains
+medium-hard and hard problems.
+
 Usage:
     python src/fine_tuning/data/prepare.py \\
-        --n-search 10000 --n-math 10000 \\
+        --n-search 1000 --n-math 1000 \\
+        --search-source both --hotpot-ratio 0.85 \\
+        --deepmath-min-difficulty 5 \\
         --output-dir data/training --seed 42
 
 Validation sets:
@@ -415,30 +442,94 @@ def build_val_files(
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Prepare training data for orchestrator fine-tuning.")
-    parser.add_argument("--n-search", type=int, default=10_000,
-                        help="Number of Search-R1 training rows (default: 10000)")
-    parser.add_argument("--n-math", type=int, default=10_000,
-                        help="Number of DeepMath training rows (default: 10000)")
-    parser.add_argument("--n-val-search", type=int, default=200,
-                        help="Number of Search-R1 rows held out for validation (default: 200)")
-    parser.add_argument("--n-val-math", type=int, default=200,
-                        help="Number of DeepMath rows held out for validation (default: 200)")
-    parser.add_argument("--output-dir", type=str, default="data/training",
-                        help="Output directory for parquet files")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Prepare training data for orchestrator fine-tuning. "
+            "Defaults are tuned for GRPO on Qwen3-8B (~1 epoch, ~2K samples): "
+            "small high-signal subsets avoid GRPO saturation and policy collapse."
+        ),
+    )
+    parser.add_argument(
+        "--n-search", type=int, default=1_000,
+        help=(
+            "Number of Search-R1 training rows (default: 1000). "
+            "GRPO reward plateaus early — 1K curated examples is typically sufficient."
+        ),
+    )
+    parser.add_argument(
+        "--n-math", type=int, default=1_000,
+        help=(
+            "Number of DeepMath training rows (default: 1000). "
+            "Filtered by --deepmath-min-difficulty before sampling."
+        ),
+    )
+    parser.add_argument(
+        "--n-val-search", type=int, default=200,
+        help="Number of Search-R1 rows held out for validation (default: 200)",
+    )
+    parser.add_argument(
+        "--n-val-math", type=int, default=200,
+        help="Number of DeepMath rows held out for validation (default: 200)",
+    )
+    parser.add_argument(
+        "--search-source", choices=["hotpotqa", "nq", "both"], default="both",
+        help=(
+            "Which Search-R1 source(s) to include (default: both). "
+            "hotpotqa: multi-hop questions only — strongest retrieval-policy signal. "
+            "nq: open-domain factoid questions only. "
+            "both: mix controlled by --hotpot-ratio."
+        ),
+    )
+    parser.add_argument(
+        "--hotpot-ratio", type=float, default=0.85,
+        help=(
+            "Fraction of Search-R1 rows drawn from HotpotQA when --search-source=both "
+            "(default: 0.85). Must be in [0, 1]."
+        ),
+    )
+    parser.add_argument(
+        "--deepmath-min-difficulty", type=int, default=5,
+        help=(
+            "Minimum difficulty score for DeepMath rows (default: 5, range 1–9). "
+            "Hard problems produce cleaner GRPO signal and encourage long reasoning traces. "
+            "Lower this if you cannot collect enough rows after filtering."
+        ),
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default="data/training",
+        help="Output directory for parquet files",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
+    if not 0.0 <= args.hotpot_ratio <= 1.0:
+        parser.error(f"--hotpot-ratio must be in [0, 1], got {args.hotpot_ratio}")
+
     output_dir = Path(args.output_dir)
 
-    print(f"Downloading Search-R1 ({args.n_val_search} val + {args.n_search} train)...")
+    print(
+        f"Downloading Search-R1 "
+        f"({args.n_val_search} val + {args.n_search} train, "
+        f"source={args.search_source!r}, hotpot_ratio={args.hotpot_ratio})..."
+    )
     search_train_rows, search_val_rows = _download_search_r1(
-        args.n_search, args.n_val_search, args.seed
+        args.n_search,
+        args.n_val_search,
+        args.seed,
+        search_source=args.search_source,
+        hotpot_ratio=args.hotpot_ratio,
     )
 
-    print(f"Downloading DeepMath ({args.n_val_math} val + {args.n_math} train)...")
+    print(
+        f"Downloading DeepMath "
+        f"({args.n_val_math} val + {args.n_math} train, "
+        f"min_difficulty={args.deepmath_min_difficulty})..."
+    )
     math_train_rows, math_val_rows = _download_deepmath(
-        args.n_math, args.n_val_math, args.seed
+        args.n_math,
+        args.n_val_math,
+        args.seed,
+        min_difficulty=args.deepmath_min_difficulty,
     )
 
     build_combined_train(search_train_rows, math_train_rows, output_dir, args.seed)
