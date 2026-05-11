@@ -109,19 +109,58 @@ model:
 
 ---
 
-## W&B Metrics
+## Logging and Analysis
 
-| Metric | What it measures |
+Training progress is captured in two places.
+
+### W&B (live, per epoch)
+
+VERL logs automatically via `trainer.logger: ['console', 'wandb']` into the project set by `PROJECT_NAME`.
+`val_before_train: true` runs a validation pass before epoch 1, giving a baseline measurement at epoch 0.
+
+| Metric | Source | What it tells you |
+|---|---|---|
+| `val_0/reward_mean` | `val_search.parquet` | Accuracy on held-out Search-R1 (NQ + HotpotQA) — `web_search` improving |
+| `val_1/reward_mean` | `val_deepmath.parquet` | Accuracy on held-out DeepMath — `code_generator` improving |
+| `actor/reward_mean` | training rollouts | Mean reward across both domains per step |
+| `actor/reward_std` | training rollouts | Diversity signal — near-zero means all rollouts tied (bad) |
+| `actor/kl_divergence` | GRPO | Should stay low; spike = policy drifting from reference |
+| `actor/pg_loss` | GRPO | Policy gradient loss; should fall over epochs |
+
+**Gap:** `actor/reward_mean` is the combined average — W&B does not get per-domain breakdown for training rollouts. That requires offline analysis of the rollout JSONs (see below).
+
+### Rollout JSONs (disk, per episode)
+
+Every episode is persisted to `rollout_dir/train|val/idx_N/rollout_<uuid8>.json`. With `rollout_n=8`, each training question produces 8 files (one per GRPO sample).
+
+Each record contains:
+```json
+{
+  "idx": 42,
+  "rollout_id": "...",
+  "data_source": "hotpotqa",
+  "question": "...",
+  "groundtruth": "...",
+  "answer_extracted": "...",
+  "reward": 1.0,
+  "output_messages": [...],
+  "timestamp": "2026-05-11T..."
+}
+```
+
+**What you can compute offline from the JSONs:**
+
+| Plot / metric | How |
 |---|---|
-| `val_0/reward_mean` | Accuracy on held-out Search-R1 (NQ + HotpotQA) — confirms `web_search` tool use is improving |
-| `val_1/reward_mean` | Accuracy on held-out DeepMath — confirms `code_generator` tool use is improving |
-| `actor/reward_mean` | Average training reward across both domains |
-| `actor/kl_divergence` | KL from reference policy — should stay low (~0.001 coef) |
+| Reward by domain per epoch | Group records by `data_source` + epoch; mean `reward` |
+| Reward distribution histogram (per epoch) | Histogram of `reward` over all 8 rollouts per question |
+| Tool call counts (`web_search` vs `code_generator`) | Count tool-call messages in `output_messages` |
+| Average turns to solution | Count assistant turns in `output_messages` |
+| Thinking trace length (tokens) | Extract `<think>...</think>` content from assistant messages |
+| Reward by DeepMath difficulty | Join on `extra_info.difficulty` from the parquet |
+| Pass@k curves | k ∈ {1,2,4,8} — fraction of questions with ≥1 correct rollout |
 
-VERL logs `val_0` and `val_1` separately because `data.val_files` is a list of two files.
-`launch_verl.py` converts the YAML list to Hydra list syntax (`key=[elem1,elem2]`) automatically.
-Per-domain breakdown is also available offline from `rollout_data/val/*.json`
-(each record includes a `data_source` field).
+**No analysis script exists yet for the JSONs.** When writing plots, create `scripts/plots/ft_rollout_analysis.py` — pattern matches `scripts/plots/efficiency_plots.py` (loads JSON files, produces matplotlib figures).
 
 ---
 
