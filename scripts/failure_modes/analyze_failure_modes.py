@@ -5,7 +5,39 @@ into one of six mutually exclusive failure modes, then outputs:
   - breakdown.json  (machine-readable counts + question IDs)
   - breakdown.csv   (flat table)
   - console table   (thesis-style pretty print)
-"""
+
+── How the thesis table figures were obtained ────────────────────────────────
+
+Table 5 (failure mode × benchmark counts) in the thesis was produced by
+*manual trace-level labelling*, not by this script.  Each of the 2 534 failed
+question-run records was read individually — including the full action_history,
+tool results, and question text — and assigned a label using the six-mode
+taxonomy defined in docs/failure_mode_and_fine_tuning/failure_mode.md.  The
+per-question assignments, representative examples, and source file/question-ID
+lists are recorded in that document (Appendix A sections).
+
+This script re-derives the same breakdown *automatically* from the structured
+fields of raw_results.json (action_history, tool_counts, prediction, turns,
+question text) using a priority-rule cascade that mirrors the taxonomy.  It
+is intended as a reproducible proxy and a starting point for analysis of new
+runs — not as an exact replayer of the manual labels.
+
+Known heuristic gaps (irreducible without reading full trace content):
+  - modality_tool_gap is undercounted: many cases are identified manually from
+    attachment metadata or question phrasing that does not contain one of the
+    VISUAL_KEYWORDS, and from multi-step traces where text_inspector returned
+    empty but the subgoal text does not use image/visual language.
+  - retrieval_evidence_failure and single_shot_tool_trust share a boundary
+    (multi-search vs single-search) that the manual labeller resolved from the
+    quality of the evidence, not just the call count.
+  - direct_reasoning_no_action is slightly overcounted because some no-tool
+    diagram questions lack visual keywords and cannot be promoted to
+    modality_tool_gap by Signal C.
+
+The aggregate total (2 534 failures, per-benchmark totals) is exact because it
+is read directly from the correct/incorrect flags; only the per-mode split
+approximates the manual assignment.
+────────────────────────────────────────────────────────────────────────────"""
 
 import argparse
 import csv
@@ -38,7 +70,18 @@ MODE_LABELS = {
     "single_shot_tool_trust":     "Single-shot tool trust",
 }
 
+# Tools that only exist for non-text modalities.  video_analysis was never
+# wired into the MAS tool set (its results are always empty); image_inspector
+# is the image-specific variant of text_inspector.  Any call to either signals
+# a modality gap regardless of the result content (Signal A).
 VISUAL_TOOLS = {"video_analysis", "image_inspector"}
+
+# Keywords scanned in text_inspector subgoals (Signal B) and in the question
+# text when action_history is empty (Signal C).  These are intentionally
+# conservative: broad terms such as "visual" or "video" can appear in
+# non-modality contexts (e.g. "visual inspection of the data", "video game").
+# The heuristic accepts some false negatives (missing real modality cases) in
+# exchange for avoiding false positives that would inflate the count.
 VISUAL_KEYWORDS = {
     "image", "photo", "picture", "figure", "diagram",
     "video", "screenshot", "visual", "illustration",
