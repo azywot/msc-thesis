@@ -1,0 +1,102 @@
+"""Analyze MAS failure modes from raw_results.json files.
+
+Classifies every failed question-run from the 20 hard-coded MAS run inventory
+into one of six mutually exclusive failure modes, then outputs:
+  - breakdown.json  (machine-readable counts + question IDs)
+  - breakdown.csv   (flat table)
+  - console table   (thesis-style pretty print)
+"""
+
+import argparse
+import csv
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+BENCHMARKS = ["aime", "gaia", "gpqa", "hle", "musique"]
+
+FAILURE_MODES = [
+    "modality_tool_gap",
+    "tool_loop_or_empty_final",
+    "direct_reasoning_no_action",
+    "computational_subgoal_error",
+    "retrieval_evidence_failure",
+    "single_shot_tool_trust",
+]
+
+MODE_LABELS = {
+    "modality_tool_gap":          "Modality / tool-coverage gap",
+    "tool_loop_or_empty_final":   "Tool loop / empty final answer",
+    "direct_reasoning_no_action": "Direct reasoning, no action",
+    "computational_subgoal_error": "Computational sub-goal error",
+    "retrieval_evidence_failure":  "Retrieval/evidence failure",
+    "single_shot_tool_trust":     "Single-shot tool trust",
+}
+
+VISUAL_TOOLS = {"video_analysis", "image_inspector"}
+VISUAL_KEYWORDS = {
+    "image", "photo", "picture", "figure", "diagram",
+    "video", "screenshot", "visual", "illustration",
+}
+
+MAX_TURNS = 15
+MIN_LOOP_REPEATS = 3
+
+# Relative to repo root: experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/
+_MAS_BASE = "experiments/results/1_milestone_no_img_no_mindmap_AgentFlow"
+
+_INVENTORY = [
+    # (benchmark, variant, relative_path)
+    ("aime", "all",          f"{_MAS_BASE}/aime/qwen8B_subagent_tools_all/train_2026-03-15-21-28-24_20752251/raw_results.json"),
+    ("aime", "none",         f"{_MAS_BASE}/aime/qwen8B_subagent_tools_none/train_2026-03-15-21-29-20_20752253/raw_results.json"),
+    ("aime", "orchestrator", f"{_MAS_BASE}/aime/qwen8B_subagent_tools_orchestrator/train_2026-03-15-21-30-27_20752258/raw_results.json"),
+    ("aime", "subagents",    f"{_MAS_BASE}/aime/qwen8B_subagent_tools_subagents/train_2026-03-15-21-31-28_20752265/raw_results.json"),
+    ("gaia", "all",          f"{_MAS_BASE}/gaia/qwen8B_subagent_tools_all/all_validation_2026-03-15-20-53-22_20752029/raw_results.json"),
+    ("gaia", "none",         f"{_MAS_BASE}/gaia/qwen8B_subagent_tools_none/all_validation_2026-03-15-20-54-46_20752030/raw_results.json"),
+    ("gaia", "orchestrator", f"{_MAS_BASE}/gaia/qwen8B_subagent_tools_orchestrator/all_validation_2026-03-15-20-55-53_20752049/raw_results.json"),
+    ("gaia", "subagents",    f"{_MAS_BASE}/gaia/qwen8B_subagent_tools_subagents/all_validation_2026-03-15-20-56-48_20752056/raw_results.json"),
+    ("gpqa", "all",          f"{_MAS_BASE}/gpqa/qwen8B_subagent_tools_all/diamond_2026-03-15-21-17-57_20752192/raw_results.json"),
+    ("gpqa", "none",         f"{_MAS_BASE}/gpqa/qwen8B_subagent_tools_none/diamond_2026-03-15-21-18-51_20752195/raw_results.json"),
+    ("gpqa", "orchestrator", f"{_MAS_BASE}/gpqa/qwen8B_subagent_tools_orchestrator/diamond_2026-03-15-21-19-20_20752198/raw_results.json"),
+    ("gpqa", "subagents",    f"{_MAS_BASE}/gpqa/qwen8B_subagent_tools_subagents/diamond_2026-03-15-21-20-26_20752204/raw_results.json"),
+    ("hle",  "all",          f"{_MAS_BASE}/hle/qwen8B_subagent_tools_all/test_subset_200_2026-03-15-21-06-19_20752116/raw_results.json"),
+    ("hle",  "none",         f"{_MAS_BASE}/hle/qwen8B_subagent_tools_none/test_subset_200_2026-03-15-21-06-56_20752118/raw_results.json"),
+    ("hle",  "orchestrator", f"{_MAS_BASE}/hle/qwen8B_subagent_tools_orchestrator/test_subset_200_2026-03-15-21-07-48_20752122/raw_results.json"),
+    ("hle",  "subagents",    f"{_MAS_BASE}/hle/qwen8B_subagent_tools_subagents/test_subset_200_2026-03-15-21-08-57_20752132/raw_results.json"),
+    ("musique", "all",          f"{_MAS_BASE}/musique/qwen8B_subagent_tools_all/validation_2026-03-15-22-08-22_20752493/raw_results.json"),
+    ("musique", "none",         f"{_MAS_BASE}/musique/qwen8B_subagent_tools_none/validation_2026-03-15-22-09-22_20752495/raw_results.json"),
+    ("musique", "orchestrator", f"{_MAS_BASE}/musique/qwen8B_subagent_tools_orchestrator/validation_2026-03-15-22-09-55_20752496/raw_results.json"),
+    ("musique", "subagents",    f"{_MAS_BASE}/musique/qwen8B_subagent_tools_subagents/validation_2026-03-15-22-10-51_20752501/raw_results.json"),
+]
+
+# ---------------------------------------------------------------------------
+# Core functions (stubs — filled in subsequent tasks)
+# ---------------------------------------------------------------------------
+
+def classify_failure(record: dict) -> str:
+    raise NotImplementedError
+
+
+def load_run(path: Path) -> list:
+    raise NotImplementedError
+
+
+def run_inventory(root: Path) -> list:
+    raise NotImplementedError
+
+
+def analyze(root: Path, output_dir: Path) -> None:
+    raise NotImplementedError
+
+
+def main() -> None:
+    raise NotImplementedError
+
+
+if __name__ == "__main__":
+    main()
