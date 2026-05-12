@@ -152,7 +152,115 @@ def run_inventory(root: Path) -> list:
 
 
 def analyze(root: Path, output_dir: Path) -> None:
-    raise NotImplementedError
+    """Run the full analysis: classify all failures, aggregate, write outputs."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # counts[mode][benchmark] = int
+    counts: dict = {m: {b: 0 for b in BENCHMARKS} for m in FAILURE_MODES}
+    # unique_qids[mode][benchmark] = set of question_ids
+    unique_qids: dict = {m: {b: set() for b in BENCHMARKS} for m in FAILURE_MODES}
+    # total failures per benchmark
+    bench_totals: dict = {b: 0 for b in BENCHMARKS}
+
+    for benchmark, variant, path in run_inventory(root):
+        records = load_run(path)
+        for rec in records:
+            if rec.get("correct"):
+                continue
+            bench_totals[benchmark] += 1
+            mode = classify_failure(rec)
+            counts[mode][benchmark] += 1
+            unique_qids[mode][benchmark].add(rec.get("question_id"))
+
+    overall_total = sum(bench_totals.values())
+
+    # ── Build structured result ──────────────────────────────────────────────
+    result = {"failure_modes": {}, "totals": {**bench_totals, "overall": overall_total}}
+    for mode in FAILURE_MODES:
+        total = sum(counts[mode].values())
+        share = round(total / overall_total * 100, 1) if overall_total else 0.0
+        unique = sum(len(unique_qids[mode][b]) for b in BENCHMARKS)
+        result["failure_modes"][mode] = {
+            "label": MODE_LABELS[mode],
+            "benchmarks": {
+                b: {
+                    "count": counts[mode][b],
+                    "question_ids": sorted(unique_qids[mode][b]),
+                }
+                for b in BENCHMARKS
+            },
+            "total": total,
+            "share_pct": share,
+            "unique_questions": unique,
+        }
+
+    # ── Write JSON ───────────────────────────────────────────────────────────
+    json_path = output_dir / "breakdown.json"
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2)
+    print(f"Written: {json_path}")
+
+    # ── Write CSV ────────────────────────────────────────────────────────────
+    csv_path = output_dir / "breakdown.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["failure_mode", "aime", "gaia", "gpqa", "hle", "musique",
+                         "total", "share_pct", "unique_questions"])
+        for mode in FAILURE_MODES:
+            fm = result["failure_modes"][mode]
+            writer.writerow([
+                mode,
+                fm["benchmarks"]["aime"]["count"],
+                fm["benchmarks"]["gaia"]["count"],
+                fm["benchmarks"]["gpqa"]["count"],
+                fm["benchmarks"]["hle"]["count"],
+                fm["benchmarks"]["musique"]["count"],
+                fm["total"],
+                fm["share_pct"],
+                fm["unique_questions"],
+            ])
+    print(f"Written: {csv_path}")
+
+    # ── Console table ────────────────────────────────────────────────────────
+    _print_table(result)
+
+
+def _print_table(result: dict) -> None:
+    """Print a thesis-style breakdown table to stdout."""
+    col_w = [38, 6, 6, 6, 6, 9, 7, 7, 6]
+    header = ["Failure mode", "AIME", "GAIA", "GPQA", "HLE", "MuSiQue",
+              "Total", "Share", "Uniq."]
+    sep = "─" * sum(col_w + [2] * len(col_w))
+
+    def row(*vals):
+        parts = [str(v).ljust(col_w[i]) if i == 0 else str(v).rjust(col_w[i])
+                 for i, v in enumerate(vals)]
+        return "  ".join(parts)
+
+    print()
+    print(row(*header))
+    print(sep)
+    for mode in FAILURE_MODES:
+        fm = result["failure_modes"][mode]
+        print(row(
+            fm["label"],
+            fm["benchmarks"]["aime"]["count"],
+            fm["benchmarks"]["gaia"]["count"],
+            fm["benchmarks"]["gpqa"]["count"],
+            fm["benchmarks"]["hle"]["count"],
+            fm["benchmarks"]["musique"]["count"],
+            fm["total"],
+            f"{fm['share_pct']}%",
+            fm["unique_questions"],
+        ))
+    print(sep)
+    t = result["totals"]
+    print(row(
+        "Total failures",
+        t["aime"], t["gaia"], t["gpqa"], t["hle"], t["musique"],
+        t["overall"], "100%", "---",
+    ))
+    print()
 
 
 def main() -> None:
