@@ -264,7 +264,26 @@ def _print_table(result: dict) -> None:
 
 
 def main() -> None:
-    raise NotImplementedError
+    default_root = Path(__file__).resolve().parent.parent.parent
+    default_out = Path(__file__).resolve().parent
+
+    parser = argparse.ArgumentParser(
+        description="Classify MAS failures into 6 failure modes and output breakdown."
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=default_root,
+        help=f"Repo root directory (default: {default_root})",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=default_out,
+        help=f"Directory for breakdown.json and breakdown.csv (default: {default_out})",
+    )
+    args = parser.parse_args()
+    analyze(args.root, args.output_dir)
 
 
 if __name__ == "__main__":
