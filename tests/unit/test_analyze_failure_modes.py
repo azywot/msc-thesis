@@ -9,7 +9,7 @@ import pytest
 from failure_modes.analyze_failure_modes import classify_failure
 
 
-def _rec(action_history=None, prediction="wrong", turns=2, tool_counts=None):
+def _rec(action_history=None, prediction="wrong", turns=2, tool_counts=None, question=""):
     """Build a minimal failed record."""
     return {
         "correct": False,
@@ -17,6 +17,7 @@ def _rec(action_history=None, prediction="wrong", turns=2, tool_counts=None):
         "turns": turns,
         "action_history": action_history or [],
         "tool_counts": tool_counts or {},
+        "question": question,
     }
 
 
@@ -69,6 +70,30 @@ class TestModalityToolGap:
             tool_counts={"text_inspector": 1},
         )
         assert classify_failure(rec) != "modality_tool_gap"
+
+    def test_empty_action_history_with_image_keyword_in_question(self):
+        # Signal C: question requires visual modality, model answered directly
+        rec = {
+            "correct": False,
+            "prediction": "15",
+            "turns": 1,
+            "action_history": [],
+            "tool_counts": {},
+            "question": "Using the provided image, identify the fractions shown.",
+        }
+        assert classify_failure(rec) == "modality_tool_gap"
+
+    def test_empty_action_history_no_visual_keyword_not_gap(self):
+        # Empty action_history but no image keyword → direct reasoning
+        rec = {
+            "correct": False,
+            "prediction": "42",
+            "turns": 1,
+            "action_history": [],
+            "tool_counts": {},
+            "question": "What is the sum of the first 10 prime numbers?",
+        }
+        assert classify_failure(rec) == "direct_reasoning_no_action"
 
     def test_multiple_text_inspector_with_results_not_gap(self):
         # All have non-empty results — not a modality gap
@@ -132,7 +157,7 @@ class TestDirectReasoning:
     def test_none_action_history(self):
         rec = {
             "correct": False, "prediction": "42", "turns": 1,
-            "action_history": None, "tool_counts": {},
+            "action_history": None, "tool_counts": {}, "question": "What is 2+2?",
         }
         assert classify_failure(rec) == "direct_reasoning_no_action"
 
@@ -169,7 +194,8 @@ class TestComputational:
 # ── Priority 5: retrieval_evidence_failure ───────────────────────────────────
 
 class TestRetrieval:
-    def test_web_search_used(self):
+    def test_multiple_web_search_is_retrieval(self):
+        # Multi-call traces: failure to reconcile evidence → retrieval failure
         steps = [
             _step("web_search", result="some info"),
             _step("web_search", result="more info"),
@@ -177,15 +203,14 @@ class TestRetrieval:
         rec = _rec(action_history=steps, prediction="wrong", tool_counts={"web_search": 2})
         assert classify_failure(rec) == "retrieval_evidence_failure"
 
-    def test_single_web_search_is_retrieval_not_single_shot(self):
-        # Single web_search: priority 4 (code_gen) no, priority 5 (web_search >= 1) YES
-        # so retrieval wins before single_shot
+    def test_single_web_search_is_single_shot_not_retrieval(self):
+        # A single web_search blindly trusted → upstream cause is single-shot trust
         rec = _rec(
             action_history=[_step("web_search", result="some useful info")],
             prediction="wrong",
             tool_counts={"web_search": 1},
         )
-        assert classify_failure(rec) == "retrieval_evidence_failure"
+        assert classify_failure(rec) == "single_shot_tool_trust"
 
 
 # ── Priority 6: single_shot_tool_trust ──────────────────────────────────────

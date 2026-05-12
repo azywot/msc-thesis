@@ -91,6 +91,8 @@ def classify_failure(record: dict) -> str:
     tools_used = [s.get("tool_name", "") for s in action_history]
     tool_counter = Counter(tools_used)
 
+    question_text = (record.get("question") or "").lower()
+
     # ── Priority 1: modality / tool-coverage gap ────────────────────────────
     # Signal A: non-existent or image-specific tool was called
     if any(t in VISUAL_TOOLS for t in tools_used):
@@ -109,6 +111,12 @@ def classify_failure(record: dict) -> str:
         if has_empty and has_keyword:
             return "modality_tool_gap"
 
+    # Signal C: no tool calls at all, but the question itself requires a visual
+    #           modality (image attachment, diagram, video) — upstream cause is
+    #           the missing modality, not a reasoning choice
+    if not action_history and any(kw in question_text for kw in VISUAL_KEYWORDS):
+        return "modality_tool_gap"
+
     # ── Priority 2: tool loop / empty final answer ───────────────────────────
     if not prediction.strip():
         return "tool_loop_or_empty_final"
@@ -126,7 +134,9 @@ def classify_failure(record: dict) -> str:
         return "computational_subgoal_error"
 
     # ── Priority 5: retrieval / evidence failure ─────────────────────────────
-    if tool_counts.get("web_search", 0) >= 1:
+    # Only fires for multi-call traces: a single web_search that was blindly
+    # trusted is single-shot trust (priority 6), not a retrieval failure.
+    if tool_counts.get("web_search", 0) >= 1 and len(action_history) >= 2:
         return "retrieval_evidence_failure"
 
     # ── Priority 6: single-shot tool trust (catch-all) ───────────────────────
