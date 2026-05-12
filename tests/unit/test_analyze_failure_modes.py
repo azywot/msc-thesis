@@ -72,7 +72,7 @@ class TestModalityToolGap:
         assert classify_failure(rec) != "modality_tool_gap"
 
     def test_empty_action_history_with_image_keyword_in_question(self):
-        # Signal C: question requires visual modality, model answered directly
+        # Signal C: non-empty prediction + no tools + visual question → modality gap
         rec = {
             "correct": False,
             "prediction": "15",
@@ -82,6 +82,18 @@ class TestModalityToolGap:
             "question": "Using the provided image, identify the fractions shown.",
         }
         assert classify_failure(rec) == "modality_tool_gap"
+
+    def test_empty_prediction_visual_question_is_tool_loop_not_modality(self):
+        # Bug 1 guard: empty prediction takes Priority 2 even with a visual question
+        rec = {
+            "correct": False,
+            "prediction": "",
+            "turns": 3,
+            "action_history": [],
+            "tool_counts": {},
+            "question": "Using the provided image, identify the fractions shown.",
+        }
+        assert classify_failure(rec) == "tool_loop_or_empty_final"
 
     def test_empty_action_history_no_visual_keyword_not_gap(self):
         # Empty action_history but no image keyword → direct reasoning
@@ -173,16 +185,19 @@ class TestComputational:
         rec = _rec(action_history=steps, prediction="42", tool_counts={"code_generator": 2})
         assert classify_failure(rec) == "computational_subgoal_error"
 
-    def test_one_code_generator_one_web_search(self):
+    def test_one_code_generator_one_web_search_is_single_shot(self):
+        # One web_search + one code_generator: code_generator count = 1 (< 2),
+        # so computational does NOT fire. web_search count = 1 (< 2), so
+        # retrieval does NOT fire either. Falls through to single-shot.
         steps = [
             _step("web_search", result="some info"),
             _step("code_generator", result="42"),
         ]
         rec = _rec(action_history=steps, prediction="42", tool_counts={"web_search": 1, "code_generator": 1})
-        assert classify_failure(rec) == "computational_subgoal_error"
+        assert classify_failure(rec) == "single_shot_tool_trust"
 
     def test_single_code_generator_not_computational(self):
-        # Only 1 action → single-shot, not computational
+        # code_generator count = 1 (< 2) → not computational
         rec = _rec(
             action_history=[_step("code_generator", result="42")],
             prediction="42",
@@ -195,7 +210,7 @@ class TestComputational:
 
 class TestRetrieval:
     def test_multiple_web_search_is_retrieval(self):
-        # Multi-call traces: failure to reconcile evidence → retrieval failure
+        # >= 2 web_search calls: failure to reconcile evidence
         steps = [
             _step("web_search", result="some info"),
             _step("web_search", result="more info"),
@@ -204,12 +219,23 @@ class TestRetrieval:
         assert classify_failure(rec) == "retrieval_evidence_failure"
 
     def test_single_web_search_is_single_shot_not_retrieval(self):
-        # A single web_search blindly trusted → upstream cause is single-shot trust
+        # 1 web_search → single-shot trust, not retrieval failure
         rec = _rec(
             action_history=[_step("web_search", result="some useful info")],
             prediction="wrong",
             tool_counts={"web_search": 1},
         )
+        assert classify_failure(rec) == "single_shot_tool_trust"
+
+    def test_single_web_search_plus_other_tool_is_single_shot(self):
+        # web_search=1 + text_inspector=1: still only one search, no reconciliation
+        # attempted → single-shot trust, not retrieval failure
+        steps = [
+            _step("web_search", result="some info"),
+            _step("text_inspector", sub_goal="read the document", result="some text"),
+        ]
+        rec = _rec(action_history=steps, prediction="wrong",
+                   tool_counts={"web_search": 1, "text_inspector": 1})
         assert classify_failure(rec) == "single_shot_tool_trust"
 
 
@@ -230,4 +256,13 @@ class TestSingleShot:
             prediction="wrong",
             tool_counts={"mind_map": 1},
         )
+        assert classify_failure(rec) == "single_shot_tool_trust"
+
+    def test_turns_none_does_not_crash(self):
+        # turns=None should fall back to 0 (no loop trigger)
+        rec = {
+            "correct": False, "prediction": "42", "turns": None,
+            "action_history": [_step("code_generator", result="42")],
+            "tool_counts": {"code_generator": 1}, "question": "",
+        }
         assert classify_failure(rec) == "single_shot_tool_trust"
