@@ -79,7 +79,58 @@ _INVENTORY = [
 # ---------------------------------------------------------------------------
 
 def classify_failure(record: dict) -> str:
-    raise NotImplementedError
+    """Classify a single failed record into one of six failure modes.
+
+    Rules are applied in priority order; the first match wins.
+    """
+    action_history = record.get("action_history") or []
+    prediction = str(record.get("prediction") or "")
+    turns = record.get("turns") or 0
+    tool_counts = record.get("tool_counts") or {}
+
+    tools_used = [s.get("tool_name", "") for s in action_history]
+    tool_counter = Counter(tools_used)
+
+    # ── Priority 1: modality / tool-coverage gap ────────────────────────────
+    # Signal A: non-existent or image-specific tool was called
+    if any(t in VISUAL_TOOLS for t in tools_used):
+        return "modality_tool_gap"
+
+    # Signal B: >= 2 text_inspector calls, at least one empty result,
+    #           and at least one subgoal mentions an image/visual keyword
+    ti_steps = [s for s in action_history if s.get("tool_name") == "text_inspector"]
+    if len(ti_steps) >= 2:
+        has_empty = any(not str(s.get("result") or "").strip() for s in ti_steps)
+        has_keyword = any(
+            kw in (s.get("sub_goal") or "").lower()
+            for s in ti_steps
+            for kw in VISUAL_KEYWORDS
+        )
+        if has_empty and has_keyword:
+            return "modality_tool_gap"
+
+    # ── Priority 2: tool loop / empty final answer ───────────────────────────
+    if not prediction.strip():
+        return "tool_loop_or_empty_final"
+    if turns >= MAX_TURNS:
+        return "tool_loop_or_empty_final"
+    if tool_counter and max(tool_counter.values()) >= MIN_LOOP_REPEATS:
+        return "tool_loop_or_empty_final"
+
+    # ── Priority 3: direct reasoning without action ──────────────────────────
+    if not action_history:
+        return "direct_reasoning_no_action"
+
+    # ── Priority 4: computational sub-goal error ─────────────────────────────
+    if tool_counts.get("code_generator", 0) >= 1 and len(action_history) >= 2:
+        return "computational_subgoal_error"
+
+    # ── Priority 5: retrieval / evidence failure ─────────────────────────────
+    if tool_counts.get("web_search", 0) >= 1:
+        return "retrieval_evidence_failure"
+
+    # ── Priority 6: single-shot tool trust (catch-all) ───────────────────────
+    return "single_shot_tool_trust"
 
 
 def load_run(path: Path) -> list:
