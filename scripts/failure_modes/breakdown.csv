@@ -1,7 +1,0 @@
-failure_mode,aime,gaia,gpqa,hle,musique,total,share_pct,unique_questions
-modality_tool_gap,8,17,16,52,2,95,3.7,39
-tool_loop_or_empty_final,28,181,13,121,155,498,19.7,269
-direct_reasoning_no_action,82,64,342,484,60,1032,40.7,349
-computational_subgoal_error,8,3,4,14,0,29,1.1,24
-retrieval_evidence_failure,0,56,4,6,161,227,9.0,136
-single_shot_tool_trust,21,213,14,91,314,653,25.8,315

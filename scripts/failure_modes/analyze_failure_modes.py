@@ -52,6 +52,16 @@ from pathlib import Path
 
 BENCHMARKS = ["aime", "gaia", "gpqa", "hle", "musique"]
 
+# Thinking-mode variant names as they appear in the run inventory, plus
+# their display labels used in table headers and JSON keys.
+THINKING_MODES = ["none", "all", "orchestrator", "subagents"]
+THINKING_MODE_LABELS = {
+    "none":         "NO",
+    "all":          "ALL",
+    "orchestrator": "ORCH",
+    "subagents":    "SUB",
+}
+
 FAILURE_MODES = [
     "modality_tool_gap",
     "tool_loop_or_empty_final",
@@ -118,20 +128,24 @@ _INVENTORY = [
 ]
 
 # ---------------------------------------------------------------------------
-# Core functions (stubs — filled in subsequent tasks)
+# Core functions
 # ---------------------------------------------------------------------------
 
 def classify_failure(record: dict) -> str:
     """Classify a single failed record into one of six failure modes.
 
     Rules are applied in priority order; the first match wins.
+    All counts are derived from action_history (the ground-truth step list)
+    rather than the pre-computed tool_counts field so that a single source
+    of truth is used throughout.
     """
     action_history = record.get("action_history") or []
     prediction = str(record.get("prediction") or "")
     turns = record.get("turns") or 0
-    tool_counts = record.get("tool_counts") or {}
 
     tools_used = [s.get("tool_name", "") for s in action_history]
+    # Counter({}) is falsy, so `if tool_counter and max(...)` below safely
+    # avoids calling max() on an empty sequence when action_history is empty.
     tool_counter = Counter(tools_used)
 
     question_text = (record.get("question") or "").lower()
@@ -167,6 +181,7 @@ def classify_failure(record: dict) -> str:
         return "tool_loop_or_empty_final"
     if turns >= MAX_TURNS:
         return "tool_loop_or_empty_final"
+    # tool_counter is falsy when action_history is empty, guarding max() safely.
     if tool_counter and max(tool_counter.values()) >= MIN_LOOP_REPEATS:
         return "tool_loop_or_empty_final"
 
@@ -178,14 +193,14 @@ def classify_failure(record: dict) -> str:
     # Requires >= 2 code_generator calls: the model ran multiple computational
     # sub-goals with wrong quantities/formulas.  A single code_generator call
     # in an otherwise multi-step trace is single-shot trust of the code result.
-    if tool_counts.get("code_generator", 0) >= 2:
+    if tool_counter.get("code_generator", 0) >= 2:
         return "computational_subgoal_error"
 
     # ── Priority 5: retrieval / evidence failure ─────────────────────────────
     # Requires >= 2 web_search calls: the agent searched multiple times but
     # failed to reconcile the evidence.  A single web_search that was blindly
     # trusted is single-shot trust (priority 6), not a retrieval failure.
-    if tool_counts.get("web_search", 0) >= 2:
+    if tool_counter.get("web_search", 0) >= 2:
         return "retrieval_evidence_failure"
 
     # ── Priority 6: single-shot tool trust (catch-all) ───────────────────────
@@ -210,92 +225,265 @@ def run_inventory(root: Path) -> list:
     return [(bench, variant, root / rel) for bench, variant, rel in _INVENTORY]
 
 
-def analyze(root: Path, output_dir: Path) -> None:
-    """Run the full analysis: classify all failures, aggregate, write outputs."""
-    output_dir.mkdir(parents=True, exist_ok=True)
+def _build_result_single_run(counts_m: dict, unique_m: dict, total: int) -> dict:
+    """Build a result dict for one (benchmark, thinking_mode) run file.
 
-    # counts[mode][benchmark] = int
-    counts: dict = {m: {b: 0 for b in BENCHMARKS} for m in FAILURE_MODES}
-    # unique_qids[mode][benchmark] = set of question_ids
-    unique_qids: dict = {m: {b: set() for b in BENCHMARKS} for m in FAILURE_MODES}
-    # total failures per benchmark
-    bench_totals: dict = {b: 0 for b in BENCHMARKS}
-
-    for benchmark, variant, path in run_inventory(root):
-        records = load_run(path)
-        for rec in records:
-            if rec.get("correct"):
-                continue
-            bench_totals[benchmark] += 1
-            mode = classify_failure(rec)
-            counts[mode][benchmark] += 1
-            unique_qids[mode][benchmark].add(rec.get("question_id"))
-
-    overall_total = sum(bench_totals.values())
-
-    # ── Build structured result ──────────────────────────────────────────────
-    result = {"failure_modes": {}, "totals": {**bench_totals, "overall": overall_total}}
+    Args:
+        counts_m: {failure_mode: int}
+        unique_m: {failure_mode: set of question_ids}
+        total:    total failed question-run cases in this single run
+    """
+    result: dict = {"failure_modes": {}, "total": total}
     for mode in FAILURE_MODES:
-        total = sum(counts[mode].values())
+        count = counts_m[mode]
+        share = round(count / total * 100, 1) if total else 0.0
+        result["failure_modes"][mode] = {
+            "label": MODE_LABELS[mode],
+            "count": count,
+            "share_pct": share,
+            # unique_questions equals count for a single run (no cross-condition dedup)
+            "unique_questions": len(unique_m[mode]),
+            "question_ids": sorted(unique_m[mode]),
+        }
+    return result
+
+
+def _build_result_by_benchmark(counts_bm: dict, unique_bm: dict, totals_bm: dict) -> dict:
+    """Build a result dict with benchmarks as the inner dimension.
+
+    Used for global view and per-thinking-mode views (same shape as the thesis
+    table: rows = failure modes, columns = benchmarks).
+
+    Args:
+        counts_bm: {benchmark: {mode: int}}
+        unique_bm: {benchmark: {mode: set of question_ids}}
+        totals_bm: {benchmark: int}  — total failures per benchmark
+    """
+    overall_total = sum(totals_bm[b] for b in BENCHMARKS)
+    result: dict = {
+        "failure_modes": {},
+        "totals": {b: totals_bm[b] for b in BENCHMARKS} | {"overall": overall_total},
+    }
+    for mode in FAILURE_MODES:
+        total = sum(counts_bm[b][mode] for b in BENCHMARKS)
         share = round(total / overall_total * 100, 1) if overall_total else 0.0
-        unique = sum(len(unique_qids[mode][b]) for b in BENCHMARKS)
+        # unique_questions = distinct (benchmark, question_id) pairs; IDs are
+        # benchmark-local so summing set sizes is equivalent.
+        unique = sum(len(unique_bm[b][mode]) for b in BENCHMARKS)
         result["failure_modes"][mode] = {
             "label": MODE_LABELS[mode],
             "benchmarks": {
-                b: {
-                    "count": counts[mode][b],
-                    "question_ids": sorted(unique_qids[mode][b]),
-                }
+                b: {"count": counts_bm[b][mode], "question_ids": sorted(unique_bm[b][mode])}
                 for b in BENCHMARKS
             },
             "total": total,
             "share_pct": share,
             "unique_questions": unique,
         }
+    return result
 
-    # ── Write JSON ───────────────────────────────────────────────────────────
+
+def _build_result_by_thinking(counts_th: dict, unique_th: dict, totals_th: dict) -> dict:
+    """Build a result dict with thinking modes as the inner dimension.
+
+    Used for per-benchmark views (rows = failure modes, columns = thinking
+    modes).  unique_questions counts distinct question_ids within this
+    benchmark across all thinking conditions for a given mode.
+
+    Args:
+        counts_th: {thinking_mode: {mode: int}}
+        unique_th: {thinking_mode: {mode: set of question_ids}}
+        totals_th: {thinking_mode: int}  — total failures per thinking mode
+    """
+    overall_total = sum(totals_th[v] for v in THINKING_MODES)
+    result: dict = {
+        "failure_modes": {},
+        "totals": {v: totals_th[v] for v in THINKING_MODES} | {"overall": overall_total},
+    }
+    for mode in FAILURE_MODES:
+        total = sum(counts_th[v][mode] for v in THINKING_MODES)
+        share = round(total / overall_total * 100, 1) if overall_total else 0.0
+        # Union across thinking conditions: same question solved in 4 runs = 1 unique
+        unique = len(set().union(*(unique_th[v][mode] for v in THINKING_MODES)))
+        result["failure_modes"][mode] = {
+            "label": MODE_LABELS[mode],
+            "thinking_modes": {
+                v: {"count": counts_th[v][mode], "question_ids": sorted(unique_th[v][mode])}
+                for v in THINKING_MODES
+            },
+            "total": total,
+            "share_pct": share,
+            "unique_questions": unique,
+        }
+    return result
+
+
+def analyze(root: Path, output_dir: Path) -> None:
+    """Run the full analysis: classify all failures, aggregate, write outputs.
+
+    Produces three levels of breakdown:
+      global          — all 20 runs combined (failure mode × benchmark)
+      by_thinking_mode — one table per thinking condition (same shape as global)
+      by_benchmark    — one table per benchmark (failure mode × thinking mode)
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    parse_errors: int = 0
+
+    # Raw counts indexed [variant][benchmark][failure_mode]
+    raw_counts = {v: {b: {m: 0  for m in FAILURE_MODES} for b in BENCHMARKS} for v in THINKING_MODES}
+    raw_unique  = {v: {b: {m: set() for m in FAILURE_MODES} for b in BENCHMARKS} for v in THINKING_MODES}
+    # total failures per (variant, benchmark); question-run cases, not unique questions
+    raw_totals  = {v: {b: 0 for b in BENCHMARKS} for v in THINKING_MODES}
+
+    for benchmark, variant, path in run_inventory(root):
+        records = load_run(path)
+        for rec in records:
+            if rec.get("correct"):
+                continue
+            raw_totals[variant][benchmark] += 1
+            try:
+                mode = classify_failure(rec)
+            except Exception as exc:
+                print(f"  [WARN] classify_failure failed for qid={rec.get('question_id')}: {exc}",
+                      file=sys.stderr)
+                parse_errors += 1
+                continue
+            raw_counts[variant][benchmark][mode] += 1
+            raw_unique[variant][benchmark][mode].add(rec.get("question_id"))
+
+    # ── Aggregate ────────────────────────────────────────────────────────────
+    # Global: sum over all thinking-mode variants
+    global_result = _build_result_by_benchmark(
+        {b: {m: sum(raw_counts[v][b][m] for v in THINKING_MODES) for m in FAILURE_MODES}
+         for b in BENCHMARKS},
+        {b: {m: set().union(*(raw_unique[v][b][m] for v in THINKING_MODES)) for m in FAILURE_MODES}
+         for b in BENCHMARKS},
+        {b: sum(raw_totals[v][b] for v in THINKING_MODES) for b in BENCHMARKS},
+    )
+
+    # By thinking mode: one global-shaped result per variant
+    by_thinking = {
+        v: _build_result_by_benchmark(
+            {b: {m: raw_counts[v][b][m] for m in FAILURE_MODES} for b in BENCHMARKS},
+            {b: {m: raw_unique[v][b][m] for m in FAILURE_MODES} for b in BENCHMARKS},
+            {b: raw_totals[v][b] for b in BENCHMARKS},
+        )
+        for v in THINKING_MODES
+    }
+
+    # By benchmark: one thinking-mode-shaped result per benchmark
+    by_benchmark = {
+        b: _build_result_by_thinking(
+            {v: {m: raw_counts[v][b][m] for m in FAILURE_MODES} for v in THINKING_MODES},
+            {v: {m: raw_unique[v][b][m] for m in FAILURE_MODES} for v in THINKING_MODES},
+            {v: raw_totals[v][b] for v in THINKING_MODES},
+        )
+        for b in BENCHMARKS
+    }
+
+    # By benchmark × thinking mode: individual result for each of the 20 runs
+    by_benchmark_and_thinking = {
+        b: {
+            v: _build_result_single_run(
+                {m: raw_counts[v][b][m] for m in FAILURE_MODES},
+                {m: raw_unique[v][b][m] for m in FAILURE_MODES},
+                raw_totals[v][b],
+            )
+            for v in THINKING_MODES
+        }
+        for b in BENCHMARKS
+    }
+
+    full_result = {
+        "global": global_result,
+        "by_thinking_mode": by_thinking,
+        "by_benchmark": by_benchmark,
+        "by_benchmark_and_thinking": by_benchmark_and_thinking,
+        "parse_errors": parse_errors,
+    }
+
+    # ── Write JSON (single file, all levels) ─────────────────────────────────
     json_path = output_dir / "breakdown.json"
     with json_path.open("w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2)
+        json.dump(full_result, f, indent=2)
     print(f"Written: {json_path}")
 
-    # ── Write CSV ────────────────────────────────────────────────────────────
-    csv_path = output_dir / "breakdown.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["failure_mode", "aime", "gaia", "gpqa", "hle", "musique",
-                         "total", "share_pct", "unique_questions"])
-        for mode in FAILURE_MODES:
-            fm = result["failure_modes"][mode]
-            writer.writerow([
-                mode,
-                fm["benchmarks"]["aime"]["count"],
-                fm["benchmarks"]["gaia"]["count"],
-                fm["benchmarks"]["gpqa"]["count"],
-                fm["benchmarks"]["hle"]["count"],
-                fm["benchmarks"]["musique"]["count"],
-                fm["total"],
-                fm["share_pct"],
-                fm["unique_questions"],
-            ])
-    print(f"Written: {csv_path}")
+    # ── Write CSVs ────────────────────────────────────────────────────────────
+    _write_csv_global(output_dir / "breakdown_global.csv", global_result)
+    _write_csv_by_thinking(output_dir / "breakdown_by_thinking_mode.csv", by_thinking)
+    _write_csv_by_benchmark(output_dir / "breakdown_by_benchmark.csv", by_benchmark)
+    _write_csv_by_benchmark_and_thinking(
+        output_dir / "breakdown_by_benchmark_and_thinking.csv", by_benchmark_and_thinking
+    )
 
-    # ── Console table ────────────────────────────────────────────────────────
-    _print_table(result)
+    # ── LaTeX tables ─────────────────────────────────────────────────────────
+    _tables_dir = output_dir.parent.parent / "results" / "tables" / "failure_modes"
+    _write_latex_global(
+        _tables_dir / "failure_modes_global.tex",
+        global_result,
+    )
+    _write_latex_by_thinking(
+        _tables_dir / "failure_modes_by_thinking.tex",
+        by_thinking,
+    )
+    _write_latex_thinking_x_benchmark(
+        _tables_dir / "total_failures_thinking_x_benchmark.tex",
+        by_benchmark_and_thinking,
+    )
+
+    # ── Console tables ────────────────────────────────────────────────────────
+    _print_table(global_result, title="Global — all 20 runs")
+    _print_table_thinking_x_benchmark(by_benchmark_and_thinking)
+    for v in THINKING_MODES:
+        _print_table(by_thinking[v], title=f"Thinking mode: {THINKING_MODE_LABELS[v]}")
+    for b in BENCHMARKS:
+        _print_table(
+            by_benchmark[b],
+            title=f"Benchmark: {b.upper()}",
+            cols=THINKING_MODES,
+            col_labels=THINKING_MODE_LABELS,
+            get_count=lambda fm, c: fm["thinking_modes"][c]["count"],
+        )
+    for b in BENCHMARKS:
+        for v in THINKING_MODES:
+            _print_table_single_run(
+                by_benchmark_and_thinking[b][v],
+                title=f"{b.upper()} × {THINKING_MODE_LABELS[v]}",
+            )
 
 
-def _print_table(result: dict) -> None:
-    """Print a thesis-style breakdown table to stdout."""
-    col_w = [38, 6, 6, 6, 6, 9, 7, 7, 6]
-    header = ["Failure mode", "AIME", "GAIA", "GPQA", "HLE", "MuSiQue",
-              "Total", "Share", "Uniq."]
-    sep = "─" * sum(col_w + [2] * len(col_w))
+def _print_table(
+    result: dict,
+    title: str = "",
+    cols: list = BENCHMARKS,
+    col_labels: dict = None,
+    get_count=None,
+) -> None:
+    """Print a thesis-style breakdown table.
+
+    Args:
+        result:     result dict from _build_result_by_benchmark or _by_thinking
+        title:      optional section heading printed above the table
+        cols:       ordered list of column keys (benchmarks or thinking modes)
+        col_labels: display label for each column key; defaults to key.upper()
+        get_count:  callable(fm, col) → int; defaults to fm["benchmarks"][col]["count"]
+    """
+    if col_labels is None:
+        col_labels = {c: c.upper() for c in cols}
+    if get_count is None:
+        get_count = lambda fm, c: fm["benchmarks"][c]["count"]
+
+    col_w = [38] + [max(6, len(col_labels[c]) + 1) for c in cols] + [7, 7, 6]
+    header = ["Failure mode"] + [col_labels[c] for c in cols] + ["Total", "Share", "Uniq."]
+    sep = "─" * (sum(col_w) + 2 * len(col_w))
 
     def row(*vals):
         parts = [str(v).ljust(col_w[i]) if i == 0 else str(v).rjust(col_w[i])
                  for i, v in enumerate(vals)]
         return "  ".join(parts)
 
+    if title:
+        print(f"\n── {title} " + "─" * max(0, len(sep) - len(title) - 4))
     print()
     print(row(*header))
     print(sep)
@@ -303,11 +491,7 @@ def _print_table(result: dict) -> None:
         fm = result["failure_modes"][mode]
         print(row(
             fm["label"],
-            fm["benchmarks"]["aime"]["count"],
-            fm["benchmarks"]["gaia"]["count"],
-            fm["benchmarks"]["gpqa"]["count"],
-            fm["benchmarks"]["hle"]["count"],
-            fm["benchmarks"]["musique"]["count"],
+            *[get_count(fm, c) for c in cols],
             fm["total"],
             f"{fm['share_pct']}%",
             fm["unique_questions"],
@@ -316,15 +500,251 @@ def _print_table(result: dict) -> None:
     t = result["totals"]
     print(row(
         "Total failures",
-        t["aime"], t["gaia"], t["gpqa"], t["hle"], t["musique"],
+        *[t[c] for c in cols],
         t["overall"], "100%", "---",
     ))
     print()
 
 
+_BM_DISPLAY = {
+    "aime": "AIME", "gaia": "GAIA", "gpqa": "GPQA",
+    "hle": "HLE", "musique": "MuSiQue",
+}
+_TM_DISPLAY = {
+    "none": "No thinking", "all": "All thinking",
+    "orchestrator": "Orch.\ thinking", "subagents": "Sub.\ thinking",
+}
+
+
+def _write_latex_thinking_x_benchmark(path: Path, by_bm_th: dict) -> None:
+    """Write a booktabs LaTeX table: rows = thinking modes, cols = benchmarks."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    col_spec = "l" + "r" * len(BENCHMARKS) + "r"
+    bm_headers = " & ".join(f"\\textbf{{{_BM_DISPLAY[b]}}}" for b in BENCHMARKS)
+    lines = [
+        f"\\begin{{tabular}}{{{col_spec}}}",
+        "\\toprule",
+        f"\\textbf{{Thinking mode}} & {bm_headers} & \\textbf{{Total}} \\\\",
+        "\\midrule",
+    ]
+    col_totals = {b: 0 for b in BENCHMARKS}
+    grand_total = 0
+    for v in THINKING_MODES:
+        counts = [by_bm_th[b][v]["total"] for b in BENCHMARKS]
+        row_total = sum(counts)
+        for b, c in zip(BENCHMARKS, counts):
+            col_totals[b] += c
+        grand_total += row_total
+        cells = " & ".join(str(c) for c in counts)
+        lines.append(f"{_TM_DISPLAY[v]} & {cells} & {row_total} \\\\")
+    lines += [
+        "\\midrule",
+        "Total & " + " & ".join(str(col_totals[b]) for b in BENCHMARKS) + f" & {grand_total} \\\\",
+        "\\bottomrule",
+        "\\end{tabular}",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"Written: {path}")
+
+
+_FM_DISPLAY = {
+    "modality_tool_gap":           "Modality / tool-coverage gap",
+    "tool_loop_or_empty_final":    "Tool loop / empty final answer",
+    "direct_reasoning_no_action":  "Direct reasoning, no action",
+    "computational_subgoal_error": "Computational sub-goal error",
+    "retrieval_evidence_failure":  "Retrieval / evidence failure",
+    "single_shot_tool_trust":      "Single-shot tool trust",
+}
+
+
+def _write_latex_global(path: Path, result: dict) -> None:
+    """Booktabs table: rows = failure modes, cols = benchmarks + Total + Share."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    col_spec = "l" + "r" * len(BENCHMARKS) + "rr"
+    bm_headers = " & ".join(f"\\textbf{{{_BM_DISPLAY[b]}}}" for b in BENCHMARKS)
+    lines = [
+        f"\\begin{{tabular}}{{{col_spec}}}",
+        "\\toprule",
+        f"\\textbf{{Failure mode}} & {bm_headers} & \\textbf{{Total}} & \\textbf{{Share}} \\\\",
+        "\\midrule",
+    ]
+    for mode in FAILURE_MODES:
+        fm = result["failure_modes"][mode]
+        counts = " & ".join(str(fm["benchmarks"][b]["count"]) for b in BENCHMARKS)
+        lines.append(
+            f"{_FM_DISPLAY[mode]} & {counts} & {fm['total']} & {fm['share_pct']}\\% \\\\"
+        )
+    t = result["totals"]
+    col_totals = " & ".join(str(t[b]) for b in BENCHMARKS)
+    lines += [
+        "\\midrule",
+        f"Total failures & {col_totals} & {t['overall']} & 100\\% \\\\",
+        "\\bottomrule",
+        "\\end{tabular}",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"Written: {path}")
+
+
+def _write_latex_by_thinking(path: Path, by_thinking: dict) -> None:
+    """Booktabs table: rows = failure modes, cols = thinking modes + Total + Share.
+
+    Counts are summed over all benchmarks for each (mode, thinking) pair.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Short column labels for thinking modes
+    tm_col_labels = {
+        "none": "No think.", "all": "All think.",
+        "orchestrator": "Orch.", "subagents": "Sub.",
+    }
+    col_spec = "l" + "r" * len(THINKING_MODES) + "rr"
+    tm_headers = " & ".join(f"\\textbf{{{tm_col_labels[v]}}}" for v in THINKING_MODES)
+    lines = [
+        f"\\begin{{tabular}}{{{col_spec}}}",
+        "\\toprule",
+        f"\\textbf{{Failure mode}} & {tm_headers} & \\textbf{{Total}} & \\textbf{{Share}} \\\\",
+        "\\midrule",
+    ]
+    grand_total = sum(by_thinking[v]["totals"]["overall"] for v in THINKING_MODES)
+    for mode in FAILURE_MODES:
+        counts = [by_thinking[v]["failure_modes"][mode]["total"] for v in THINKING_MODES]
+        row_total = sum(counts)
+        share = round(row_total / grand_total * 100, 1) if grand_total else 0.0
+        cells = " & ".join(str(c) for c in counts)
+        lines.append(f"{_FM_DISPLAY[mode]} & {cells} & {row_total} & {share}\\% \\\\")
+    tm_totals = " & ".join(str(by_thinking[v]["totals"]["overall"]) for v in THINKING_MODES)
+    lines += [
+        "\\midrule",
+        f"Total failures & {tm_totals} & {grand_total} & 100\\% \\\\",
+        "\\bottomrule",
+        "\\end{tabular}",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"Written: {path}")
+
+
+def _print_table_thinking_x_benchmark(by_bm_th: dict) -> None:
+    """Print a THINKING_MODE × DATASET summary table of total failures."""
+    BM_LABELS = {b: b.upper() for b in BENCHMARKS}
+    col_w = [8] + [max(7, len(BM_LABELS[b]) + 1) for b in BENCHMARKS] + [7]
+    header = [" "] + [BM_LABELS[b] for b in BENCHMARKS] + ["Total"]
+    sep = "─" * (sum(col_w) + 2 * len(col_w))
+
+    def row(*vals):
+        parts = [str(v).ljust(col_w[i]) if i == 0 else str(v).rjust(col_w[i])
+                 for i, v in enumerate(vals)]
+        return "  ".join(parts)
+
+    print(f"\n── Total failures: thinking mode × benchmark " + "─" * 20)
+    print()
+    print(row(*header))
+    print(sep)
+    col_totals = {b: 0 for b in BENCHMARKS}
+    grand_total = 0
+    for v in THINKING_MODES:
+        counts = [by_bm_th[b][v]["total"] for b in BENCHMARKS]
+        row_total = sum(counts)
+        for b, c in zip(BENCHMARKS, counts):
+            col_totals[b] += c
+        grand_total += row_total
+        print(row(THINKING_MODE_LABELS[v], *counts, row_total))
+    print(sep)
+    print(row("Total", *[col_totals[b] for b in BENCHMARKS], grand_total))
+    print()
+
+
+def _print_table_single_run(result: dict, title: str = "") -> None:
+    """Print a single-run breakdown table (failure mode × count only)."""
+    col_w = [38, 7, 7, 6]
+    header = ["Failure mode", "Count", "Share", "Uniq."]
+    sep = "─" * (sum(col_w) + 2 * len(col_w))
+
+    def row(*vals):
+        parts = [str(v).ljust(col_w[i]) if i == 0 else str(v).rjust(col_w[i])
+                 for i, v in enumerate(vals)]
+        return "  ".join(parts)
+
+    if title:
+        print(f"\n── {title} " + "─" * max(0, len(sep) - len(title) - 4))
+    print()
+    print(row(*header))
+    print(sep)
+    for mode in FAILURE_MODES:
+        fm = result["failure_modes"][mode]
+        print(row(fm["label"], fm["count"], f"{fm['share_pct']}%", fm["unique_questions"]))
+    print(sep)
+    print(row("Total failures", result["total"], "100%", "---"))
+    print()
+
+
+def _write_csv_global(path: Path, result: dict) -> None:
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["failure_mode"] + BENCHMARKS + ["total", "share_pct", "unique_questions"])
+        for mode in FAILURE_MODES:
+            fm = result["failure_modes"][mode]
+            writer.writerow(
+                [mode]
+                + [fm["benchmarks"][b]["count"] for b in BENCHMARKS]
+                + [fm["total"], fm["share_pct"], fm["unique_questions"]]
+            )
+    print(f"Written: {path}")
+
+
+def _write_csv_by_thinking(path: Path, by_thinking: dict) -> None:
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            ["thinking_mode", "failure_mode"] + BENCHMARKS + ["total", "share_pct", "unique_questions"]
+        )
+        for v in THINKING_MODES:
+            for mode in FAILURE_MODES:
+                fm = by_thinking[v]["failure_modes"][mode]
+                writer.writerow(
+                    [v, mode]
+                    + [fm["benchmarks"][b]["count"] for b in BENCHMARKS]
+                    + [fm["total"], fm["share_pct"], fm["unique_questions"]]
+                )
+    print(f"Written: {path}")
+
+
+def _write_csv_by_benchmark_and_thinking(path: Path, by_bm_th: dict) -> None:
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["benchmark", "thinking_mode", "failure_mode",
+                         "count", "share_pct", "unique_questions"])
+        for b in BENCHMARKS:
+            for v in THINKING_MODES:
+                run = by_bm_th[b][v]
+                for mode in FAILURE_MODES:
+                    fm = run["failure_modes"][mode]
+                    writer.writerow([b, v, mode, fm["count"], fm["share_pct"], fm["unique_questions"]])
+    print(f"Written: {path}")
+
+
+def _write_csv_by_benchmark(path: Path, by_benchmark: dict) -> None:
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            ["benchmark", "failure_mode"] + THINKING_MODES + ["total", "share_pct", "unique_questions"]
+        )
+        for b in BENCHMARKS:
+            for mode in FAILURE_MODES:
+                fm = by_benchmark[b]["failure_modes"][mode]
+                writer.writerow(
+                    [b, mode]
+                    + [fm["thinking_modes"][v]["count"] for v in THINKING_MODES]
+                    + [fm["total"], fm["share_pct"], fm["unique_questions"]]
+                )
+    print(f"Written: {path}")
+
+
 def main() -> None:
     default_root = Path(__file__).resolve().parent.parent.parent
-    default_out = Path(__file__).resolve().parent
+    default_out = default_root / "data" / "results" / "failure_modes"
 
     parser = argparse.ArgumentParser(
         description="Classify MAS failures into 6 failure modes and output breakdown."
