@@ -134,11 +134,21 @@ def classify_failure(record: dict) -> str:
 
 
 def load_run(path: Path) -> list:
-    raise NotImplementedError
+    """Load records from a raw_results.json. Returns [] and warns on error."""
+    if not path.exists():
+        print(f"  [WARN] missing: {path}", file=sys.stderr)
+        return []
+    with path.open(encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError as exc:
+            print(f"  [WARN] JSON parse error in {path}: {exc}", file=sys.stderr)
+            return []
 
 
 def run_inventory(root: Path) -> list:
-    raise NotImplementedError
+    """Return list of (benchmark, variant, resolved_path) from the hard-coded inventory."""
+    return [(bench, variant, root / rel) for bench, variant, rel in _INVENTORY]
 
 
 def analyze(root: Path, output_dir: Path) -> None:
