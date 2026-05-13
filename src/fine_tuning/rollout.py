@@ -16,6 +16,10 @@ from typing import Any, Optional
 
 from filelock import FileLock
 
+from ._agentflow_path import ensure_agentflow_litagent_importable
+
+ensure_agentflow_litagent_importable()
+
 from agentflow import LitAgent, reward
 from agentflow.types import NamedResources
 
@@ -64,7 +68,8 @@ def _build_tool_registry(subagent_endpoint: str, subagent_model: str) -> ToolReg
         raise EnvironmentError(
             "SUBAGENT_ENDPOINT must be set to the URL of a frozen sub-agent vLLM "
             "server (e.g. http://localhost:9998/v1).  Start it separately with:\n"
-            "  vllm serve <SUBAGENT_MODEL> --port 9998"
+            "  vllm serve <SUBAGENT_MODEL> --port 9998 --tensor-parallel-size 1 \\\n"
+            "    --gpu-memory-utilization 0.15 --max-model-len 8192"
         )
     api_key = os.environ.get("SERPER_API_KEY") or os.environ.get("TAVILY_API_KEY")
     if not api_key:
@@ -178,16 +183,16 @@ class OrchestratorRollout(LitAgent):
 
     async def training_rollout_async(
         self, task: Any, rollout_id: str, resources: NamedResources, val: bool = False
-    ) -> None:
+    ) -> float:
         temperature = self.test_temperature if val else self.train_temperature
         endpoint = resources.get("main_llm").endpoint
-        await self._run_episode(task, rollout_id, temperature, endpoint=endpoint, val=val)
+        return await self._run_episode(task, rollout_id, temperature, endpoint=endpoint, val=val)
 
     async def validation_rollout_async(
         self, task: Any, rollout_id: str, resources: NamedResources
-    ) -> None:
+    ) -> float:
         endpoint = resources.get("main_llm").endpoint
-        await self._run_episode(
+        return await self._run_episode(
             task, rollout_id, self.test_temperature, endpoint=endpoint, val=True
         )
 
@@ -202,7 +207,7 @@ class OrchestratorRollout(LitAgent):
         temperature: float,
         endpoint: str,
         val: bool,
-    ) -> None:
+    ) -> float:
         question_text, ground_truth, data_source, idx = _get_task_metadata(task)
         prompt = _build_rollout_question(question_text)
 
@@ -239,7 +244,6 @@ class OrchestratorRollout(LitAgent):
         )
         print(f"answer={answer!r}  gt={ground_truth!r}  reward={reward_value}")
 
-        # Save rollout data to disk for debugging (mirrors AgentFlow)
         self._save_rollout(
             idx=idx,
             rollout_id=rollout_id,
@@ -251,6 +255,7 @@ class OrchestratorRollout(LitAgent):
             output_messages=output_messages,
             val=val,
         )
+        return reward_value
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #

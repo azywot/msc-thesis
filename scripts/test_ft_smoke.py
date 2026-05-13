@@ -18,6 +18,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from fine_tuning._agentflow_path import ensure_agentflow_litagent_importable
+
+ensure_agentflow_litagent_importable()
+
 PASS = "PASS"
 FAIL = "FAIL"
 results: list[tuple[str, str, str]] = []  # (check, status, detail)

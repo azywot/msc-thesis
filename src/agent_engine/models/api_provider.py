@@ -11,7 +11,7 @@ from typing import Dict, List
 from openai import OpenAI
 from anthropic import Anthropic
 
-from .base import BaseModelProvider, GenerationResult, ModelConfig
+from .base import BaseModelProvider, GenerationResult, ModelConfig, _ENABLE_THINKING_KWARG_FAMILIES
 from ..utils.logging import get_logger, format_messages_as_chat
 
 logger = get_logger(__name__)
@@ -81,10 +81,12 @@ class OpenAIProvider(BaseModelProvider):
             List with single GenerationResult
         """
         raw_messages = None
+        use_thinking = False
         try:
             payload = json.loads(prompt)
             if isinstance(payload, dict) and "messages" in payload:
                 raw_messages = payload["messages"]
+                use_thinking = bool(payload.get("use_thinking", False))
             elif isinstance(payload, list):
                 raw_messages = payload
         except (json.JSONDecodeError, TypeError):
@@ -101,6 +103,10 @@ class OpenAIProvider(BaseModelProvider):
 
         logger.debug("OpenAI request:\n%s", format_messages_as_chat(messages))
 
+        extra_body = {}
+        if self.config.family in _ENABLE_THINKING_KWARG_FAMILIES:
+            extra_body["chat_template_kwargs"] = {"enable_thinking": use_thinking}
+
         response = self.client.chat.completions.create(
             model=self.config.path_or_id,
             messages=messages,
@@ -108,6 +114,7 @@ class OpenAIProvider(BaseModelProvider):
             top_p=self.config.top_p,
             max_tokens=self.config.max_tokens,
             seed=self.config.seed,
+            extra_body=extra_body or None,
         )
 
         result = GenerationResult(
@@ -131,16 +138,16 @@ class OpenAIProvider(BaseModelProvider):
         messages: List[Dict[str, str]],
         use_thinking: bool = False
     ) -> str:
-        """Serialize the full conversation for the OpenAI API.
-
-        Args:
-            messages: List of message dicts
-            use_thinking: Ignored for OpenAI
+        """Serialize the full conversation for the OpenAI-compatible API.
 
         Returns:
-            JSON-encoded messages list (deserialized in _generate_single)
+            JSON-encoded payload with messages and use_thinking flag
+            (deserialized in _generate_single).
         """
-        return json.dumps(messages, ensure_ascii=False)
+        return json.dumps(
+            {"messages": messages, "use_thinking": use_thinking},
+            ensure_ascii=False,
+        )
 
     def cleanup(self):
         """Cleanup (no-op for API providers)."""

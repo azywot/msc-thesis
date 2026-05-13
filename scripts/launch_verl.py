@@ -20,6 +20,11 @@ def main():
     parser.add_argument("--config", type=str, default="experiments/configs/train/config.yaml")
     args, unknown = parser.parse_known_args()
 
+    # VERL workers forbid ROCR_VISIBLE_DEVICES alongside CUDA_VISIBLE_DEVICES (see
+    # verl/single_controller/base/worker.py). Some HPC stacks export both even on NVIDIA nodes.
+    if os.environ.get("CUDA_VISIBLE_DEVICES"):
+        os.environ.pop("ROCR_VISIBLE_DEVICES", None)
+
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
 
@@ -28,9 +33,22 @@ def main():
         os.environ[key] = str(value)
         print(f"  Exported {key}={value}")
 
-    # Build: python -m agentflow.verl key=value key=value ...
-    command = [sys.executable, "-m", "agentflow.verl"]
-    for key, value in config.get("python_args", {}).items():
+    # Same as AgentFlow agentflow.verl.entrypoint: VERL + vLLM v1 AsyncLLM require this.
+    _v1 = os.environ.get("VLLM_USE_V1", "").strip().lower()
+    if _v1 not in ("1", "true", "yes", "on"):
+        os.environ["VLLM_USE_V1"] = "1"
+
+    python_args = dict(config.get("python_args", {}))
+    # Ray defaults num_cpus to the whole host under SLURM; that prestarts far more workers than the
+    # job's CPU allocation and wedges worker registration. Prefer the scheduler's CPU count.
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+    if slurm_cpus:
+        python_args["ray_init.num_cpus"] = int(slurm_cpus)
+        print(f"  ray_init.num_cpus={slurm_cpus} (from SLURM_CPUS_PER_TASK)")
+
+    # Build: python -u -m agentflow.verl key=value key=value ...  (-u: line-buffered logs under SLURM > redirect)
+    command = [sys.executable, "-u", "-m", "agentflow.verl"]
+    for key, value in python_args.items():
         if isinstance(value, list):
             # Hydra list syntax: key=[elem1,elem2]  (each element env-expanded)
             elems = ",".join(os.path.expandvars(str(v)) for v in value)

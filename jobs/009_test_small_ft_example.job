@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=SmokeFT
 #SBATCH --partition=gpu_a100
+# Two GPUs: GPU 0 = frozen sub-agent; GPU 1 = VERL (N_GPUS=1). Smoke uses **Qwen3-4B** so FSDP + vLLM fit on one 40GB card (8B OOMs here).
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -15,6 +16,9 @@
 #
 # Run AFTER job 008 (creates cosmas-train + data — must already be prepared).
 # If this passes, the full training job (010) is safe to submit.
+#
+# Optional: put SKIP_PIP_SETUP=1 in .env to skip editable installs + reconcile when
+# cosmas-train is already warm (PATH + import check still run).
 
 set -euo pipefail
 
@@ -47,9 +51,43 @@ if [[ -z "${SERPER_API_KEY:-}" && -z "${TAVILY_API_KEY:-}" ]]; then
     exit 1
 fi
 
+AGENTFLOW_ROOT="${AGENTFLOW_ROOT:-$HOME/azywot/AgentFlow}"
+AGENTFLOW_REPO="${AGENTFLOW_REPO:-https://github.com/shin-ee-chen/AgentFlow.git}"
+
+normalize_agentflow_pythonpath() {
+    local root="$1"
+    local inner="$root/agentflow"
+    local nested="$root/agentflow/agentflow"
+    local root_c inner_c nested_c entry_c
+    local new_path=""
+    local entry
+
+    root_c="$(realpath -m "$root")"
+    inner_c="$(realpath -m "$inner")"
+    nested_c="$(realpath -m "$nested")"
+
+    IFS=':' read -ra path_entries <<< "${PYTHONPATH:-}"
+    for entry in "${path_entries[@]}"; do
+        [[ -z "$entry" ]] && continue
+        entry_c="$(realpath -m "$entry" 2>/dev/null || printf '%s' "$entry")"
+        case "$entry_c" in
+            "$root_c"|"$inner_c"|"$nested_c") continue ;;
+        esac
+        if [[ -z "$new_path" ]]; then
+            new_path="$entry"
+        else
+            new_path="$new_path:$entry"
+        fi
+    done
+
+    export PYTHONPATH="$root${new_path:+:$new_path}"
+}
+
 if [[ -z "${WANDB_API_KEY:-}" ]]; then
     echo "Warning: WANDB_API_KEY is not set; W&B logging may fail."
 fi
+
+normalize_agentflow_pythonpath "$AGENTFLOW_ROOT"
 
 # cosmas-train is created once by jobs/008_prepare_fine_tuning_data.job.
 if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
@@ -60,9 +98,8 @@ fi
 
 source activate cosmas-train
 export PYTHONNOUSERSITE=1
+normalize_agentflow_pythonpath "$AGENTFLOW_ROOT"
 
-AGENTFLOW_ROOT="${AGENTFLOW_ROOT:-$HOME/azywot/AgentFlow}"
-AGENTFLOW_REPO="${AGENTFLOW_REPO:-https://github.com/shin-ee-chen/AgentFlow.git}"
 if [[ ! -d "$AGENTFLOW_ROOT/agentflow" ]]; then
     echo "AgentFlow clone not found at $AGENTFLOW_ROOT; cloning..."
     if [[ -e "$AGENTFLOW_ROOT" ]]; then
@@ -72,11 +109,19 @@ if [[ ! -d "$AGENTFLOW_ROOT/agentflow" ]]; then
     git clone "$AGENTFLOW_REPO" "$AGENTFLOW_ROOT"
 fi
 
-echo "Installing AgentFlow and msc-thesis packages..."
-pip install --no-deps -e "$AGENTFLOW_ROOT/agentflow"
-pip install -e .
-bash jobs/cosmas_train_pip_reconcile.sh
-python -c "import agentflow, agent_engine, fine_tuning, verl, vllm; print('Training imports OK')"
+case "${SKIP_PIP_SETUP:-}" in
+    1|true|TRUE|yes|YES)
+        echo "SKIP_PIP_SETUP is set — skipping pip install + reconcile (reuse current cosmas-train)."
+        ;;
+    *)
+        echo "Installing AgentFlow and msc-thesis packages..."
+        python -m pip install --no-deps -e "$AGENTFLOW_ROOT/agentflow"
+        python -m pip install -e .
+        bash jobs/cosmas_train_pip_reconcile.sh
+        ;;
+esac
+normalize_agentflow_pythonpath "$AGENTFLOW_ROOT"
+python -c "import agentflow, agent_engine, fine_tuning, verl, vllm; from agentflow import LitAgent, Trainer, reward; print(f'Training imports OK: agentflow={agentflow.__file__}')"
 
 mkdir -p out/fine_tuning
 
@@ -120,11 +165,14 @@ echo "Pre-flight checks passed. Starting training..."
 
 # ── 2. Frozen sub-agent vLLM server (separate from VERL, never updated) ──────
 echo ""
-echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998)..."
-vllm serve Qwen/Qwen3-1.7B \
+echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998, physical GPU 0 only)..."
+# V1 + torch.compile can leave almost no KV budget on a small util fraction (see smoke_*_subagent.log).
+# Legacy engine on a dedicated 40GB card keeps startup predictable; env applies only to this process.
+VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
     --port 9998 \
     --tensor-parallel-size 1 \
-    --gpu-memory-utilization 0.15 \
+    --gpu-memory-utilization 0.40 \
+    --max-model-len 8192 \
     > out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
 SUBAGENT_PID=$!
 export SUBAGENT_ENDPOINT="http://localhost:9998/v1"
@@ -136,18 +184,44 @@ if ! kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
     wait "$SUBAGENT_PID"
 fi
 
+# Single training GPU (must match N_GPUS=1 in config_smoke.yaml).
+export CUDA_VISIBLE_DEVICES=1
+
 # ── 3. VERL server ───────────────────────────────────────────────────────────
+# Unbuffered Python so *_verl.log updates live under SLURM file redirection (also applies to train_orchestrator below).
+export PYTHONUNBUFFERED=1
 echo ""
 echo "Starting VERL server (config_smoke.yaml)..."
 python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml \
     > out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_verl.log 2>&1 &
 VERL_PID=$!
 
-echo "Waiting 90s for Ray + vLLM to be ready..."
-sleep 90
+echo "Waiting up to 3 min for Ray + worker bootstrap; N_GPUS=1 + FSDP + colocated vLLM can take 15–25 min before AgentFlow answers /task."
+sleep 180
 if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
     echo "FAIL — VERL server exited during startup. See out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_verl.log"
     wait "$VERL_PID"
+fi
+
+# AgentFlow control plane (VERL) — fail fast if it never binds; avoids endless rollout polling.
+AGENTFLOW_PORT="${AGENTFLOW_PORT:-9999}"
+echo "Polling http://localhost:${AGENTFLOW_PORT}/task for AgentFlow readiness (up to 25 min)..."
+_deadline=$((SECONDS + 1500))
+while (( SECONDS < _deadline )); do
+    if curl -fsS --max-time 5 "http://127.0.0.1:${AGENTFLOW_PORT}/task" >/dev/null 2>&1; then
+        echo "AgentFlow server is responding on port ${AGENTFLOW_PORT}."
+        break
+    fi
+    if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
+        echo "FAIL — VERL exited before AgentFlow came up. See out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_verl.log"
+        wait "$VERL_PID" || true
+        exit 1
+    fi
+    sleep 10
+done
+if (( SECONDS >= _deadline )); then
+    echo "FAIL — AgentFlow on :${AGENTFLOW_PORT} not ready after 25 min (VERL may be wedged). Check *_verl.log and Ray logs under /scratch-local/${USER}.${SLURM_JOB_ID:-local}/ray/"
+    exit 1
 fi
 
 # ── 4. Rollout workers ───────────────────────────────────────────────────────
@@ -160,7 +234,7 @@ wait $VERL_PID
 # ── 5. Verify checkpoint was written ─────────────────────────────────────────
 echo ""
 echo "Verifying checkpoint..."
-CKPT_DIR="experiments/results/training/qwen3-8b-grpo-smoke"
+CKPT_DIR="experiments/results/training/qwen3-4b-grpo-smoke"
 if ls "$CKPT_DIR"/checkpoint_step_*/actor/lora_weights.pt 1>/dev/null 2>&1; then
     echo "PASS — checkpoint found:"
     ls -lh "$CKPT_DIR"/checkpoint_step_*/actor/lora_weights.pt

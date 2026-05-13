@@ -1,31 +1,36 @@
 # experiments/configs/train/config_smoke.yaml
-# Minimal smoke-test config — verifies the full VERL pipeline end-to-end
-# on real hardware with tiny data (16 training samples, 2 rollouts, 1 epoch).
+# Minimal smoke-test config — verifies the full VERL pipeline end-to-end on real hardware
+# (16 training samples, 2 rollouts, 1 epoch).
+#
+# Uses **Qwen3-4B** (not 8B) so two GPUs suffice: GPU 0 = frozen sub-agent vLLM; GPU 1 = VERL with
+# N_GPUS=1 (FSDP actor/ref + rollout vLLM colocated). 8B + 8B vLLM OOMs on one 40GB card
+# (see smoke_*_verl.log during vLLM load_model). Full training (**config.yaml**) stays Qwen3-8B.
+#
+# SLURM: jobs/009 allocates **2 GPUs** — see job script for CUDA_VISIBLE_DEVICES.
 #
 # Differences from config.yaml:
-#   - data dir: data/training/smoke  (prepared by job 008 with --n-search 50 --n-math 50)
-#   - train_max_samples: 16          (only 16 questions per epoch)
-#   - rollout.n: 2                   (2 rollouts per question instead of 8)
-#   - total_epochs: 1
-#   - TOOL_STEPS: 2                  (shorter episodes)
+#   - BASE_MODEL: Qwen3-4B (smoke only)
+#   - data dir: data/training/smoke
+#   - train_max_samples: 16, rollout.n: 2, total_epochs: 1
 #   - smaller batch / micro-batch sizes
-#   - logger includes wandb so W&B logging is also verified
 #
 # Launch with:
 #   python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml
 #   python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke.yaml
 #
-# IMPORTANT: Before starting rollout workers, launch a frozen sub-agent server:
-#   vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1
+# IMPORTANT: Launch frozen sub-agent on GPU 0 before VERL (see jobs/009):
+#   VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 \
+#       --gpu-memory-utilization 0.40 --max-model-len 8192
 #   export SUBAGENT_ENDPOINT=http://localhost:9998/v1
+#   CUDA_VISIBLE_DEVICES=1 python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml
 
 env:
-  BASE_MODEL: 'Qwen/Qwen3-8B'
+  BASE_MODEL: 'Qwen/Qwen3-4B'
   SUBAGENT_MODEL: 'Qwen/Qwen3-1.7B'
   SUBAGENT_ENDPOINT: 'http://localhost:9998/v1'
-  N_GPUS: 2
+  N_GPUS: 1
   ROLLOUT_TP_SIZE: 1
-  EXPERIMENT_NAME: 'qwen3-8b-grpo-smoke'
+  EXPERIMENT_NAME: 'qwen3-4b-grpo-smoke'
   PROJECT_NAME: 'cosmas-rl-finetuning-smoke'
   BASE_DATA_DIR: 'data/training/smoke'
   ENABLE_TOOLS: ["web_search", "code_generator"]
@@ -38,25 +43,27 @@ env:
 
 python_args:
   agentflow.port: 9999
+  ray_init.num_cpus: 16
   algorithm.adv_estimator: 'grpo'
   data.train_files: '${BASE_DATA_DIR}/train/combined_train.parquet'
-  data.val_files:                                           # two files → VERL logs val_0 (search) and val_1 (math) separately in W&B
+  data.val_files:
     - '${BASE_DATA_DIR}/val/val_search.parquet'
     - '${BASE_DATA_DIR}/val/val_deepmath.parquet'
   data.train_batch_size: 4
   data.train_max_samples: 16
-  data.max_prompt_length: 8192
-  data.max_response_length: 4096
+  data.max_prompt_length: 4096
+  data.max_response_length: 2048
   data.truncation: 'truncate'
   actor_rollout_ref.rollout.n: 2
   actor_rollout_ref.actor.ppo_mini_batch_size: 4
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 1
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu: 1
   actor_rollout_ref.rollout.multi_turn.format: 'hermes'
   actor_rollout_ref.model.path: '${BASE_MODEL}'
   actor_rollout_ref.model.lora_rank: 64
   actor_rollout_ref.model.lora_alpha: 16
-  actor_rollout_ref.model.lora_target_modules: 'all-linear'
+  '+actor_rollout_ref.model.lora_target_modules': 'all-linear'
   actor_rollout_ref.model.enable_gradient_checkpointing: true
   actor_rollout_ref.model.use_remove_padding: true
   actor_rollout_ref.actor.optim.lr: 1.0e-6
@@ -64,11 +71,14 @@ python_args:
   actor_rollout_ref.actor.kl_loss_coef: 0.001
   actor_rollout_ref.actor.clip_ratio_low: 0.2
   actor_rollout_ref.actor.clip_ratio_high: 0.3
+  # 4B fits FSDP + vLLM on one 40GB GPU without CPU offload (8B does not).
   actor_rollout_ref.actor.fsdp_config.param_offload: false
   actor_rollout_ref.actor.fsdp_config.optimizer_offload: false
   actor_rollout_ref.ref.fsdp_config.param_offload: false
   actor_rollout_ref.rollout.name: 'vllm'
-  actor_rollout_ref.rollout.gpu_memory_utilization: 0.6
+  actor_rollout_ref.rollout.gpu_memory_utilization: 0.28
+  actor_rollout_ref.rollout.max_model_len: 6144
+  actor_rollout_ref.rollout.max_num_batched_tokens: 4096
   actor_rollout_ref.rollout.tensor_model_parallel_size: '${ROLLOUT_TP_SIZE}'
   trainer.n_gpus_per_node: '${N_GPUS}'
   trainer.logger: ['console', 'wandb']

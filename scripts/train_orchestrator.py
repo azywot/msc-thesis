@@ -1,5 +1,9 @@
 """Start OrchestratorRollout workers and connect them to the VERL daemon.
 
+Note: upstream ``agentflow.Trainer`` imports ``AgentOpsTracer`` at package import time,
+so ``agentops``, ``flask``, and ``setproctitle`` must be installed even though this
+script only uses ``NullTracer`` at runtime.
+
 Usage:
     python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml
 
@@ -18,12 +22,15 @@ import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
 
 # Add src to path (matches run_experiment.py convention)
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+from fine_tuning._agentflow_path import ensure_agentflow_litagent_importable
 
 
 def _get_git_hash() -> str:
@@ -71,7 +78,8 @@ def main():
             "ERROR: SUBAGENT_ENDPOINT is not set.\n"
             "  Sub-agents must use a separate frozen vLLM server (not the VERL endpoint).\n"
             "  Start one first:\n"
-            f"    vllm serve {subagent_model} --port 9998\n"
+            f"    vllm serve {subagent_model} --port 9998 --tensor-parallel-size 1 \\\n"
+            f"      --gpu-memory-utilization 0.15 --max-model-len 8192\n"
             "  Then export SUBAGENT_ENDPOINT=http://localhost:9998/v1  (or set it in the config)."
         )
         sys.exit(1)
@@ -90,6 +98,8 @@ def main():
         f"subagent_endpoint={subagent_endpoint}"
     )
 
+    ensure_agentflow_litagent_importable()
+
     # ── 6. Build NullTracer ─────────────────────────────────────────────────
     from agentflow.tracer.base import BaseTracer
 
@@ -99,6 +109,13 @@ def main():
         def teardown(self): pass
         def init_worker(self, worker_id): pass
         def teardown_worker(self, worker_id): pass
+
+        @contextmanager
+        def trace_context(self, name=None):
+            yield
+
+        def get_last_trace(self):
+            return []
 
     # ── 7. Instantiate rollout agent ────────────────────────────────────────
     from fine_tuning.rollout import OrchestratorRollout
