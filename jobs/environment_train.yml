@@ -6,8 +6,7 @@
 #   conda activate cosmas-train
 #
 # Then install local packages as needed:
-#   pip install -e $HOME/azywot/AgentFlow/agentflow
-#   pip install -e .   # msc-thesis (fine_tuning module)
+#   pip install -e .   # msc-thesis (includes vendored fine_tuning.agentflow)
 
 name: cosmas-train
 channels:

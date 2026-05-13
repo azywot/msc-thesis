@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=SmokeFT
-#SBATCH --partition=gpu_a100
+#SBATCH --partition=gpu_h100
 # Two GPUs: GPU 0 = frozen sub-agent; GPU 1 = VERL (N_GPUS=1). Smoke uses **Qwen3-4B** so FSDP + vLLM fit on one 40GB card (8B OOMs here).
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
@@ -51,43 +51,9 @@ if [[ -z "${SERPER_API_KEY:-}" && -z "${TAVILY_API_KEY:-}" ]]; then
     exit 1
 fi
 
-AGENTFLOW_ROOT="${AGENTFLOW_ROOT:-$HOME/azywot/AgentFlow}"
-AGENTFLOW_REPO="${AGENTFLOW_REPO:-https://github.com/shin-ee-chen/AgentFlow.git}"
-
-normalize_agentflow_pythonpath() {
-    local root="$1"
-    local inner="$root/agentflow"
-    local nested="$root/agentflow/agentflow"
-    local root_c inner_c nested_c entry_c
-    local new_path=""
-    local entry
-
-    root_c="$(realpath -m "$root")"
-    inner_c="$(realpath -m "$inner")"
-    nested_c="$(realpath -m "$nested")"
-
-    IFS=':' read -ra path_entries <<< "${PYTHONPATH:-}"
-    for entry in "${path_entries[@]}"; do
-        [[ -z "$entry" ]] && continue
-        entry_c="$(realpath -m "$entry" 2>/dev/null || printf '%s' "$entry")"
-        case "$entry_c" in
-            "$root_c"|"$inner_c"|"$nested_c") continue ;;
-        esac
-        if [[ -z "$new_path" ]]; then
-            new_path="$entry"
-        else
-            new_path="$new_path:$entry"
-        fi
-    done
-
-    export PYTHONPATH="$root${new_path:+:$new_path}"
-}
-
 if [[ -z "${WANDB_API_KEY:-}" ]]; then
     echo "Warning: WANDB_API_KEY is not set; W&B logging may fail."
 fi
-
-normalize_agentflow_pythonpath "$AGENTFLOW_ROOT"
 
 # cosmas-train is created once by jobs/008_prepare_fine_tuning_data.job.
 if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
@@ -98,30 +64,18 @@ fi
 
 source activate cosmas-train
 export PYTHONNOUSERSITE=1
-normalize_agentflow_pythonpath "$AGENTFLOW_ROOT"
-
-if [[ ! -d "$AGENTFLOW_ROOT/agentflow" ]]; then
-    echo "AgentFlow clone not found at $AGENTFLOW_ROOT; cloning..."
-    if [[ -e "$AGENTFLOW_ROOT" ]]; then
-        echo "ERROR: $AGENTFLOW_ROOT exists but does not contain an agentflow/ package."
-        exit 1
-    fi
-    git clone "$AGENTFLOW_REPO" "$AGENTFLOW_ROOT"
-fi
 
 case "${SKIP_PIP_SETUP:-}" in
     1|true|TRUE|yes|YES)
         echo "SKIP_PIP_SETUP is set — skipping pip install + reconcile (reuse current cosmas-train)."
         ;;
     *)
-        echo "Installing AgentFlow and msc-thesis packages..."
-        python -m pip install --no-deps -e "$AGENTFLOW_ROOT/agentflow"
+        echo "Installing msc-thesis package..."
         python -m pip install -e .
         bash jobs/cosmas_train_pip_reconcile.sh
         ;;
 esac
-normalize_agentflow_pythonpath "$AGENTFLOW_ROOT"
-python -c "import agentflow, agent_engine, fine_tuning, verl, vllm; from agentflow import LitAgent, Trainer, reward; print(f'Training imports OK: agentflow={agentflow.__file__}')"
+python -c "import agent_engine, fine_tuning, verl, vllm; from fine_tuning.agentflow import LitAgent, Trainer, reward; print('Training imports OK')"
 
 mkdir -p out/fine_tuning
 
