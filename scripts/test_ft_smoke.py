@@ -18,10 +18,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from fine_tuning._agentflow_path import ensure_agentflow_litagent_importable
-
-ensure_agentflow_litagent_importable()
-
 PASS = "PASS"
 FAIL = "FAIL"
 results: list[tuple[str, str, str]] = []  # (check, status, detail)
@@ -45,11 +41,11 @@ def check(name: str):
 # Checks
 # ---------------------------------------------------------------------------
 
-@check("import agentflow")
+@check("import fine_tuning.agentflow")
 def check_agentflow():
-    import agentflow  # noqa: F401
-    from agentflow import LitAgent, Trainer, reward  # noqa: F401
-    return f"agentflow imported"
+    import fine_tuning.agentflow  # noqa: F401
+    from fine_tuning.agentflow import LitAgent, Trainer, reward  # noqa: F401
+    return "fine_tuning.agentflow imported"
 
 
 @check("import fine_tuning")

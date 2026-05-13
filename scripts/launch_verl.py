@@ -1,7 +1,7 @@
 """Launch the VERL training server.
 
 Mirrors AgentFlow's train/train_agent.py: reads the training config, sets
-environment variables, and spawns `python -m agentflow.verl key=value ...`.
+environment variables, and spawns `python -m fine_tuning.agentflow.verl key=value ...`.
 
 Usage:
     python scripts/launch_verl.py --config experiments/configs/train/config.yaml
@@ -33,7 +33,7 @@ def main():
         os.environ[key] = str(value)
         print(f"  Exported {key}={value}")
 
-    # Same as AgentFlow agentflow.verl.entrypoint: VERL + vLLM v1 AsyncLLM require this.
+    # Same as fine_tuning.agentflow.verl.entrypoint: VERL + vLLM v1 AsyncLLM require this.
     _v1 = os.environ.get("VLLM_USE_V1", "").strip().lower()
     if _v1 not in ("1", "true", "yes", "on"):
         os.environ["VLLM_USE_V1"] = "1"
@@ -46,8 +46,8 @@ def main():
         python_args["ray_init.num_cpus"] = int(slurm_cpus)
         print(f"  ray_init.num_cpus={slurm_cpus} (from SLURM_CPUS_PER_TASK)")
 
-    # Build: python -u -m agentflow.verl key=value key=value ...  (-u: line-buffered logs under SLURM > redirect)
-    command = [sys.executable, "-u", "-m", "agentflow.verl"]
+    # Build: python -u -m fine_tuning.agentflow.verl key=value key=value ...  (-u: line-buffered logs under SLURM > redirect)
+    command = [sys.executable, "-u", "-m", "fine_tuning.agentflow.verl"]
     for key, value in python_args.items():
         if isinstance(value, list):
             # Hydra list syntax: key=[elem1,elem2]  (each element env-expanded)
