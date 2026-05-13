@@ -38,6 +38,14 @@ def main():
     if _v1 not in ("1", "true", "yes", "on"):
         os.environ["VLLM_USE_V1"] = "1"
 
+    # vLLM V1 uses cuMemCreate/cuMemMap for weight tensors. PyTorch's default CUDA
+    # caching allocator holds large free blocks without returning them to the driver,
+    # so after each FSDP training step + checkpoint save the driver has no free physical
+    # pages for vLLM's wake_up call. Expandable segments return emptied pages to the
+    # driver immediately, preventing this OOM.
+    if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
     python_args = dict(config.get("python_args", {}))
     # Ray defaults num_cpus to the whole host under SLURM; that prestarts far more workers than the
     # job's CPU allocation and wedges worker registration. Prefer the scheduler's CPU count.
@@ -45,6 +53,21 @@ def main():
     if slurm_cpus:
         python_args["ray_init.num_cpus"] = int(slurm_cpus)
         print(f"  ray_init.num_cpus={slurm_cpus} (from SLURM_CPUS_PER_TASK)")
+
+    # USE_LORA was exported above via the env: loop; read it back now.
+    use_lora = os.environ.get("USE_LORA", "false").strip().lower() in ("1", "true", "yes", "on")
+    if use_lora:
+        lora_cfg = config.get("lora", {}) or {}
+        python_args["actor_rollout_ref.model.lora_rank"] = int(lora_cfg.get("rank", 64))
+        python_args["actor_rollout_ref.model.lora_alpha"] = int(lora_cfg.get("alpha", 16))
+        python_args["+actor_rollout_ref.model.lora_target_modules"] = str(lora_cfg.get("target_modules", "all-linear"))
+        print(
+            f"  LoRA enabled: rank={lora_cfg.get('rank', 64)}, "
+            f"alpha={lora_cfg.get('alpha', 16)}, "
+            f"targets={lora_cfg.get('target_modules', 'all-linear')}"
+        )
+    else:
+        print("  LoRA disabled: full-parameter training (USE_LORA=false)")
 
     # Build: python -u -m fine_tuning.agentflow.verl key=value key=value ...  (-u: line-buffered logs under SLURM > redirect)
     command = [sys.executable, "-u", "-m", "fine_tuning.agentflow.verl"]

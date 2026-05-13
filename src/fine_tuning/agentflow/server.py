@@ -10,6 +10,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Path
 from pydantic import Field
 
+from .runner import _fmt_rollout
 from .types import (
     Rollout,
     Task,
@@ -284,7 +285,7 @@ class AgentFlowServer:
             """Endpoint for clients to report a completed rollout."""
             if not self._store:
                 raise HTTPException(status_code=503, detail="Server not fully initialized.")
-            print(f"[DEBUG] Post rollout received: {payload}")
+            print(f"[DEBUG] Post rollout received: {_fmt_rollout(payload)}")
             await self._store.store_rollout(payload)
             return GenericResponse(
                 status="ok",

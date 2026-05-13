@@ -30,6 +30,7 @@ env:
   TEST_TEMPERATURE: 0.0
   N_WORKERS: 1
   VERBOSITY: 'INFO'
+  USE_LORA: "false"
 
 python_args:
   agentflow.port: 9999
@@ -52,10 +53,6 @@ python_args:
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu: 4
   actor_rollout_ref.rollout.multi_turn.format: 'hermes'
   actor_rollout_ref.model.path: '${BASE_MODEL}'
-  actor_rollout_ref.model.lora_rank: 64
-  actor_rollout_ref.model.lora_alpha: 16
-  # Structured VERL Hydra defaults omit this key → use '+' to extend the config node.
-  '+actor_rollout_ref.model.lora_target_modules': 'all-linear'
   actor_rollout_ref.model.enable_gradient_checkpointing: true
   actor_rollout_ref.model.use_remove_padding: true
   actor_rollout_ref.actor.optim.lr: 1.0e-6
@@ -82,3 +79,8 @@ python_args:
   trainer.val_before_train: true
   trainer.critic_warmup: 0
   algorithm.use_kl_in_reward: false
+
+lora:                     # applied only when USE_LORA=true
+  rank: 64
+  alpha: 16
+  target_modules: "all-linear"

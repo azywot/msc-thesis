@@ -117,6 +117,12 @@ class OpenAIProvider(BaseModelProvider):
             extra_body=extra_body or None,
         )
 
+        # Capture token IDs when the backend includes them (e.g. VERL vLLM proxy).
+        # openai-python exposes extra JSON fields via __getattr__ → model_extra.
+        prompt_token_ids = getattr(response, "prompt_token_ids", None)
+        raw_response_token_ids = getattr(response, "response_token_ids", None)
+        response_token_ids = raw_response_token_ids[0] if raw_response_token_ids else None
+
         result = GenerationResult(
             text=response.choices[0].message.content,
             finish_reason=response.choices[0].finish_reason,
@@ -130,13 +136,16 @@ class OpenAIProvider(BaseModelProvider):
                 "role": self.config.role,
             },
             messages=raw_messages,
+            prompt_token_ids=list(prompt_token_ids) if prompt_token_ids is not None else None,
+            response_token_ids=list(response_token_ids) if response_token_ids is not None else None,
         )
         return [result]
 
     def apply_chat_template(
         self,
         messages: List[Dict[str, str]],
-        use_thinking: bool = False
+        use_thinking: bool = False,
+        force_tool_call: bool = False,
     ) -> str:
         """Serialize the full conversation for the OpenAI-compatible API.
 
@@ -271,13 +280,15 @@ class AnthropicProvider(BaseModelProvider):
     def apply_chat_template(
         self,
         messages: List[Dict[str, str]],
-        use_thinking: bool = False
+        use_thinking: bool = False,
+        force_tool_call: bool = False,
     ) -> str:
         """Serialize the full conversation for the Anthropic API.
 
         Args:
             messages: List of message dicts
             use_thinking: Ignored for Anthropic
+            force_tool_call: Ignored for Anthropic
 
         Returns:
             JSON-encoded messages list (deserialized in _generate_single)

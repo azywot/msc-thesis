@@ -40,6 +40,7 @@ env:
   TEST_TEMPERATURE: 0.0
   N_WORKERS: 1
   VERBOSITY: 'INFO'
+  USE_LORA: "false"
 
 python_args:
   agentflow.port: 9999
@@ -61,9 +62,6 @@ python_args:
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu: 1
   actor_rollout_ref.rollout.multi_turn.format: 'hermes'
   actor_rollout_ref.model.path: '${BASE_MODEL}'
-  actor_rollout_ref.model.lora_rank: 64
-  actor_rollout_ref.model.lora_alpha: 16
-  '+actor_rollout_ref.model.lora_target_modules': 'all-linear'
   actor_rollout_ref.model.enable_gradient_checkpointing: true
   actor_rollout_ref.model.use_remove_padding: true
   actor_rollout_ref.actor.optim.lr: 1.0e-6
@@ -71,10 +69,13 @@ python_args:
   actor_rollout_ref.actor.kl_loss_coef: 0.001
   actor_rollout_ref.actor.clip_ratio_low: 0.2
   actor_rollout_ref.actor.clip_ratio_high: 0.3
-  # 4B fits FSDP + vLLM on one 40GB GPU without CPU offload (8B does not).
+  # 4B on one 40GB GPU: actor params stay on GPU but ref params and optimizer
+  # states are offloaded to CPU. After the first training step Adam states
+  # (~32 GB fp32) would otherwise leave no room for the vLLM KV-cache
+  # re-allocation on wake_up. Ref param offload matches config.yaml.
   actor_rollout_ref.actor.fsdp_config.param_offload: false
-  actor_rollout_ref.actor.fsdp_config.optimizer_offload: false
-  actor_rollout_ref.ref.fsdp_config.param_offload: false
+  actor_rollout_ref.actor.fsdp_config.optimizer_offload: true
+  actor_rollout_ref.ref.fsdp_config.param_offload: true
   actor_rollout_ref.rollout.name: 'vllm'
   actor_rollout_ref.rollout.gpu_memory_utilization: 0.28
   actor_rollout_ref.rollout.max_model_len: 6144
@@ -90,3 +91,8 @@ python_args:
   trainer.val_before_train: true
   trainer.critic_warmup: 0
   algorithm.use_kl_in_reward: false
+
+lora:                     # applied only when USE_LORA=true
+  rank: 64
+  alpha: 16
+  target_modules: "all-linear"

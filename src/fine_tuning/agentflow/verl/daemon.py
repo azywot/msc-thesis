@@ -199,6 +199,35 @@ class AgentModeDaemon:
                 ]
                 if resp.status_code == 200:
                     response_json = json.loads(resp.content.decode("utf-8"))
+
+                    # Inject prompt/response token IDs for RL training data construction.
+                    # The orchestrator rollout workers read these from GenerationResult and
+                    # use them to build Triplet objects without needing AgentOps tracing.
+                    if (
+                        "prompt_token_ids" not in response_json
+                        and "choices" in response_json
+                        and response_json["choices"]
+                        and self.tokenizer is not None
+                        and "chat/completions" in path
+                    ):
+                        try:
+                            req_body = json.loads(request.get_data(as_text=True))
+                            messages = req_body.get("messages") or []
+                            if messages:
+                                prompt_ids = self.tokenizer.apply_chat_template(
+                                    messages, add_generation_prompt=True, tokenize=True
+                                )
+                                response_text = (
+                                    (response_json["choices"][0].get("message") or {}).get("content") or ""
+                                )
+                                response_ids = self.tokenizer.encode(
+                                    response_text, add_special_tokens=False
+                                )
+                                response_json["prompt_token_ids"] = prompt_ids
+                                response_json["response_token_ids"] = [response_ids]
+                        except Exception as _inj_exc:
+                            logger.debug(f"Token ID proxy injection failed: {_inj_exc}")
+
                     replaced_return_content = json.dumps(response_json).encode("utf-8")
                     return Response(replaced_return_content, status=resp.status_code, headers=response_headers)
                 return Response(resp.content, resp.status_code, response_headers)
@@ -562,18 +591,32 @@ class AgentModeDaemon:
 
         sample_stat_list = []
         for rollout_id, rollout in self._completed_rollouts.items():
-            if not rollout.triplets:
-                continue
-            response_length_list = [len(triplet.response.get("token_ids", [])) for triplet in rollout.triplets]
             final_reward = self._fillna_reward(rollout)
-            sample_stat_list.append(
-                {
+            if rollout.triplets:
+                response_length_list = [len(triplet.response.get("token_ids", [])) for triplet in rollout.triplets]
+                sample_stat_list.append({
                     "sum_response_length": np.sum(response_length_list),
                     "mean_response_length": np.mean(response_length_list) if response_length_list else 0,
                     "turn_count": len(rollout.triplets),
                     "reward": final_reward,
-                }
-            )
+                })
+            else:
+                # No triplets yet (e.g. first run before proxy injection is active),
+                # but reward is still valid — include it so val/reward is never NaN.
+                sample_stat_list.append({
+                    "sum_response_length": 0,
+                    "mean_response_length": 0,
+                    "turn_count": 0,
+                    "reward": final_reward,
+                })
+
+        if not sample_stat_list:
+            return {
+                "val/reward": 0.0,
+                "val/mean_response_length": 0.0,
+                "val/sum_response_length": 0.0,
+                "val/turn_count": 0.0,
+            }
 
         return {
             "val/reward": np.mean([stat["reward"] for stat in sample_stat_list]),

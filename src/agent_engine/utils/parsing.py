@@ -147,6 +147,29 @@ def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _extract_balanced_boxed(text: str) -> Optional[str]:
+    """Extract the last \\boxed{...} in text with proper nested-brace balancing.
+
+    The simple regex [^}]+ fails on nested braces like \\boxed{\\frac{2}{3}}.
+    This walks the string character-by-character to find the matching closing brace.
+    Returns the last match so multi-step solutions with intermediate \\boxed{} calls
+    don't shadow the final answer.
+    """
+    results = []
+    for m in re.finditer(r'\\+boxed\{', text):
+        depth = 1
+        i = m.end()
+        while i < len(text) and depth > 0:
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+            i += 1
+        if depth == 0:
+            results.append(text[m.end():i - 1].strip())
+    return results[-1] if results else None
+
+
 def extract_answer(text: str) -> Optional[str]:
     """Extract the final answer from model output.
 
@@ -167,10 +190,9 @@ def extract_answer(text: str) -> Optional[str]:
         return None
     text = strip_thinking_tags(text)
 
-    boxed_pattern = r'\\+boxed\{([^}]+)\}'
-    match = re.search(boxed_pattern, text, re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
+    boxed_content = _extract_balanced_boxed(text)
+    if boxed_content is not None:
+        return boxed_content
 
     pattern1 = r'Final Answer:\s*(.+?)(?:\n|$)'
     match = re.search(pattern1, text, re.IGNORECASE)

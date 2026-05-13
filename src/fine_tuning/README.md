@@ -184,6 +184,92 @@ truncation is likely. Fix: increase `data.max_response_length` to `8192` in
 
 ---
 
+## Checkpoint Layout
+
+VERL writes checkpoints to:
+```
+checkpoints/<PROJECT_NAME>/<EXPERIMENT_NAME>/
+```
+For the smoke run that is `checkpoints/cosmas-rl-finetuning-smoke/qwen3-4b-grpo-smoke/`.
+
+```
+checkpoints/cosmas-rl-finetuning-smoke/qwen3-4b-grpo-smoke/
+│
+├── latest_checkpointed_iteration.txt   # Contains the last saved global step number (e.g. "1").
+│                                       # Used by VERL to find the latest checkpoint when resuming.
+│
+└── global_step_<N>/                    # One directory per saved step (save_freq: 1 → every step).
+    │
+    ├── data.pt                         # Dataloader state dict (StatefulDataLoader).
+    │                                   # Stores the RNG state + sampler position so training can
+    │                                   # resume mid-epoch without re-seeing the same batches.
+    │
+    └── actor/                          # Actor (policy) checkpoint — the model being trained.
+        │                               # No critic/ directory: GRPO has no value network.
+        │
+        ├── model_world_size_1_rank_0.pt    # Full FSDP model state dict for rank 0 (~17 GB for Qwen3-4B).
+        │                                   # Contains all trainable parameters (full weights when
+        │                                   # USE_LORA=false; LoRA adapter + frozen base when true).
+        │                                   # world_size and rank are part of the filename so multi-GPU
+        │                                   # runs shard across multiple files (e.g. _rank_0, _rank_1…).
+        │
+        ├── optim_world_size_1_rank_0.pt    # Adam optimizer state for rank 0 (~30 GB — first & second
+        │                                   # moment estimates, one tensor pair per parameter).
+        │                                   # Required to resume training with identical behaviour.
+        │                                   # Can be deleted if you only need inference.
+        │
+        ├── extra_state_world_size_1_rank_0.pt  # LR scheduler state + RNG state (~15 KB).
+        │                                       # Needed for exact learning-rate resume.
+        │
+        ├── fsdp_config.json            # FSDP metadata: FSDP_version and world_size.
+        │                               # Used by the checkpoint loader to validate shard count.
+        │
+        └── huggingface/                # HF-format tokenizer (always saved, even without hf_model).
+            ├── config.json             # Model architecture config (vocab size, hidden dims, etc.)
+            ├── generation_config.json  # Default generation parameters (temperature, top_p…)
+            ├── tokenizer.json          # Fast tokenizer vocabulary + merge rules
+            ├── tokenizer_config.json   # Tokenizer metadata (chat template path, special tokens…)
+            ├── chat_template.jinja     # Qwen3 chat template (used by apply_chat_template)
+            ├── vocab.json              # BPE vocabulary mapping token → id
+            ├── merges.txt              # BPE merge rules
+            ├── added_tokens.json       # Special tokens added on top of the base vocab
+            └── special_tokens_map.json # Maps special token names (bos, eos…) to their strings
+```
+
+### What to keep vs. discard
+
+| File | Keep for inference | Keep for resuming training |
+|---|---|---|
+| `model_world_size_*_rank_*.pt` | Yes | Yes |
+| `optim_world_size_*_rank_*.pt` | No (large) | Yes |
+| `extra_state_*_rank_*.pt` | No | Yes |
+| `fsdp_config.json` | No | Yes |
+| `huggingface/` | Yes (tokenizer) | Yes |
+| `data.pt` | No | Yes |
+| `latest_checkpointed_iteration.txt` | No | Yes |
+
+### Resuming training
+
+Set `trainer.resume_from_path` in the config to `global_step_<N>`, or leave it unset and VERL will
+auto-resume from the step in `latest_checkpointed_iteration.txt`.
+
+### Converting to a usable model (LoRA runs)
+
+When `USE_LORA=true`, `model_world_size_1_rank_0.pt` contains only the LoRA adapter deltas — the
+frozen base weights are not stored. Merge before inference:
+
+```bash
+python $HOME/azywot/AgentFlow/util/model_merger.py \
+    --base_model Qwen/Qwen3-8B \
+    --lora_path checkpoints/cosmas-rl-finetuning-smoke/qwen3-4b-grpo-smoke/global_step_<N>/actor/model_world_size_1_rank_0.pt \
+    --output_dir experiments/results/training/<run>/merged_model/
+```
+
+When `USE_LORA=false` (current smoke config), `model_world_size_1_rank_0.pt` is the full model and
+can be loaded directly with `from_pretrained`.
+
+---
+
 ## Environment Variables Required at Runtime
 
 | Variable | Where to set |

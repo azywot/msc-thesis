@@ -19,6 +19,26 @@ from .tracer import TripletExporter
 logger = logging.getLogger(__name__)
 
 
+def _fmt_rollout(rollout: Optional["Rollout"]) -> str:
+    """Format a Rollout for debug logging with readable response text."""
+    if rollout is None:
+        return "None"
+    parts = [f"rollout_id={rollout.rollout_id!r}", f"final_reward={rollout.final_reward}"]
+    if rollout.triplets:
+        summaries = []
+        for i, t in enumerate(rollout.triplets):
+            p_len = len(t.prompt.get("token_ids", []))
+            text = t.response.get("text", "")
+            preview = (text[:120] + "…") if len(text) > 120 else text
+            summaries.append(
+                f"  turn {i}: prompt=<{p_len} tokens>  response={preview!r}  reward={t.reward}"
+            )
+        parts.append("triplets=[\n" + "\n".join(summaries) + "\n]")
+    else:
+        parts.append("triplets=None")
+    return f"Rollout({', '.join(parts)})"
+
+
 class AgentRunner(ParallelWorkerBase):
     """Manages the agent's execution loop and integrates with AgentOps.
 
@@ -234,7 +254,7 @@ class AgentRunner(ParallelWorkerBase):
         except Exception:
             logger.exception(f"{self._log_prefix(rollout_id)} Exception during rollout.")
         finally:
-            print(f"[DEBUG] Posting rollout: {rollout_obj}")
+            print(f"[DEBUG] Posting rollout: {_fmt_rollout(rollout_obj)}")
             response = await self.client.post_rollout_async(rollout_obj)
             print(f"[DEBUG] Post rollout response: {response}")
 

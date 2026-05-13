@@ -14,10 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from filelock import FileLock
-
 from fine_tuning.agentflow import LitAgent, reward
-from fine_tuning.agentflow.types import NamedResources
+from fine_tuning.agentflow.types import NamedResources, Rollout, Triplet
 
 from agent_engine.core.orchestrator import AgenticOrchestrator
 from agent_engine.core.tool import ToolRegistry
@@ -86,11 +84,13 @@ def _build_tool_registry(subagent_endpoint: str, subagent_model: str) -> ToolReg
     subagent_provider = OpenAIProvider(subagent_config, api_key="EMPTY", base_url=subagent_endpoint)
 
     registry = ToolRegistry()
+    max_search_content_chars = int(os.environ.get("MAX_SEARCH_CONTENT_CHARS", 14000))
     registry.register(WebSearchTool(
         api_key=api_key,
         provider=search_provider,
         top_k=5,
         model_provider=subagent_provider,
+        max_search_content_chars=max_search_content_chars,
     ))
     registry.register(CodeGeneratorTool(model_provider=subagent_provider))
     return registry
@@ -139,6 +139,33 @@ def _build_rollout_question(question_text: str) -> str:
     same user-question surface.
     """
     return question_text
+
+
+class _CapturingProvider:
+    """Wraps an OpenAIProvider to record (prompt_ids, response_ids) per generate() call.
+
+    Delegates all attribute access to the underlying provider so the orchestrator
+    can use it as a drop-in replacement. The token IDs are available in
+    `captured_turns` after the episode finishes, one entry per LLM call.
+    """
+
+    def __init__(self, provider: OpenAIProvider) -> None:
+        object.__setattr__(self, "_provider", provider)
+        object.__setattr__(self, "captured_turns", [])
+
+    def __getattr__(self, name: str):
+        return getattr(object.__getattribute__(self, "_provider"), name)
+
+    def generate(self, prompts: list) -> list:
+        results = object.__getattribute__(self, "_provider").generate(prompts)
+        turns = object.__getattribute__(self, "captured_turns")
+        for result in results:
+            turns.append({
+                "prompt_ids": list(result.prompt_token_ids) if result.prompt_token_ids else [],
+                "response_ids": list(result.response_token_ids) if result.response_token_ids else [],
+                "response_text": result.text or "",
+            })
+        return results
 
 
 class OrchestratorRollout(LitAgent):
@@ -203,14 +230,16 @@ class OrchestratorRollout(LitAgent):
         temperature: float,
         endpoint: str,
         val: bool,
-    ) -> float:
+    ) -> Rollout:
         question_text, ground_truth, data_source, idx = _get_task_metadata(task)
         prompt = _build_rollout_question(question_text)
 
         answer = "None"
         output_messages: list = []
+        capturing_provider: Optional[_CapturingProvider] = None
         try:
-            provider = self._build_provider(endpoint, temperature)
+            base_provider = self._build_provider(endpoint, temperature)
+            capturing_provider = _CapturingProvider(base_provider)
             tool_registry = self._get_or_build_tools()
             system_prompt = self._prompt_builder.build_system_prompt(
                 dataset_name=_prompt_dataset_for_data_source(data_source),
@@ -218,7 +247,7 @@ class OrchestratorRollout(LitAgent):
                 direct_tool_call=False,
             )
             orchestrator = AgenticOrchestrator(
-                model_provider=provider,
+                model_provider=capturing_provider,
                 tool_registry=tool_registry,
                 max_turns=self.max_turns,
                 use_thinking=self.use_thinking,
@@ -251,7 +280,28 @@ class OrchestratorRollout(LitAgent):
             output_messages=output_messages,
             val=val,
         )
-        return reward_value
+
+        # Build triplets from captured LLM turns (one per generate() call).
+        # The VERL proxy injects prompt/response token IDs into vLLM responses;
+        # _CapturingProvider records them here.  Assign reward to the last turn.
+        triplets: Optional[list] = None
+        if capturing_provider is not None:
+            turns = capturing_provider.captured_turns
+            if turns:
+                triplets = [
+                    Triplet(
+                        prompt={"token_ids": t["prompt_ids"]},
+                        response={"token_ids": t["response_ids"], "text": t.get("response_text", "")},
+                        reward=reward_value if i == len(turns) - 1 else None,
+                    )
+                    for i, t in enumerate(turns)
+                ]
+
+        return Rollout(
+            rollout_id=rollout_id,
+            final_reward=reward_value,
+            triplets=triplets,
+        )
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
@@ -293,13 +343,6 @@ class OrchestratorRollout(LitAgent):
         split = "val" if val else "train"
         save_dir = self.rollout_dir / split / f"idx_{idx}"
         save_dir.mkdir(parents=True, exist_ok=True)
-
-        lock_path = self.rollout_dir / f".{split}.lock"
-        with FileLock(str(lock_path), timeout=30):
-            existing = sum(1 for _ in save_dir.glob("rollout_*.json"))
-            assert existing < self.rollout_n, (
-                f"Too many rollouts for idx {idx}: {existing} >= {self.rollout_n}"
-            )
 
         record = {
             "idx": idx,

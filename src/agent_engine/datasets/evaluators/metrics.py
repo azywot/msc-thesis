@@ -31,6 +31,10 @@ def normalize_answer(answer: str) -> str:
     answer = answer.lower()
     answer = answer.translate(str.maketrans("", "", string.punctuation))
     answer = re.sub(r"\b(a|an|the)\b", " ", answer)
+    # Canonicalize boolean synonyms as whole words so "true"/"yes" and "false"/"no"
+    # compare equal whether standalone or embedded ("the answer is true" == "the answer is yes").
+    answer = re.sub(r"\btrue\b", "yes", answer)
+    answer = re.sub(r"\bfalse\b", "no", answer)
     return " ".join(answer.split()).strip()
 
 
@@ -83,7 +87,13 @@ def normalized_match(prediction: str, ground_truth: str) -> bool:
 
 
 def contains_match(prediction: str, ground_truth: str) -> bool:
-    return normalize_answer(ground_truth) in normalize_answer(prediction)
+    pred_norm = normalize_answer(prediction)
+    gt_norm = normalize_answer(ground_truth)
+    if gt_norm in pred_norm:
+        return True
+    gt_no_initials = " ".join(t for t in gt_norm.split() if len(t) > 1)
+    pred_no_initials = " ".join(t for t in pred_norm.split() if len(t) > 1)
+    return bool(gt_no_initials) and gt_no_initials in pred_no_initials
 
 
 def token_f1(prediction: str, ground_truth: str) -> float:

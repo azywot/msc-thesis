@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -69,7 +70,10 @@ def main():
     subagent_endpoint = str(env.get("SUBAGENT_ENDPOINT", os.environ.get("SUBAGENT_ENDPOINT", "")))
     subagent_model = str(env.get("SUBAGENT_MODEL", os.environ.get("SUBAGENT_MODEL", "Qwen/Qwen3-1.7B")))
     experiment_name = str(env.get("EXPERIMENT_NAME", "cosmas-train"))
-    output_dir = Path("experiments/results/training") / experiment_name
+    date_str = datetime.now().strftime("%d-%m-%Y_%H-%M")
+    job_id = os.environ.get("SLURM_JOB_ID", "local")
+    run_subdir = f"{date_str}-{job_id}"
+    output_dir = Path("experiments/results/training") / experiment_name / run_subdir
 
     # ── 3. Validate sub-agent endpoint ──────────────────────────────────────
     if not subagent_endpoint:

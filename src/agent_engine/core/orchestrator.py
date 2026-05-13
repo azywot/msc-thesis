@@ -214,7 +214,24 @@ class AgenticOrchestrator:
         if not state.finished:
             logger.warning(f"Max turns ({self.max_turns}) reached without finishing")
             state.metadata["max_turns_reached"] = True
-            state.answer = extract_answer(state.current_output)
+            # The last turn ended with a tool call, so current_output has no answer.
+            try:
+                nudge_msgs = (
+                    state.messages if self.baseline else self._build_memory_prompt(state, system_prompt)
+                ) + [{"role": "user", "content": "You have used all available tool calls. Based on the information gathered so far, provide your final answer now."}]
+                synth_prompt = self.model.apply_chat_template(
+                    nudge_msgs,
+                    use_thinking=self.use_thinking,
+                )
+                synth_result = self.model.generate([synth_prompt])[0]
+                state.current_output = synth_result.text
+                _accumulate_usage(state, synth_result.usage)
+                state.answer = extract_answer(synth_result.text)
+                state.output_messages.append({"role": "assistant", "content": synth_result.text})
+                logger.info(f"Synthesis turn answer: {state.answer}")
+            except Exception as e:
+                logger.exception("Synthesis generation error")
+                state.answer = extract_answer(state.current_output)
 
         return state
 
@@ -277,12 +294,34 @@ class AgenticOrchestrator:
                 break
             self._process_batch_turn(active)
 
-        for s in states:
-            if not s.finished:
-                logger.warning(f"Max turns ({self.max_turns}) reached for question {s.question_id}")
-                s.metadata["max_turns_reached"] = True
-                s.answer = extract_answer(s.current_output)
-                s.finished = True
+        unfinished = [s for s in states if not s.finished]
+        if unfinished:
+            system_prompt = unfinished[0].messages[0]["content"]
+            nudge_prompts = [
+                self.model.apply_chat_template(
+                    (s.messages if self.baseline else self._build_memory_prompt(s, system_prompt))
+                    + [{"role": "user", "content": "You have used all available tool calls. Based on the information gathered so far, provide your final answer now."}],
+                    use_thinking=self.use_thinking,
+                )
+                for s in unfinished
+            ]
+            try:
+                synth_results = self.model.generate(nudge_prompts)
+                for s, synth_result in zip(unfinished, synth_results):
+                    logger.warning(f"Max turns ({self.max_turns}) reached for question {s.question_id}")
+                    s.metadata["max_turns_reached"] = True
+                    s.current_output = synth_result.text
+                    _accumulate_usage(s, synth_result.usage)
+                    s.answer = extract_answer(synth_result.text)
+                    s.output_messages.append({"role": "assistant", "content": synth_result.text})
+                    s.finished = True
+                    logger.info(f"Q{s.question_id} synthesis answer: {s.answer}")
+            except Exception as e:
+                logger.exception("Batch synthesis generation error")
+                for s in unfinished:
+                    s.metadata["max_turns_reached"] = True
+                    s.answer = extract_answer(s.current_output)
+                    s.finished = True
 
         return states
 

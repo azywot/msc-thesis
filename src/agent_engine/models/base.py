@@ -243,12 +243,17 @@ class GenerationResult(BaseModel):
         metadata: Provider-specific extras (e.g. logprobs).
         messages: The input messages that produced this result (optional,
                   used for debugging API provider calls).
+        prompt_token_ids: Token IDs of the prompt (set when the backend returns them,
+                          e.g. the VERL vLLM proxy).  Used to build RL training triplets.
+        response_token_ids: Token IDs of the generated response (same as above).
     """
     text: str
     finish_reason: str
     usage: Dict[str, int] = {}
     metadata: Dict[str, Any] = {}
     messages: Optional[List[Dict[str, Any]]] = None
+    prompt_token_ids: Optional[List[int]] = None
+    response_token_ids: Optional[List[int]] = None
 
 
 class BaseModelProvider(ABC):

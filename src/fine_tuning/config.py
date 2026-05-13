@@ -12,7 +12,8 @@ class FinetuningConfig:
     """All hyperparameters and paths for one fine-tuning run.
 
     Required fields must be supplied; optional fields carry sensible defaults
-    that mirror AgentFlow's train/config.yaml.
+    that mirror AgentFlow's train/config.yaml (full-parameter training, no LoRA).
+    Set use_lora=True to enable PEFT LoRA adapters.
     """
 
     # ── required ────────────────────────────────────────────────────────────
@@ -21,7 +22,8 @@ class FinetuningConfig:
     val_data: str                  # path to validation parquet
     output_dir: str                # checkpoint + config output directory
 
-    # ── LoRA ────────────────────────────────────────────────────────────────
+    # ── LoRA (only used when use_lora=True) ─────────────────────────────────
+    use_lora: bool = False         # default False = full-parameter training (matches AgentFlow)
     lora_rank: int = 64
     lora_alpha: int = 16
     lora_target_modules: str = "all-linear"
@@ -43,9 +45,31 @@ class FinetuningConfig:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "FinetuningConfig":
-        """Load config from a YAML file. Unknown keys are silently ignored."""
+        """Load config from a YAML file.
+
+        Reads flat top-level keys, flattens the nested ``lora:`` section into
+        ``lora_rank``/``lora_alpha``/``lora_target_modules``, and reads
+        ``USE_LORA`` from the ``env:`` section into ``use_lora``.
+        Unknown keys are silently ignored.
+        """
         with open(path, "r") as f:
             data = yaml.safe_load(f) or {}
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         filtered = {k: v for k, v in data.items() if k in known}
+
+        # Flatten nested lora: section → lora_rank, lora_alpha, lora_target_modules
+        lora_section = data.get("lora", {}) or {}
+        if "rank" in lora_section:
+            filtered["lora_rank"] = int(lora_section["rank"])
+        if "alpha" in lora_section:
+            filtered["lora_alpha"] = int(lora_section["alpha"])
+        if "target_modules" in lora_section:
+            filtered["lora_target_modules"] = str(lora_section["target_modules"])
+
+        # Read USE_LORA from env: section
+        env_section = data.get("env", {}) or {}
+        if "USE_LORA" in env_section:
+            val = str(env_section["USE_LORA"]).strip().lower()
+            filtered["use_lora"] = val in ("1", "true", "yes", "on")
+
         return cls(**filtered)

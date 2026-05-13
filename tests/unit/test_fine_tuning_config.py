@@ -52,3 +52,48 @@ def test_from_yaml():
     assert cfg.base_model == "Qwen/Qwen3-8B"
     assert cfg.wandb_project == "cosmas-test"
     assert cfg.lora_rank == 64  # default applied
+
+
+def test_use_lora_default_is_false():
+    cfg = FinetuningConfig(
+        base_model="Qwen/Qwen3-8B",
+        train_data="data/train.parquet",
+        val_data="data/val.parquet",
+        output_dir="/tmp/run",
+    )
+    assert cfg.use_lora is False
+
+
+def test_from_yaml_reads_lora_section():
+    content = {
+        "base_model": "Qwen/Qwen3-8B",
+        "train_data": "data/train.parquet",
+        "val_data": "data/val.parquet",
+        "output_dir": "/tmp/run",
+        "lora": {"rank": 32, "alpha": 8, "target_modules": "q_proj,v_proj"},
+        "env": {"USE_LORA": "true"},
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(content, f)
+        path = f.name
+    cfg = FinetuningConfig.from_yaml(path)
+    assert cfg.use_lora is True
+    assert cfg.lora_rank == 32
+    assert cfg.lora_alpha == 8
+    assert cfg.lora_target_modules == "q_proj,v_proj"
+
+
+def test_from_yaml_use_lora_false_by_default():
+    content = {
+        "base_model": "Qwen/Qwen3-8B",
+        "train_data": "data/train.parquet",
+        "val_data": "data/val.parquet",
+        "output_dir": "/tmp/run",
+        "env": {"USE_LORA": "false"},
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(content, f)
+        path = f.name
+    cfg = FinetuningConfig.from_yaml(path)
+    assert cfg.use_lora is False
+    assert cfg.lora_rank == 64   # default still present for when LoRA is enabled
