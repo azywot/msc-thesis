@@ -8,11 +8,8 @@ installing the full training stack.
 from .config import FinetuningConfig
 from .reward import OrchestratorReward
 
-# OrchestratorRollout requires agentflow — only import when available
+# OrchestratorRollout requires agentflow (vendored) + vllm — only import when available
 try:
-    from ._agentflow_path import ensure_agentflow_litagent_importable
-
-    ensure_agentflow_litagent_importable()
     from .rollout import OrchestratorRollout
     __all__ = ["FinetuningConfig", "OrchestratorReward", "OrchestratorRollout"]
 except ImportError:
