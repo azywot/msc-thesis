@@ -1,7 +1,7 @@
 import ray
 from copy import deepcopy
 
-from agentflow.instrumentation.vllm import instrument_vllm, ChatCompletionResponsePatched
+from fine_tuning.agentflow.instrumentation.vllm import instrument_vllm, ChatCompletionResponsePatched
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from vllm.entrypoints.openai.protocol import ChatCompletionRequest, ErrorResponse

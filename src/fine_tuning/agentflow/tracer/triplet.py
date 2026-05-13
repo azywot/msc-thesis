@@ -6,7 +6,7 @@ from typing import List, Dict, Tuple, Optional, Any
 from pydantic import BaseModel
 from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import ReadableSpan
-from agentflow.types import Triplet
+from fine_tuning.agentflow.types import Triplet
 
 
 class Transition(BaseModel):

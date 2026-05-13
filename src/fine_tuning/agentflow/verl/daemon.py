@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import requests
 import torch
-from agentflow import LLM, AgentFlowServer, NamedResources, Rollout, configure_logger
+from fine_tuning.agentflow import LLM, AgentFlowServer, NamedResources, Rollout, configure_logger
 from flask import Flask, Response, abort, request
 from openai.types.chat.chat_completion import ChatCompletion
 from tensordict import TensorDict

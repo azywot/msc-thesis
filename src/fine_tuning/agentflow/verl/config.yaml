@@ -18,5 +18,5 @@ actor_rollout_ref:
     mode: async
     agent:
       custom_async_server:
-        path: pkg://agentflow.verl.async_server
+        path: pkg://fine_tuning.agentflow.verl.async_server
         name: PatchedvLLMServer

@@ -10,7 +10,7 @@ from verl.trainer.ppo.reward import load_reward_manager
 from verl.trainer.main_ppo import create_rl_sampler
 
 
-@hydra.main(config_path="pkg://agentflow/verl", config_name="config", version_base=None)
+@hydra.main(config_path="pkg://fine_tuning.agentflow/verl", config_name="config", version_base=None)
 def main(config):
     run_ppo(config)
 

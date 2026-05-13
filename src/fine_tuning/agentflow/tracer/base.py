@@ -2,7 +2,7 @@ from contextlib import contextmanager
 from typing import Iterator, List, Optional, Callable, Any, Awaitable
 
 from opentelemetry.sdk.trace import ReadableSpan
-from agentflow.types import ParallelWorkerBase
+from fine_tuning.agentflow.types import ParallelWorkerBase
 
 
 class BaseTracer(ParallelWorkerBase):

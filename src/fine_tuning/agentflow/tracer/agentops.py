@@ -11,8 +11,8 @@ from agentops.sdk.core import TracingCore
 from agentops.sdk.processors import SpanProcessor
 from opentelemetry.sdk.trace import ReadableSpan
 
-from agentflow.instrumentation.agentops import AgentOpsServerManager
-from agentflow.instrumentation import instrument_all, uninstrument_all
+from fine_tuning.agentflow.instrumentation.agentops import AgentOpsServerManager
+from fine_tuning.agentflow.instrumentation import instrument_all, uninstrument_all
 from .base import BaseTracer
 
 
