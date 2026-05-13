@@ -16,12 +16,8 @@ from typing import Any, Optional
 
 from filelock import FileLock
 
-from ._agentflow_path import ensure_agentflow_litagent_importable
-
-ensure_agentflow_litagent_importable()
-
-from agentflow import LitAgent, reward
-from agentflow.types import NamedResources
+from fine_tuning.agentflow import LitAgent, reward
+from fine_tuning.agentflow.types import NamedResources
 
 from agent_engine.core.orchestrator import AgenticOrchestrator
 from agent_engine.core.tool import ToolRegistry
