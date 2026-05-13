@@ -6,8 +6,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --time=02:00:00
-#SBATCH --output=out/fine_tuning/smoke_test/smoke_%A.log
-#SBATCH --error=out/fine_tuning/smoke_test/smoke_%A.err
+#SBATCH --output=out/fine_tuning/smoke_%A.log
+#SBATCH --error=out/fine_tuning/smoke_%A.err
 
 # Smoke-test the fine-tuning pipeline end-to-end:
 #   1. Pre-flight checks (no GPU): imports, reward, config, parquet schema
@@ -64,32 +64,20 @@ fi
 
 source activate cosmas-train
 export PYTHONNOUSERSITE=1
-normalize_agentflow_pythonpath "$AGENTFLOW_ROOT"
-
-if [[ ! -d "$AGENTFLOW_ROOT/agentflow" ]]; then
-    echo "AgentFlow clone not found at $AGENTFLOW_ROOT; cloning..."
-    if [[ -e "$AGENTFLOW_ROOT" ]]; then
-        echo "ERROR: $AGENTFLOW_ROOT exists but does not contain an agentflow/ package."
-        exit 1
-    fi
-    git clone "$AGENTFLOW_REPO" "$AGENTFLOW_ROOT"
-fi
 
 case "${SKIP_PIP_SETUP:-}" in
     1|true|TRUE|yes|YES)
         echo "SKIP_PIP_SETUP is set — skipping pip install + reconcile (reuse current cosmas-train)."
         ;;
     *)
-        echo "Installing AgentFlow and msc-thesis packages..."
-        python -m pip install --no-deps -e "$AGENTFLOW_ROOT/agentflow"
+        echo "Installing msc-thesis package..."
         python -m pip install -e .
         bash jobs/cosmas_train_pip_reconcile.sh
         ;;
 esac
-normalize_agentflow_pythonpath "$AGENTFLOW_ROOT"
-python -c "import agentflow, agent_engine, fine_tuning, verl, vllm; from agentflow import LitAgent, Trainer, reward; print(f'Training imports OK: agentflow={agentflow.__file__}')"
+python -c "import agent_engine, fine_tuning, verl, vllm; from fine_tuning.agentflow import LitAgent, Trainer, reward; print('Training imports OK')"
 
-mkdir -p out/fine_tuning/smoke_test
+mkdir -p out/fine_tuning
 
 for required_file in \
     data/training/smoke/train/combined_train.parquet \
@@ -139,14 +127,14 @@ VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
     --tensor-parallel-size 1 \
     --gpu-memory-utilization 0.40 \
     --max-model-len 8192 \
-    > out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
+    > out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
 SUBAGENT_PID=$!
 export SUBAGENT_ENDPOINT="http://localhost:9998/v1"
 
 echo "Waiting 60s for sub-agent vLLM to be ready..."
 sleep 60
 if ! kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
-    echo "FAIL — sub-agent server exited during startup. See out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_subagent.log"
+    echo "FAIL — sub-agent server exited during startup. See out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_subagent.log"
     wait "$SUBAGENT_PID"
 fi
 
@@ -159,13 +147,13 @@ export PYTHONUNBUFFERED=1
 echo ""
 echo "Starting VERL server (config_smoke.yaml)..."
 python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml \
-    > out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_verl.log 2>&1 &
+    > out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_verl.log 2>&1 &
 VERL_PID=$!
 
 echo "Waiting up to 3 min for Ray + worker bootstrap; N_GPUS=1 + FSDP + colocated vLLM can take 15–25 min before AgentFlow answers /task."
 sleep 180
 if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
-    echo "FAIL — VERL server exited during startup. See out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_verl.log"
+    echo "FAIL — VERL server exited during startup. See out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_verl.log"
     wait "$VERL_PID"
 fi
 
@@ -179,7 +167,7 @@ while (( SECONDS < _deadline )); do
         break
     fi
     if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
-        echo "FAIL — VERL exited before AgentFlow came up. See out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_verl.log"
+        echo "FAIL — VERL exited before AgentFlow came up. See out/fine_tuning/smoke_${SLURM_JOB_ID:-local}_verl.log"
         wait "$VERL_PID" || true
         exit 1
     fi
