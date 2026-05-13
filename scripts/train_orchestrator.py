@@ -30,7 +30,6 @@ import yaml
 # Add src to path (matches run_experiment.py convention)
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from fine_tuning._agentflow_path import ensure_agentflow_litagent_importable
 
 
 def _get_git_hash() -> str:
@@ -98,10 +97,8 @@ def main():
         f"subagent_endpoint={subagent_endpoint}"
     )
 
-    ensure_agentflow_litagent_importable()
-
     # ── 6. Build NullTracer ─────────────────────────────────────────────────
-    from agentflow.tracer.base import BaseTracer
+    from fine_tuning.agentflow.tracer.base import BaseTracer
 
     class NullTracer(BaseTracer):
         """No-op tracer — avoids AgentOps dependency."""
@@ -119,7 +116,7 @@ def main():
 
     # ── 7. Instantiate rollout agent ────────────────────────────────────────
     from fine_tuning.rollout import OrchestratorRollout
-    from agentflow import Trainer
+    from fine_tuning.agentflow import Trainer
 
     rollout_dir = str(output_dir / "rollout_data")
     agent = OrchestratorRollout(
