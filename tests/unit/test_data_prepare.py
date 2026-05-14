@@ -214,3 +214,56 @@ class TestValidateSchema:
         df = pd.DataFrame([{"data_source": "nq", "question": "Q?", "result": "A"}])
         with pytest.raises(ValueError, match="Missing columns"):
             validate_parquet_schema(df)
+
+
+class TestDownloadAimeVal:
+    """Tests for _download_aime_val — HF calls are mocked."""
+
+    def _fake_rows(self, n):
+        return [{"problem": f"Problem {i}", "answer": str(i)} for i in range(n)]
+
+    def test_returns_correct_count_and_sources(self):
+        from unittest.mock import patch
+        from fine_tuning.data.prepare import _download_aime_val
+
+        fake = self._fake_rows(30)
+        with patch("fine_tuning.data.prepare._load_dataset_for_aime", return_value=fake):
+            rows = _download_aime_val(n_2024=10, n_2025=10, seed=42)
+
+        assert len(rows) == 20
+        assert sum(1 for r in rows if r["data_source"] == "aime_2024") == 10
+        assert sum(1 for r in rows if r["data_source"] == "aime_2025") == 10
+
+    def test_raises_if_not_enough_rows(self):
+        from unittest.mock import patch
+        from fine_tuning.data.prepare import _download_aime_val
+
+        fake = self._fake_rows(5)  # only 5 available, need 10
+        with patch("fine_tuning.data.prepare._load_dataset_for_aime", return_value=fake):
+            with pytest.raises(RuntimeError, match="only 5 rows available"):
+                _download_aime_val(n_2024=10, n_2025=10, seed=42)
+
+    def test_zero_n_skips_that_year(self):
+        from unittest.mock import patch, call
+        from fine_tuning.data.prepare import _download_aime_val
+
+        fake = self._fake_rows(30)
+        with patch("fine_tuning.data.prepare._load_dataset_for_aime", return_value=fake) as mock_load:
+            rows = _download_aime_val(n_2024=0, n_2025=10, seed=42)
+
+        assert len(rows) == 10
+        assert all(r["data_source"] == "aime_2025" for r in rows)
+        assert mock_load.call_count == 1  # only called for 2025
+
+    def test_indices_are_per_year(self):
+        from unittest.mock import patch
+        from fine_tuning.data.prepare import _download_aime_val
+
+        fake = self._fake_rows(30)
+        with patch("fine_tuning.data.prepare._load_dataset_for_aime", return_value=fake):
+            rows = _download_aime_val(n_2024=3, n_2025=3, seed=42)
+
+        rows_2024 = [r for r in rows if r["data_source"] == "aime_2024"]
+        rows_2025 = [r for r in rows if r["data_source"] == "aime_2025"]
+        assert [r["extra_info"]["idx"] for r in rows_2024] == [0, 1, 2]
+        assert [r["extra_info"]["idx"] for r in rows_2025] == [0, 1, 2]
