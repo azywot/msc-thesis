@@ -71,16 +71,23 @@ python_args:
   actor_rollout_ref.actor.clip_ratio_low: 0.2
   actor_rollout_ref.actor.clip_ratio_high: 0.3
   # N_GPUS=1 → optimizer is NOT sharded: 4B × 12 bytes (fp32 Adam) = 32 GB if kept on GPU.
-  # Offload both optimizer and ref to CPU; actor stays on GPU for the backward pass.
-  # (config.yaml uses param_offload=false because N_GPUS=4 shards optimizer to ~8 GB/GPU.)
-  actor_rollout_ref.actor.fsdp_config.param_offload: false
+  # param_offload=True for smoke test: during the training rollout, vLLM AND the FSDP actor
+  # params would both be on GPU (42.3 GB + 8 GB = 50.3 GB) causing a CUDA illegal memory access
+  # in the vLLM kernels (reported asynchronously at the next sync, i.e. compute_log_prob).
+  # Offloading actor params to CPU removes the 8 GB duplication during the rollout phase.
+  # (config.yaml uses param_offload=false because N_GPUS=4 shards the model to ~2 GB/GPU.)
+  actor_rollout_ref.actor.fsdp_config.param_offload: true
   actor_rollout_ref.actor.fsdp_config.optimizer_offload: true
   actor_rollout_ref.ref.fsdp_config.param_offload: true
   actor_rollout_ref.rollout.name: 'vllm'
-  # H100 94 GB: util=0.55 → 51.7 GB vLLM budget (8 GB Qwen3-4B model + 43.7 GB KV).
-  # Non-vLLM (actor 8 GB + grads 8 GB + ref offloaded + misc 2 GB) = 18 GB; total = 70.2 GB < 94 GB.
-  # Optimizer offloaded to CPU (32 GB for 4B model, N_GPUS=1, not sharded) — still too large for GPU.
-  actor_rollout_ref.rollout.gpu_memory_utilization: 0.55
+  # H100 94 GB: util=0.45 → 42.3 GB vLLM budget (8 GB Qwen3-4B model + 34.3 GB KV).
+  # Reduced from 0.55 to avoid GPU memory fragmentation before compute_log_prob.
+  # free_cache_engine=True destroys the vLLM KV-cache engine on each sleep() so the
+  # FSDP actor gets a clean, unfragmented memory state before compute_log_prob runs.
+  # Without this, the async rollout leaves fragmented CUDA memory that causes an
+  # "illegal memory access" when TensorDict's _to_consolidated does a non_blocking GPU copy.
+  actor_rollout_ref.rollout.free_cache_engine: true
+  actor_rollout_ref.rollout.gpu_memory_utilization: 0.45
   actor_rollout_ref.rollout.max_model_len: 6144
   # max_num_batched_tokens must be >= max_model_len so a single full-length sequence can be processed.
   actor_rollout_ref.rollout.max_num_batched_tokens: 6144
