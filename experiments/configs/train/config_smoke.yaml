@@ -42,6 +42,7 @@ env:
   VERBOSITY: 'INFO'
   USE_LORA: "false"
   USE_SCRATCH_CHECKPOINTS: "false"
+  SAVE_OPTIMIZER: "false"
 
 python_args:
   agentflow.port: 9999

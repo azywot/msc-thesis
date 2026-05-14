@@ -14,9 +14,10 @@
 # SLURM: jobs/010 requests 4 H100 NVL GPUs (~94 GB each).
 #   GPU 0: frozen sub-agent at util=0.08 (~7.5 GB) — low enough to share with VERL on the same card.
 #   GPUs 0–3: VERL (N_GPUS: 4, CUDA_VISIBLE_DEVICES=0,1,2,3).
-# Memory per VERL GPU at util=0.45: actor shard 4 GB + optimizer 24 GB + grads 4 GB +
-#   ref 4 GB + vLLM engine 42.3 GB (16 GB model + 26.3 GB KV) + misc 3 GB = 81.3 GB.
-# GPU 0 total including sub-agent: 88.8 GB / 94 GB (5.2 GB headroom for activations).
+# Memory per VERL GPU at util=0.45 (rollout-phase peak, grads freed from previous step):
+#   actor shard 4 GB + optimizer 24 GB + ref shard 4 GB + vLLM 42.3 GB (16 GB model + 26.3 GB KV) + misc 3 GB = 77.3 GB.
+# GPU 0 also hosts sub-agent at util=0.08 (~7.5 GB) → 84.8 GB / 94 GB (9.2 GB headroom).
+# During actor update (after vLLM sleep frees KV, model stays at 16 GB): 16+4+24+4+4+4+3 = 55 GB per GPU.
 # ROLLOUT_TP_SIZE is 1; N_GPUS=4 is valid (TP=2 also works with 4 GPUs but adds overhead).
 
 env:
@@ -37,6 +38,7 @@ env:
   VERBOSITY: 'INFO'
   USE_LORA: "false"
   USE_SCRATCH_CHECKPOINTS: "true"
+  SAVE_OPTIMIZER: "false"
 
 python_args:
   agentflow.port: 9999
@@ -72,8 +74,7 @@ python_args:
   actor_rollout_ref.ref.fsdp_config.param_offload: false
   actor_rollout_ref.rollout.name: 'vllm'
   # util=0.45 on H100 94 GB = 42.3 GB vLLM budget per GPU (16 GB model + 26.3 GB KV cache).
-  # Budget verified: non-vLLM peak ~39 GB + vLLM 42.3 GB = 81.3 GB < 94 GB (GPUs 1–3);
-  # GPU 0 also hosts sub-agent at util=0.08 → 88.8 GB total, 5.2 GB activation headroom.
+  # Full budget breakdown is in the file header comment above.
   actor_rollout_ref.rollout.gpu_memory_utilization: 0.45
   # Cap vLLM context to actual training sequence length (max_prompt + max_response = 22528).
   # Without this, vLLM defaults to Qwen3-8B's native 40960-token context, consuming far more
@@ -85,9 +86,11 @@ python_args:
   trainer.logger: ['console', 'wandb']
   trainer.project_name: '${PROJECT_NAME}'
   trainer.experiment_name: '${EXPERIMENT_NAME}'
-  trainer.save_freq: 1
+  # save_freq=56: one checkpoint per epoch (floor(1800/32)=56 steps/epoch × 5 epochs = 280 total steps).
+  # save_freq=1 would create 280 × ~47 GB ≈ 13 TB of checkpoints; "checkpoint every epoch" is the intent.
+  trainer.save_freq: 56
   trainer.test_freq: 1
-  # true: post-epoch val; false: every test_freq steps.
+  # true: post-epoch val (lines 497-507 in trainer.py, outside inner loop); false: every test_freq steps.
   trainer.val_every_epoch: true
   trainer.total_epochs: 5
   trainer.val_before_train: true
