@@ -437,6 +437,7 @@ class AgentFlowTrainer(RayPPOTrainer):
         # we start from step 1
         self.global_steps += 1
         last_val_metrics = None
+        val_every_epoch = bool(self.config.trainer.get("val_every_epoch", False))
 
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
@@ -447,12 +448,17 @@ class AgentFlowTrainer(RayPPOTrainer):
                 # train step
                 metrics = self._train_step(batch_dict)
 
-                # validate
-                if (
-                    self.val_reward_fn is not None
-                    and self.config.trainer.test_freq > 0
-                    and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
-                ):
+                # In-loop validation: every test_freq steps (default), or only when stopping mid-epoch
+                # (is_last_step) if val_every_epoch — full epochs are validated in the block below.
+                run_val = False
+                if self.val_reward_fn is not None:
+                    if val_every_epoch:
+                        run_val = is_last_step
+                    else:
+                        run_val = self.config.trainer.test_freq > 0 and (
+                            is_last_step or self.global_steps % self.config.trainer.test_freq == 0
+                        )
+                if run_val:
                     with _timer("validate", timing_raw):
                         val_metrics: dict = self._validate()
                         if is_last_step:
@@ -487,3 +493,15 @@ class AgentFlowTrainer(RayPPOTrainer):
 
                 progress_bar.update(1)
                 self.global_steps += 1
+
+            # val_every_epoch: one validation pass after all batches in this epoch (inner loop above).
+            # Separate logger.log so val metrics are recorded without merging into the last step's train metrics.
+            if val_every_epoch and self.val_reward_fn is not None:
+                timing_raw_epoch = {}
+                with _timer("validate", timing_raw_epoch):
+                    val_metrics = self._validate()
+                    last_val_metrics = val_metrics
+                epoch_val_log = dict(val_metrics)
+                epoch_val_log["training/global_step"] = self.global_steps
+                epoch_val_log["training/epoch"] = epoch
+                logger.log(data=epoch_val_log, step=self.global_steps)

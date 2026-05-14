@@ -356,6 +356,7 @@ class OrchestratorRollout(LitAgent):
             "output_messages": output_messages,
             "timestamp": datetime.now().isoformat(),
         }
-        out = save_dir / f"rollout_{uuid.uuid4().hex[:8]}.json"
+        idx_prefix = len(list(save_dir.glob("*.json")))
+        out = save_dir / f"{idx_prefix}_rollout_{uuid.uuid4().hex[:8]}.json"
         with open(out, "w") as f:
             json.dump(record, f, indent=2, default=str)

@@ -52,7 +52,7 @@ python_args:
     - '${BASE_DATA_DIR}/val/val_search.parquet'
     - '${BASE_DATA_DIR}/val/val_deepmath.parquet'
   data.train_batch_size: 4
-  data.train_max_samples: 12
+  data.train_max_samples: 8
   data.max_prompt_length: 4096
   data.max_response_length: 2048
   data.truncation: 'truncate'
@@ -91,6 +91,8 @@ python_args:
   trainer.experiment_name: '${EXPERIMENT_NAME}'
   trainer.save_freq: 1
   trainer.test_freq: 1
+  # true: post-epoch val; false: every test_freq steps.
+  trainer.val_every_epoch: true
   trainer.total_epochs: 1
   trainer.val_before_train: true
   trainer.critic_warmup: 0

@@ -87,6 +87,8 @@ python_args:
   trainer.experiment_name: '${EXPERIMENT_NAME}'
   trainer.save_freq: 1
   trainer.test_freq: 1
+  # true: post-epoch val; false: every test_freq steps.
+  trainer.val_every_epoch: true
   trainer.total_epochs: 5
   trainer.val_before_train: true
   trainer.critic_warmup: 0
