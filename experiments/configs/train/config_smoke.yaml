@@ -1,0 +1,112 @@
+# experiments/configs/train/config_smoke.yaml
+# Minimal smoke-test config — verifies the full VERL pipeline end-to-end on real hardware
+# (16 training samples, 2 rollouts, 1 epoch).
+#
+# Uses **Qwen3-4B** (not 8B) and **N_GPUS=1** to keep the smoke test fast. GPU 0 = frozen
+# sub-agent; GPU 1 = VERL with one H100 (~94 GB). Full training (config.yaml) uses Qwen3-8B
+# with N_GPUS=4 on H100.
+#
+# SLURM: jobs/009 allocates **2 GPUs** — see job script for CUDA_VISIBLE_DEVICES.
+#
+# Differences from config.yaml:
+#   - BASE_MODEL: Qwen3-4B (smoke only)
+#   - data dir: data/training/smoke
+#   - train_max_samples: 16, rollout.n: 2, total_epochs: 1
+#   - smaller batch / micro-batch sizes
+#
+# Launch with:
+#   python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml
+#   python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke.yaml
+#
+# IMPORTANT: Launch frozen sub-agent on GPU 0 before VERL (see jobs/009):
+#   VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 \
+#       --gpu-memory-utilization 0.40 --max-model-len 8192
+#   export SUBAGENT_ENDPOINT=http://localhost:9998/v1
+#   CUDA_VISIBLE_DEVICES=1 python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml
+
+env:
+  BASE_MODEL: 'Qwen/Qwen3-4B'
+  SUBAGENT_MODEL: 'Qwen/Qwen3-1.7B'
+  SUBAGENT_ENDPOINT: 'http://localhost:9998/v1'
+  N_GPUS: 1
+  ROLLOUT_TP_SIZE: 1
+  EXPERIMENT_NAME: 'qwen3-4b-grpo-smoke'
+  PROJECT_NAME: 'cosmas-rl-finetuning-smoke'
+  BASE_DATA_DIR: 'data/training/smoke'
+  ENABLE_TOOLS: ["web_search", "code_generator"]
+  TOOL_STEPS: 2
+  THINKING_MODE: 'NO'
+  TRAIN_TEMPERATURE: 0.7
+  TEST_TEMPERATURE: 0.0
+  N_WORKERS: 1
+  VERBOSITY: 'INFO'
+  USE_LORA: "false"
+  USE_SCRATCH_CHECKPOINTS: "false"
+  SAVE_OPTIMIZER: "false"
+
+python_args:
+  agentflow.port: 9999
+  ray_init.num_cpus: 16
+  algorithm.adv_estimator: 'grpo'
+  data.train_files: '${BASE_DATA_DIR}/train/combined_train.parquet'
+  data.val_files:
+    - '${BASE_DATA_DIR}/val/val_search.parquet'
+    - '${BASE_DATA_DIR}/val/val_deepmath.parquet'
+  data.train_batch_size: 4
+  data.train_max_samples: 8
+  data.max_prompt_length: 4096
+  data.max_response_length: 2048
+  data.truncation: 'truncate'
+  actor_rollout_ref.rollout.n: 2
+  actor_rollout_ref.actor.ppo_mini_batch_size: 4
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.rollout.multi_turn.format: 'hermes'
+  actor_rollout_ref.model.path: '${BASE_MODEL}'
+  actor_rollout_ref.model.enable_gradient_checkpointing: true
+  actor_rollout_ref.model.use_remove_padding: true
+  actor_rollout_ref.actor.optim.lr: 1.0e-6
+  actor_rollout_ref.actor.use_kl_loss: true
+  actor_rollout_ref.actor.kl_loss_coef: 0.001
+  actor_rollout_ref.actor.clip_ratio_low: 0.2
+  actor_rollout_ref.actor.clip_ratio_high: 0.3
+  # N_GPUS=1 → optimizer is NOT sharded: 4B × 12 bytes (fp32 Adam) = 32 GB if kept on GPU.
+  # param_offload=True for smoke test: during the training rollout, vLLM AND the FSDP actor
+  # params would both be on GPU (42.3 GB + 8 GB = 50.3 GB) causing a CUDA illegal memory access
+  # in the vLLM kernels (reported asynchronously at the next sync, i.e. compute_log_prob).
+  # Offloading actor params to CPU removes the 8 GB duplication during the rollout phase.
+  # (config.yaml uses param_offload=false because N_GPUS=4 shards the model to ~2 GB/GPU.)
+  actor_rollout_ref.actor.fsdp_config.param_offload: true
+  actor_rollout_ref.actor.fsdp_config.optimizer_offload: true
+  actor_rollout_ref.ref.fsdp_config.param_offload: true
+  actor_rollout_ref.rollout.name: 'vllm'
+  # H100 94 GB: util=0.45 → 42.3 GB vLLM budget (8 GB Qwen3-4B model + 34.3 GB KV).
+  # Reduced from 0.55 to avoid GPU memory fragmentation before compute_log_prob.
+  # free_cache_engine=True destroys the vLLM KV-cache engine on each sleep() so the
+  # FSDP actor gets a clean, unfragmented memory state before compute_log_prob runs.
+  # Without this, the async rollout leaves fragmented CUDA memory that causes an
+  # "illegal memory access" when TensorDict's _to_consolidated does a non_blocking GPU copy.
+  actor_rollout_ref.rollout.free_cache_engine: true
+  actor_rollout_ref.rollout.gpu_memory_utilization: 0.45
+  actor_rollout_ref.rollout.max_model_len: 6144
+  # max_num_batched_tokens must be >= max_model_len so a single full-length sequence can be processed.
+  actor_rollout_ref.rollout.max_num_batched_tokens: 6144
+  actor_rollout_ref.rollout.tensor_model_parallel_size: '${ROLLOUT_TP_SIZE}'
+  trainer.n_gpus_per_node: '${N_GPUS}'
+  trainer.logger: ['console', 'wandb']
+  trainer.project_name: '${PROJECT_NAME}'
+  trainer.experiment_name: '${EXPERIMENT_NAME}'
+  trainer.save_freq: 1
+  trainer.test_freq: 1
+  # true: post-epoch val; false: every test_freq steps.
+  trainer.val_every_epoch: true
+  trainer.total_epochs: 1
+  trainer.val_before_train: true
+  trainer.critic_warmup: 0
+  algorithm.use_kl_in_reward: false
+
+lora:                     # applied only when USE_LORA=true
+  rank: 64
+  alpha: 64               # alpha=rank → scaling factor 1.0 (neutral LoRA initialisation)
+  target_modules: "all-linear"

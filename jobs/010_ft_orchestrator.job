@@ -1,0 +1,268 @@
+#!/bin/bash
+#SBATCH --job-name=FTOrchestrator
+#SBATCH --partition=gpu_h100
+# Four H100 NVL GPUs (~94 GB each). Sub-agent starts on GPU 0 at util=0.08 (~7.5 GB), leaving
+# ~86 GB for VERL on GPU 0. VERL uses all 4 GPUs (CUDA_VISIBLE_DEVICES=0,1,2,3, N_GPUS=4).
+# Budget per VERL GPU: actor 4 GB + opt 24 GB + grads 4 GB + ref 4 GB + vLLM 42.3 GB + misc 3 GB
+# = 81.3 GB (GPUs 1–3) / 88.8 GB (GPU 0 with sub-agent). Both < 94 GB.
+#SBATCH --gpus=4
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=24:00:00
+#SBATCH --output=out/fine_tuning/orchestrator_ft/ft_%A.log
+#SBATCH --error=out/fine_tuning/orchestrator_ft/ft_%A.err
+
+# Full orchestrator fine-tuning run.
+#   5 epochs, 100k training questions, n=8 rollouts, thinking enabled.
+#   Checkpoint every epoch; written to /scratch-shared/$USER/msc-thesis/training/<experiment>/<run-tag>/global_step_<N>/.
+#   After training, prune to keep only latest + best checkpoint payloads.
+#
+# Prerequisites:
+#   - Job 008 completed (creates cosmas-train + data/training/)
+#   - Job 009 passed (smoke test — 2 GPUs; pipeline check before this 4-GPU run)
+#
+# Optional: SKIP_PIP_SETUP=1 in .env skips editable installs + reconcile when the env is warm.
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis — Orchestrator Fine-Tuning"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+if [[ -f ".env" ]]; then
+    echo "Loading environment variables from .env..."
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${SERPER_API_KEY:-}" && -z "${TAVILY_API_KEY:-}" ]]; then
+    echo "ERROR: SERPER_API_KEY or TAVILY_API_KEY must be set for rollout workers."
+    exit 1
+fi
+
+if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    echo "Warning: WANDB_API_KEY is not set; W&B logging may fail."
+fi
+
+# cosmas-train is created once by jobs/008_prepare_fine_tuning_data.job.
+if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
+    echo "ERROR: conda env 'cosmas-train' not found."
+    echo "Run jobs/008_prepare_fine_tuning_data.job first (creates env + training data)."
+    exit 1
+fi
+
+source activate cosmas-train
+export PYTHONNOUSERSITE=1
+
+case "${SKIP_PIP_SETUP:-}" in
+    1|true|TRUE|yes|YES)
+        echo "SKIP_PIP_SETUP is set — skipping pip install + reconcile (reuse current cosmas-train)."
+        ;;
+    *)
+        echo "Installing msc-thesis package..."
+        python -m pip install -e .
+        bash jobs/cosmas_train_pip_reconcile.sh
+        ;;
+esac
+python -c "import agent_engine, fine_tuning, verl, vllm; from fine_tuning.agentflow import LitAgent, Trainer, reward; print('Training imports OK')"
+
+mkdir -p out/fine_tuning/orchestrator_ft
+
+for required_file in \
+    data/training/train/combined_train.parquet \
+    data/training/val/val_search.parquet \
+    data/training/val/val_deepmath.parquet
+do
+    if [[ ! -f "$required_file" ]]; then
+        echo "ERROR: Missing required training data file: $required_file"
+        echo "Run jobs/008_prepare_fine_tuning_data.job first."
+        exit 1
+    fi
+done
+
+VERL_PID=""
+SUBAGENT_PID=""
+ORCHESTRATOR_PID=""
+CRASH_MONITOR_PID=""
+cleanup() {
+    [[ -n "${CRASH_MONITOR_PID:-}" ]] && kill "$CRASH_MONITOR_PID" 2>/dev/null || true
+    if [[ -n "${ORCHESTRATOR_PID:-}" ]] && kill -0 "$ORCHESTRATOR_PID" >/dev/null 2>&1; then
+        echo "Stopping rollout workers (pid=$ORCHESTRATOR_PID)..."
+        kill "$ORCHESTRATOR_PID" || true
+        wait "$ORCHESTRATOR_PID" || true
+    fi
+    if [[ -n "${VERL_PID:-}" ]] && kill -0 "$VERL_PID" >/dev/null 2>&1; then
+        echo "Stopping VERL server (pid=$VERL_PID)..."
+        kill "$VERL_PID" || true
+        wait "$VERL_PID" || true
+    fi
+    if [[ -n "${SUBAGENT_PID:-}" ]] && kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+        echo "Stopping frozen sub-agent server (pid=$SUBAGENT_PID)..."
+        kill "$SUBAGENT_PID" || true
+        wait "$SUBAGENT_PID" || true
+    fi
+}
+trap cleanup EXIT
+# Watch a log file; send SIGTERM to this script on fatal CUDA/NCCL errors so
+# the EXIT trap fires and cleanup kills all background processes immediately.
+# In bash, $$ inside () expands to the parent script PID, not the subshell.
+start_crash_monitor() {
+    local logfile="$1" label="$2"
+    (
+        while [[ ! -f "$logfile" ]]; do sleep 2; done
+        tail -n 0 -F "$logfile" 2>/dev/null \
+        | grep --line-buffered -E \
+            "CUDA (Error|out of memory)|RuntimeError: CUDA|\
+NCCL (error|failure)|ncclSystemError|ncclInternalError|ncclCommAbort|\
+RayActorError|ActorDiedError|WorkerDied|The actor died unexpectedly|\
+Segmentation fault|Aborted \(core dumped\)|^Killed\$|\
+FATAL ERROR|Fatal Python error" \
+        | { IFS= read -r line
+            printf '\n=== FATAL CRASH [%s] ===\n%s\nKilling job...\n' "$label" "$line" >&2
+            kill -TERM $$ ; }
+    ) &
+    CRASH_MONITOR_PID=$!
+}
+
+# Shared run tag — checkpoints and rollout data go under the same directory.
+# Both launch_verl.py and train_orchestrator.py read VERL_RUN_TAG; if not set they compute independently.
+VERL_RUN_TAG="$(date +%d-%m-%Y_%H-%M)-${SLURM_JOB_ID:-local}"
+export VERL_RUN_TAG
+echo "Run tag: $VERL_RUN_TAG"
+
+# ── 1. Frozen sub-agent vLLM server (separate from VERL, never updated) ──────
+echo ""
+echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998, GPU 0, util=0.08)..."
+# Sub-agent is pinned to GPU 0 at minimal util so VERL can also use GPU 0 (util=0.08 → ~7.5 GB,
+# leaves ~86 GB free for VERL's vLLM+FSDP on GPU 0). V1 disabled: torch.compile at low util can
+# leave no KV budget (smoke_*_subagent.log).
+VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
+    --port 9998 \
+    --tensor-parallel-size 1 \
+    --gpu-memory-utilization 0.08 \
+    --max-model-len 8192 \
+    > out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
+SUBAGENT_PID=$!
+export SUBAGENT_ENDPOINT="http://localhost:9998/v1"
+
+echo "Waiting 60s for sub-agent vLLM to be ready..."
+sleep 60
+if ! kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+    echo "FAIL — sub-agent server exited during startup. See out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_subagent.log"
+    wait "$SUBAGENT_PID"
+fi
+
+# All 4 H100 GPUs go to VERL. GPU 0 is shared with the sub-agent (util=0.08, see above).
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+
+# ── 2. VERL server ───────────────────────────────────────────────────────────
+# Unbuffered Python so *_verl.log updates live under SLURM file redirection (also applies to train_orchestrator below).
+export PYTHONUNBUFFERED=1
+VERL_LOG="out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_verl.log"
+echo ""
+echo "Starting VERL server..."
+python scripts/launch_verl.py --config experiments/configs/train/config.yaml \
+    > "$VERL_LOG" 2>&1 &
+VERL_PID=$!
+start_crash_monitor "$VERL_LOG" "VERL"
+
+echo "Waiting 120s for Ray + vLLM to be ready..."
+sleep 120
+if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
+    echo "FAIL — VERL server exited during startup. See out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_verl.log"
+    wait "$VERL_PID"
+fi
+
+AGENTFLOW_PORT="${AGENTFLOW_PORT:-9999}"
+echo "Polling http://localhost:${AGENTFLOW_PORT}/task for AgentFlow readiness (up to 15 min)..."
+_deadline=$((SECONDS + 900))
+while (( SECONDS < _deadline )); do
+    if curl -fsS --max-time 5 "http://127.0.0.1:${AGENTFLOW_PORT}/task" >/dev/null 2>&1; then
+        echo "AgentFlow server is responding on port ${AGENTFLOW_PORT}."
+        break
+    fi
+    if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
+        echo "FAIL — VERL exited before AgentFlow came up. See out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_verl.log"
+        wait "$VERL_PID" || true
+        exit 1
+    fi
+    sleep 10
+done
+if (( SECONDS >= _deadline )); then
+    echo "FAIL — AgentFlow on :${AGENTFLOW_PORT} not ready after 15 min (VERL may be wedged). Check *_verl.log and Ray logs under /scratch-local/${USER}.${SLURM_JOB_ID:-local}/ray/"
+    exit 1
+fi
+
+# ── 3. Rollout workers ───────────────────────────────────────────────────────
+echo ""
+echo "Starting rollout workers..."
+python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml &
+ORCHESTRATOR_PID=$!
+wait $ORCHESTRATOR_PID
+wait $VERL_PID
+
+# ── 4. Verify checkpoint ─────────────────────────────────────────────────────
+echo ""
+EXPERIMENT_NAME="qwen3-8b-grpo-search-math"
+# Full fine-tuning checkpoints (~47 GB/step) land in scratch-shared (set by USE_SCRATCH_CHECKPOINTS=true).
+# VERL writes: <base>/<experiment>/<run-tag>/global_step_<N>/actor/model_world_size_*_rank_*.pt
+CKPT_DIR="/scratch-shared/${USER}/msc-thesis/training/${EXPERIMENT_NAME}"
+echo "Checkpoints written under: $CKPT_DIR"
+find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null \
+    | head -10 || echo "No checkpoints found."
+
+# #  NOTE: Checkpoint pruning is disabled for now.
+# # ── 5. Prune checkpoints (keep latest + best) ────────────────────────────────
+# echo ""
+# echo "Pruning checkpoints: keeping latest and best..."
+
+# mapfile -t STEP_DIRS < <(find "$CKPT_DIR" -maxdepth 3 -name "global_step_*" -type d | sort -V || true)
+# if ((${#STEP_DIRS[@]} == 0)); then
+#     echo "No step checkpoints found; skipping prune."
+# else
+#     LATEST_STEP_DIR="${STEP_DIRS[-1]}"
+#     # No checkpoint_best symlink — select best manually from W&B val metrics
+
+#     echo "Latest checkpoint: $LATEST_STEP_DIR"
+#     if [[ -n "$BEST_TARGET" ]]; then
+#         echo "Best checkpoint target: $BEST_TARGET"
+#     else
+#         echo "Best checkpoint target not resolved; will keep latest only."
+#     fi
+
+#     for d in "${STEP_DIRS[@]}"; do
+#         KEEP=0
+#         [[ "$d" == "$LATEST_STEP_DIR" ]] && KEEP=1
+#         [[ -n "$BEST_TARGET" && "$d" == "$BEST_TARGET" ]] && KEEP=1
+#         if ((KEEP == 0)); then
+#             echo "Removing old checkpoint: $d"
+#             rm -rf "$d"
+#         fi
+#     done
+# fi
+
+echo "Remaining checkpoint payloads:"
+find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null \
+    | head -10 || echo "No checkpoints found."
+
+echo ""
+echo "Training complete at: $(date)"
+echo ""
+echo "Next step — locate latest checkpoint and evaluate (USE_LORA=false → full weights, no merge needed):"
+echo "  LATEST_CKPT=\$(find $CKPT_DIR -maxdepth 3 -name 'global_step_*' -type d | sort -V | tail -1)"
+echo "  # Load actor/model_world_size_*_rank_*.pt directly with from_pretrained"
+echo "  # Or if USE_LORA=true was set: merge with scripts/merge_lora.py"

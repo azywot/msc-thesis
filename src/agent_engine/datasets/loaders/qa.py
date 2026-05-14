@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from ..base import BaseDataset, DatasetExample, DatasetRegistry
-from ..evaluators.metrics import evaluate_qa, evaluate_musique
+from ..evaluators.metrics import evaluate_musique
 from ...utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -38,9 +38,12 @@ def _load_qa_jsonl(data_path: Path, dataset_name: str, subset_num: int = -1) -> 
                 metadata: Dict[str, Any] = {
                     "dataset": dataset_name,
                 }
-                # Propagate answer aliases when present (e.g., MuSiQue).
+                # Propagate answer aliases when present.
+                # MuSiQue uses "answer_aliases"; NQ/TriviaQA/HotpotQA use "golden_answers".
                 if "answer_aliases" in data:
-                    metadata["answer_aliases"] = data.get("answer_aliases")
+                    metadata["answer_aliases"] = data["answer_aliases"]
+                elif "golden_answers" in data and isinstance(data["golden_answers"], list):
+                    metadata["answer_aliases"] = data["golden_answers"]
 
                 example = DatasetExample(
                     question_id=idx,
@@ -75,7 +78,8 @@ class NaturalQuestionsDataset(BaseDataset):
         metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Evaluate NQ prediction."""
-        return evaluate_qa(prediction, ground_truth)
+        aliases = metadata.get("answer_aliases") or []
+        return evaluate_musique(prediction, ground_truth, aliases)
 
 
 @DatasetRegistry.register("triviaqa")
@@ -94,7 +98,8 @@ class TriviaQADataset(BaseDataset):
         metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Evaluate TriviaQA prediction."""
-        return evaluate_qa(prediction, ground_truth)
+        aliases = metadata.get("answer_aliases") or []
+        return evaluate_musique(prediction, ground_truth, aliases)
 
 
 @DatasetRegistry.register("hotpotqa")
@@ -113,7 +118,8 @@ class HotpotQADataset(BaseDataset):
         metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Evaluate HotpotQA prediction."""
-        return evaluate_qa(prediction, ground_truth)
+        aliases = metadata.get("answer_aliases") or []
+        return evaluate_musique(prediction, ground_truth, aliases)
 
 
 @DatasetRegistry.register("musique")
@@ -156,7 +162,8 @@ class BamboogleDataset(BaseDataset):
         metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Evaluate Bamboogle prediction."""
-        return evaluate_qa(prediction, ground_truth)
+        aliases = metadata.get("answer_aliases") or []
+        return evaluate_musique(prediction, ground_truth, aliases)
 
 
 @DatasetRegistry.register("2wiki")
@@ -175,4 +182,5 @@ class TwoWikiDataset(BaseDataset):
         metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Evaluate 2Wiki prediction."""
-        return evaluate_qa(prediction, ground_truth)
+        aliases = metadata.get("answer_aliases") or []
+        return evaluate_musique(prediction, ground_truth, aliases)

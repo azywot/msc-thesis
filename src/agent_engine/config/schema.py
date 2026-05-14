@@ -41,6 +41,8 @@ class ToolsConfig(BaseModel):
         max_search_limit: Maximum number of ``web_search`` calls per question.
         top_k_results: Number of search results returned per query.
         max_doc_len: Maximum characters per fetched document snippet.
+        max_search_content_chars: Maximum total characters of formatted search results
+        passed to the sub-agent LLM before truncation.
     """
     enabled_tools: List[str] = ["web_search", "code_generator"]
     direct_tool_call: bool = True
@@ -49,6 +51,7 @@ class ToolsConfig(BaseModel):
     max_search_limit: int = 10
     top_k_results: int = 5
     max_doc_len: int = 3000
+    max_search_content_chars: int = 14000
 
 
 class DatasetConfig(BaseModel):

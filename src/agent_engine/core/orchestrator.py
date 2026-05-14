@@ -214,7 +214,24 @@ class AgenticOrchestrator:
         if not state.finished:
             logger.warning(f"Max turns ({self.max_turns}) reached without finishing")
             state.metadata["max_turns_reached"] = True
-            state.answer = extract_answer(state.current_output)
+            # The last turn ended with a tool call, so current_output has no answer.
+            try:
+                nudge_msgs = (
+                    state.messages if self.baseline else self._build_memory_prompt(state, system_prompt)
+                ) + [{"role": "user", "content": "You have used all available tool calls. Based on the information gathered so far, provide your final answer now."}]
+                synth_prompt = self.model.apply_chat_template(
+                    nudge_msgs,
+                    use_thinking=self.use_thinking,
+                )
+                synth_result = self.model.generate([synth_prompt])[0]
+                state.current_output = synth_result.text
+                _accumulate_usage(state, synth_result.usage)
+                state.answer = extract_answer(synth_result.text)
+                state.output_messages.append({"role": "assistant", "content": synth_result.text})
+                logger.info(f"Synthesis turn answer: {state.answer}")
+            except Exception as e:
+                logger.exception("Synthesis generation error")
+                state.answer = extract_answer(state.current_output)
 
         return state
 
@@ -277,12 +294,34 @@ class AgenticOrchestrator:
                 break
             self._process_batch_turn(active)
 
-        for s in states:
-            if not s.finished:
-                logger.warning(f"Max turns ({self.max_turns}) reached for question {s.question_id}")
-                s.metadata["max_turns_reached"] = True
-                s.answer = extract_answer(s.current_output)
-                s.finished = True
+        unfinished = [s for s in states if not s.finished]
+        if unfinished:
+            system_prompt = unfinished[0].messages[0]["content"]
+            nudge_prompts = [
+                self.model.apply_chat_template(
+                    (s.messages if self.baseline else self._build_memory_prompt(s, system_prompt))
+                    + [{"role": "user", "content": "You have used all available tool calls. Based on the information gathered so far, provide your final answer now."}],
+                    use_thinking=self.use_thinking,
+                )
+                for s in unfinished
+            ]
+            try:
+                synth_results = self.model.generate(nudge_prompts)
+                for s, synth_result in zip(unfinished, synth_results):
+                    logger.warning(f"Max turns ({self.max_turns}) reached for question {s.question_id}")
+                    s.metadata["max_turns_reached"] = True
+                    s.current_output = synth_result.text
+                    _accumulate_usage(s, synth_result.usage)
+                    s.answer = extract_answer(synth_result.text)
+                    s.output_messages.append({"role": "assistant", "content": synth_result.text})
+                    s.finished = True
+                    logger.info(f"Q{s.question_id} synthesis answer: {s.answer}")
+            except Exception as e:
+                logger.exception("Batch synthesis generation error")
+                for s in unfinished:
+                    s.metadata["max_turns_reached"] = True
+                    s.answer = extract_answer(s.current_output)
+                    s.finished = True
 
         return states
 
@@ -594,14 +633,6 @@ class AgenticOrchestrator:
 
         if state.query_analysis:
             parts.append(f"\n**Query Analysis:**\n{state.query_analysis}")
-
-        # # NOTE: idea -> add previous sub goals earlier in the prompt, 
-        # # before the query analysis to give the model more context about the problem at hand.
-        # # Not used for now, but keeping the idea here for future reference.
-        # sub_goals = [a["sub_goal"] for a in state.action_history if a.get("sub_goal")]
-        # if sub_goals:
-        #     chain = "\n".join(f"  {i + 1}. {g}" for i, g in enumerate(sub_goals))
-        #     parts.append(f"\n**Plan so far (completed sub-goals):**\n{chain}")
 
         if state.action_history:
             parts.append(f"\n**Previous Steps:**\n{self._format_action_history(state.action_history)}")

@@ -143,6 +143,7 @@ def setup_tools(
                 fetch_urls=True,
                 use_thinking=use_subagent_thinking,
                 cache_manager=cache_manager,
+                max_search_content_chars=config.tools.max_search_content_chars,
             ))
         elif tool_name == "code_generator":
             # Get model provider for sub-agent mode

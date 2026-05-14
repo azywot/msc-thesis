@@ -1,0 +1,114 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=PrepareFTData
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=02:00:00
+#SBATCH --output=out/fine_tuning/prepare_data_%A.log
+
+# Download Search-R1 + DeepMath-103K and write VERL parquet files.
+# Splits (proportions held constant across all three):
+#   data/training/train/combined_train.parquet  (900 search + 900 math = 1800 train)
+#   data/training/val/val_*.parquet             (100 search + 100 math = 200 val)
+#   data/training/test/test_*.parquet           (100 search + 100 math = 200 test)
+#
+# Search-R1 composition: 85% HotpotQA (multi-hop) + 15% NQ.
+# DeepMath: difficulty >= 5 only (cleaner GRPO signal, avoids trivial problems).
+# Row order: test carved first, then val, then train — no cross-split contamination.
+#
+# Also writes a small smoke-test subset to data/training/smoke/ for job 009.
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis — Prepare Fine-Tuning Data"
+echo "=========================================="
+echo "Start time: $(date)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+# # flash-attn / pip download prebuilt wheels into TMPDIR, then hardlink/rename into
+# # ~/.cache/pip. Node-local /tmp vs GPFS home → Errno 18 Invalid cross-device link.
+# mkdir -p "${HOME}/.tmp"
+# export TMPDIR="${HOME}/.tmp"
+
+# # Recreate training environment from scratch on every run.
+# if conda env list | awk '{print $1}' | rg -x "cosmas-train" >/dev/null 2>&1; then
+#     echo "Removing existing conda env: cosmas-train"
+#     conda env remove -n cosmas-train -y
+# fi
+
+# echo "Creating conda env: cosmas-train (jobs/environment_train.yml)"
+# export PIP_NO_BUILD_ISOLATION=1
+# conda env create -f jobs/environment_train.yml
+
+source activate cosmas-train
+export PYTHONNOUSERSITE=1
+
+# # flash-attn must build after torch is importable in this env; conda pip -r can still
+# # use an isolated build env where torch is missing. Install explicitly with no isolation.
+# echo "Installing flash-attn (needs torch + CUDA modules already loaded)..."
+# pip install --no-build-isolation 'flash-attn==2.8.1'
+
+# echo "Installing msc-thesis package..."
+# pip install -e .
+# bash jobs/cosmas_train_pip_reconcile.sh
+
+mkdir -p out/fine_tuning
+
+# ── 1. Full training data ────────────────────────────────────────────────────
+echo ""
+echo "Preparing curated training data (1800 train / 200 val / 200 test)..."
+python src/fine_tuning/data/prepare.py \
+    --n-search       900 \
+    --n-math         900 \
+    --n-val-search   100 \
+    --n-val-math     100 \
+    --n-test-search  100 \
+    --n-test-math    100 \
+    --search-source  both \
+    --hotpot-ratio   0.85 \
+    --deepmath-min-difficulty 5 \
+    --output-dir data/training \
+    --seed 42
+
+echo ""
+echo "Full data written:"
+ls -lh data/training/train/combined_train.parquet
+ls -lh data/training/val/val_search.parquet
+ls -lh data/training/val/val_deepmath.parquet
+ls -lh data/training/val/val_combined.parquet
+ls -lh data/training/test/test_search.parquet
+ls -lh data/training/test/test_deepmath.parquet
+ls -lh data/training/test/test_combined.parquet
+
+# ── 2. Smoke-test subset ─────────────────────────────────────────────────────
+echo ""
+echo "Preparing smoke-test subset (50 search + 50 math)..."
+python src/fine_tuning/data/prepare.py \
+    --n-search    50 \
+    --n-math      50 \
+    --n-val-search 3 \
+    --n-val-math   3 \
+    --output-dir data/training/smoke \
+    --seed 42
+
+echo ""
+echo "Smoke data written:"
+ls -lh data/training/smoke/train/combined_train.parquet
+ls -lh data/training/smoke/val/val_search.parquet
+ls -lh data/training/smoke/val/val_deepmath.parquet
+ls -lh data/training/smoke/val/val_combined.parquet
+
+echo ""
+echo "Done at: $(date)"

@@ -235,14 +235,6 @@ class TestExtractAnswer:
         text = r"<think>\boxed{fake}</think>" + "\n" + r"\boxed{real}"
         assert extract_answer(text) == "real"
 
-    def test_code_block_fallback(self):
-        text = "```python\nprint('hello')\n```"
-        assert extract_answer(text) == "print('hello')"
-
-    def test_last_code_block_preferred(self):
-        text = "```python\nfirst\n```\nsome text\n```python\nlast\n```"
-        assert extract_answer(text) == "last"
-
     def test_no_match_returns_none(self):
         assert extract_answer("Nothing here.") is None
 

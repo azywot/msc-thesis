@@ -40,6 +40,7 @@ class WebSearchTool(BaseTool):
         use_jina: bool = False,  # Whether to use Jina for URL fetching
         fetch_urls: bool = True,  # Whether to fetch full page content
         cache_manager=None,  # Optional: persist cache on each update (for parallel runs)
+        max_search_content_chars: int = 14_000,  # Max chars fed to sub-agent LLM before truncation
     ):
         """Initialize web search tool.
 
@@ -57,6 +58,7 @@ class WebSearchTool(BaseTool):
             use_jina: Whether to use Jina AI reader API for URL fetching (Serper only)
             fetch_urls: Whether to fetch full page content (Serper only; ignored for Tavily)
             cache_manager: Optional cache manager for atomic cache persistence
+            max_search_content_chars: Max total characters of formatted search results passed to the sub-agent LLM.
         """
         self.provider = provider.lower()
 
@@ -81,6 +83,7 @@ class WebSearchTool(BaseTool):
         self.use_jina = use_jina
         self.fetch_urls = fetch_urls
         self.cache_manager = cache_manager
+        self.max_search_content_chars = max_search_content_chars
         self.direct_mode = model_provider is None
 
     @property
@@ -265,6 +268,8 @@ class WebSearchTool(BaseTool):
         Returns:
             Tuple of (LLM-analyzed summary, token usage dict or None)
         """
+        if len(search_results) > self.max_search_content_chars:
+            search_results = search_results[: self.max_search_content_chars] + "\n...[truncated]"
         prompt = self.build_analysis_prompt(query, search_results)
         result = self.model_provider.generate([prompt])[0]
         output = strip_thinking_tags(result.text)
@@ -395,7 +400,7 @@ Now you should analyze each web page and find helpful information based on the c
                         hint,
                         context_chars=self.max_doc_len,
                     )
-                    content = focused
+                    content = focused[: self.max_doc_len]  # hard cap: extract_snippet may overshoot
                 else:
                     content = ""
 

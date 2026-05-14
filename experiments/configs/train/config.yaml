@@ -1,0 +1,103 @@
+# experiments/configs/train/config.yaml
+# Training configuration for CoSMAS orchestrator RL fine-tuning.
+#
+# Launch with:
+#   python scripts/launch_verl.py --config experiments/configs/train/config.yaml      (VERL server)
+#   python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml  (rollout workers)
+#
+# IMPORTANT: Before starting rollout workers, launch a separate frozen sub-agent
+# vLLM server and export SUBAGENT_ENDPOINT, or set it in this file (VLLM_USE_V1=0 avoids V1 KV OOM):
+#   VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 \
+#       --gpu-memory-utilization 0.08 --max-model-len 8192
+#   export SUBAGENT_ENDPOINT=http://localhost:9998/v1
+#
+# SLURM: jobs/010 requests 4 H100 NVL GPUs (~94 GB each).
+#   GPU 0: frozen sub-agent at util=0.08 (~7.5 GB) — low enough to share with VERL on the same card.
+#   GPUs 0–3: VERL (N_GPUS: 4, CUDA_VISIBLE_DEVICES=0,1,2,3).
+# Memory per VERL GPU at util=0.45 (rollout-phase peak, grads freed from previous step):
+#   actor shard 4 GB + optimizer 24 GB + ref shard 4 GB + vLLM 42.3 GB (16 GB model + 26.3 GB KV) + misc 3 GB = 77.3 GB.
+# GPU 0 also hosts sub-agent at util=0.08 (~7.5 GB) → 84.8 GB / 94 GB (9.2 GB headroom).
+# During actor update (after vLLM sleep frees KV, model stays at 16 GB): 16+4+24+4+4+4+3 = 55 GB per GPU.
+# ROLLOUT_TP_SIZE is 1; N_GPUS=4 is valid (TP=2 also works with 4 GPUs but adds overhead).
+
+env:
+  BASE_MODEL: 'Qwen/Qwen3-8B'
+  SUBAGENT_MODEL: 'Qwen/Qwen3-1.7B'
+  SUBAGENT_ENDPOINT: 'http://localhost:9998/v1'
+  N_GPUS: 4
+  ROLLOUT_TP_SIZE: 1
+  EXPERIMENT_NAME: 'qwen3-8b-grpo-search-math'
+  PROJECT_NAME: 'cosmas-rl-finetuning'
+  BASE_DATA_DIR: 'data/training'
+  ENABLE_TOOLS: ["web_search", "code_generator"]
+  TOOL_STEPS: 5
+  THINKING_MODE: 'NO'
+  TRAIN_TEMPERATURE: 0.7
+  TEST_TEMPERATURE: 0.0
+  N_WORKERS: 1
+  VERBOSITY: 'INFO'
+  USE_LORA: "false"
+  USE_SCRATCH_CHECKPOINTS: "true"
+  SAVE_OPTIMIZER: "false"
+
+python_args:
+  agentflow.port: 9999
+  # Ray must not auto-detect all cores on the node under SLURM — see jobs/010 (cpus-per-task).
+  ray_init.num_cpus: 16
+  algorithm.adv_estimator: 'grpo'
+  data.train_files: '${BASE_DATA_DIR}/train/combined_train.parquet'
+  data.val_files:                                           # two files → VERL logs val_0 (search) and val_1 (math) separately in W&B
+    - '${BASE_DATA_DIR}/val/val_search.parquet'
+    - '${BASE_DATA_DIR}/val/val_deepmath.parquet'
+  data.train_batch_size: 32
+  data.train_max_samples: 1800
+  data.max_prompt_length: 18432
+  data.max_response_length: 4096
+  data.truncation: 'truncate'
+  actor_rollout_ref.rollout.n: 8
+  actor_rollout_ref.actor.ppo_mini_batch_size: 8
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 4
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu: 4
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu: 4
+  actor_rollout_ref.rollout.multi_turn.format: 'hermes'
+  actor_rollout_ref.model.path: '${BASE_MODEL}'
+  actor_rollout_ref.model.enable_gradient_checkpointing: true
+  actor_rollout_ref.model.use_remove_padding: true
+  actor_rollout_ref.actor.optim.lr: 1.0e-6
+  actor_rollout_ref.actor.use_kl_loss: true
+  actor_rollout_ref.actor.kl_loss_coef: 0.001
+  actor_rollout_ref.actor.clip_ratio_low: 0.2
+  actor_rollout_ref.actor.clip_ratio_high: 0.3
+  actor_rollout_ref.actor.fsdp_config.param_offload: false
+  actor_rollout_ref.actor.fsdp_config.optimizer_offload: false
+  # H100 94 GB has enough headroom for ref weights on-GPU (saves PCIe transfer overhead vs offload).
+  actor_rollout_ref.ref.fsdp_config.param_offload: false
+  actor_rollout_ref.rollout.name: 'vllm'
+  # util=0.45 on H100 94 GB = 42.3 GB vLLM budget per GPU (16 GB model + 26.3 GB KV cache).
+  # Full budget breakdown is in the file header comment above.
+  actor_rollout_ref.rollout.gpu_memory_utilization: 0.45
+  # Cap vLLM context to actual training sequence length (max_prompt + max_response = 22528).
+  # Without this, vLLM defaults to Qwen3-8B's native 40960-token context, consuming far more
+  # KV memory than needed and risking "no available memory for cache blocks" at init time.
+  actor_rollout_ref.rollout.max_model_len: 22528
+  actor_rollout_ref.rollout.max_num_batched_tokens: 22528
+  actor_rollout_ref.rollout.tensor_model_parallel_size: '${ROLLOUT_TP_SIZE}'
+  trainer.n_gpus_per_node: '${N_GPUS}'
+  trainer.logger: ['console', 'wandb']
+  trainer.project_name: '${PROJECT_NAME}'
+  trainer.experiment_name: '${EXPERIMENT_NAME}'
+  # save_freq=56: one checkpoint per epoch (floor(1800/32)=56 steps/epoch × 5 epochs = 280 total steps).
+  # save_freq=1 would create 280 × ~47 GB ≈ 13 TB of checkpoints; "checkpoint every epoch" is the intent.
+  trainer.save_freq: 56
+  trainer.test_freq: 1
+  # true: post-epoch val (lines 497-507 in trainer.py, outside inner loop); false: every test_freq steps.
+  trainer.val_every_epoch: true
+  trainer.total_epochs: 5
+  trainer.val_before_train: true
+  trainer.critic_warmup: 0
+  algorithm.use_kl_in_reward: false
+
+lora:                     # applied only when USE_LORA=true
+  rank: 64
+  alpha: 64               # alpha=rank → scaling factor 1.0 (neutral LoRA initialisation)
+  target_modules: "all-linear"
