@@ -216,7 +216,9 @@ echo ""
 echo "Starting rollout workers..."
 python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml &
 ORCHESTRATOR_PID=$!
-wait $ORCHESTRATOR_PID
+# Wait for VERL (server) to finish training first.
+# The orchestrator is a client of VERL — waiting for it before VERL exits would deadlock.
+# After VERL exits the orchestrator loses its connection and is killed by the EXIT trap.
 wait $VERL_PID
 
 # ── 4. Verify checkpoint ─────────────────────────────────────────────────────

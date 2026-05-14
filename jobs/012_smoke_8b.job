@@ -1,31 +1,34 @@
 #!/bin/bash
-#SBATCH --job-name=SmokeFT
+#SBATCH --job-name=Smoke8B
 #SBATCH --partition=gpu_h100
-# Two GPUs: GPU 0 = frozen sub-agent; GPU 1 = VERL (N_GPUS=1). Smoke uses **Qwen3-4B** (not 8B)
-# to keep the test fast (smaller model = fewer tokens/step). Full training (job 010, N_GPUS=4)
-# uses Qwen3-8B on H100. H100 NVL cards here have ~94 GB.
-#SBATCH --gpus=2
+# Three H100 NVL GPUs (~94 GB each):
+#   GPU 0 (exclusive): frozen sub-agent Qwen3-1.7B at util=0.40 (~37.6 GB)
+#   GPUs 1–2: VERL N_GPUS=2 for Qwen3-8B — actor FSDP-sharded to ~8 GB/GPU.
+#     Rollout phase (param_offload=True): vLLM TP=1 data-parallel, util=0.45 → 42.3 GB/GPU ✓
+#     Training phase (free_cache_engine destroys KV): ~26 GB/GPU ✓
+# Upgrade from job 009 (4B, 2 GPUs) — same pipeline check before the 4-GPU full run (job 010).
+#SBATCH --gpus=3
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --time=02:00:00
-#SBATCH --output=out/fine_tuning/smoke_test/smoke_%A.log
-#SBATCH --error=out/fine_tuning/smoke_test/smoke_%A.err
+#SBATCH --output=out/fine_tuning/smoke_test_8b/smoke8b_%A.log
+#SBATCH --error=out/fine_tuning/smoke_test_8b/smoke8b_%A.err
 
-# Smoke-test the fine-tuning pipeline end-to-end:
+# Smoke-test the fine-tuning pipeline with Qwen3-8B end-to-end:
 #   1. Pre-flight checks (no GPU): imports, reward, config, parquet schema
-#   2. One epoch of GRPO training on 16 questions with config_smoke.yaml
+#   2. One epoch of GRPO training on 8 questions with config_smoke8b.yaml
 #   3. Verify checkpoint was written and W&B run exists
 #
 # Run AFTER job 008 (creates cosmas-train + data — must already be prepared).
 # If this passes, the full training job (010) is safe to submit.
 #
-# Optional: put SKIP_PIP_SETUP=1 in .env to skip editable installs + reconcile when
+# Optional: SKIP_PIP_SETUP=1 in .env skips editable installs + reconcile when
 # cosmas-train is already warm (PATH + import check still run).
 
 set -euo pipefail
 
 echo "=========================================="
-echo "MSC Thesis — Fine-Tuning Smoke Test"
+echo "MSC Thesis — Fine-Tuning Smoke Test (8B)"
 echo "=========================================="
 echo "Start time: $(date)"
 echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
@@ -57,7 +60,6 @@ if [[ -z "${WANDB_API_KEY:-}" ]]; then
     echo "Warning: WANDB_API_KEY is not set; W&B logging may fail."
 fi
 
-# cosmas-train is created once by jobs/008_prepare_fine_tuning_data.job.
 if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
     echo "ERROR: conda env 'cosmas-train' not found."
     echo "Run jobs/008_prepare_fine_tuning_data.job first (creates env + training data)."
@@ -79,7 +81,7 @@ case "${SKIP_PIP_SETUP:-}" in
 esac
 python -c "import agent_engine, fine_tuning, verl, vllm; from fine_tuning.agentflow import LitAgent, Trainer, reward; print('Training imports OK')"
 
-mkdir -p out/fine_tuning/smoke_test
+mkdir -p out/fine_tuning/smoke_test_8b
 
 for required_file in \
     data/training/smoke/train/combined_train.parquet \
@@ -109,8 +111,6 @@ cleanup() {
         kill "$VERL_PID" || true
         wait "$VERL_PID" || true
     fi
-    # Ray spawns background OS processes (raylet, GCS, object store) that outlive the
-    # Python process that called ray.init() and keep the SLURM job alive indefinitely.
     echo "Stopping Ray background processes..."
     ray stop --force 2>/dev/null || true
     if [[ -n "${SUBAGENT_PID:-}" ]] && kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
@@ -120,6 +120,7 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
 # Watch a log file; send SIGTERM to this script on fatal CUDA/NCCL errors so
 # the EXIT trap fires and cleanup kills all background processes immediately.
 # In bash, $$ inside () expands to the parent script PID, not the subshell.
@@ -146,95 +147,88 @@ echo ""
 echo "Running pre-flight checks..."
 python scripts/test_ft_smoke.py \
     --data-dir data/training/smoke \
-    --config   experiments/configs/train/config_smoke.yaml
+    --config   experiments/configs/train/config_smoke8b.yaml
 
 echo ""
 echo "Pre-flight checks passed. Starting training..."
 
-# Shared run tag — checkpoints and rollout data go under the same directory.
-# Both launch_verl.py and train_orchestrator.py read VERL_RUN_TAG; if not set they compute independently.
 VERL_RUN_TAG="$(date +%d-%m-%Y_%H-%M)-${SLURM_JOB_ID:-local}"
 export VERL_RUN_TAG
 echo "Run tag: $VERL_RUN_TAG"
 
-# ── 2. Frozen sub-agent vLLM server (separate from VERL, never updated) ──────
+# ── 2. Frozen sub-agent vLLM server (GPU 0, dedicated, never updated by VERL) ─
 echo ""
 echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998, physical GPU 0 only)..."
+# GPU 0 is exclusive to the sub-agent (not shared with VERL); util=0.40 is fine here.
 # V1 + torch.compile can leave almost no KV budget on a small util fraction (see smoke_*_subagent.log).
-# Legacy engine on a dedicated 40GB card keeps startup predictable; env applies only to this process.
 VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
     --port 9998 \
     --tensor-parallel-size 1 \
     --gpu-memory-utilization 0.40 \
     --max-model-len 8192 \
-    > out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
+    > out/fine_tuning/smoke_test_8b/smoke8b_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
 SUBAGENT_PID=$!
 export SUBAGENT_ENDPOINT="http://localhost:9998/v1"
 
 echo "Waiting 60s for sub-agent vLLM to be ready..."
 sleep 60
 if ! kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
-    echo "FAIL — sub-agent server exited during startup. See out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_subagent.log"
+    echo "FAIL — sub-agent server exited during startup. See out/fine_tuning/smoke_test_8b/smoke8b_${SLURM_JOB_ID:-local}_subagent.log"
     wait "$SUBAGENT_PID"
 fi
 
-# Single training GPU (must match N_GPUS=1 in config_smoke.yaml).
-export CUDA_VISIBLE_DEVICES=1
+# VERL uses GPUs 1 and 2 (N_GPUS=2, as set in config_smoke8b.yaml).
+export CUDA_VISIBLE_DEVICES=1,2
 
 # ── 3. VERL server ───────────────────────────────────────────────────────────
-# Unbuffered Python so *_verl.log updates live under SLURM file redirection (also applies to train_orchestrator below).
 export PYTHONUNBUFFERED=1
-VERL_LOG="out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_verl.log"
+VERL_LOG="out/fine_tuning/smoke_test_8b/smoke8b_${SLURM_JOB_ID:-local}_verl.log"
 echo ""
-echo "Starting VERL server (config_smoke.yaml)..."
-python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml \
+echo "Starting VERL server (config_smoke8b.yaml, N_GPUS=2)..."
+python scripts/launch_verl.py --config experiments/configs/train/config_smoke8b.yaml \
     > "$VERL_LOG" 2>&1 &
 VERL_PID=$!
 start_crash_monitor "$VERL_LOG" "VERL"
 
-echo "Waiting up to 3 min for Ray + worker bootstrap; N_GPUS=1 + FSDP + colocated vLLM can take 15–25 min before AgentFlow answers /task."
+echo "Waiting up to 3 min for Ray + worker bootstrap; N_GPUS=2 + FSDP + colocated vLLM can take 20–30 min before AgentFlow answers /task."
 sleep 180
 if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
-    echo "FAIL — VERL server exited during startup. See out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_verl.log"
+    echo "FAIL — VERL server exited during startup. See out/fine_tuning/smoke_test_8b/smoke8b_${SLURM_JOB_ID:-local}_verl.log"
     wait "$VERL_PID"
 fi
 
-# AgentFlow control plane (VERL) — fail fast if it never binds; avoids endless rollout polling.
 AGENTFLOW_PORT="${AGENTFLOW_PORT:-9999}"
-echo "Polling http://localhost:${AGENTFLOW_PORT}/task for AgentFlow readiness (up to 25 min)..."
-_deadline=$((SECONDS + 1500))
+echo "Polling http://localhost:${AGENTFLOW_PORT}/task for AgentFlow readiness (up to 30 min)..."
+_deadline=$((SECONDS + 1800))
 while (( SECONDS < _deadline )); do
     if curl -fsS --max-time 5 "http://127.0.0.1:${AGENTFLOW_PORT}/task" >/dev/null 2>&1; then
         echo "AgentFlow server is responding on port ${AGENTFLOW_PORT}."
         break
     fi
     if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
-        echo "FAIL — VERL exited before AgentFlow came up. See out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_verl.log"
+        echo "FAIL — VERL exited before AgentFlow came up. See out/fine_tuning/smoke_test_8b/smoke8b_${SLURM_JOB_ID:-local}_verl.log"
         wait "$VERL_PID" || true
         exit 1
     fi
     sleep 10
 done
 if (( SECONDS >= _deadline )); then
-    echo "FAIL — AgentFlow on :${AGENTFLOW_PORT} not ready after 25 min (VERL may be wedged). Check *_verl.log and Ray logs under /scratch-local/${USER}.${SLURM_JOB_ID:-local}/ray/"
+    echo "FAIL — AgentFlow on :${AGENTFLOW_PORT} not ready after 30 min (VERL may be wedged). Check *_verl.log and Ray logs under /scratch-local/${USER}.${SLURM_JOB_ID:-local}/ray/"
     exit 1
 fi
 
 # ── 4. Rollout workers ───────────────────────────────────────────────────────
 echo ""
 echo "Starting rollout workers..."
-python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke.yaml &
+python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke8b.yaml &
 ORCHESTRATOR_PID=$!
-# Wait for VERL (server) to finish training first.
-# The orchestrator is a client of VERL — waiting for it before VERL exits would deadlock.
-# After VERL exits the orchestrator loses its connection and is killed by the EXIT trap.
+wait $ORCHESTRATOR_PID
 wait $VERL_PID
 
 # ── 5. Verify checkpoint was written ─────────────────────────────────────────
 echo ""
 echo "Verifying checkpoint..."
-CKPT_BASE="experiments/results/training/qwen3-4b-grpo-smoke"
-# VERL writes: <base>/<experiment>/<run-tag>/global_step_<N>/actor/model_world_size_*_rank_*.pt
+CKPT_BASE="experiments/results/training/qwen3-8b-grpo-smoke"
 if find "$CKPT_BASE" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null | grep -q .; then
     echo "PASS — checkpoint found:"
     find "$CKPT_BASE" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" | head -5
@@ -244,5 +238,5 @@ else
 fi
 
 echo ""
-echo "Smoke test complete at: $(date)"
+echo "8B smoke test complete at: $(date)"
 echo "Submit 010_ft_orchestrator.job for the full training run."
