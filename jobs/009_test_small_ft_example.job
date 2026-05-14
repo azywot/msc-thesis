@@ -109,6 +109,10 @@ cleanup() {
         kill "$VERL_PID" || true
         wait "$VERL_PID" || true
     fi
+    # Ray spawns background OS processes (raylet, GCS, object store) that outlive the
+    # Python process that called ray.init() and keep the SLURM job alive indefinitely.
+    echo "Stopping Ray background processes..."
+    ray stop --force 2>/dev/null || true
     if [[ -n "${SUBAGENT_PID:-}" ]] && kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
         echo "Stopping frozen sub-agent server (pid=$SUBAGENT_PID)..."
         kill "$SUBAGENT_PID" || true
