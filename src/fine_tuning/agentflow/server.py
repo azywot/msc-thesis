@@ -127,8 +127,15 @@ class ServerDataStore:
         async with self._results_lock:
             self._processing_tasks.pop(rollout.rollout_id, None)
             self._completed_rollouts[rollout.rollout_id] = rollout
-            print(f"[DEBUG] Rollout received and stored: {rollout}")
-            print(f"Rollout received and stored: {rollout.rollout_id}")
+            triplet_texts = []
+            for i, t in enumerate(rollout.triplets or []):
+                text = t.response.get("text", "") if isinstance(t.response, dict) else ""
+                triplet_texts.append(f"  turn {i}: reward={t.reward} response={text!r}")
+            triplets_str = "\n".join(triplet_texts) or "  (none)"
+            print(
+                f"Rollout received and stored: rollout_id={rollout.rollout_id!r} "
+                f"final_reward={rollout.final_reward}\ntriplets:\n{triplets_str}"
+            )
 
     async def retrieve_rollout(self, rollout_id: str) -> Optional[Rollout]:
         """

@@ -11,6 +11,7 @@ import argparse
 import os
 import subprocess
 import sys
+from datetime import datetime
 
 import yaml
 
@@ -38,14 +39,6 @@ def main():
     if _v1 not in ("1", "true", "yes", "on"):
         os.environ["VLLM_USE_V1"] = "1"
 
-    # vLLM V1 uses cuMemCreate/cuMemMap for weight tensors. PyTorch's default CUDA
-    # caching allocator holds large free blocks without returning them to the driver,
-    # so after each FSDP training step + checkpoint save the driver has no free physical
-    # pages for vLLM's wake_up call. Expandable segments return emptied pages to the
-    # driver immediately, preventing this OOM.
-    if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
-        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
     python_args = dict(config.get("python_args", {}))
     # Ray defaults num_cpus to the whole host under SLURM; that prestarts far more workers than the
     # job's CPU allocation and wedges worker registration. Prefer the scheduler's CPU count.
@@ -58,16 +51,48 @@ def main():
     use_lora = os.environ.get("USE_LORA", "false").strip().lower() in ("1", "true", "yes", "on")
     if use_lora:
         lora_cfg = config.get("lora", {}) or {}
-        python_args["actor_rollout_ref.model.lora_rank"] = int(lora_cfg.get("rank", 64))
-        python_args["actor_rollout_ref.model.lora_alpha"] = int(lora_cfg.get("alpha", 16))
-        python_args["+actor_rollout_ref.model.lora_target_modules"] = str(lora_cfg.get("target_modules", "all-linear"))
+        rank = int(lora_cfg.get("rank", 64))
+        alpha = int(lora_cfg.get("alpha", 64))
+        targets = str(lora_cfg.get("target_modules", "all-linear"))
+        python_args["actor_rollout_ref.model.lora_rank"] = rank
+        python_args["actor_rollout_ref.model.lora_alpha"] = alpha
+        # No + prefix: target_modules is an existing VERL schema key (lora_target_modules is not).
+        python_args["actor_rollout_ref.model.target_modules"] = targets
+        # load_format=safetensors: vLLM must load base weights from disk on startup so the
+        # FSDPVLLMShardingManager can push LoRA deltas on top (dummy_dtensor starts with zeros,
+        # which breaks LoRA — base weights would be missing entirely).
+        python_args["actor_rollout_ref.rollout.load_format"] = "safetensors"
+        # layered_summon: sync FSDP→vLLM one layer at a time (lower peak GPU memory for LoRA).
+        python_args["actor_rollout_ref.rollout.layered_summon"] = True
+        # use_shm: pass weights via shared memory instead of torch RPC (faster, less contention).
+        python_args["actor_rollout_ref.model.use_shm"] = True
+        # LoRA trains ~1% of parameters; a 10× higher LR than full FT is standard practice.
+        lora_lr = 1e-5
+        python_args["actor_rollout_ref.actor.optim.lr"] = lora_lr
         print(
-            f"  LoRA enabled: rank={lora_cfg.get('rank', 64)}, "
-            f"alpha={lora_cfg.get('alpha', 16)}, "
-            f"targets={lora_cfg.get('target_modules', 'all-linear')}"
+            f"  LoRA enabled: rank={rank}, alpha={alpha}, targets={targets}, "
+            f"lr={lora_lr} (overrides config), "
+            f"load_format=safetensors, layered_summon=True, use_shm=True"
         )
     else:
         print("  LoRA disabled: full-parameter training (USE_LORA=false)")
+
+    # Build unique checkpoint dir: <base>/<experiment>/<DD-MM-YYYY_HH-MM>-<SLURM_JOB_ID>
+    # Full fine-tuning checkpoints (~47 GB/step) go to scratch-shared; LoRA/smoke stay local.
+    experiment_name = os.environ.get("EXPERIMENT_NAME", "unknown")
+    job_id = os.environ.get("SLURM_JOB_ID", "local")
+    run_tag = os.environ.get("VERL_RUN_TAG") or f"{datetime.now().strftime('%d-%m-%Y_%H-%M')}-{job_id}"
+    use_scratch = os.environ.get("USE_SCRATCH_CHECKPOINTS", "false").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+    if use_scratch:
+        _user = os.environ.get("USER") or os.environ.get("LOGNAME") or "user"
+        ckpt_base = f"/scratch-shared/{_user}/msc-thesis/training"
+    else:
+        ckpt_base = "experiments/results/training"
+    ckpt_dir = f"{ckpt_base}/{experiment_name}/{run_tag}"
+    python_args["trainer.default_local_dir"] = ckpt_dir
+    print(f"  Checkpoint dir: {ckpt_dir}")
 
     # Build: python -u -m fine_tuning.agentflow.verl key=value key=value ...  (-u: line-buffered logs under SLURM > redirect)
     command = [sys.executable, "-u", "-m", "fine_tuning.agentflow.verl"]

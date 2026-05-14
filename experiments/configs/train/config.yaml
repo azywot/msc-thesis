@@ -8,17 +8,22 @@
 # IMPORTANT: Before starting rollout workers, launch a separate frozen sub-agent
 # vLLM server and export SUBAGENT_ENDPOINT, or set it in this file (VLLM_USE_V1=0 avoids V1 KV OOM):
 #   VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 \
-#       --gpu-memory-utilization 0.40 --max-model-len 8192
+#       --gpu-memory-utilization 0.08 --max-model-len 8192
 #   export SUBAGENT_ENDPOINT=http://localhost:9998/v1
 #
-# SLURM: jobs/010 requests 4 GPUs; sub-agent uses CUDA_VISIBLE_DEVICES=0, VERL sees 1–3 (N_GPUS: 3).
-# ROLLOUT_TP_SIZE is 1 so 3 GPUs is valid (TP=2 needs n_gpus divisible by 2).
+# SLURM: jobs/010 requests 4 H100 NVL GPUs (~94 GB each).
+#   GPU 0: frozen sub-agent at util=0.08 (~7.5 GB) — low enough to share with VERL on the same card.
+#   GPUs 0–3: VERL (N_GPUS: 4, CUDA_VISIBLE_DEVICES=0,1,2,3).
+# Memory per VERL GPU at util=0.45: actor shard 4 GB + optimizer 24 GB + grads 4 GB +
+#   ref 4 GB + vLLM engine 42.3 GB (16 GB model + 26.3 GB KV) + misc 3 GB = 81.3 GB.
+# GPU 0 total including sub-agent: 88.8 GB / 94 GB (5.2 GB headroom for activations).
+# ROLLOUT_TP_SIZE is 1; N_GPUS=4 is valid (TP=2 also works with 4 GPUs but adds overhead).
 
 env:
   BASE_MODEL: 'Qwen/Qwen3-8B'
   SUBAGENT_MODEL: 'Qwen/Qwen3-1.7B'
   SUBAGENT_ENDPOINT: 'http://localhost:9998/v1'
-  N_GPUS: 3
+  N_GPUS: 4
   ROLLOUT_TP_SIZE: 1
   EXPERIMENT_NAME: 'qwen3-8b-grpo-search-math'
   PROJECT_NAME: 'cosmas-rl-finetuning'
@@ -31,6 +36,7 @@ env:
   N_WORKERS: 1
   VERBOSITY: 'INFO'
   USE_LORA: "false"
+  USE_SCRATCH_CHECKPOINTS: "true"
 
 python_args:
   agentflow.port: 9999
@@ -62,12 +68,18 @@ python_args:
   actor_rollout_ref.actor.clip_ratio_high: 0.3
   actor_rollout_ref.actor.fsdp_config.param_offload: false
   actor_rollout_ref.actor.fsdp_config.optimizer_offload: false
-  # Ref forward-only: offload keeps GPU footprint smaller for colocated vLLM (hybrid rollout).
-  actor_rollout_ref.ref.fsdp_config.param_offload: true
+  # H100 94 GB has enough headroom for ref weights on-GPU (saves PCIe transfer overhead vs offload).
+  actor_rollout_ref.ref.fsdp_config.param_offload: false
   actor_rollout_ref.rollout.name: 'vllm'
-  # vLLM requires free_mem >= util × total_VRAM on colocated workers. On 40GB A100 with N_GPUS=3 and TP=1,
-  # 0.4 can fail init_device; ref param_offload helps headroom; keep util conservative.
-  actor_rollout_ref.rollout.gpu_memory_utilization: 0.30
+  # util=0.45 on H100 94 GB = 42.3 GB vLLM budget per GPU (16 GB model + 26.3 GB KV cache).
+  # Budget verified: non-vLLM peak ~39 GB + vLLM 42.3 GB = 81.3 GB < 94 GB (GPUs 1–3);
+  # GPU 0 also hosts sub-agent at util=0.08 → 88.8 GB total, 5.2 GB activation headroom.
+  actor_rollout_ref.rollout.gpu_memory_utilization: 0.45
+  # Cap vLLM context to actual training sequence length (max_prompt + max_response = 22528).
+  # Without this, vLLM defaults to Qwen3-8B's native 40960-token context, consuming far more
+  # KV memory than needed and risking "no available memory for cache blocks" at init time.
+  actor_rollout_ref.rollout.max_model_len: 22528
+  actor_rollout_ref.rollout.max_num_batched_tokens: 22528
   actor_rollout_ref.rollout.tensor_model_parallel_size: '${ROLLOUT_TP_SIZE}'
   trainer.n_gpus_per_node: '${N_GPUS}'
   trainer.logger: ['console', 'wandb']
@@ -82,5 +94,5 @@ python_args:
 
 lora:                     # applied only when USE_LORA=true
   rank: 64
-  alpha: 16
+  alpha: 64               # alpha=rank → scaling factor 1.0 (neutral LoRA initialisation)
   target_modules: "all-linear"

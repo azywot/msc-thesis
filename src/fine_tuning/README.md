@@ -74,19 +74,27 @@ python scripts/train_orchestrator.py --config experiments/configs/train/config.y
 
 ### 3. Merge LoRA and evaluate
 
+When `USE_LORA=true`, merge the adapter before inference:
+
 ```bash
 conda activate cosmas-train
+# Find the run tag printed by launch_verl.py at startup (also in the SLURM log)
+RUN_TAG="<DD-MM-YYYY_HH-MM-JOBID>"
+CKPT_STEP="experiments/results/training/qwen3-8b-grpo-search-math/${RUN_TAG}/global_step_<N>"
+
 python $HOME/azywot/AgentFlow/util/model_merger.py \
     --base_model Qwen/Qwen3-8B \
-    --lora_path experiments/results/training/<run>/checkpoint_best/actor/lora_weights.pt \
-    --output_dir experiments/results/training/<run>/merged_model/
+    --lora_path "${CKPT_STEP}/actor/model_world_size_1_rank_0.pt" \
+    --output_dir "experiments/results/training/qwen3-8b-grpo-search-math/${RUN_TAG}/merged_model/"
 ```
+
+When `USE_LORA=false` (current default), `model_world_size_1_rank_0.pt` is the full model — no merge needed, load directly with `from_pretrained`.
 
 Then update any experiment YAML:
 ```yaml
 models:
   orchestrator:
-    path_or_id: /path/to/experiments/results/training/<run>/merged_model/
+    path_or_id: /path/to/experiments/results/training/<experiment>/<run-tag>/merged_model/
     # all other fields (family, role, tensor_parallel_size, etc.) unchanged
 ```
 
@@ -130,7 +138,7 @@ VERL logs automatically via `trainer.logger: ['console', 'wandb']` into the proj
 
 ### Rollout JSONs (disk, per episode)
 
-Every episode is persisted to `rollout_dir/train|val/idx_N/rollout_<uuid8>.json`. With `rollout_n=8`, each training question produces 8 files (one per GRPO sample).
+Every episode is persisted to `experiments/results/training/<experiment>/<run-tag>/rollout_data/train|val/idx_N/rollout_<uuid8>.json`. With `rollout_n=8`, each training question produces 8 files (one per GRPO sample).
 
 Each record contains:
 ```json
@@ -186,14 +194,20 @@ truncation is likely. Fix: increase `data.max_response_length` to `8192` in
 
 ## Checkpoint Layout
 
-VERL writes checkpoints to:
-```
-checkpoints/<PROJECT_NAME>/<EXPERIMENT_NAME>/
-```
-For the smoke run that is `checkpoints/cosmas-rl-finetuning-smoke/qwen3-4b-grpo-smoke/`.
+VERL writes checkpoints to a unique run directory set by `trainer.default_local_dir` in `launch_verl.py`.
+The run tag `<DD-MM-YYYY_HH-MM-JOBID>` is printed at startup and shared by checkpoints and rollout data.
+
+| Config | Checkpoint base |
+|---|---|
+| `config_smoke.yaml` (`USE_SCRATCH_CHECKPOINTS: false`) | `experiments/results/training/<experiment>/<run-tag>/` |
+| `config.yaml` (`USE_SCRATCH_CHECKPOINTS: true`) | `/scratch-shared/$USER/msc-thesis/training/<experiment>/<run-tag>/` |
+
+Rollout JSONs always land in `experiments/results/training/<experiment>/<run-tag>/rollout_data/`.
+
+For the smoke run the checkpoint tree looks like:
 
 ```
-checkpoints/cosmas-rl-finetuning-smoke/qwen3-4b-grpo-smoke/
+experiments/results/training/qwen3-4b-grpo-smoke/<run-tag>/
 │
 ├── latest_checkpointed_iteration.txt   # Contains the last saved global step number (e.g. "1").
 │                                       # Used by VERL to find the latest checkpoint when resuming.
@@ -259,10 +273,17 @@ When `USE_LORA=true`, `model_world_size_1_rank_0.pt` contains only the LoRA adap
 frozen base weights are not stored. Merge before inference:
 
 ```bash
+# Smoke (USE_SCRATCH_CHECKPOINTS=false):
+python $HOME/azywot/AgentFlow/util/model_merger.py \
+    --base_model Qwen/Qwen3-4B \
+    --lora_path experiments/results/training/qwen3-4b-grpo-smoke/<run-tag>/global_step_<N>/actor/model_world_size_1_rank_0.pt \
+    --output_dir experiments/results/training/qwen3-4b-grpo-smoke/<run-tag>/merged_model/
+
+# Full training (USE_SCRATCH_CHECKPOINTS=true):
 python $HOME/azywot/AgentFlow/util/model_merger.py \
     --base_model Qwen/Qwen3-8B \
-    --lora_path checkpoints/cosmas-rl-finetuning-smoke/qwen3-4b-grpo-smoke/global_step_<N>/actor/model_world_size_1_rank_0.pt \
-    --output_dir experiments/results/training/<run>/merged_model/
+    --lora_path /scratch-shared/$USER/msc-thesis/training/qwen3-8b-grpo-search-math/<run-tag>/global_step_<N>/actor/model_world_size_1_rank_0.pt \
+    --output_dir experiments/results/training/qwen3-8b-grpo-search-math/<run-tag>/merged_model/
 ```
 
 When `USE_LORA=false` (current smoke config), `model_world_size_1_rank_0.pt` is the full model and

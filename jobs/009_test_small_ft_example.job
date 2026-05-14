@@ -1,7 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=SmokeFT
 #SBATCH --partition=gpu_h100
-# Two GPUs: GPU 0 = frozen sub-agent; GPU 1 = VERL (N_GPUS=1). Smoke uses **Qwen3-4B** so FSDP + vLLM fit on one 40GB card (8B OOMs here).
+# Two GPUs: GPU 0 = frozen sub-agent; GPU 1 = VERL (N_GPUS=1). Smoke uses **Qwen3-4B** (not 8B)
+# to keep the test fast (smaller model = fewer tokens/step). Full training (job 010, N_GPUS=4)
+# uses Qwen3-8B on H100. H100 NVL cards here have ~94 GB.
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -77,7 +79,7 @@ case "${SKIP_PIP_SETUP:-}" in
 esac
 python -c "import agent_engine, fine_tuning, verl, vllm; from fine_tuning.agentflow import LitAgent, Trainer, reward; print('Training imports OK')"
 
-mkdir -p out/fine_tuning
+mkdir -p out/fine_tuning/smoke_test
 
 for required_file in \
     data/training/smoke/train/combined_train.parquet \
@@ -93,7 +95,15 @@ done
 
 VERL_PID=""
 SUBAGENT_PID=""
+ORCHESTRATOR_PID=""
+CRASH_MONITOR_PID=""
 cleanup() {
+    [[ -n "${CRASH_MONITOR_PID:-}" ]] && kill "$CRASH_MONITOR_PID" 2>/dev/null || true
+    if [[ -n "${ORCHESTRATOR_PID:-}" ]] && kill -0 "$ORCHESTRATOR_PID" >/dev/null 2>&1; then
+        echo "Stopping rollout workers (pid=$ORCHESTRATOR_PID)..."
+        kill "$ORCHESTRATOR_PID" || true
+        wait "$ORCHESTRATOR_PID" || true
+    fi
     if [[ -n "${VERL_PID:-}" ]] && kill -0 "$VERL_PID" >/dev/null 2>&1; then
         echo "Stopping VERL server (pid=$VERL_PID)..."
         kill "$VERL_PID" || true
@@ -106,6 +116,26 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+# Watch a log file; send SIGTERM to this script on fatal CUDA/NCCL errors so
+# the EXIT trap fires and cleanup kills all background processes immediately.
+# In bash, $$ inside () expands to the parent script PID, not the subshell.
+start_crash_monitor() {
+    local logfile="$1" label="$2"
+    (
+        while [[ ! -f "$logfile" ]]; do sleep 2; done
+        tail -n 0 -F "$logfile" 2>/dev/null \
+        | grep --line-buffered -E \
+            "CUDA (Error|out of memory)|RuntimeError: CUDA|\
+NCCL (error|failure)|ncclSystemError|ncclInternalError|ncclCommAbort|\
+RayActorError|ActorDiedError|WorkerDied|The actor died unexpectedly|\
+Segmentation fault|Aborted \(core dumped\)|^Killed\$|\
+FATAL ERROR|Fatal Python error" \
+        | { IFS= read -r line
+            printf '\n=== FATAL CRASH [%s] ===\n%s\nKilling job...\n' "$label" "$line" >&2
+            kill -TERM $$ ; }
+    ) &
+    CRASH_MONITOR_PID=$!
+}
 
 # ── 1. Pre-flight checks (CPU, no VERL needed) ───────────────────────────────
 echo ""
@@ -116,6 +146,12 @@ python scripts/test_ft_smoke.py \
 
 echo ""
 echo "Pre-flight checks passed. Starting training..."
+
+# Shared run tag — checkpoints and rollout data go under the same directory.
+# Both launch_verl.py and train_orchestrator.py read VERL_RUN_TAG; if not set they compute independently.
+VERL_RUN_TAG="$(date +%d-%m-%Y_%H-%M)-${SLURM_JOB_ID:-local}"
+export VERL_RUN_TAG
+echo "Run tag: $VERL_RUN_TAG"
 
 # ── 2. Frozen sub-agent vLLM server (separate from VERL, never updated) ──────
 echo ""
@@ -144,11 +180,13 @@ export CUDA_VISIBLE_DEVICES=1
 # ── 3. VERL server ───────────────────────────────────────────────────────────
 # Unbuffered Python so *_verl.log updates live under SLURM file redirection (also applies to train_orchestrator below).
 export PYTHONUNBUFFERED=1
+VERL_LOG="out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_verl.log"
 echo ""
 echo "Starting VERL server (config_smoke.yaml)..."
 python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml \
-    > out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_verl.log 2>&1 &
+    > "$VERL_LOG" 2>&1 &
 VERL_PID=$!
+start_crash_monitor "$VERL_LOG" "VERL"
 
 echo "Waiting up to 3 min for Ray + worker bootstrap; N_GPUS=1 + FSDP + colocated vLLM can take 15–25 min before AgentFlow answers /task."
 sleep 180
@@ -181,19 +219,21 @@ fi
 # ── 4. Rollout workers ───────────────────────────────────────────────────────
 echo ""
 echo "Starting rollout workers..."
-python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke.yaml
-
+python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke.yaml &
+ORCHESTRATOR_PID=$!
+wait $ORCHESTRATOR_PID
 wait $VERL_PID
 
 # ── 5. Verify checkpoint was written ─────────────────────────────────────────
 echo ""
 echo "Verifying checkpoint..."
 CKPT_BASE="experiments/results/training/qwen3-4b-grpo-smoke"
-if ls "$CKPT_BASE"/*/checkpoint_step_*/actor/lora_weights.pt 1>/dev/null 2>&1; then
+# VERL writes: <base>/<experiment>/<run-tag>/global_step_<N>/actor/model_world_size_*_rank_*.pt
+if find "$CKPT_BASE" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null | grep -q .; then
     echo "PASS — checkpoint found:"
-    ls -lh "$CKPT_BASE"/*/checkpoint_step_*/actor/lora_weights.pt
+    find "$CKPT_BASE" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" | head -5
 else
-    echo "FAIL — no checkpoint found under $CKPT_BASE/*/"
+    echo "FAIL — no checkpoint found under $CKPT_BASE"
     exit 1
 fi
 

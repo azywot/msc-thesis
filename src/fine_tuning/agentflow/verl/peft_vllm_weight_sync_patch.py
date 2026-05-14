@@ -82,7 +82,7 @@ def _patch_fsdp_vllm_sharding_manager() -> None:
                 lora_request = TensorLoRARequest(
                     lora_name=f"{lora_int_id}",
                     lora_int_id=lora_int_id,
-                    lora_path="simon_lora_path",
+                    lora_path="cosmas_lora_adapter",
                     peft_config=asdict(peft_config),
                     lora_tensors=updated_params,
                 )

@@ -13,6 +13,7 @@ EM and F1 are computed the same way for every dataset (SQuAD-style).
 import re
 import string
 from collections import Counter
+from datetime import date, datetime
 from math_verify import parse, verify
 from typing import Any, Dict, List, Optional
 from .gaia_scorer import question_scorer
@@ -74,6 +75,18 @@ def strip_latex_wrappers(ans: str) -> str:
             break
 
     return s
+
+
+def _try_parse_date(s: str) -> Optional[date]:
+    """Return a date if s parses unambiguously as one, else None."""
+    try:
+        from dateutil import parser as _dp
+        dt = _dp.parse(s, default=datetime(1, 1, 1), ignoretz=True)
+        if dt.year == 1:
+            return None
+        return dt.date()
+    except Exception:
+        return None
 
 
 def exact_match(prediction: str, ground_truth: str, case_sensitive: bool = False) -> bool:
@@ -221,6 +234,12 @@ def evaluate_answer(
         em_score = float(exact_match(pred, gt, case_sensitive=False))
         f1_score = token_f1(pred, gt)
     else:
+        # Date equivalence: "April 2, 2011" == "2011-04-02"
+        pred_date = _try_parse_date(pred)
+        gt_date = _try_parse_date(gt)
+        if pred_date is not None and gt_date is not None and pred_date == gt_date:
+            return {"correct": True, "accuracy": 1.0, "em": 1.0, "f1": 1.0}
+
         # Plain text → GAIA-style normalised comparison, see: https://github.com/aymeric-roucher/GAIA/blob/main/scripts/evaluation/gaia_scorer.py
         score = float(question_scorer(pred, gt))
         em_score = float(exact_match(pred, gt, case_sensitive=False))

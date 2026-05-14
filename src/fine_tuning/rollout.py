@@ -341,11 +341,12 @@ class OrchestratorRollout(LitAgent):
         val: bool,
     ) -> None:
         split = "val" if val else "train"
-        save_dir = self.rollout_dir / split / f"idx_{idx}"
+        unique_id = f"{data_source}_{idx}"
+        save_dir = self.rollout_dir / split / f"idx_{unique_id}"
         save_dir.mkdir(parents=True, exist_ok=True)
 
         record = {
-            "idx": idx,
+            "idx": unique_id,
             "rollout_id": rollout_id,
             "data_source": data_source,
             "question": question,
