@@ -45,7 +45,7 @@ AIME answers are integers 0–999 — handled by the existing uniform
    each. Returns a flat list of normalised rows. Raises if either year cannot
    supply the requested count.
 
-3. **New CLI args** (both default to 0, preserving old behaviour when omitted):
+3. **New CLI args** (both default to 10):
    - `--n-val-aime-2024`
    - `--n-val-aime-2025`
 
@@ -78,8 +78,6 @@ Update the full-data prepare invocation:
 
 ## Backward Compatibility
 
-- Default values of `--n-val-aime-2024 0` / `--n-val-aime-2025 0` mean running
-  `prepare.py` without the new flags reproduces the old two-source behaviour.
 - `val_search.parquet` and `val_deepmath.parquet` are still written; any tooling
   that reads them offline continues to work.
 - `config_smoke.yaml` is not changed — smoke runs use `data/training/smoke/`
