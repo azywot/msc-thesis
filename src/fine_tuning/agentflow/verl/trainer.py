@@ -1,10 +1,14 @@
+import json
+import os
 import random
+import shutil
+import threading
 from contextlib import contextmanager
 from copy import deepcopy
 from typing import Dict
 
 import torch
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 from pprint import pprint
 from tqdm import tqdm
 
@@ -353,6 +357,59 @@ class AgentFlowTrainer(RayPPOTrainer):
 
         return metrics
 
+    def _save_checkpoint(self):
+        # Disable VERL's auto-rotation (max_ckpt_to_keep) — we manage
+        # latest/best retention ourselves in _rotate_checkpoints.
+        # open_dict is required because VERL's config is a struct DictConfig.
+        with open_dict(self.config.trainer):
+            original = self.config.trainer.get("max_actor_ckpt_to_keep", None)
+            self.config.trainer.max_actor_ckpt_to_keep = None
+            try:
+                super()._save_checkpoint()
+            finally:
+                self.config.trainer.max_actor_ckpt_to_keep = original
+
+    def _rotate_checkpoints(self, is_best: bool, epoch: int, val_reward: float) -> None:
+        """Maintain latest_checkpoint/ and best_checkpoint/ symlinks.
+
+        After every epoch:
+          - latest_checkpoint  always points to the just-saved global_step_N dir
+          - best_checkpoint    points to the dir with the highest val/reward so far
+
+        Step dirs that are no longer referenced by either symlink are deleted in a background
+        thread — checkpoint dirs are 8-32 GB and synchronous deletion would stall the training loop.
+        """
+        base = self.config.trainer.default_local_dir
+        abs_step_dir = os.path.abspath(os.path.join(base, f"global_step_{self.global_steps}"))
+        latest_link = os.path.join(base, "latest_checkpoint")
+        best_link = os.path.join(base, "best_checkpoint")
+
+        def _realpath_if_link(p):
+            return os.path.realpath(p) if os.path.islink(p) else None
+
+        prev_latest = _realpath_if_link(latest_link)
+        prev_best = _realpath_if_link(best_link)
+
+        if os.path.islink(latest_link):
+            os.unlink(latest_link)
+        os.symlink(abs_step_dir, latest_link)
+
+        if is_best:
+            if os.path.islink(best_link):
+                os.unlink(best_link)
+            os.symlink(abs_step_dir, best_link)
+            info = {"epoch": epoch, "step": self.global_steps, "val_reward": val_reward}
+            with open(os.path.join(base, "best_checkpoint_info.json"), "w") as f:
+                json.dump(info, f, indent=2)
+            print(f"New best checkpoint: epoch={epoch}, step={self.global_steps}, val_reward={val_reward:.4f}")
+
+        current_best = abs_step_dir if is_best else prev_best
+        protected = {abs_step_dir, current_best}
+        for old_dir in [prev_latest, prev_best]:
+            if old_dir and old_dir not in protected and os.path.isdir(old_dir):
+                threading.Thread(target=shutil.rmtree, args=(old_dir,), daemon=True).start()
+                print(f"Deleting old checkpoint dir in background: {old_dir}")
+
     def fit(self):
         logger = Tracking(
             project_name=self.config.trainer.project_name,
@@ -400,6 +457,7 @@ class AgentFlowTrainer(RayPPOTrainer):
         last_val_metrics = None
         val_every_epoch = bool(self.config.trainer.get("val_every_epoch", False))
         save_every_epoch = bool(self.config.trainer.get("save_every_epoch", False))
+        best_val_reward = float("-inf")
 
         done = False
         for epoch in range(self.config.trainer.total_epochs):
@@ -452,11 +510,8 @@ class AgentFlowTrainer(RayPPOTrainer):
                 progress_bar.update(1)
                 self.global_steps += 1
 
-            # Post-epoch: val + save fire consistently for every epoch including the last.
-            if save_every_epoch:
-                with _timer("save_checkpoint", {}):
-                    self._save_checkpoint()
-
+            # Post-epoch: validate first so the score drives checkpoint selection,
+            # then save and rotate latest/best symlinks.
             if val_every_epoch and self.val_reward_fn is not None:
                 timing_raw_epoch = {}
                 with _timer("validate", timing_raw_epoch):
@@ -466,6 +521,15 @@ class AgentFlowTrainer(RayPPOTrainer):
                 epoch_val_log["training/global_step"] = self.global_steps
                 epoch_val_log["training/epoch"] = epoch
                 logger.log(data=epoch_val_log, step=self.global_steps)
+
+            if save_every_epoch:
+                val_reward = (last_val_metrics or {}).get("val/reward", float("-inf"))
+                is_best = val_reward > best_val_reward
+                if is_best:
+                    best_val_reward = val_reward
+                with _timer("save_checkpoint", {}):
+                    self._save_checkpoint()
+                self._rotate_checkpoints(is_best=is_best, epoch=epoch, val_reward=val_reward)
 
             if done:
                 pprint(f"Final validation metrics: {last_val_metrics}")

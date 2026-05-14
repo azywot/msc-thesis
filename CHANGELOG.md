@@ -73,6 +73,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 - **`scripts/merge_lora.py`** — post-training LoRA merger: loads a VERL FSDP actor checkpoint, detects whether it is a LoRA or full-parameter run, and saves a merged HuggingFace model. LoRA path: normalises VERL's HF-style keys to PEFT's `base_model.model.*` namespace, calls `PeftModel.load_state_dict(strict=False)` then `merge_and_unload()`. Full-param path: loads state dict directly and saves with `safe_serialization=True`. Tokenizer is copied from the checkpoint's `actor/huggingface/` subdir.
 
+### Added
+- **Checkpoint rotation** (`src/fine_tuning/agentflow/verl/trainer.py`)
+  - `_rotate_checkpoints(is_best, epoch, val_reward)` — maintains `latest_checkpoint/` and `best_checkpoint/` symlinks pointing into VERL's `global_step_N/` dirs after every epoch
+  - `best_checkpoint_info.json` written alongside the checkpoint dir whenever a new best is recorded: `{"epoch": N, "step": N, "val_reward": 0.xxxx}`
+  - Old step dirs that are no longer referenced by either symlink are deleted in a background thread (checkpoint dirs are 8-32 GB; synchronous deletion would stall the training loop)
+  - `_save_checkpoint()` override disables VERL's built-in `max_actor_ckpt_to_keep` rotation (wrapped in `open_dict` to handle OmegaConf struct configs safely)
+- **`total_training_steps` fix for `train_max_samples`** (`src/fine_tuning/agentflow/verl/trainer.py`)
+  - `_create_dataloader()` override recomputes `self.total_training_steps` after truncating the dataset to `train_max_samples`, so `is_last_step` and the tqdm progress bar are based on the truncated dataloader rather than the full dataset the base class measured (was showing `2/25` instead of `2/2` in smoke runs)
+- **`ModelFamily` detection helper** (`src/fine_tuning/rollout.py`)
+  - `_model_family_from_id(model_id)` — derives `ModelFamily` from a HuggingFace model ID string; used by `_make_model_config()` for both orchestrator and sub-agent providers so non-Qwen models (DeepSeek, OLMo) get the correct prompt/tool-call format
+
+### Changed
+- **Epoch-boundary validate-then-save ordering** (`src/fine_tuning/agentflow/verl/trainer.py`)
+  - When `val_every_epoch=true` and `save_every_epoch=true`, validation now always runs before the save so the `val/reward` score is available to drive `is_best` checkpoint selection; previously these were independent code paths that could diverge
+  - `best_val_reward` tracked across epochs; `_rotate_checkpoints` receives `is_best` flag based on cumulative best
+  - In-loop validation/save (`test_freq` / `save_freq`) now correctly guarded by `not val_every_epoch` / `not save_every_epoch`; no double-validation on the final epoch
+  - `done` flag + `break` replaces `return` on `is_last_step` so the post-epoch block (validate → save → rotate) always fires, including for the final step
+  - Natural-epoch-exhaustion path (when `train_max_samples` truncates below `total_training_steps`) now has a matching cleanup block (`progress_bar.close()`, `del logger`)
+  - `agentops` import in `reward.py` moved inside `reward()` with `ImportError` fallback (was a top-level import that failed when agentops is not installed)
+- **`actor_rollout_ref.rollout.free_cache_engine: false`** added to `experiments/configs/train/config.yaml` to make the intent explicit (prevents vLLM from freeing the cache engine between rollout and update phases on multi-GPU runs where memory is sufficient)
+
 ### Changed
 - **Flow GRPO: propagate final reward to all turns** (`src/fine_tuning/rollout.py`)
   - Previously, only the last triplet in a multi-turn rollout received `reward=reward_value`; all intermediate turns (planning, tool-call steps) had `reward=None`, so they contributed no gradient signal.

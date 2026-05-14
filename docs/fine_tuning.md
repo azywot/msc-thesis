@@ -176,6 +176,30 @@ Setting `PYTHONHASHSEED` at runtime (in `set_seed()`) affects child processes on
 
 ---
 
+## Checkpoint Management
+
+After every epoch `AgentFlowTrainer._rotate_checkpoints()` updates two symlinks in `trainer.default_local_dir`:
+
+| Path | Points to |
+|---|---|
+| `latest_checkpoint/` | `global_step_N/` from the most recent epoch |
+| `best_checkpoint/` | `global_step_N/` with the highest `val/reward` seen so far |
+
+`best_checkpoint_info.json` records the epoch, global step, and val reward of the current best:
+```json
+{"epoch": 3, "step": 18, "val_reward": 0.4750}
+```
+
+**Checkpoint retention:** any `global_step_N/` dir that is no longer referenced by either symlink is deleted in a background thread. Checkpoint dirs are 8-32 GB; synchronous deletion would stall the training loop between epochs. The background thread is daemonised so it does not block process exit if training is interrupted.
+
+**`val/reward` for selection:** VERL's `daemon.get_test_metrics()` returns a cumulative average across all rollouts in the validation run, not split by dataset. `val_0/reward_mean` and `val_1/reward_mean` are still logged per-dataset in W&B for diagnostic purposes; `val/reward` (the key used for `is_best`) is the combined metric.
+
+**Order invariant:** when `val_every_epoch=true` and `save_every_epoch=true`, validation always runs before the save so the reward score drives checkpoint selection. The in-loop `test_freq` / `save_freq` paths are disabled when epoch-boundary mode is active (no double-validation on the final epoch).
+
+**`total_training_steps` with `train_max_samples`:** VERL's base class computes `total_training_steps` from the full dataset before `train_max_samples` truncation. The `_create_dataloader()` override recomputes it after truncation so `is_last_step`, the tqdm progress bar, and checkpoint rotation all align with the actual run length. Without this fix, a smoke run with `train_max_samples=8` and batch size 8 showed `2/25` progress instead of `1/1`.
+
+---
+
 ## Two Conda Environments
 
 | Env | Purpose | vLLM |
