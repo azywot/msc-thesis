@@ -3,8 +3,6 @@ import inspect
 import warnings
 from typing import TypedDict, Optional
 
-from agentops.sdk.decorators import operation
-
 
 class RewardSpanData(TypedDict):
     type: "reward"
@@ -16,6 +14,11 @@ def reward(fn: callable) -> callable:
     A decorator to wrap a function that computes rewards.
     It will automatically handle the input and output of the function.
     """
+    try:
+        from agentops.sdk.decorators import operation
+    except ImportError:
+        def operation(f):
+            return f
 
     def wrap_result(result: Optional[float]) -> RewardSpanData:
         """

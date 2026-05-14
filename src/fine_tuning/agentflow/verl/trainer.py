@@ -1,7 +1,7 @@
 import random
 from contextlib import contextmanager
 from copy import deepcopy
-from typing import Dict, Tuple
+from typing import Dict
 
 import torch
 from omegaconf import OmegaConf
@@ -29,14 +29,6 @@ from verl.utils.tracking import Tracking
 
 from .daemon import AgentModeDaemon
 
-import os
-import json
-import uuid
-from collections import defaultdict
-
-import time
-
-import numpy as np
 
 @contextmanager
 def _timer(name: str, timing_raw: Dict[str, float]):
@@ -62,6 +54,31 @@ class AgentFlowTrainer(RayPPOTrainer):
     3. Direct batch processing through agent daemon
     4. Streamlined validation using agent_mode validation
     """
+
+    def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler):
+        super()._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
+        max_samples = self.config.data.get("train_max_samples", -1)
+        if max_samples is not None and max_samples > 0 and len(self.train_dataset) > max_samples:
+            from torch.utils.data import Subset
+            from torchdata.stateful_dataloader import StatefulDataLoader
+            from verl.utils.dataset.rl_dataset import collate_fn as default_collate_fn
+            from verl.trainer.main_ppo import create_rl_sampler
+            self.train_dataset = Subset(self.train_dataset, list(range(max_samples)))
+            self.train_dataloader = StatefulDataLoader(
+                dataset=self.train_dataset,
+                batch_size=self.config.data.get("gen_batch_size", self.config.data.train_batch_size),
+                num_workers=self.config.data["dataloader_num_workers"],
+                drop_last=True,
+                collate_fn=collate_fn if collate_fn is not None else default_collate_fn,
+                sampler=create_rl_sampler(self.config.data, self.train_dataset),
+            )
+            # Recompute total_training_steps so is_last_step and tqdm are based on the
+            # truncated dataloader, not the full dataset the base class measured.
+            self.total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+            print(
+                f"train_max_samples={max_samples}: train dataset truncated to {len(self.train_dataset)} samples "
+                f"({len(self.train_dataloader)} batches, total_training_steps={self.total_training_steps})."
+            )
 
     def _validate(self):
         assert len(self.val_dataloader) == 1, "Please set val_batch_size to None for better throughput."
@@ -91,7 +108,6 @@ class AgentFlowTrainer(RayPPOTrainer):
             raise ValueError("Validation data is empty. Check your validation dataset.")
 
         test_batch = DataProto.from_single_dict(test_data)
-        # test_batch.non_tensor_batch["step"] = np.ones_like(test_batch.non_tensor_batch["question"]) * self.global_steps
         self.async_rollout_manager.wake_up()
         self.agent_mode_daemon.set_up_data_and_server(
             test_batch.non_tensor_batch,
@@ -165,7 +181,6 @@ class AgentFlowTrainer(RayPPOTrainer):
 
             # generate a batch
             with _timer("gen", timing_raw):
-                # gen_batch.non_tensor_batch["step"] = np.ones_like(gen_batch.non_tensor_batch["question"]) * self.global_steps
                 self.async_rollout_manager.wake_up()
                 self.agent_mode_daemon.set_up_data_and_server(
                     gen_batch.non_tensor_batch, self.async_rollout_manager.server_addresses
@@ -217,8 +232,6 @@ class AgentFlowTrainer(RayPPOTrainer):
                 if self.use_rm:
                     reward_tensor = self.rm_wg.compute_rm_score(batch)
                     batch = batch.union(reward_tensor)
-
-                reward_extra_infos_dict = {}
 
             # for agent mode, pad the lengths to calculate old log prob, ref, and values
             batch, pad_size = pad_dataproto_to_divisor(batch, self.actor_rollout_wg.world_size)
@@ -340,58 +353,6 @@ class AgentFlowTrainer(RayPPOTrainer):
 
         return metrics
 
-    def _dump_rollout_data(self, inputs, outputs, scores, reward_extra_infos_dict, metrics, dump_path, is_train, batch, data_ids=None, ground_truths=None):
-        data_type = 'train' if is_train else 'val'
-        current_time = time.strftime("%Y%m%d_%H%M%S")
-        step_dir = os.path.join(dump_path, data_type, f"step_{self.global_steps}_{current_time}")
-        os.makedirs(step_dir, exist_ok=True)
-
-        if data_ids is None:
-            data_ids = batch.non_tensor_batch.get("data_id_list", [str(uuid.uuid4()) for _ in inputs])
-        else:
-            data_ids = data_ids[:len(inputs)] + [str(uuid.uuid4()) for _ in range(len(inputs) - len(data_ids))]
-
-        question_groups = defaultdict(list)
-        all_metrics = metrics.copy()
-
-        for i, (input_text, output_text, score) in enumerate(zip(inputs, outputs, scores)):
-            data_id = data_ids[i] if i < len(data_ids) else str(uuid.uuid4())
-
-            record = {
-                "query_index": i,
-                "data_id": data_id,
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "input": input_text,
-                "output": output_text,
-                "score": score,
-                "metrics": {},
-                "extra_info": {}
-            }
-
-            if ground_truths and i < len(ground_truths):
-                record["ground_truth"] = ground_truths[i]
-
-            for metric_name, metric_value in all_metrics.items():
-                if isinstance(metric_value, (list, tuple)) and i < len(metric_value):
-                    record["metrics"][metric_name] = metric_value[i]
-                else:
-                    record["metrics"][f"global_{metric_name}"] = metric_value
-
-            if reward_extra_infos_dict:
-                for key, values in reward_extra_infos_dict.items():
-                    if i < len(values):
-                        record["extra_info"][key] = values[i]
-
-            question_groups[data_id].append(record)
-
-        for data_id, records in question_groups.items():
-            json_path = os.path.join(step_dir, f"query_{data_id}.json")
-
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(records, f, ensure_ascii=False, indent=2)
-
-        print(f"Successfully saved rollout data to {step_dir}")
-
     def fit(self):
         logger = Tracking(
             project_name=self.config.trainer.project_name,
@@ -438,7 +399,9 @@ class AgentFlowTrainer(RayPPOTrainer):
         self.global_steps += 1
         last_val_metrics = None
         val_every_epoch = bool(self.config.trainer.get("val_every_epoch", False))
+        save_every_epoch = bool(self.config.trainer.get("save_every_epoch", False))
 
+        done = False
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
                 metrics = {}
@@ -448,16 +411,14 @@ class AgentFlowTrainer(RayPPOTrainer):
                 # train step
                 metrics = self._train_step(batch_dict)
 
-                # In-loop validation: every test_freq steps (default), or only when stopping mid-epoch
-                # (is_last_step) if val_every_epoch — full epochs are validated in the block below.
+                # In-loop validation/save: only when NOT in epoch-boundary mode.
+                # val_every_epoch / save_every_epoch always delegate to the post-epoch block below,
+                # which fires even on the final epoch (inner loop exits via break, not return).
                 run_val = False
-                if self.val_reward_fn is not None:
-                    if val_every_epoch:
-                        run_val = is_last_step
-                    else:
-                        run_val = self.config.trainer.test_freq > 0 and (
-                            is_last_step or self.global_steps % self.config.trainer.test_freq == 0
-                        )
+                if self.val_reward_fn is not None and not val_every_epoch:
+                    run_val = self.config.trainer.test_freq > 0 and (
+                        is_last_step or self.global_steps % self.config.trainer.test_freq == 0
+                    )
                 if run_val:
                     with _timer("validate", timing_raw):
                         val_metrics: dict = self._validate()
@@ -465,11 +426,13 @@ class AgentFlowTrainer(RayPPOTrainer):
                             last_val_metrics = val_metrics
                     metrics.update(val_metrics)
 
-                if self.config.trainer.save_freq > 0 and (
-                    is_last_step or self.global_steps % self.config.trainer.save_freq == 0
-                ):
-                    with _timer("save_checkpoint", timing_raw):
-                        self._save_checkpoint()
+                if not save_every_epoch:
+                    run_save = self.config.trainer.save_freq > 0 and (
+                        is_last_step or self.global_steps % self.config.trainer.save_freq == 0
+                    )
+                    if run_save:
+                        with _timer("save_checkpoint", timing_raw):
+                            self._save_checkpoint()
 
                 # step metrics
                 metrics.update(
@@ -482,20 +445,18 @@ class AgentFlowTrainer(RayPPOTrainer):
                 logger.log(data=metrics, step=self.global_steps)
 
                 if is_last_step:
-                    pprint(f"Final validation metrics: {last_val_metrics}")
-                    progress_bar.close()
-
-                    # This exit logic is to ensure a robust CI.
-                    pprint(f"Flush the logger...")
-                    del logger  # Make sure the loggers are flushed and closed properly
-                    pprint(f"Training finished at step {self.global_steps}.")
-                    return
+                    progress_bar.update(1)
+                    done = True
+                    break  # fall through to post-epoch block, then exit
 
                 progress_bar.update(1)
                 self.global_steps += 1
 
-            # val_every_epoch: one validation pass after all batches in this epoch (inner loop above).
-            # Separate logger.log so val metrics are recorded without merging into the last step's train metrics.
+            # Post-epoch: val + save fire consistently for every epoch including the last.
+            if save_every_epoch:
+                with _timer("save_checkpoint", {}):
+                    self._save_checkpoint()
+
             if val_every_epoch and self.val_reward_fn is not None:
                 timing_raw_epoch = {}
                 with _timer("validate", timing_raw_epoch):
@@ -505,3 +466,19 @@ class AgentFlowTrainer(RayPPOTrainer):
                 epoch_val_log["training/global_step"] = self.global_steps
                 epoch_val_log["training/epoch"] = epoch
                 logger.log(data=epoch_val_log, step=self.global_steps)
+
+            if done:
+                pprint(f"Final validation metrics: {last_val_metrics}")
+                progress_bar.close()
+                pprint(f"Flush the logger...")
+                del logger
+                pprint(f"Training finished at step {self.global_steps}.")
+                return
+
+        # Reached when all epochs exhaust naturally without is_last_step firing
+        # (e.g. train_max_samples truncates the dataloader below total_training_steps).
+        pprint(f"Final validation metrics: {last_val_metrics}")
+        progress_bar.close()
+        pprint(f"Flush the logger...")
+        del logger
+        pprint(f"Training finished at step {self.global_steps}.")

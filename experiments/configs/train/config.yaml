@@ -73,6 +73,10 @@ python_args:
   # H100 94 GB has enough headroom for ref weights on-GPU (saves PCIe transfer overhead vs offload).
   actor_rollout_ref.ref.fsdp_config.param_offload: false
   actor_rollout_ref.rollout.name: 'vllm'
+  # N_GPUS=4 shards the actor to ~2 GB/GPU so post-rollout GPU memory fragmentation is not
+  # a problem (unlike the smoke test where N_GPUS=1 keeps the full 8 GB actor on-GPU alongside
+  # the 42 GB vLLM allocation). Explicitly set false so the intent is clear.
+  actor_rollout_ref.rollout.free_cache_engine: false
   # util=0.45 on H100 94 GB = 42.3 GB vLLM budget per GPU (16 GB model + 26.3 GB KV cache).
   # Full budget breakdown is in the file header comment above.
   actor_rollout_ref.rollout.gpu_memory_utilization: 0.45
@@ -86,12 +90,11 @@ python_args:
   trainer.logger: ['console', 'wandb']
   trainer.project_name: '${PROJECT_NAME}'
   trainer.experiment_name: '${EXPERIMENT_NAME}'
-  # save_freq=56: one checkpoint per epoch (floor(1800/32)=56 steps/epoch × 5 epochs = 280 total steps).
-  # save_freq=1 would create 280 × ~47 GB ≈ 13 TB of checkpoints; "checkpoint every epoch" is the intent.
-  trainer.save_freq: 56
-  trainer.test_freq: 1
-  # true: post-epoch val (lines 497-507 in trainer.py, outside inner loop); false: every test_freq steps.
+  trainer.save_freq: -1
+  trainer.test_freq: -1
+  # true: post-epoch val/checkpoint; false: every test_freq/save_freq steps.
   trainer.val_every_epoch: true
+  trainer.save_every_epoch: true
   trainer.total_epochs: 5
   trainer.val_before_train: true
   trainer.critic_warmup: 0

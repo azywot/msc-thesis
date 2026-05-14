@@ -17,6 +17,7 @@ from typing import Any, Optional
 from fine_tuning.agentflow import LitAgent, reward
 from fine_tuning.agentflow.types import NamedResources, Rollout, Triplet
 
+from agent_engine.caching import CacheManager
 from agent_engine.core.orchestrator import AgenticOrchestrator
 from agent_engine.core.tool import ToolRegistry
 from agent_engine.models.api_provider import OpenAIProvider
@@ -25,6 +26,9 @@ from agent_engine.prompts.builder import PromptBuilder
 from agent_engine.tools import WebSearchTool, CodeGeneratorTool
 
 from .reward import OrchestratorReward
+
+# Disk layout matches inference: ``<cache_dir>/<provider>/fine_tuning/{search,url}_cache.json``.
+_DEFAULT_WEB_CACHE_DATASET = "fine_tuning"
 
 _reward_fn_instance = OrchestratorReward()
 
@@ -41,7 +45,9 @@ async def _reward_fn(
     return _reward_fn_instance(prediction, ground_truth, data_source)
 
 
-def _build_tool_registry(subagent_endpoint: str, subagent_model: str) -> ToolRegistry:
+def _build_tool_registry(
+    subagent_endpoint: str, subagent_model: str
+) -> tuple[ToolRegistry, CacheManager]:
     """Build the ToolRegistry for rollout workers using a frozen sub-agent server.
 
     Sub-agents connect to a SEPARATE, fixed vLLM endpoint (not the VERL training
@@ -52,6 +58,14 @@ def _build_tool_registry(subagent_endpoint: str, subagent_model: str) -> ToolReg
 
     - WebSearchTool:     query → API results → sub-agent LLM analyses them
     - CodeGeneratorTool: task description → sub-agent LLM writes code → exec
+
+    Web search uses the same on-disk cache as ``run_experiment.py``:
+    ``${CACHE_DIR:-./cache}/<provider>/<dataset>/search_cache.json`` (and
+    ``url_cache.json`` for Serper).  Defaults: ``./cache/serper/fine_tuning/``.
+
+    Environment:
+      - ``CACHE_DIR``: cache root (default ``./cache``).
+      - ``WEB_CACHE_DATASET``: subdirectory under the provider (default ``fine_tuning``).
 
     Requires:
       - SERPER_API_KEY or TAVILY_API_KEY in the environment.
@@ -83,24 +97,45 @@ def _build_tool_registry(subagent_endpoint: str, subagent_model: str) -> ToolReg
     )
     subagent_provider = OpenAIProvider(subagent_config, api_key="EMPTY", base_url=subagent_endpoint)
 
+    cache_dir = os.environ.get("CACHE_DIR", "./cache")
+    web_cache_dataset = os.environ.get("WEB_CACHE_DATASET", _DEFAULT_WEB_CACHE_DATASET)
+    cache_manager = CacheManager(
+        cache_dir,
+        web_tool_provider=search_provider,
+        dataset_name=web_cache_dataset,
+    )
+
     registry = ToolRegistry()
     max_search_content_chars = int(os.environ.get("MAX_SEARCH_CONTENT_CHARS", 14000))
     registry.register(WebSearchTool(
         api_key=api_key,
         provider=search_provider,
+        search_cache=cache_manager.search_cache,
+        url_cache=cache_manager.url_cache,
         top_k=5,
         model_provider=subagent_provider,
         max_search_content_chars=max_search_content_chars,
+        cache_manager=cache_manager,
     ))
     registry.register(CodeGeneratorTool(model_provider=subagent_provider))
-    return registry
+    return registry, cache_manager
+
+
+def _model_family_from_id(model_id: str) -> ModelFamily:
+    """Derive ModelFamily from a HuggingFace model ID string."""
+    mid = model_id.lower()
+    if "deepseek" in mid:
+        return ModelFamily.DEEPSEEK
+    if "olmo" in mid:
+        return ModelFamily.OLMO_THINK if "think" in mid else ModelFamily.OLMO_INSTRUCT
+    return ModelFamily.QWEN3
 
 
 def _make_model_config(model_id: str, temperature: float, max_tokens: int = 2048) -> ModelConfig:
     """Build a ModelConfig for the VERL-served model (OpenAI-compatible API)."""
     return ModelConfig(
         name="verl_orchestrator",
-        family=ModelFamily.QWEN3,
+        family=_model_family_from_id(model_id),
         path_or_id=model_id,
         role="orchestrator",
         temperature=temperature,
@@ -199,6 +234,7 @@ class OrchestratorRollout(LitAgent):
         self.subagent_model = subagent_model
         self._prompt_builder = PromptBuilder()
         self._tool_registry: Optional[ToolRegistry] = None
+        self._web_cache_manager: Optional[CacheManager] = None
 
     # ------------------------------------------------------------------ #
     # LitAgent interface                                                   #
@@ -251,6 +287,7 @@ class OrchestratorRollout(LitAgent):
                 tool_registry=tool_registry,
                 max_turns=self.max_turns,
                 use_thinking=self.use_thinking,
+                cache_manager=self._web_cache_manager,
             )
             state = orchestrator.run(
                 question=prompt,
@@ -283,7 +320,13 @@ class OrchestratorRollout(LitAgent):
 
         # Build triplets from captured LLM turns (one per generate() call).
         # The VERL proxy injects prompt/response token IDs into vLLM responses;
-        # _CapturingProvider records them here.  Assign reward to the last turn.
+        # _CapturingProvider records them here.
+        #
+        # Flow GRPO: propagate the final sparse reward to every turn in the
+        # trajectory so that planning and intermediate tool-call steps receive
+        # gradient signal, not just the final synthesis step.  This mirrors the
+        # AgentFlow Flow GRPO design (daemon.py:656-695) where all triplets in a
+        # rollout share the same reward value.
         triplets: Optional[list] = None
         if capturing_provider is not None:
             turns = capturing_provider.captured_turns
@@ -292,9 +335,9 @@ class OrchestratorRollout(LitAgent):
                     Triplet(
                         prompt={"token_ids": t["prompt_ids"]},
                         response={"token_ids": t["response_ids"], "text": t.get("response_text", "")},
-                        reward=reward_value if i == len(turns) - 1 else None,
+                        reward=reward_value,
                     )
-                    for i, t in enumerate(turns)
+                    for t in turns
                 ]
 
         return Rollout(
@@ -318,7 +361,7 @@ class OrchestratorRollout(LitAgent):
 
     def _get_or_build_tools(self) -> ToolRegistry:
         if self._tool_registry is None:
-            self._tool_registry = _build_tool_registry(
+            self._tool_registry, self._web_cache_manager = _build_tool_registry(
                 self.subagent_endpoint, self.subagent_model
             )
         return self._tool_registry

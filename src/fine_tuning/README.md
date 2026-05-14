@@ -104,7 +104,7 @@ models:
 
 | Decision | Choice | Why |
 |---|---|---|
-| Algorithm | GRPO, n=8 rollouts | No value network; same as AgentFlow |
+| Algorithm | Flow GRPO, n=8 rollouts | No value network; same as AgentFlow. Final reward propagated to all turns so planning and tool-call steps receive gradient signal |
 | Training data | Search-R1 (NQ+HotpotQA) + DeepMath-103K | Targets the two dominant failure modes: direct reasoning without action on retrieval tasks and math tasks |
 | Training data mix | 85% HotpotQA / 15% NQ within Search-R1; 50/50 search/math overall | HotpotQA requires multi-hop evidence aggregation → stronger retrieval-policy signal than single-hop NQ; DeepMath difficulty ≥ 5 → harder problems produce cleaner GRPO reward signal |
 | Validation | 100 held-out Search-R1 + 100 held-out DeepMath | AIME is an eval benchmark — must not be used for checkpoint selection; two separate val files so W&B logs `val_0/reward_mean` (search) and `val_1/reward_mean` (math) independently |

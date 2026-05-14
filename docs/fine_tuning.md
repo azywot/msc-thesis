@@ -1,6 +1,6 @@
 # Fine-Tuning Design Notes
 
-Technical notes and decisions for the GRPO fine-tuning pipeline.
+Technical notes and decisions for the Flow GRPO fine-tuning pipeline.
 For the full step-by-step guide see `docs/fine_tuning_README.md`.
 For failure-mode motivation see `docs/failure_modes_fine_tuning_alignment.md`.
 
@@ -77,7 +77,7 @@ Sub-agents run on a **separate, frozen vLLM server** (`SUBAGENT_ENDPOINT`, defau
 - The sub-agent weights never co-evolve with the orchestrator during training.
 - At eval time, sub-agents also run the same fixed base model through the standard `VLLMProvider`, so there is **no train/eval distribution shift for sub-agents**.
 
-`_build_tool_registry(subagent_endpoint, subagent_model)` raises `EnvironmentError` if `SUBAGENT_ENDPOINT` is not set — this enforces the invariant that a frozen server is always explicitly provided before training starts. The job scripts (009, 010) launch the frozen server first, then the VERL server.
+`_build_tool_registry(subagent_endpoint, subagent_model)` raises `EnvironmentError` if `SUBAGENT_ENDPOINT` is not set — this enforces the invariant that a frozen server is always explicitly provided before training starts. The job scripts (009, 010) launch the frozen server first, then the VERL server. Web search uses :class:`~agent_engine.caching.CacheManager` like inference: by default ``./cache/serper/fine_tuning/`` (override with ``CACHE_DIR`` and ``WEB_CACHE_DATASET``).
 
 **Why a smaller sub-agent model (1.7B)?**
 The 1.7B model is significantly cheaper to load alongside the 8B orchestrator on the same node, leaving more GPU memory for the VERL actor/rollout. Sub-agent tasks (retrieve-and-summarise, write-and-execute) are narrow and well-specified by the orchestrator, so the quality difference from using a 1.7B model instead of 8B is small in practice.
@@ -95,6 +95,21 @@ The 1.7B model is significantly cheaper to load alongside the 8B orchestrator on
 | Planning turn | enabled (`baseline=False`) | enabled (unless `baseline: true`) |
 
 Fewer turns during training keeps rollouts shorter and reduces the chance of token budget overflow. At eval time, 15 turns allow more tool-use rounds. The distribution shift is deliberate: training questions (NQ, HotpotQA, DeepMath) typically resolve in 1–3 tool calls; the orchestrator will not be harmed by having more turns available at eval.
+
+---
+
+## Reward Assignment: Flow GRPO
+
+The CoSMAS orchestrator produces a multi-turn trajectory per rollout: a planning turn, one or more tool-call turns, and a final synthesis turn. Each turn is captured as a `Triplet` (prompt token IDs, response token IDs, reward).
+
+**Flow GRPO assigns the same final sparse reward to every triplet in the trajectory.** This is identical to the AgentFlow Flow GRPO design (`daemon.py:656-695`). Previously only the last triplet received a non-None reward.
+
+Why this matters:
+- The planning step determines whether the model decides to use a tool at all — the "direct reasoning without action" failure mode that motivated fine-tuning. Giving it zero gradient signal means training cannot reinforce correct tool-dispatch decisions.
+- The tool-call formulation (which tool, which query) is also part of the policy. With reward only on the synthesis step the model gets credit for a good final answer even when it stumbled into it through a bad tool call.
+- Flow GRPO makes the reward assignment consistent with the GRPO grouping logic: all triplets from the same rollout share the same `uid` (question id), and all receive the same reward signal.
+
+GRPO advantage normalisation (within each question group, across `rollout_n=8` trajectories) is unchanged — Flow GRPO only affects which turns receive the reward, not how advantages are computed.
 
 ---
 
@@ -143,7 +158,7 @@ This is correct: NQ and HotpotQA are retrieval QA tasks that use the same system
 
 ## Shared Tool Registry Across Episodes
 
-`OrchestratorRollout._get_or_build_tools()` lazily creates a single `ToolRegistry` on the first episode and reuses it for all subsequent episodes in the same worker process. The URL cache and search cache therefore accumulate across rollouts during a training run. This is intentional — cache hits speed up later rollouts that ask the same question (GRPO generates `rollout_n=8` rollouts per question, so cache hits are common within the same group). Disk usage for `rollout_dir` JSON logs grows at ~1–5 KB per rollout; on a 5-epoch run with 128 training questions/epoch and 8 rollouts each, this is ~5–25 MB.
+`OrchestratorRollout._get_or_build_tools()` lazily creates a single `ToolRegistry` and `CacheManager` on the first episode and reuses them for all subsequent episodes in the same worker process. Search and URL entries persist under ``./cache/serper/fine_tuning/`` (same JSON files as inference) and accumulate in memory and on disk across workers via the manager’s merge-and-lock writes. This speeds repeat queries (GRPO uses `rollout_n=8` rollouts per question). Disk usage for `rollout_dir` JSON logs grows at ~1–5 KB per rollout; on a 5-epoch run with 128 training questions/epoch and 8 rollouts each, this is ~5–25 MB.
 
 ---
 

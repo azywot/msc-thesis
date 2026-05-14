@@ -73,6 +73,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 - **`scripts/merge_lora.py`** — post-training LoRA merger: loads a VERL FSDP actor checkpoint, detects whether it is a LoRA or full-parameter run, and saves a merged HuggingFace model. LoRA path: normalises VERL's HF-style keys to PEFT's `base_model.model.*` namespace, calls `PeftModel.load_state_dict(strict=False)` then `merge_and_unload()`. Full-param path: loads state dict directly and saves with `safe_serialization=True`. Tokenizer is copied from the checkpoint's `actor/huggingface/` subdir.
 
+### Changed
+- **Flow GRPO: propagate final reward to all turns** (`src/fine_tuning/rollout.py`)
+  - Previously, only the last triplet in a multi-turn rollout received `reward=reward_value`; all intermediate turns (planning, tool-call steps) had `reward=None`, so they contributed no gradient signal.
+  - Now every triplet in the trajectory receives the same final sparse reward, matching the AgentFlow Flow GRPO design (`daemon.py:656-695`). GRPO advantage normalisation within each question group is unchanged — only the per-turn reward assignment changes.
+  - **Why it matters:** the CoSMAS orchestrator runs a planning turn + one or more tool-call turns + a synthesis turn. Training with reward only on the synthesis step ignores whether the model correctly decided to call a tool, which tool to call, and how to formulate the query — all learnable behaviours. Flow GRPO exposes those decisions to the gradient.
+
 ### Fixed
 - **LoRA Hydra key mismatch** (`scripts/launch_verl.py`): `+actor_rollout_ref.model.lora_target_modules` used a `+` prefix which adds a new orphaned key (`lora_target_modules`) not present in VERL's schema; VERL reads `actor_rollout_ref.model.target_modules` (no prefix, no `lora_` prefix). Changed to `actor_rollout_ref.model.target_modules` without `+`.
 - **LoRA vLLM startup failure** (`scripts/launch_verl.py`): `actor_rollout_ref.rollout.load_format` was left at the default `dummy_dtensor` when LoRA was enabled. vLLM's `dummy_dtensor` starts with zero weights, so FSDP→vLLM base-weight sync was missing entirely — LoRA deltas were pushed on top of zeros. Added `actor_rollout_ref.rollout.load_format=safetensors` when `USE_LORA=true` so vLLM loads the base weights from disk on startup.

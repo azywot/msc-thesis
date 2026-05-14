@@ -18,6 +18,7 @@ This script:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import shutil
 import subprocess
@@ -30,6 +31,28 @@ import yaml
 
 # Add src to path (matches run_experiment.py convention)
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+# Route INFO/DEBUG to stdout (→ SLURM .log); WARNING+ stay on stderr (→ SLURM .err).
+# force=True replaces any handlers that packages may have already installed.
+class _MaxLevelFilter(logging.Filter):
+    def __init__(self, max_level: int) -> None:
+        self.max_level = max_level
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno <= self.max_level
+
+_stdout_handler = logging.StreamHandler(sys.stdout)
+_stdout_handler.setLevel(logging.DEBUG)
+_stdout_handler.addFilter(_MaxLevelFilter(logging.INFO))
+
+_stderr_handler = logging.StreamHandler(sys.stderr)
+_stderr_handler.setLevel(logging.WARNING)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:%(name)s:%(message)s",
+    handlers=[_stdout_handler, _stderr_handler],
+    force=True,
+)
 
 
 
