@@ -77,8 +77,21 @@ def main():
     else:
         print("  LoRA disabled: full-parameter training (USE_LORA=false)")
 
+    # Save optimizer state only when explicitly requested (needed for resume; omit by default to save disk).
+    # VERL controls checkpoint contents via actor_rollout_ref.actor.checkpoint.save_contents.
+    save_optimizer = os.environ.get("SAVE_OPTIMIZER", "false").strip().lower() in ("1", "true", "yes", "on")
+    if save_optimizer:
+        python_args["actor_rollout_ref.actor.checkpoint.save_contents"] = "['model','optimizer','extra']"
+        python_args["actor_rollout_ref.actor.checkpoint.load_contents"] = "['model','optimizer','extra']"
+    else:
+        python_args["actor_rollout_ref.actor.checkpoint.save_contents"] = "['model']"
+        python_args["actor_rollout_ref.actor.checkpoint.load_contents"] = "['model']"
+    print(f"  Save optimizer state: {save_optimizer} (save_contents={'model,optimizer,extra' if save_optimizer else 'model only'})")
+
     # Build unique checkpoint dir: <base>/<experiment>/<DD-MM-YYYY_HH-MM>-<SLURM_JOB_ID>
-    # Full fine-tuning checkpoints (~47 GB/step) go to scratch-shared; LoRA/smoke stay local.
+    # USE_SCRATCH_CHECKPOINTS=true → /scratch-shared/$USER/msc-thesis/training (large quota).
+    # Both smoke and full training use scratch: Qwen3-4B fp32 AdamW optimizer state is ~48 GB,
+    # which exceeds GPFS home quotas. Set USE_SCRATCH_CHECKPOINTS=false only for tiny LoRA runs.
     experiment_name = os.environ.get("EXPERIMENT_NAME", "unknown")
     job_id = os.environ.get("SLURM_JOB_ID", "local")
     run_tag = os.environ.get("VERL_RUN_TAG") or f"{datetime.now().strftime('%d-%m-%Y_%H-%M')}-{job_id}"
