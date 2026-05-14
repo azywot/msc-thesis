@@ -94,6 +94,10 @@ def main():
     python_args["trainer.default_local_dir"] = ckpt_dir
     print(f"  Checkpoint dir: {ckpt_dir}")
 
+    # AgentFlowTrainer-only; VERL's structured trainer config rejects unknown keys without +.
+    if "trainer.val_every_epoch" in python_args:
+        python_args["+trainer.val_every_epoch"] = python_args.pop("trainer.val_every_epoch")
+
     # Build: python -u -m fine_tuning.agentflow.verl key=value key=value ...  (-u: line-buffered logs under SLURM > redirect)
     command = [sys.executable, "-u", "-m", "fine_tuning.agentflow.verl"]
     for key, value in python_args.items():

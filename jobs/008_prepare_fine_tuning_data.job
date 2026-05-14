@@ -98,8 +98,8 @@ echo "Preparing smoke-test subset (50 search + 50 math)..."
 python src/fine_tuning/data/prepare.py \
     --n-search    50 \
     --n-math      50 \
-    --n-val-search 5 \
-    --n-val-math   5 \
+    --n-val-search 3 \
+    --n-val-math   3 \
     --output-dir data/training/smoke \
     --seed 42
 
