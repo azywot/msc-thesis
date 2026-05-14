@@ -8,6 +8,7 @@ import fine_tuning.data.prepare as data_prepare
 from fine_tuning.data.prepare import (
     normalise_search_r1_row,
     normalise_deepmath_row,
+    normalise_aime_row,
     validate_parquet_schema,
     REQUIRED_COLS,
 )
@@ -164,6 +165,37 @@ class TestPassesDifficultyFilter:
         from fine_tuning.data.prepare import _passes_difficulty_filter
         assert _passes_difficulty_filter({"difficulty": "6"}, min_difficulty=5) is True
         assert _passes_difficulty_filter({"difficulty": "4"}, min_difficulty=5) is False
+
+
+class TestNormaliseAime:
+    def test_basic_row_2024(self):
+        raw = {"problem": "Find the value of x", "answer": "42"}
+        row = normalise_aime_row(raw, idx=0, year=2024)
+        assert set(row.keys()) == REQUIRED_COLS
+        assert row["data_source"] == "aime_2024"
+        assert row["question"] == "Find the value of x"
+        assert row["result"] == "42"
+        assert row["extra_info"]["idx"] == 0
+        assert row["extra_info"]["groundtruth"] == "42"
+        assert row["extra_info"]["year"] == 2024
+
+    def test_basic_row_2025(self):
+        raw = {"problem": "Compute the sum", "answer": "113"}
+        row = normalise_aime_row(raw, idx=3, year=2025)
+        assert row["data_source"] == "aime_2025"
+        assert row["extra_info"]["year"] == 2025
+        assert row["extra_info"]["idx"] == 3
+
+    def test_answer_coerced_to_str(self):
+        raw = {"problem": "Q", "answer": 7}
+        row = normalise_aime_row(raw, idx=0, year=2024)
+        assert row["result"] == "7"
+        assert row["extra_info"]["groundtruth"] == "7"
+
+    def test_missing_fields_produce_empty_strings(self):
+        row = normalise_aime_row({}, idx=0, year=2024)
+        assert row["question"] == ""
+        assert row["result"] == ""
 
 
 class TestValidateSchema:

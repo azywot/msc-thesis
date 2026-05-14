@@ -65,7 +65,7 @@ from __future__ import annotations
 import argparse
 import random
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # HuggingFace dataset id (Search-R1 NQ + HotpotQA). Older Hub name
 # PeterJinGo/SearchR1-nq_hotpotqa_train was removed; use nq_hotpotqa_train.
@@ -158,6 +158,21 @@ def normalise_deepmath_row(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
         "question": question,
         "result": answer,
         "extra_info": extra_info,
+    }
+
+
+def normalise_aime_row(raw: Dict[str, Any], idx: int, year: int) -> Dict[str, Any]:
+    """Convert an AIME row (HuggingFaceH4/aime_2024 or yentinglin/aime_2025) to VERL schema.
+
+    Both repos use `problem` + `answer` fields.
+    """
+    question = str(raw.get("problem") or "")
+    answer = str(raw.get("answer") if raw.get("answer") is not None else "")
+    return {
+        "data_source": f"aime_{year}",
+        "question": question,
+        "result": answer,
+        "extra_info": {"idx": idx, "groundtruth": answer, "year": year},
     }
 
 

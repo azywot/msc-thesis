@@ -7,6 +7,7 @@
 #     Rollout phase (param_offload=True): vLLM TP=1 data-parallel, util=0.45 → 42.3 GB/GPU ✓
 #     Training phase (free_cache_engine destroys KV): ~26 GB/GPU ✓
 # Upgrade from job 009 (4B, 2 GPUs) — same pipeline check before the 4-GPU full run (job 010).
+# Checkpoints: /scratch-shared/$USER/msc-thesis/training/qwen3-8b-grpo-smoke/ (USE_SCRATCH_CHECKPOINTS=true)
 #SBATCH --gpus=3
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -156,6 +157,12 @@ VERL_RUN_TAG="$(date +%d-%m-%Y_%H-%M)-${SLURM_JOB_ID:-local}"
 export VERL_RUN_TAG
 echo "Run tag: $VERL_RUN_TAG"
 
+EXPERIMENT_NAME="qwen3-8b-grpo-smoke"
+CKPT_DIR="/scratch-shared/${USER}/msc-thesis/training/${EXPERIMENT_NAME}"
+echo ""
+echo "Checkpoints will be written to: $CKPT_DIR"
+echo "  (USE_SCRATCH_CHECKPOINTS=true — scratch-shared, not experiments/results/)"
+
 # ── 2. Frozen sub-agent vLLM server (GPU 0, dedicated, never updated by VERL) ─
 echo ""
 echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998, physical GPU 0 only)..."
@@ -227,13 +234,12 @@ wait $VERL_PID
 
 # ── 5. Verify checkpoint was written ─────────────────────────────────────────
 echo ""
-echo "Verifying checkpoint..."
-CKPT_BASE="experiments/results/training/qwen3-8b-grpo-smoke"
-if find "$CKPT_BASE" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null | grep -q .; then
+echo "Verifying checkpoint under: $CKPT_DIR"
+if find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null | grep -q .; then
     echo "PASS — checkpoint found:"
-    find "$CKPT_BASE" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" | head -5
+    find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" | head -5
 else
-    echo "FAIL — no checkpoint found under $CKPT_BASE"
+    echo "FAIL — no checkpoint found under $CKPT_DIR"
     exit 1
 fi
 

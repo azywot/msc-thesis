@@ -21,6 +21,7 @@
 #   - N_GPUS: 2
 #   - EXPERIMENT_NAME: qwen3-8b-grpo-smoke
 #   - data dir: data/training/smoke  (same)
+#   - USE_SCRATCH_CHECKPOINTS: true (8B checkpoints → /scratch-shared/$USER/msc-thesis/training/qwen3-8b-grpo-smoke/)
 #   - train_max_samples / rollout.n / epochs: same (minimal smoke)
 #
 # Launch with:
@@ -50,7 +51,7 @@ env:
   N_WORKERS: 1
   VERBOSITY: 'INFO'
   USE_LORA: "false"
-  USE_SCRATCH_CHECKPOINTS: "false"
+  USE_SCRATCH_CHECKPOINTS: "true"
   SAVE_OPTIMIZER: "false"
 
 python_args:
