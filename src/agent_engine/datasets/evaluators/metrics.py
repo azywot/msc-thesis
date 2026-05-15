@@ -137,7 +137,7 @@ MATH_TOKEN_PATTERN = re.compile(
     (                                    # valid math expression tokens
         (?:[+\-*/^%]|\d+(?:\.\d+)?       # operator or number
         |[a-zA-Z]+                       # variable/function name
-        |\(|\)
+        |\(|\)|\{|\}
         |\\frac|\\sqrt|\\sin|\\cos|\\tan # common LaTeX/math funcs
         |pi|e
         |\\[a-zA-Z]+                     # any LaTeX command
@@ -175,6 +175,15 @@ def is_math_answer(s: str) -> bool:
     return bool(MATH_TOKEN_PATTERN.match(s))
 
 
+def _normalize_latex_for_parse(s: str) -> str:
+    """Normalize display-style LaTeX variants that math_verify cannot parse.
+
+    Replaces \\dfrac, \\tfrac, \\cfrac with \\frac (they are mathematically
+    equivalent and math_verify only recognises \\frac).
+    """
+    return re.sub(r"\\[dct]frac\b", r"\\frac", s)
+
+
 def evaluate_with_math_verify(prediction: str, ground_truth: str) -> bool:
     """Return True if prediction matches ground_truth via Math-Verify.
 
@@ -182,8 +191,8 @@ def evaluate_with_math_verify(prediction: str, ground_truth: str) -> bool:
     either expression (e.g. purely textual answers).
     """
     try:
-        gold = parse(ground_truth)
-        answer = parse(prediction)
+        gold = parse(_normalize_latex_for_parse(ground_truth))
+        answer = parse(_normalize_latex_for_parse(prediction))
         if gold and answer:
             return bool(verify(gold, answer))
     except Exception:
