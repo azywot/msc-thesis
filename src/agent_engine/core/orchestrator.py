@@ -49,6 +49,25 @@ _TEXT_EXTS: frozenset = frozenset({
     ".jsonld", ".parquet", ".pdf", ".pdb", ".pptx", ".py",
 })
 
+_DEFAULT_PLANNING_SUFFIX_NO_TOOLS = (
+    "\n\nBefore answering, analyze this query to determine the approach needed.\n"
+    "Instructions:\n"
+    "1. Identify the main objectives in the query.\n"
+    "2. Break down the problem into sub-tasks.\n"
+    "3. Consider what knowledge or reasoning steps are required.\n"
+    "Be brief and precise. Do NOT provide the final answer yet."
+)
+
+_DEFAULT_PLANNING_SUFFIX_TOOLS = (
+    "\n\nBefore using any tools, analyze this query to determine the approach needed.\n"
+    "Instructions:\n"
+    "1. Identify the main objectives in the query.\n"
+    "2. List the necessary skills and tools.\n"
+    "3. For each tool, explain how it helps address the query.\n"
+    "4. Note any additional considerations.\n\n"
+    "Be brief and precise. Do NOT call any tools yet."
+)
+
 
 # ---------------------------------------------------------------------------
 # Typed job descriptors for batched tool execution
@@ -99,6 +118,7 @@ class AgenticOrchestrator:
         use_thinking: bool = False,
         cache_manager=None,
         baseline: bool = False,
+        planning_suffix: Optional[str] = None,
     ):
         """Initialize the orchestrator.
 
@@ -123,6 +143,7 @@ class AgenticOrchestrator:
         self.tool_limits = tool_limits or {"web_search": 10}
         self.use_thinking = use_thinking and model_provider.config.supports_thinking
         self.baseline = baseline
+        self.planning_suffix: Optional[str] = planning_suffix
         # Force tool-call prefix injection on action turns for families (DeepSeek)
         # that hallucinate tool use in their thinking blocks instead of emitting <tool_call>.
         # Disabled in baseline mode: the forced prefix injects a <sub_goal> tag which
@@ -705,33 +726,17 @@ class AgenticOrchestrator:
         or final answer, those are handled as edge cases.
 
         """
-        if len(self.tools) == 0:
-            # NOTE: double check if it should look like this, or if we should just omit the query analysis step entirely when no tools are available
-            planning_suffix = (
-                "\n\nBefore answering, analyze this query to determine the approach needed.\n"
-                "Instructions:\n"
-                "1. Identify the main objectives in the query.\n"
-                "2. Break down the problem into sub-tasks.\n"
-                "3. Consider what knowledge or reasoning steps are required.\n"
-                "Be brief and precise. Do NOT provide the final answer yet."
-            )
-        else:
-            planning_suffix = (
-                "\n\nBefore using any tools, analyze this query to determine the approach needed.\n"
-                "Instructions:\n"
-                "1. Identify the main objectives in the query.\n"
-                "2. List the necessary skills and tools.\n"
-                "3. For each tool, explain how it helps address the query.\n"
-                "4. Note any additional considerations.\n\n"
-                "Be brief and precise. Do NOT call any tools yet."
-            )
+        suffix = self.planning_suffix if self.planning_suffix is not None else (
+            _DEFAULT_PLANNING_SUFFIX_TOOLS if len(self.tools) > 0
+            else _DEFAULT_PLANNING_SUFFIX_NO_TOOLS
+        )
 
         prompts = []
         for s in states:
             planning_messages = list(s.messages)  # shallow copy
             planning_messages[-1] = {
                 "role": planning_messages[-1]["role"],
-                "content": planning_messages[-1]["content"] + planning_suffix,
+                "content": planning_messages[-1]["content"] + suffix,
             }
             prompts.append(
                 self.model.apply_chat_template(planning_messages, use_thinking=self.use_thinking)
@@ -763,17 +768,20 @@ class AgenticOrchestrator:
                             break
                 before_tool = text[:idx].strip() if idx > 0 else ""
                 analysis = strip_thinking_tags(before_tool) if before_tool else strip_thinking_tags(text)
+                s.raw_query_analysis = text
                 s.query_analysis = analysis
                 logger.info(
                     "Planning turn for Q%s produced tool call (discarded); analysis: %.100s...",
                     s.question_id, analysis,
                 )
             elif "\\boxed{" in text or "\\boxed " in text:
+                s.raw_query_analysis = text
                 s.query_analysis = strip_thinking_tags(text)
                 s.finished = True
                 s.answer = extract_answer(text)
                 logger.info("Planning turn for Q%s produced final answer: %s", s.question_id, s.answer)
             else:
+                s.raw_query_analysis = text
                 s.query_analysis = strip_thinking_tags(text)
                 logger.info("Planning turn for Q%s complete: %.100s...", s.question_id, s.query_analysis)
 

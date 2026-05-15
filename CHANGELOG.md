@@ -6,6 +6,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — feat/gepa-integration
+
+### Added
+- **GEPA prompt optimisation** (`src/gepa_integration/`) — system adaptation chapter implementation
+  - `seed.py` — `build_seed_candidate()` renders the two-component seed (`system_prompt` + `planning_suffix`) from YAML templates; `build_splits()` generates failure-stratified train / random val / random test splits from any existing `raw_results.json`
+  - `adapter.py` — `AgentGEPAAdapter` implementing the GEPA `GEPAAdapter` protocol: `evaluate()` runs the orchestrator under `ORCHESTRATOR_ONLY` thinking and returns per-example scores; `make_reflective_dataset()` serialises execution traces into GEPA's reflective dataset format for both `system_prompt` and `planning_suffix` components
+  - Reflective records include the orchestrator's raw `<think>` blocks (via `raw_query_analysis` and `output_messages`) so the Qwen3-32B reflector can diagnose reasoning failures, not just answer failures
+- **`scripts/run_gepa.py`** — four-mode CLI for the full GEPA pipeline:
+  - `--mode splits` — generate and save train/val/test split JSON files; train set is failure-stratified (65% failures proportional across all six failure modes, 35% successes) using `classify_failure()` from `scripts/failure_modes/analyze_failure_modes.py`
+  - `--mode optimize` — run GEPA optimisation loop (GAIA: 80 train / 45 val; GPQA: 100 train / 48 val); saves `best_candidate.json` and `seed_candidate.json` to `run_dir`
+  - `--mode evaluate` — evaluate best candidate on held-out test set (GAIA: 40q, GPQA: 50q); outputs `gepa_results.json` in `raw_results.json` format for use with existing `analyze_results.py`
+  - `--mode diff` — print unified diff of `system_prompt` and `planning_suffix` between seed and best candidate
+- **GEPA experiment configs** (`experiments/configs/gepa/`)
+  - `gaia.yaml` — GAIA optimisation: Qwen3-8B agent + sub-agents, Qwen3-32B reflector (port 8001), 150 rollouts, sub-agent mode (`direct_tool_call: false`) matching the milestone baseline
+  - `gpqa.yaml` — GPQA Diamond: same setup, multiple-choice routing via `example.metadata["choices"]`
+  - `splits/gaia_splits.json` — pre-generated splits: 80 train / 45 val / 40 test (seed=1, failure-stratified)
+  - `splits/gpqa_splits.json` — pre-generated splits: 100 train / 48 val / 50 test (seed=1, failure-stratified)
+- **`jobs/gepa/` — SLURM job sequence** for the full GEPA pipeline:
+  - `000_prep_gepa_data.job` — generates failure-stratified splits for GAIA and GPQA via `run_gepa.py --mode splits`; safe to re-run (deterministic, seed=1)
+  - `001_install_gepa_deps.job` — installs `gepa==0.0.22` (pinned in `requirements.txt`) into the `agent_engine` conda env; smoke-tests all imports
+  - `002_smoke_gepa.job` — CPU-only pre-flight checks: imports, seed candidate structure, source `raw_results.json` presence, splits integrity (sizes + no-overlap), dataset loading, `evaluate_answer` spot-checks
+  - `003_smoke_gepa_gpu.job` — end-to-end GPU smoke test (3×H100 NVL): Qwen3-8B agent on GPU 0 (tp=1), Qwen3-32B reflector on GPUs 1–2 (tp=2); runs 1 GEPA step on 2 GAIA train examples then evaluates on 2 held-out test examples; asserts `gepa_results.json` schema
+  - `004_run_gepa.job` — full optimisation run (4×H100 NVL, 12h): GAIA then GPQA; supports `REGEN_SPLITS=1`, `SKIP_GAIA=1`, `SKIP_GPQA=1` overrides
+- **`scripts/smoke_gepa.py`** — standalone pre-flight smoke test (no GPU); run locally or via `002_smoke_gepa.job`
+- **`experiments/configs/gepa/smoke_test.yaml`** — minimal GEPA config for `003_smoke_gepa_gpu.job`: 2 train / 2 val / 2 test examples, 1 GEPA step (budget=2, minibatch=2), Qwen3-32B reflector, `max_turns=3`
+- **`experiments/configs/gepa/splits/smoke_splits.json`** — pre-generated splits for smoke test (6 GAIA question IDs)
+- **`tests/gepa_integration/`** — 32 unit tests covering `ExecutionState.raw_query_analysis`, orchestrator `planning_suffix` param + constants, `build_seed_candidate`, `build_splits` (size, no-overlap, failure ratio, JSON output), `_extract_thinking`, and all `AgentGEPAAdapter` methods
+
+### Fixed
+- `scripts/run_gepa.py` — `_build_tool_registry` used non-existent `direct_mode=` constructor argument on all three tools; replaced with the correct `model_provider=` pattern (direct mode = `model_provider=None`, sub-agent mode = pass the shared `VLLMProvider`)
+- `scripts/run_gepa.py` — all configs changed to `direct_tool_call: false`; `_build_tool_registry` now accepts `model_provider` and wires it into tools when in sub-agent mode, with `use_thinking` derived from `thinking_mode`; model provider is created before the tool registry in both `run_optimize` and `run_evaluate` so it can be passed in
+- `scripts/run_gepa.py` — `build_seed_candidate` now reads `max_search_limit` from the YAML config instead of silently using the default
+- `scripts/run_gepa.py` — `run_evaluate` now passes `tool_limits` from the config to `AgenticOrchestrator`
+- `jobs/gepa/003_smoke_gepa_gpu.job`, `jobs/gepa/004_run_gepa.job` — removed `--enable-thinking` from `vllm serve` (not a valid server flag; thinking is a per-request sampling parameter)
+
+### Changed
+- `src/agent_engine/core/state.py` — `ExecutionState` gains `raw_query_analysis: Optional[str] = None`; stores the full planning-turn output including `<think>` blocks before stripping
+- `src/agent_engine/core/orchestrator.py` — planning-turn suffix strings extracted as module-level constants (`_DEFAULT_PLANNING_SUFFIX_NO_TOOLS`, `_DEFAULT_PLANNING_SUFFIX_TOOLS`); `AgenticOrchestrator.__init__` gains optional `planning_suffix` parameter (default `None` = use constants as before); `_run_planning_turn` stores raw text in `state.raw_query_analysis` before stripping thinking tags
+
+---
+
 ## [Unreleased] — feat/fine-tuning
 
 ### Added

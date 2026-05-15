@@ -1,0 +1,218 @@
+#!/bin/bash
+#SBATCH --job-name=GEPAOpt
+#SBATCH --partition=gpu_h100
+# Three H100 NVL GPUs (~94 GB each).
+#   GPU 0:    agent vLLM (Qwen3-8B, tp=1, ~16 GB weights + KV cache)
+#   GPUs 1–2: reflector vLLM (Qwen3-32B, tp=2, ~64 GB weights + KV cache)
+# Qwen3-8B fits comfortably on a single H100 NVL — no need to shard it.
+#SBATCH --gpus=3
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=24:00:00
+#SBATCH --output=out/gepa/gepa_%A.log
+#SBATCH --error=out/gepa/gepa_%A.err
+
+# GEPA prompt optimisation — runs after the main AgentFlow experiments are complete.
+#
+# What this job does:
+#   1. Start Qwen3-32B reflector vLLM on GPUs 1–2 (port 8001); stays alive the whole job.
+#   2. Run GEPA optimisation for GAIA   (~3h): evolves system_prompt + planning_suffix.
+#   3. Evaluate GAIA best candidate on held-out test (40 questions).
+#   4. Run GEPA optimisation for GPQA   (~3h): same procedure.
+#   5. Evaluate GPQA best candidate on held-out test (50 questions).
+#   6. Kill reflector and exit.
+#
+# Prerequisites:
+#   - Job 001 completed (agent_engine conda env exists)
+#   - Milestone-1 AgentFlow results present at paths in experiments/configs/gepa/*.yaml
+#   - Splits already generated (run_gepa.py --mode splits) or generate them here via --regen-splits
+#   - SERPER_API_KEY set in .env
+#
+# Math benchmark is intentionally omitted — confirm the result path first (see
+# experiments/configs/gepa/math.yaml once created).
+#
+# Optional: REGEN_SPLITS=1 regenerates train/val/test splits before optimising.
+# Optional: SKIP_GAIA=1 / SKIP_GPQA=1 to run only one benchmark.
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis — GEPA Prompt Optimisation"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+if [[ -f ".env" ]]; then
+    echo "Loading environment variables from .env..."
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${SERPER_API_KEY:-}" && -z "${TAVILY_API_KEY:-}" ]]; then
+    echo "ERROR: SERPER_API_KEY or TAVILY_API_KEY must be set for web search during agent rollouts."
+    exit 1
+fi
+
+ENV_NAME="${ENV_NAME:-agent_engine}"
+echo "Activating environment: $ENV_NAME"
+source activate "$ENV_NAME"
+export PYTHONNOUSERSITE=1
+
+# Route vLLM's own logger to WARNING so progress-bar/INFO noise stays out of .err.
+# Actual Python tracebacks are captured per-step and replayed on failure (see run_benchmark).
+export VLLM_LOGGING_LEVEL=WARNING
+
+# Verify gepa package is installed
+python -c "from gepa.api import optimize; from gepa_integration.adapter import AgentGEPAAdapter; print('GEPA imports OK')"
+
+mkdir -p out/gepa
+
+# ── Cleanup trap ─────────────────────────────────────────────────────────────
+
+REFLECTOR_PID=""
+cleanup() {
+    if [[ -n "${REFLECTOR_PID:-}" ]] && kill -0 "$REFLECTOR_PID" >/dev/null 2>&1; then
+        echo "Stopping reflector vLLM (pid=$REFLECTOR_PID)..."
+        kill "$REFLECTOR_PID" || true
+        wait "$REFLECTOR_PID" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
+# ── 1. Start reflector vLLM (Qwen3-32B on GPUs 1–2, port 8001) ──────────────
+
+echo ""
+echo "Starting Qwen3-32B reflector vLLM on GPUs 1–2, port 8001..."
+REFLECTOR_LOG="out/gepa/gepa_${SLURM_JOB_ID:-local}_reflector.log"
+CUDA_VISIBLE_DEVICES=1,2 vllm serve Qwen/Qwen3-32B \
+    --port 8001 \
+    --tensor-parallel-size 2 \
+    --gpu-memory-utilization 0.85 \
+    --max-model-len 32768 \
+    > "$REFLECTOR_LOG" 2>&1 &
+REFLECTOR_PID=$!
+
+echo "Waiting 90s for reflector vLLM to start..."
+sleep 90
+if ! kill -0 "$REFLECTOR_PID" >/dev/null 2>&1; then
+    echo "FAIL — reflector vLLM exited during startup. See $REFLECTOR_LOG"
+    exit 1
+fi
+
+# Poll for readiness (up to 10 min)
+echo "Polling http://localhost:8001/health for reflector readiness..."
+_deadline=$((SECONDS + 600))
+while (( SECONDS < _deadline )); do
+    if curl -fsS --max-time 5 "http://127.0.0.1:8001/health" >/dev/null 2>&1; then
+        echo "Reflector vLLM is ready."
+        break
+    fi
+    if ! kill -0 "$REFLECTOR_PID" >/dev/null 2>&1; then
+        echo "FAIL — reflector vLLM exited before becoming ready. See $REFLECTOR_LOG"
+        exit 1
+    fi
+    sleep 10
+done
+if (( SECONDS >= _deadline )); then
+    echo "FAIL — reflector not ready after 10 min. Check $REFLECTOR_LOG"
+    exit 1
+fi
+
+# Agent vLLM will use GPU 0 only (tp=1, auto-detected from device count)
+export CUDA_VISIBLE_DEVICES=0
+
+# ── Helper: run one benchmark ─────────────────────────────────────────────────
+
+run_benchmark() {
+    local benchmark="$1"
+    local config="experiments/configs/gepa/${benchmark}.yaml"
+    local run_dir="experiments/results/gepa/${benchmark}"
+    mkdir -p "$run_dir"
+
+    echo ""
+    echo "══════════════════════════════════════════"
+    echo "  Benchmark: ${benchmark^^}"
+    echo "══════════════════════════════════════════"
+
+    # Optionally regenerate splits
+    if [[ "${REGEN_SPLITS:-0}" == "1" ]]; then
+        echo "Regenerating splits for $benchmark..."
+        python scripts/run_gepa.py --mode splits --config "$config"
+    fi
+
+    # Verify splits file exists
+    splits_file="experiments/configs/gepa/splits/${benchmark}_splits.json"
+    if [[ ! -f "$splits_file" ]]; then
+        echo "ERROR: $splits_file not found."
+        echo "Run: python scripts/run_gepa.py --mode splits --config $config"
+        exit 1
+    fi
+
+    # Optimise — stderr (vLLM tqdm/INFO) goes to a step log; replayed on failure.
+    echo ""
+    echo "Starting GEPA optimisation for $benchmark (budget=150 rollouts)..."
+    _ERR="$run_dir/optimize.stderr"
+    python scripts/run_gepa.py --mode optimize --config "$config" 2>"$_ERR" \
+        || { echo "ERROR: optimize failed for $benchmark. Stderr:"; cat "$_ERR" >&2; exit 1; }
+
+    # Evaluate on held-out test
+    echo ""
+    echo "Evaluating best candidate on held-out test set..."
+    _ERR="$run_dir/evaluate.stderr"
+    python scripts/run_gepa.py --mode evaluate --config "$config" 2>"$_ERR" \
+        || { echo "ERROR: evaluate failed for $benchmark. Stderr:"; cat "$_ERR" >&2; exit 1; }
+
+    # Print diff
+    echo ""
+    echo "Prompt diff (seed → best):"
+    python scripts/run_gepa.py --mode diff --config "$config"
+
+    echo ""
+    echo "$benchmark done at: $(date)"
+}
+
+# ── 2. GAIA ──────────────────────────────────────────────────────────────────
+
+if [[ "${SKIP_GAIA:-0}" != "1" ]]; then
+    run_benchmark "gaia"
+fi
+
+# ── 3. GPQA ──────────────────────────────────────────────────────────────────
+
+if [[ "${SKIP_GPQA:-0}" != "1" ]]; then
+    run_benchmark "gpqa"
+fi
+
+# ── Done ─────────────────────────────────────────────────────────────────────
+
+echo ""
+echo "=========================================="
+echo "All GEPA benchmarks complete."
+echo "Results:"
+for benchmark in gaia gpqa; do
+    result_file="experiments/results/gepa/${benchmark}/gepa_results.json"
+    if [[ -f "$result_file" ]]; then
+        n_correct=$(python -c "import json; r=json.load(open('$result_file')); print(sum(x['correct'] for x in r))")
+        n_total=$(python -c "import json; r=json.load(open('$result_file')); print(len(r))")
+        echo "  ${benchmark^^}: ${n_correct}/${n_total}"
+    fi
+done
+echo ""
+echo "Optimised prompts:"
+for benchmark in gaia gpqa; do
+    best="experiments/results/gepa/${benchmark}/best_candidate.json"
+    [[ -f "$best" ]] && echo "  ${benchmark^^}: $best"
+done
+echo ""
+echo "End time: $(date)"
+echo "=========================================="

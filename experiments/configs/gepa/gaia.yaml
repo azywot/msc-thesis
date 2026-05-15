@@ -1,0 +1,61 @@
+name: "GEPA_gaia_qwen3_8b"
+description: "GEPA two-component prompt optimisation on GAIA, Qwen3-8B, ORCHESTRATOR_ONLY thinking"
+
+benchmark: "gaia"
+dataset_split: "all_validation"
+data_dir: "./data"
+thinking_mode: "ORCHESTRATOR_ONLY"
+seed: 1
+max_turns: 15
+cache_dir: "./cache"
+
+model:
+  name: "Qwen3-8B"
+  path_or_id: "Qwen/Qwen3-8B"
+  role: "orchestrator"
+
+# Reflector runs on a separate vLLM instance.
+# Start before --mode optimize:
+#   vllm serve Qwen/Qwen3-32B --port 8001 --enable-thinking
+reflector:
+  name: "Qwen3-32B"
+  path_or_id: "Qwen/Qwen3-32B"
+  host: "localhost"
+  port: 8001
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+  direct_tool_call: false
+  web_tool_provider: "serper"
+  max_search_limit: 10
+
+splits_file: "experiments/configs/gepa/splits/gaia_splits.json"
+existing_results: "experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/gaia/qwen8B_subagent_tools_orchestrator/all_validation_2026-03-15-20-55-53_20752049/raw_results.json"
+
+splits:
+  train_n: 80
+  val_n: 45
+  # remaining ~40 become held-out test
+
+gepa:
+  rollout_budget: 150
+  minibatch_size: 10
+  merge_proposer: true
+  run_dir: "experiments/results/gepa/gaia"
+
+wandb:
+  enabled: true
+  project: "gepa"
+  name: "gepa_gaia_qwen3_8b"
+  tags: ["gaia", "gepa", "qwen3-8b"]
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 4
+  ntasks: 1
+  cpus_per_task: 16
+  time: "12:00:00"
+  conda_env: "agent_engine"
