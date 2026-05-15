@@ -57,6 +57,7 @@ class ExecutionState(BaseModel):
 
     # Structured memory (AgentFlow-inspired)
     query_analysis: str = ""
+    raw_query_analysis: Optional[str] = None   # full planning output incl. <think> blocks
     action_history: List[Dict[str, str]] = []
 
     # Metadata
