@@ -534,6 +534,9 @@ class AgentFlowTrainer(RayPPOTrainer):
             if done:
                 pprint(f"Final validation metrics: {last_val_metrics}")
                 progress_bar.close()
+                # Release DataLoader workers before Ray tears down this actor so they
+                # receive SIGTERM (graceful) rather than SIGKILL from Ray's cleanup.
+                self.train_dataloader = None
                 pprint(f"Flush the logger...")
                 del logger
                 pprint(f"Training finished at step {self.global_steps}.")
@@ -543,6 +546,7 @@ class AgentFlowTrainer(RayPPOTrainer):
         # (e.g. train_max_samples truncates the dataloader below total_training_steps).
         pprint(f"Final validation metrics: {last_val_metrics}")
         progress_bar.close()
+        self.train_dataloader = None
         pprint(f"Flush the logger...")
         del logger
         pprint(f"Training finished at step {self.global_steps}.")

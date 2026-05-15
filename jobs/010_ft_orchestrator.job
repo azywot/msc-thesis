@@ -110,6 +110,10 @@ cleanup() {
         kill "$VERL_PID" || true
         wait "$VERL_PID" || true
     fi
+    # Ray spawns background OS processes (raylet, GCS, object store) that outlive the
+    # Python process that called ray.init() and keep the SLURM job alive indefinitely.
+    echo "Stopping Ray background processes..."
+    ray stop --force 2>/dev/null || true
     if [[ -n "${SUBAGENT_PID:-}" ]] && kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
         echo "Stopping frozen sub-agent server (pid=$SUBAGENT_PID)..."
         kill "$SUBAGENT_PID" || true
@@ -212,7 +216,9 @@ echo ""
 echo "Starting rollout workers..."
 python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml &
 ORCHESTRATOR_PID=$!
-wait $ORCHESTRATOR_PID
+# Wait for VERL (server) to finish training first.
+# The orchestrator is a client of VERL — waiting for it before VERL exits would deadlock.
+# After VERL exits the orchestrator loses its connection and is killed by the EXIT trap.
 wait $VERL_PID
 
 # ── 4. Verify checkpoint ─────────────────────────────────────────────────────
