@@ -12,6 +12,7 @@ cache_dir: "./cache"
 model:
   name: "Qwen3-8B"
   path_or_id: "Qwen/Qwen3-8B"
+  family: "qwen3"
   role: "orchestrator"
 
 reflector:

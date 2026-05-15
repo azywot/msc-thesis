@@ -66,18 +66,23 @@ def _load_examples(cfg: dict, question_ids: list) -> list:
 def _build_tool_registry(cfg: dict) -> ToolRegistry:
     import os
     tools = ToolRegistry()
-    enabled = cfg.get("tools", {}).get("enabled_tools", ["web_search", "code_generator"])
-    direct = cfg.get("tools", {}).get("direct_tool_call", True)
-    provider = cfg.get("tools", {}).get("web_tool_provider", "serper")
+    tools_cfg = cfg.get("tools", {})
+    enabled = tools_cfg.get("enabled_tools", ["web_search", "code_generator"])
+    provider = tools_cfg.get("web_tool_provider", "serper")
+    top_k = tools_cfg.get("top_k_results", 5)
+    max_doc_len = tools_cfg.get("max_doc_len", 3000)
 
+    # Direct mode = model_provider=None (default). Sub-agent mode would require
+    # a separate model provider; for GEPA runs we always use direct tool calls.
     if "web_search" in enabled:
         tools.register(WebSearchTool(
             api_key=os.environ.get("SERPER_API_KEY" if provider == "serper" else "TAVILY_API_KEY", ""),
             provider=provider,
-            direct_mode=direct,
+            top_k=top_k,
+            max_doc_len=max_doc_len,
         ))
     if "code_generator" in enabled:
-        tools.register(CodeGeneratorTool(direct_mode=direct))
+        tools.register(CodeGeneratorTool())
     if "text_inspector" in enabled:
         tools.register(TextInspectorTool())
 
@@ -154,12 +159,12 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
     from agent_engine.models.vllm_provider import VLLMProvider
 
     model_cfg_raw = cfg["model"]
+    family_str = model_cfg_raw.get("family", "qwen3")
     model_cfg = ModelConfig(
         name=model_cfg_raw["name"],
         path_or_id=model_cfg_raw["path_or_id"],
-        family=ModelFamily.QWEN3,
+        family=ModelFamily(family_str),
         role="orchestrator",
-        use_thinking=True,
     )
     model_provider = VLLMProvider(model_cfg)
 
@@ -254,12 +259,12 @@ def run_evaluate(cfg: dict, config_path: Path) -> None:
     from agent_engine.models.vllm_provider import VLLMProvider
 
     model_cfg_raw = cfg["model"]
+    family_str = model_cfg_raw.get("family", "qwen3")
     model_cfg = ModelConfig(
         name=model_cfg_raw["name"],
         path_or_id=model_cfg_raw["path_or_id"],
-        family=ModelFamily.QWEN3,
+        family=ModelFamily(family_str),
         role="orchestrator",
-        use_thinking=True,
     )
     model_provider = VLLMProvider(model_cfg)
 
@@ -316,7 +321,11 @@ def run_evaluate(cfg: dict, config_path: Path) -> None:
 def run_diff(cfg: dict, config_path: Path) -> None:
     import difflib
 
-    run_dir = Path(gepa_cfg["run_dir"]) if (gepa_cfg := cfg.get("gepa")) else Path(".")
+    gepa_cfg = cfg.get("gepa")
+    if not gepa_cfg:
+        print("ERROR: config has no 'gepa' section.")
+        sys.exit(1)
+    run_dir = Path(gepa_cfg["run_dir"])
     best_path = run_dir / "best_candidate.json"
     seed_path = run_dir / "seed_candidate.json"
 
