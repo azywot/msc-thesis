@@ -86,14 +86,20 @@ def _build_tool_registry(cfg: dict) -> ToolRegistry:
 
 # ─────────────────────────────────────────────── MODE: splits ──────────────
 
+def _repo_root(config_path: Path) -> Path:
+    """Return the repo root (4 levels up from experiments/configs/gepa/foo.yaml)."""
+    return config_path.parent.parent.parent.parent
+
+
 def run_splits(cfg: dict, config_path: Path) -> None:
+    root = _repo_root(config_path)
     existing_results = Path(cfg["existing_results"])
     if not existing_results.is_absolute():
-        existing_results = config_path.parent.parent.parent / existing_results
+        existing_results = root / existing_results
 
     splits_file = Path(cfg["splits_file"])
     if not splits_file.is_absolute():
-        splits_file = config_path.parent.parent.parent / splits_file
+        splits_file = root / splits_file
 
     split_cfg = cfg.get("splits", {})
     train_n = split_cfg.get("train_n", 80)
@@ -129,7 +135,7 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
 
     splits_file = Path(cfg["splits_file"])
     if not splits_file.is_absolute():
-        splits_file = config_path.parent.parent.parent / splits_file
+        splits_file = _repo_root(config_path) / splits_file
     if not splits_file.exists():
         print(f"ERROR: splits file not found: {splits_file}")
         print("Run --mode splits first.")
@@ -234,7 +240,7 @@ def run_evaluate(cfg: dict, config_path: Path) -> None:
 
     splits_file = Path(cfg["splits_file"])
     if not splits_file.is_absolute():
-        splits_file = config_path.parent.parent.parent / splits_file
+        splits_file = _repo_root(config_path) / splits_file
 
     with open(splits_file) as f:
         splits = json.load(f)
