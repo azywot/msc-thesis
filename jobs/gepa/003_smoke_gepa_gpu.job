@@ -1,0 +1,166 @@
+#!/bin/bash
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=3
+#SBATCH --job-name=SmokeGEPAGPU
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=01:00:00
+#SBATCH --output=out/gepa/smoke_gepa_gpu_%A.log
+#SBATCH --error=out/gepa/smoke_gepa_gpu_%A.err
+
+# End-to-end GEPA smoke test on real GPUs.
+#
+# What this does:
+#   GPU 0:    agent vLLM — Qwen3-8B   (tp=1, port 8000)
+#   GPUs 1-2: reflector vLLM — Qwen3-32B (tp=2, port 8001)
+#
+#   1. optimize — 1 GEPA step on 2 GAIA train examples
+#   2. evaluate — run best candidate on 2 held-out test examples
+#   3. diff     — print prompt diff (seed → best)
+#
+# Pass: both modes exit 0 and gepa_results.json is written.
+# Fail: any step exits non-zero; SLURM marks job FAILED.
+#
+# Prerequisites: 000_install_gepa_deps.job completed, agent_engine env exists.
+
+set -euo pipefail
+
+mkdir -p out/gepa
+
+echo "=========================================="
+echo "MSC Thesis — GEPA GPU smoke test"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+if [[ -f ".env" ]]; then
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${SERPER_API_KEY:-}" && -z "${TAVILY_API_KEY:-}" ]]; then
+    echo "ERROR: SERPER_API_KEY or TAVILY_API_KEY must be set."
+    exit 1
+fi
+
+ENV_NAME="${ENV_NAME:-agent_engine}"
+echo "Activating environment: $ENV_NAME"
+source activate "$ENV_NAME"
+export PYTHONNOUSERSITE=1
+
+# Route vLLM's own logger to WARNING so progress-bar/INFO noise stays out of .err.
+# Actual Python tracebacks are captured per-step and replayed on failure (see below).
+export VLLM_LOGGING_LEVEL=WARNING
+
+CONFIG="experiments/configs/gepa/smoke_test.yaml"
+RUN_DIR="experiments/results/gepa/smoke_test"
+mkdir -p "$RUN_DIR"
+
+# ── Cleanup trap ──────────────────────────────────────────────────────────────
+
+REFLECTOR_PID=""
+cleanup() {
+    if [[ -n "${REFLECTOR_PID:-}" ]] && kill -0 "$REFLECTOR_PID" 2>/dev/null; then
+        echo "Stopping reflector vLLM (pid=$REFLECTOR_PID)..."
+        kill "$REFLECTOR_PID" || true
+        wait "$REFLECTOR_PID" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
+# ── 1. Start reflector vLLM (GPUs 2-3, port 8001) ────────────────────────────
+
+echo ""
+echo "Starting Qwen3-32B reflector on GPUs 1-2, port 8001..."
+REFLECTOR_LOG="out/gepa/smoke_gepa_gpu_${SLURM_JOB_ID:-local}_reflector.log"
+CUDA_VISIBLE_DEVICES=1,2 vllm serve Qwen/Qwen3-32B \
+    --port 8001 \
+    --tensor-parallel-size 2 \
+    --gpu-memory-utilization 0.85 \
+    --max-model-len 32768 \
+    > "$REFLECTOR_LOG" 2>&1 &
+REFLECTOR_PID=$!
+
+echo "Polling http://localhost:8001/health..."
+_deadline=$((SECONDS + 600))
+while (( SECONDS < _deadline )); do
+    if curl -fsS --max-time 5 "http://127.0.0.1:8001/health" >/dev/null 2>&1; then
+        echo "Reflector ready."
+        break
+    fi
+    if ! kill -0 "$REFLECTOR_PID" 2>/dev/null; then
+        echo "FAIL — reflector exited during startup. See $REFLECTOR_LOG"
+        exit 1
+    fi
+    sleep 10
+done
+if (( SECONDS >= _deadline )); then
+    echo "FAIL — reflector not ready after 10 min."
+    exit 1
+fi
+
+# Agent uses GPU 0 only (tp=1 is sufficient for 2 examples)
+export CUDA_VISIBLE_DEVICES=0
+
+# ── 2. optimize (1 GEPA step, 2 train examples) ──────────────────────────────
+
+echo ""
+echo "Running --mode optimize (budget=2, minibatch=2)..."
+_ERR="$RUN_DIR/optimize.stderr"
+python scripts/run_gepa.py --mode optimize --config "$CONFIG" 2>"$_ERR" \
+    || { echo "ERROR: optimize step failed. Stderr:"; cat "$_ERR" >&2; exit 1; }
+
+echo ""
+echo "best_candidate.json:"
+cat "$RUN_DIR/best_candidate.json"
+
+# ── 3. evaluate (2 held-out test examples) ───────────────────────────────────
+
+echo ""
+echo "Running --mode evaluate (2 test examples)..."
+_ERR="$RUN_DIR/evaluate.stderr"
+python scripts/run_gepa.py --mode evaluate --config "$CONFIG" 2>"$_ERR" \
+    || { echo "ERROR: evaluate step failed. Stderr:"; cat "$_ERR" >&2; exit 1; }
+
+echo ""
+echo "gepa_results.json:"
+cat "$RUN_DIR/gepa_results.json"
+
+# ── 4. diff ───────────────────────────────────────────────────────────────────
+
+echo ""
+echo "Running --mode diff..."
+python scripts/run_gepa.py --mode diff --config "$CONFIG"
+
+# ── 5. sanity assertions ─────────────────────────────────────────────────────
+
+echo ""
+echo "Asserting outputs..."
+python - <<'PY'
+import json, sys
+results = json.load(open("experiments/results/gepa/smoke_test/gepa_results.json"))
+assert len(results) == 2, f"Expected 2 test results, got {len(results)}"
+for r in results:
+    assert "correct" in r,    f"Missing 'correct' key: {r}"
+    assert "prediction" in r, f"Missing 'prediction' key: {r}"
+    assert "evaluation" in r, f"Missing 'evaluation' key: {r}"
+print(f"  test accuracy: {sum(r['correct'] for r in results)}/{len(results)}")
+print("  All assertions passed.")
+PY
+
+echo ""
+echo "=========================================="
+echo "GEPA GPU smoke test PASSED"
+echo "End time: $(date)"
+echo "=========================================="

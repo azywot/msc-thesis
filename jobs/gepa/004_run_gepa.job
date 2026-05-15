@@ -68,6 +68,10 @@ echo "Activating environment: $ENV_NAME"
 source activate "$ENV_NAME"
 export PYTHONNOUSERSITE=1
 
+# Route vLLM's own logger to WARNING so progress-bar/INFO noise stays out of .err.
+# Actual Python tracebacks are captured per-step and replayed on failure (see run_benchmark).
+export VLLM_LOGGING_LEVEL=WARNING
+
 # Verify gepa package is installed
 python -c "from gepa.api import optimize; from gepa_integration.adapter import AgentGEPAAdapter; print('GEPA imports OK')"
 
@@ -95,7 +99,6 @@ CUDA_VISIBLE_DEVICES=2,3 vllm serve Qwen/Qwen3-32B \
     --tensor-parallel-size 2 \
     --gpu-memory-utilization 0.85 \
     --max-model-len 32768 \
-    --enable-thinking \
     > "$REFLECTOR_LOG" 2>&1 &
 REFLECTOR_PID=$!
 
@@ -133,6 +136,8 @@ export CUDA_VISIBLE_DEVICES=0,1
 run_benchmark() {
     local benchmark="$1"
     local config="experiments/configs/gepa/${benchmark}.yaml"
+    local run_dir="experiments/results/gepa/${benchmark}"
+    mkdir -p "$run_dir"
 
     echo ""
     echo "══════════════════════════════════════════"
@@ -153,15 +158,19 @@ run_benchmark() {
         exit 1
     fi
 
-    # Optimise
+    # Optimise — stderr (vLLM tqdm/INFO) goes to a step log; replayed on failure.
     echo ""
     echo "Starting GEPA optimisation for $benchmark (budget=150 rollouts)..."
-    python scripts/run_gepa.py --mode optimize --config "$config"
+    _ERR="$run_dir/optimize.stderr"
+    python scripts/run_gepa.py --mode optimize --config "$config" 2>"$_ERR" \
+        || { echo "ERROR: optimize failed for $benchmark. Stderr:"; cat "$_ERR" >&2; exit 1; }
 
     # Evaluate on held-out test
     echo ""
     echo "Evaluating best candidate on held-out test set..."
-    python scripts/run_gepa.py --mode evaluate --config "$config"
+    _ERR="$run_dir/evaluate.stderr"
+    python scripts/run_gepa.py --mode evaluate --config "$config" 2>"$_ERR" \
+        || { echo "ERROR: evaluate failed for $benchmark. Stderr:"; cat "$_ERR" >&2; exit 1; }
 
     # Print diff
     echo ""
