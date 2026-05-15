@@ -147,8 +147,10 @@ python scripts/run_gepa.py --mode diff --config "$CONFIG"
 
 echo ""
 echo "Asserting outputs..."
-python - <<'PY'
-import json, sys
+python - <<PY
+import json, re, sys
+from pathlib import Path
+
 results = json.load(open("experiments/results/gepa/smoke_test/gepa_results.json"))
 assert len(results) == 2, f"Expected 2 test results, got {len(results)}"
 for r in results:
@@ -156,6 +158,19 @@ for r in results:
     assert "prediction" in r, f"Missing 'prediction' key: {r}"
     assert "evaluation" in r, f"Missing 'evaluation' key: {r}"
 print(f"  test accuracy: {sum(r['correct'] for r in results)}/{len(results)}")
+
+# Hard check: the reflector must have served at least one chat completion.
+# Otherwise the smoke is trivially passing without exercising the reflective
+# mutation path.
+reflector_log = Path("$REFLECTOR_LOG")
+log_text = reflector_log.read_text(errors="ignore") if reflector_log.exists() else ""
+hits = len(re.findall(r'POST /v1/(chat/)?completions', log_text))
+assert hits > 0, (
+    f"Reflector was never called for inference (0 POSTs to /v1/chat/completions). "
+    f"Increase gepa.rollout_budget in smoke_test.yaml — it must exceed val_n so "
+    f"the reflective mutation loop runs at least once."
+)
+print(f"  Reflector chat completion calls: {hits}")
 print("  All assertions passed.")
 PY
 

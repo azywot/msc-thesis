@@ -37,7 +37,11 @@ splits:
   test_n: 2
 
 gepa:
-  rollout_budget: 2
+  # Budget must exceed val_n so the reflective mutation loop runs at least
+  # once (otherwise the seed val eval consumes the whole budget and the
+  # reflector is never invoked). 10 covers: seed val (2) + 1 reflection
+  # iteration (2 curr + 2 new + 2 new-val accept) = 8, with slack.
+  rollout_budget: 10
   minibatch_size: 2
   merge_proposer: false
   run_dir: "experiments/results/gepa/smoke_test"

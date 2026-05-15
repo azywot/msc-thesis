@@ -41,6 +41,10 @@ class AgentGEPAAdapter:
         tool_limits:    Per-tool call limits dict.
     """
 
+    # GEPA's reflective_mutation accesses adapter.propose_new_texts directly
+    # (no getattr/hasattr); setting it to None tells GEPA to use reflection_lm.
+    propose_new_texts = None
+
     def __init__(
         self,
         model_provider: BaseModelProvider,
