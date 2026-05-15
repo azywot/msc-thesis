@@ -9,6 +9,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased] — feat/fine-tuning
 
 ### Added
+- **Qwen3-8B smoke-test config and job** (`experiments/configs/train/config_smoke8b.yaml`, `jobs/012_smoke_8b.job`)
+  - Mirrors `config_smoke.yaml` (4B, 1 GPU) but targets Qwen3-8B with `N_GPUS=2` — actor FSDP-sharded to ~8 GB/GPU, vLLM TP=1 data-parallel (each GPU holds a full 8B copy during rollout)
+  - Total: 3 H100 NVL GPUs — GPU 0 exclusive to frozen Qwen3-1.7B sub-agent (`util=0.40`); GPUs 1–2 for VERL
+  - `param_offload=true` / `optimizer_offload=true` / `free_cache_engine=true` retained for the same reason as the 4B smoke: vLLM + actor shard on GPU during rollout risks CUDA memory fragmentation
+  - `USE_SCRATCH_CHECKPOINTS: true` — 8B checkpoints (even from smoke runs) written to `/scratch-shared/$USER/msc-thesis/training/qwen3-8b-grpo-smoke/`; job script prints the path at startup and re-uses it in the checkpoint verification step
+  - `max_model_len: 6144` = `max_prompt_length (4096) + max_response_length (2048)` — identical to 4B smoke to keep the test fast
+
+### Added
 - **RL fine-tuning pipeline** for the orchestrator (`src/fine_tuning/`)
   - `FinetuningConfig` dataclass (LoRA, GRPO, training hyperparams)
   - `OrchestratorReward` — binary reward via `evaluate_answer()` from `metrics.py`
