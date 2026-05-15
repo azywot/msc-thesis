@@ -1,21 +1,21 @@
 #!/bin/bash
 #SBATCH --job-name=GEPAOpt
 #SBATCH --partition=gpu_h100
-# Four H100 NVL GPUs (~94 GB each).
-#   GPUs 0–1: agent vLLM (Qwen3-8B, tp=2, ~16 GB weights + KV cache)
-#   GPUs 2–3: reflector vLLM (Qwen3-32B, tp=2, ~64 GB weights + KV cache)
-# Budget per GPU pair is well within 188 GB.
-#SBATCH --gpus=4
+# Three H100 NVL GPUs (~94 GB each).
+#   GPU 0:    agent vLLM (Qwen3-8B, tp=1, ~16 GB weights + KV cache)
+#   GPUs 1–2: reflector vLLM (Qwen3-32B, tp=2, ~64 GB weights + KV cache)
+# Qwen3-8B fits comfortably on a single H100 NVL — no need to shard it.
+#SBATCH --gpus=3
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=out/gepa/gepa_%A.log
 #SBATCH --error=out/gepa/gepa_%A.err
 
 # GEPA prompt optimisation — runs after the main AgentFlow experiments are complete.
 #
 # What this job does:
-#   1. Start Qwen3-32B reflector vLLM on GPUs 2–3 (port 8001); stays alive the whole job.
+#   1. Start Qwen3-32B reflector vLLM on GPUs 1–2 (port 8001); stays alive the whole job.
 #   2. Run GEPA optimisation for GAIA   (~3h): evolves system_prompt + planning_suffix.
 #   3. Evaluate GAIA best candidate on held-out test (40 questions).
 #   4. Run GEPA optimisation for GPQA   (~3h): same procedure.
@@ -89,12 +89,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── 1. Start reflector vLLM (Qwen3-32B on GPUs 2–3, port 8001) ──────────────
+# ── 1. Start reflector vLLM (Qwen3-32B on GPUs 1–2, port 8001) ──────────────
 
 echo ""
-echo "Starting Qwen3-32B reflector vLLM on GPUs 2–3, port 8001..."
+echo "Starting Qwen3-32B reflector vLLM on GPUs 1–2, port 8001..."
 REFLECTOR_LOG="out/gepa/gepa_${SLURM_JOB_ID:-local}_reflector.log"
-CUDA_VISIBLE_DEVICES=2,3 vllm serve Qwen/Qwen3-32B \
+CUDA_VISIBLE_DEVICES=1,2 vllm serve Qwen/Qwen3-32B \
     --port 8001 \
     --tensor-parallel-size 2 \
     --gpu-memory-utilization 0.85 \
@@ -128,8 +128,8 @@ if (( SECONDS >= _deadline )); then
     exit 1
 fi
 
-# Agent vLLM will use GPUs 0–1; set this before calling run_gepa.py
-export CUDA_VISIBLE_DEVICES=0,1
+# Agent vLLM will use GPU 0 only (tp=1, auto-detected from device count)
+export CUDA_VISIBLE_DEVICES=0
 
 # ── Helper: run one benchmark ─────────────────────────────────────────────────
 
