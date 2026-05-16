@@ -653,7 +653,7 @@ python scripts/run_gepa.py --mode evaluate  --config experiments/configs/gepa/ga
 python scripts/run_gepa.py --mode diff      --config experiments/configs/gepa/gaia.yaml
 ```
 
-### Outputs (per benchmark, under `experiments/results/gepa/<benchmark>/`)
+### Outputs (per benchmark, under `experiments/results/gepa/<benchmark>/<TIMESTAMP>_<JOB_ID>/`)
 
 | File | Contents |
 |---|---|

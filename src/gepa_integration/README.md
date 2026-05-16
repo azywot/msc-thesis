@@ -268,14 +268,17 @@ sbatch --export=ALL,SKIP_GPQA=1    jobs/gepa/004_run_gepa.job   # GAIA only
 
 ### Step 5 — analyse results
 
+Each job run writes to `experiments/results/gepa/<benchmark>/<TIMESTAMP>_<JOB_ID>/`;
+replace `<run>` below with the specific subdirectory you want to analyse.
+
 ```bash
 # Accuracy + tool stats on the held-out test set
-python scripts/analyze_results.py experiments/results/gepa/gaia/gepa_results.json --by-level --tools
-python scripts/analyze_results.py experiments/results/gepa/gpqa/gepa_results.json --tools
+python scripts/analyze_results.py experiments/results/gepa/gaia/<run>/gepa_results.json --by-level --tools
+python scripts/analyze_results.py experiments/results/gepa/gpqa/<run>/gepa_results.json --tools
 
-# Diff between seed and optimised prompts
-python scripts/run_gepa.py --mode diff --config experiments/configs/gepa/gaia.yaml
-python scripts/run_gepa.py --mode diff --config experiments/configs/gepa/gpqa.yaml
+# Diff between seed and optimised prompts (pass the same --run-dir used by the job)
+python scripts/run_gepa.py --mode diff --config experiments/configs/gepa/gaia.yaml --run-dir experiments/results/gepa/gaia/<run>
+python scripts/run_gepa.py --mode diff --config experiments/configs/gepa/gpqa.yaml --run-dir experiments/results/gepa/gpqa/<run>
 ```
 
 ---
@@ -290,7 +293,7 @@ orchestrator:
 import json
 from agent_engine.core.orchestrator import AgenticOrchestrator
 
-best = json.load(open("experiments/results/gepa/gaia/best_candidate.json"))
+best = json.load(open("experiments/results/gepa/gaia/<TIMESTAMP>_<JOB_ID>/best_candidate.json"))
 
 orchestrator = AgenticOrchestrator(
     model_provider=model_provider,
@@ -352,14 +355,26 @@ gepa:
   rollout_budget: 150       # total agent rollouts during optimisation
   minibatch_size: 10        # examples per reflector call
   merge_proposer: true      # whether to use GEPA's merge proposer
-  run_dir: "experiments/results/gepa/gaia"
+  run_dir: "experiments/results/gepa/gaia"   # base dir; jobs append <TIMESTAMP>_<JOB_ID>
 ```
 
 ---
 
 ## Outputs
 
-All outputs land under `gepa.run_dir` (e.g. `experiments/results/gepa/gaia/`):
+Each invocation of `004_run_gepa.job` (or `003_smoke_gepa_gpu.job`) writes to a
+timestamped + job-id subdirectory so successive runs never overwrite each
+other:
+
+```
+experiments/results/gepa/<benchmark>/<YYYY-MM-DD-HH-MM-SS>_<SLURM_JOB_ID>/
+```
+
+The job script computes the path once and passes it via `--run-dir` to every
+mode (`optimize`, `evaluate`, `diff`). When invoking `run_gepa.py` manually
+without `--run-dir`, the base path from `gepa.run_dir` in the YAML is used as-is.
+
+Files in each run directory:
 
 | File | Contents |
 |---|---|

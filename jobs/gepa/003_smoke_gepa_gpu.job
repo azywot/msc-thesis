@@ -62,10 +62,15 @@ export PYTHONNOUSERSITE=1
 # Route vLLM's own logger to WARNING so progress-bar/INFO noise stays out of .err.
 # Actual Python tracebacks are captured per-step and replayed on failure (see below).
 export VLLM_LOGGING_LEVEL=WARNING
+# Silence the HF tokenizers fork warning (we load the reflector tokenizer before
+# vLLM internals fork worker processes; parallelism is unused either way).
+export TOKENIZERS_PARALLELISM=false
 
 CONFIG="experiments/configs/gepa/smoke_test.yaml"
-RUN_DIR="experiments/results/gepa/smoke_test"
+TIMESTAMP="$(date +%Y-%m-%d-%H-%M-%S)"
+RUN_DIR="experiments/results/gepa/smoke_test/${TIMESTAMP}_${SLURM_JOB_ID:-local}"
 mkdir -p "$RUN_DIR"
+echo "Run directory: $RUN_DIR"
 
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
 
@@ -87,8 +92,10 @@ REFLECTOR_LOG="out/gepa/smoke_gepa_gpu_${SLURM_JOB_ID:-local}_reflector.log"
 CUDA_VISIBLE_DEVICES=1,2 vllm serve Qwen/Qwen3-32B \
     --port 8001 \
     --tensor-parallel-size 2 \
+    --dtype bfloat16 \
     --gpu-memory-utilization 0.85 \
-    --max-model-len 32768 \
+    --enable-prefix-caching \
+    --max-model-len 40960 \
     > "$REFLECTOR_LOG" 2>&1 &
 REFLECTOR_PID=$!
 
@@ -118,7 +125,7 @@ export CUDA_VISIBLE_DEVICES=0
 echo ""
 echo "Running --mode optimize (budget=2, minibatch=2)..."
 _ERR="$RUN_DIR/optimize.stderr"
-python scripts/run_gepa.py --mode optimize --config "$CONFIG" 2>"$_ERR" \
+python scripts/run_gepa.py --mode optimize --config "$CONFIG" --run-dir "$RUN_DIR" 2>"$_ERR" \
     || { echo "ERROR: optimize step failed. Stderr:"; cat "$_ERR" >&2; exit 1; }
 
 echo ""
@@ -130,7 +137,7 @@ cat "$RUN_DIR/best_candidate.json"
 echo ""
 echo "Running --mode evaluate (2 test examples)..."
 _ERR="$RUN_DIR/evaluate.stderr"
-python scripts/run_gepa.py --mode evaluate --config "$CONFIG" 2>"$_ERR" \
+python scripts/run_gepa.py --mode evaluate --config "$CONFIG" --run-dir "$RUN_DIR" 2>"$_ERR" \
     || { echo "ERROR: evaluate step failed. Stderr:"; cat "$_ERR" >&2; exit 1; }
 
 echo ""
@@ -141,7 +148,7 @@ cat "$RUN_DIR/gepa_results.json"
 
 echo ""
 echo "Running --mode diff..."
-python scripts/run_gepa.py --mode diff --config "$CONFIG"
+python scripts/run_gepa.py --mode diff --config "$CONFIG" --run-dir "$RUN_DIR"
 
 # ── 5. sanity assertions ─────────────────────────────────────────────────────
 
@@ -151,7 +158,7 @@ python - <<PY
 import json, re, sys
 from pathlib import Path
 
-results = json.load(open("experiments/results/gepa/smoke_test/gepa_results.json"))
+results = json.load(open("$RUN_DIR/gepa_results.json"))
 assert len(results) == 2, f"Expected 2 test results, got {len(results)}"
 for r in results:
     assert "correct" in r,    f"Missing 'correct' key: {r}"

@@ -217,14 +217,36 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
     reflector_host = reflector_cfg.get("host", "localhost")
     reflector_port = reflector_cfg.get("port", 8001)
 
+    # Qwen3-32B native context is 40960. Keep some headroom for the response so
+    # the reflector is never rejected for context overflow during a long trace.
+    REFLECTOR_CTX = int(reflector_cfg.get("max_model_len", 40960))
+    REFLECTOR_RESPONSE_BUDGET = int(reflector_cfg.get("max_tokens", 4096))
+    REFLECTOR_INPUT_BUDGET = REFLECTOR_CTX - REFLECTOR_RESPONSE_BUDGET - 256  # safety margin
+
+    from transformers import AutoTokenizer
+    try:
+        _reflector_tok = AutoTokenizer.from_pretrained(reflector_model, trust_remote_code=True)
+    except Exception as e:
+        print(f"WARN: could not load reflector tokenizer ({e}); falling back to char heuristic.")
+        _reflector_tok = None
+
+    from gepa_integration.reflection import trim_prompt
+
     import litellm
 
     def _reflection_lm(prompt: str) -> str:
+        trimmed = trim_prompt(
+            prompt,
+            budget_tokens=REFLECTOR_INPUT_BUDGET,
+            tokenizer=_reflector_tok,
+            on_trim=print,
+        )
         completion = litellm.completion(
             model=f"openai/{reflector_model}",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": trimmed}],
             base_url=f"http://{reflector_host}:{reflector_port}/v1",
             api_key="EMPTY",
+            max_tokens=REFLECTOR_RESPONSE_BUDGET,
         )
         return completion.choices[0].message.content
 
@@ -257,9 +279,10 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
         max_metric_calls=gepa_cfg["rollout_budget"],
         reflection_minibatch_size=gepa_cfg["minibatch_size"],
         use_merge=gepa_cfg.get("merge_proposer", True),
+        track_best_outputs=gepa_cfg.get("track_best_outputs", False),
         run_dir=str(run_dir),
         seed=cfg.get("seed", 1),
-        raise_on_exception=False,
+        raise_on_exception=gepa_cfg.get("raise_on_exception", True),
         display_progress_bar=True,
         use_wandb=use_wandb,
         wandb_api_key=wandb_api_key,
@@ -418,6 +441,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="GEPA prompt optimisation")
     parser.add_argument("--mode", choices=["splits", "optimize", "evaluate", "diff"], required=True)
     parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument(
+        "--run-dir",
+        default=None,
+        help="Override gepa.run_dir from config. Job scripts use this to inject a "
+             "timestamped + job-id subdirectory so optimize/evaluate/diff all read "
+             "and write the same run.",
+    )
     args = parser.parse_args()
 
     config_path = args.config
@@ -425,6 +455,8 @@ def main() -> None:
         config_path = Path.cwd() / config_path
 
     cfg = load_gepa_config(config_path)
+    if args.run_dir is not None:
+        cfg.setdefault("gepa", {})["run_dir"] = args.run_dir
     setup_logging()
     set_seed(cfg.get("seed", 1))
 

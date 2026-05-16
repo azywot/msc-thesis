@@ -138,8 +138,13 @@ class AgentGEPAAdapter:
     # Reflective dataset helpers                                           #
     # ------------------------------------------------------------------ #
 
-    _MAX_RECORDS = 12          # 6 correct + 6 wrong per reflective call
+    # Reflector prompt budget: instruction template + system_prompt + records.
+    # With 12 verbose records the reflector regularly exceeded 32 K tokens on
+    # thinking traces. 8 records + a hard cap on thinking length keeps the
+    # reflective prompt comfortably under the reflector's max_model_len.
+    _MAX_RECORDS = 8           # 4 correct + 4 wrong per reflective call
     _RESULT_SNIPPET_LEN = 300  # chars per tool result
+    _THINKING_SNIPPET_LEN = 1500  # chars per <think> trace (truncated)
 
     def _balanced_sample(
         self, states: list[ExecutionState], scores: list[float]
@@ -161,6 +166,8 @@ class AgentGEPAAdapter:
                 if state.output_messages
                 else ""
             )
+            if len(first_thinking) > self._THINKING_SNIPPET_LEN:
+                first_thinking = first_thinking[: self._THINKING_SNIPPET_LEN] + "…[truncated]"
             action_steps = [
                 {
                     "tool": a["tool_name"],

@@ -38,9 +38,13 @@ splits:
   # remaining ~50 become held-out test
 
 gepa:
-  rollout_budget: 150
+  # GEPA FAQ: budget should be >= 15-30 * len(valset). With val_n=48, 15x = 720;
+  # 750 sits comfortably in the recommended range and leaves headroom for
+  # use_merge candidate evaluations.
+  rollout_budget: 750
   minibatch_size: 10
   merge_proposer: true
+  track_best_outputs: true
   run_dir: "experiments/results/gepa/gpqa"
 
 wandb:
