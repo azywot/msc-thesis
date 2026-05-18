@@ -490,3 +490,162 @@ No change to `_THINKING_SNIPPET_LEN` or `_RESULT_SNIPPET_LEN` is needed.
 end-to-end check that the tool-error signal reaches both the
 `system_prompt` and `planning_suffix` reflective records. Total
 `tests/gepa_integration/` count is now 58.
+
+---
+
+## Addendum 2026-05-18 (Iteration 2): record shape + sample selection
+
+Review of the Iteration 1 feedback design (see previous addendum) surfaced
+three remaining gaps. None of them needed orchestrator changes — the data is
+already on `ExecutionState`; only the adapter's record-building and sampling
+logic change. Because Iteration 1 already requires a GEPA re-run for its
+feedback to take effect, these refinements are batched into the same re-run
+at no additional compute cost.
+
+### Motivation by failure mode
+
+| Gap | Failure modes affected | Why Iteration 1 missed it |
+|---|---|---|
+| `system_prompt` records only show *first-turn* thinking | `single_shot_tool_trust`, `retrieval_evidence_failure` — the stopping decision lives in the *last* turn, not the first | Iteration 1 mirrored where the planning thinking lives (turn 0); but most failure thinking is later |
+| `planning_suffix` records bury the planning `<think>` block inside the raw blob | `direct_reasoning_no_action`, `computational_subgoal_error` — the reflector has to parse XML to see the plan's reasoning, asymmetric with system_prompt records | Iteration 1 specified `raw_planning_output` rather than extracting the two halves |
+| `_balanced_sample` takes the first half of each bucket | Any failure mode that systematically appears later in a minibatch — the reflector never sees those examples | Deterministic head-of-list slicing was the simplest correct implementation; bias was acceptable for Iteration 1 |
+
+### Unified thinking-snippet cap
+
+The Iteration 1 spec used `_THINKING_SNIPPET_LEN = 1500` for the single
+thinking field. With three thinking snippets now in play
+(first-turn + last-turn for system_prompt, plan thinking for
+planning_suffix), three different caps would be hard to reason about. The
+constant is **unified at 800 characters** for every snippet. Rationale:
+
+- 800 chars ≈ 200 tokens — enough to capture a coherent reasoning chain
+  segment without dominating the reflective prompt
+- At `_MAX_RECORDS = 8`, the worst case is system_prompt records with two
+  snippets per record = 16 × 800 = ~12.8 K chars per reflective call,
+  matching the Iteration 1 budget ceiling for thinking content
+- The cap is applied identically by both record builders, removing a
+  per-call dimension of variability the reflector would otherwise see
+
+The class constant is renamed in spirit but kept as
+`_THINKING_SNIPPET_LEN = 800` for the diff to be one number.
+
+### Change 1 — last-turn thinking in `system_prompt` records
+
+Add one field next to the existing `thinking_before_first_tool`:
+
+```python
+"Generated Outputs": {
+    "predicted_answer": state.answer or "",
+    "thinking_before_first_tool": <first-turn snippet, 800-char cap>,
+    "thinking_at_last_turn":      <last-turn snippet, 800-char cap>,  # NEW
+    "action_steps": [...],
+}
+```
+
+- **Source:** the last *assistant* message in `state.output_messages`. The
+  list interleaves assistant and tool roles, so filter first:
+  ```python
+  assistant_msgs = [m for m in state.output_messages if m["role"] == "assistant"]
+  ```
+  Then `_extract_thinking(assistant_msgs[-1]["content"])`.
+- **Conditional inclusion:** if `len(assistant_msgs) <= 1`, omit the field
+  entirely. The first and last snippets would be identical, and a duplicate
+  field under a misleading name would mislead the reflector.
+- **Same cap:** 800 chars, "…[truncated]" suffix on overflow.
+
+### Change 2 — extract planning thinking into its own field
+
+Replace the single `raw_planning_output` field in `planning_suffix` records
+with the two extracted halves:
+
+```python
+"Generated Outputs": {
+    "plan":             state.query_analysis,                          # stripped of <think>
+    "thinking_in_plan": _extract_thinking(state.raw_query_analysis or ""),  # NEW
+    "tools_subsequently_used": [...],
+    "num_turns_taken":  state.turn,
+}
+```
+
+- **No orchestrator change:** `state.raw_query_analysis` already contains the
+  full planning output including `<think>` (set in
+  `orchestrator._run_planning_turn`, see Iteration 1 spec §4).
+- **No data loss:** `query_analysis` is `raw_query_analysis` with thinking
+  stripped, so the two new fields together contain everything the old raw
+  blob did, presented to the reflector in the same shape as the
+  system_prompt records.
+- **Same cap:** `thinking_in_plan` truncated at 800 chars.
+
+### Change 3 — seeded random shuffle in `_balanced_sample`
+
+Replace head-of-list slicing with a deterministic shuffle:
+
+```python
+def _balanced_sample(self, states, scores):
+    correct = [(s, sc) for s, sc in zip(states, scores) if sc > 0]
+    wrong   = [(s, sc) for s, sc in zip(states, scores) if sc == 0]
+    rng = random.Random(self._sample_seed)
+    rng.shuffle(correct); rng.shuffle(wrong)
+    half = self._MAX_RECORDS // 2
+    return correct[:half] + wrong[:half]
+```
+
+- **New constructor param** `sample_seed: int = 0`, stored as
+  `self._sample_seed`. Fixed seed means re-runs select the same records,
+  preserving reproducibility while removing the head-of-list bias.
+- **Why not "prefer high-f1 wrongs":** scoring shape is binary (em/f1 only
+  inform the *feedback string*, not selection). High-f1 wrongs are mostly
+  format-error failures — selecting them preferentially over-edits the
+  prompt for format issues and under-edits orchestration ones. Random
+  preserves the failure-mode mix already present in the minibatch.
+- **Why not unseeded random:** GEPA needs reproducible runs; an
+  unseeded RNG makes two otherwise-identical GEPA runs diverge in which
+  records the reflector sees.
+
+### Token-budget verification
+
+Iteration 1 ceiling for the reflective prompt was ~30 K tokens (instruction
+template ~2 K + system_prompt ~3 K + 8 records × ~3 K each). Iteration 2
+deltas per record, in tokens (1 token ≈ 4 chars):
+
+| Record type | Per-record delta | At 8 records |
+|---|---|---|
+| `system_prompt`: first-turn snippet shrink (1500 → 800 chars) | −175 tok | −1.4 K tok |
+| `system_prompt`: new `thinking_at_last_turn` field (≤800 chars, often omitted on single-turn rollouts) | +0–200 tok | +0–1.6 K tok |
+| `planning_suffix`: drop unbounded `raw_planning_output`, add capped `plan` (≈ raw − thinking) + capped `thinking_in_plan` (≤800 chars) | ≈ neutral; net-negative when raw blob ran long, slightly positive when it was short | ≈ 0, bounded |
+
+Worst case combined: roughly *neutral* to *slightly negative* — Iteration 2
+fits inside the Iteration 1 budget without raising the ceiling. The
+unification at 800 chars also makes the per-call budget much more
+predictable than Iteration 1's mix of capped (1500) and uncapped
+(`raw_planning_output`) thinking content.
+
+### Tests
+
+`tests/gepa_integration/test_adapter.py` gains ~6 tests:
+
+- `_diagnose` is unchanged; existing tests continue to pass.
+- New: `thinking_at_last_turn` is included when output_messages contains ≥2 *assistant* messages, with content from the last assistant turn
+- New: `thinking_at_last_turn` is omitted when output_messages contains ≤1 assistant message (single-turn rollout)
+- New: `plan` field equals stripped `query_analysis` (no `<think>` tags)
+- New: `thinking_in_plan` field contains the `<think>` content from
+  `raw_query_analysis`
+- New: `_balanced_sample` returns the same records on two calls with the same
+  `sample_seed` (determinism)
+- New: `_balanced_sample` returns a different order than head-of-list for a
+  minibatch large enough to make collision unlikely (seed=0, list of 20+
+  states with distinguishable identifiers)
+
+Estimated total for `tests/gepa_integration/` after Iteration 2: ~64.
+
+### Out of scope
+
+- **LLM judge augmentation** — same rationale as Iteration 1.
+- **Cross-record correlation features** — e.g., "this failure mode appeared
+  in 3/4 wrong examples." Useful in theory but requires per-batch
+  aggregation that the reflector currently can't act on (it gets per-record
+  feedback). Defer until the reflector's meta-prompt is changed to consume
+  batch-level signal.
+- **Adaptive snippet length** — e.g., 400 chars when the trace is dense
+  with `<think>` blocks, 1200 when it's sparse. Adds complexity without
+  clear benefit at current scale.
