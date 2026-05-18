@@ -15,8 +15,12 @@ This module wires the `gepa` package into the CoSMAS inference stack.
 ```
 src/gepa_integration/
 ├── __init__.py
-├── seed.py      — build the starting candidate + generate data splits
-└── adapter.py   — AgentGEPAAdapter (GEPAAdapter protocol implementation)
+├── seed.py        — build_seed_candidate(); build_splits() (legacy path)
+├── adapter.py     — AgentGEPAAdapter (GEPAAdapter protocol implementation)
+├── reflection.py  — trim_prompt() — reflector context budget management
+└── data/
+    ├── prepare.py — Download Search-R1 + DeepMath → GEPA DatasetExamples
+    └── loader.py  — load_gepa_examples() — JSON → DatasetExample
 ```
 
 ---
@@ -30,8 +34,64 @@ Every GEPA run operates on exactly two string components:
 | `system_prompt` | Full system prompt — preamble, few-shot example, tool instructions. Tool schemas inside `<tools>…</tools>` are never touched. | Passed as `system_prompts=[...]` to `AgenticOrchestrator.run_batch()` |
 | `planning_suffix` | Instruction block appended to the user query on Turn 0 (the planning turn). Tells the orchestrator how to analyse the question before using tools. | Passed as `planning_suffix=` to `AgenticOrchestrator.__init__()` |
 
-The seed values are the unmodified prompts used in the milestone-1 AgentFlow
-runs, rendered by `PromptBuilder` — so the baseline comparison is exact.
+The seed values are rendered by `PromptBuilder` — byte-for-byte identical to
+the prompts used in the milestone-1 AgentFlow runs, so the baseline comparison
+is exact.
+
+---
+
+## `data/` — training data preparation
+
+Training data comes from open datasets that do not overlap with any benchmark
+held-out test set:
+
+| Preset | Composition | Purpose |
+|---|---|---|
+| `gaia` | 75 % Search-R1 (85/15 HotpotQA/NQ) + 25 % DeepMath (no difficulty filter) | Targets GAIA/HLE/MuSiQue failure modes: retrieval chaining, single-shot tool trust, evidence gaps |
+| `math` | 75 % DeepMath (difficulty ≥ 5) + 25 % Search-R1 | Targets AIME failure mode: direct reasoning without code delegation |
+
+Both presets produce 300 examples: **150 D_feedback (train) / 50 D_pareto (val) / 100 test**.
+
+### `prepare.py`
+
+```bash
+python src/gepa_integration/data/prepare.py \
+    --preset gaia \
+    --output-dir data/gepa/gaia \
+    --splits-out experiments/configs/gepa/splits/gaia_gepa_splits.json \
+    --seed 1
+
+python src/gepa_integration/data/prepare.py \
+    --preset math \
+    --output-dir data/gepa/math \
+    --splits-out experiments/configs/gepa/splits/math_gepa_splits.json \
+    --seed 1
+```
+
+Writes `data/gepa/<preset>/all_examples.json` (300 examples) and the splits
+JSON. Each example carries:
+- `question`, `answer` — the canonical question and primary answer
+- `answer_aliases` — all valid answer strings from the source dataset (e.g.
+  `["New York City", "New York", "NYC"]`); used by `evaluate_answer` so
+  Search-R1 multi-answer examples score correctly
+- `data_source` — `"hotpotqa"`, `"nq"`, or `"deepmath"`; used internally by
+  the adapter to gate feedback hints (see [§ Feedback design](#feedback-design-μf-for-cosmas))
+
+### `loader.py`
+
+```python
+from gepa_integration.data.loader import load_gepa_examples
+
+examples = load_gepa_examples(
+    data_file=Path("data/gepa/gaia/all_examples.json"),
+    question_ids=splits["train"],   # list[int] from splits JSON
+)
+# → list[DatasetExample] with metadata["answer_aliases"] and metadata["data_source"]
+```
+
+All 300 examples are loaded into memory at once (negligible footprint — plain
+strings). GEPA then samples minibatches of `minibatch_size` (3) from the
+150-item train list during optimisation.
 
 ---
 
@@ -46,7 +106,7 @@ from agent_engine.models.base import get_tool_call_format, ModelFamily
 
 tool_schemas = tool_registry.get_all_schemas()
 seed = build_seed_candidate(
-    benchmark="gaia",                              # or "gpqa"
+    benchmark="gaia",                              # or "math"
     tool_schemas=tool_schemas,
     direct_tool_call=False,                        # must match your inference config
     tool_call_format=get_tool_call_format(ModelFamily.QWEN3),
@@ -70,42 +130,12 @@ time.
 | `tool_call_format` | derived from model family | `JSON` for Qwen3, `PYTHONIC` for OLMo |
 | `max_search_limit` | `tools.max_search_limit` | Embedded in tool instructions |
 
-### `build_splits`
+### `build_splits` (legacy)
 
-Partitions an existing `raw_results.json` into three stratified splits that
-share the same class distribution (correct + each of the six failure modes),
-so GEPA-vs-seed comparisons on any split are apples-to-apples.
-
-```python
-from gepa_integration.seed import build_splits
-from pathlib import Path
-
-splits = build_splits(
-    raw_results_path=Path("experiments/results/.../raw_results.json"),
-    train_n=80,
-    val_n=45,
-    seed=1,
-    output_path=Path("experiments/configs/gepa/splits/gaia_splits.json"),
-)
-# splits == {"train": [qid, ...], "val": [...], "test": [...]}
-```
-
-**Split construction:**
-- Each record is labelled by class — `CORRECT` for solved questions, or
-  one of the six failure modes from
-  `scripts/failure_modes/analyze_failure_modes.py` for failed ones.
-- Within each class, records are allocated to train/val/test in proportion
-  to the requested split sizes (relative to the full dataset), so each
-  split preserves the natural class distribution.
-- Test is never seen during optimisation.
-
-Pre-generated splits are committed to the repo at
-`experiments/configs/gepa/splits/`. Regenerate with:
-```bash
-sbatch jobs/gepa/000_prep_gepa_data.job
-# or directly:
-python scripts/run_gepa.py --mode splits --config experiments/configs/gepa/gaia.yaml
-```
+Partitions an existing `raw_results.json` into stratified splits. This is the
+*legacy* path used when `gepa_data_file` is not set in the config (i.e. when
+the benchmark's own results are used as training data). For the current GAIA
+and MATH runs, `prepare.py` generates the data and splits instead.
 
 ---
 
@@ -159,14 +189,26 @@ result: EvaluationBatch = adapter.evaluate(
 # result.trajectories — list of ExecutionState (only when capture_traces=True)
 ```
 
-Ground truth is stored in `state.metadata["ground_truth"]` so
-`make_reflective_dataset` can access it without the original examples.
+For each example, the following are stashed in `state.metadata` so
+`make_reflective_dataset` can access them without the original examples:
+
+| Key | Value |
+|---|---|
+| `ground_truth` | canonical answer string |
+| `eval_result` | `{"correct", "accuracy", "em", "f1"}` from `evaluate_answer` |
+| `choices` | MC answer choices, or `None` |
+| `data_source` | `"hotpotqa"` / `"nq"` / `"deepmath"` / `""` for real benchmark examples |
+
+`evaluate_answer` is called with both `choices` and `answer_aliases` from
+`example.metadata`, so Search-R1 multi-answer examples score correctly without
+false negatives feeding the reflector.
 
 ### `make_reflective_dataset(candidate, eval_batch, components_to_update)`
 
 Builds per-component feedback records from execution traces. Returns at most
-12 records per component (6 correct + 6 wrong) to keep reflector context
-manageable.
+**8 records per component** (4 correct + 4 wrong), balanced by
+`_balanced_sample` which shuffles each bucket with a fixed seed before
+slicing (deterministic, not biased by minibatch arrival order).
 
 ```python
 dataset = adapter.make_reflective_dataset(
@@ -194,12 +236,28 @@ dataset = adapter.make_reflective_dataset(
 - Number of turns taken
 - The enriched `Feedback` string — same `_diagnose()` output as the system-prompt records
 
-### Feedback design (μ_f for CoSMAS)
+### Thinking tags and ORCHESTRATOR_ONLY mode
+
+With `use_thinking=True` (ORCHESTRATOR_ONLY), the model emits one
+`<think>…</think>` block per turn. The pipeline is designed so the reflector
+always sees clean content:
+
+| Field | Raw source | What the reflector sees |
+|---|---|---|
+| `predicted_answer` | `extract_answer(gen_result.text)` — strips tags | clean answer string |
+| `thinking_before_first_tool` / `thinking_at_last_turn` | `_extract_thinking(output_messages[n]["content"])` | content *inside* the think block only |
+| `thinking_in_plan` | `_extract_thinking(state.raw_query_analysis)` | content inside the planning think block |
+| `plan` | `state.query_analysis` — stripped by `strip_thinking_tags` in orchestrator | clean plan text |
+| `action_steps[*].result_snippet` | `action_history[*]["result"]` — stripped by `strip_thinking_tags` before storage | clean tool output |
+
+---
+
+## Feedback design (μ_f for CoSMAS)
 
 The GEPA paper describes a *feedback function* (μ_f) that returns more than a
 scalar — it surfaces the natural-language signal the environment produced
 while scoring (compiler errors, failed rubrics, retrieval gaps). For
-benchmarks like GAIA/GPQA where the "environment" is just an answer scorer,
+benchmarks like GAIA/MATH where the "environment" is just an answer scorer,
 we approximate μ_f deterministically: we read everything the orchestrator and
 `evaluate_answer` already produced, and turn it into a per-failure-mode
 diagnosis. **No second LLM judge is involved** — that was deliberately ruled
@@ -219,37 +277,31 @@ reflector can credit-assign to a prompt change):
 |---|---|---|
 | `WRONG. Ground truth: '…'. Predicted: '…'.` | always | basic disagreement |
 | `Scoring: em=…, f1=…` | always | partial-credit shape |
-| `Normalised: '…' vs '…'.` | normalised forms differ but are non-empty | hides irrelevant whitespace/punct/article differences so the reflector sees the real mismatch |
+| `Normalised: '…' vs '…'.` | normalised forms differ and are non-empty | hides irrelevant whitespace/punct/article differences |
 | `No final answer was produced.` | prediction is empty | extraction or convergence failure |
-| `Format mismatch: gold is numeric/symbolic; prediction is prose.` | `is_math_answer(gt)` and not `is_math_answer(pred)` (skipped for MC) | needs a stricter answer-format instruction |
+| `Format mismatch: gold is numeric/symbolic; prediction is prose.` | `is_math_answer(gt)` and not `is_math_answer(pred)` — **suppressed when `data_source` is `"hotpotqa"` or `"nq"`** (skipped for MC) | needs stricter answer-format instruction; suppressed for Search-R1 examples whose year-like answers would misfire |
 | `Prediction is much longer than the gold answer …` | pred word count > 4 × gt word count (skipped for MC) | gold answers are short — the model is over-explaining |
-| `Token overlap is high (f1 ≥ 0.5) …` | f1 ≥ 0.5 (skipped for MC) | right *content*, wrong *precision/format* — typically a unit or rounding fix |
+| `Token overlap is high (f1 ≥ 0.5) …` | f1 ≥ 0.5 (skipped for MC) | right *content*, wrong *precision/format* |
 | `Tools used: {…}` / `No tools called — … parametric memory only.` | always | flags hallucination-from-memory and over/under-tooling |
 | `N/M tool calls returned an error.` | ≥ 1 action-history result starts with `error/exception/traceback/failed` | infrastructure or query-phrasing problem |
 | `Max turns (K) reached without a final answer.` | `state.metadata["max_turns_reached"]` is True | planning didn't converge — usually a `planning_suffix` target |
 
-Multiple-choice questions (GPQA, with `example.metadata["choices"]` set)
+Multiple-choice questions (with `example.metadata["choices"]` set)
 skip the format/verbosity/f1 lines: gold is one letter and the heuristics
 would misfire.
 
 Both record types use the same `_diagnose` output, by design. The
 `system_prompt` and `planning_suffix` records differ in their
-`Generated Outputs` payload (one shows first + last assistant `<think>`
-blocks + action steps, the other shows the planning `<think>` block +
-the stripped plan + the downstream tool list) — the reflector already
-has the per-component context it needs, so the *feedback* itself can be
-component-agnostic.
+`Generated Outputs` payload — the reflector already has the per-component
+context it needs, so the *feedback* itself can be component-agnostic.
 
-**Iteration 2 (2026-05-18)** unified the thinking-snippet cap at 800 chars
-across every field, added `thinking_at_last_turn` to `system_prompt`
-records so the stopping decision is visible to the reflector, and split
-the planning record's raw blob into `plan` + `thinking_in_plan` for
-parity with the system-prompt record shape. `_balanced_sample` now
-shuffles each bucket with `random.Random(self._sample_seed)` (default
-seed `0`) before slicing, so the reflector's records are not biased by
-the minibatch's arrival order while remaining reproducible across runs.
-See `docs/superpowers/specs/2026-05-15-gepa-integration-design.md`
-Iteration 2 addendum for the full rationale.
+**Note on mixed training data:** With 25 % of training examples from the
+minority source (e.g. DeepMath examples in the GAIA optimizer), the format
+mismatch hint could mislead the reflector about what answer format the target
+benchmark requires. This is mitigated by suppressing the hint for
+`_FACTUAL_QA_SOURCES = {"hotpotqa", "nq"}`. The `data_source` field is stored
+in `state.metadata` but is *not* passed to the reflector — the reflector sees
+only the question, outputs, and feedback string.
 
 #### Why not an LLM judge?
 
@@ -266,17 +318,9 @@ to, for two reasons:
    (especially questions the orchestrator itself couldn't solve). Wrong
    diagnoses become wrong prompt edits.
 
-If a future setting really needs LLM-judged feedback (e.g. open-ended
-benchmarks without a deterministic scorer), the right place to plug it in is
-a new branch inside `_diagnose` — keep the deterministic lines and *append*
-the judge's paragraph after them, so the reflector still has the structured
-signal as a sanity floor.
-
 ---
 
 ## Alignment with the inference pipeline
-
-The GEPA pipeline is designed so that every component matches inference exactly:
 
 | Aspect | GEPA | Inference (`run_experiment.py`) |
 |---|---|---|
@@ -285,8 +329,8 @@ The GEPA pipeline is designed so that every component matches inference exactly:
 | Tool mode | `direct_tool_call: false` (sub-agent) | Matches milestone-1 `qwen8B_subagent_tools_orchestrator` |
 | Sub-agent model | Same `VLLMProvider` as orchestrator (Qwen3-8B) | Sub-agent model role in config |
 | Thinking mode | `ORCHESTRATOR_ONLY` — orchestrator on, sub-agents off | Same |
-| Scoring | `evaluate_answer(prediction, ground_truth, choices=choices)` | Same function |
-| GPQA choices | `example.metadata.get("choices")` | Same |
+| Scoring | `evaluate_answer(prediction, ground_truth, choices=choices, answer_aliases=aliases)` | Same function |
+| Answer aliases | `example.metadata.get("answer_aliases")` | Same (where available) |
 
 ---
 
@@ -294,33 +338,29 @@ The GEPA pipeline is designed so that every component matches inference exactly:
 
 ### Step 0 — prerequisites
 
-The GAIA and GPQA milestone-1 AgentFlow results must exist:
-```
-experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/
-  gaia/qwen8B_subagent_tools_orchestrator/.../raw_results.json
-  gpqa/qwen8B_subagent_tools_orchestrator/.../raw_results.json
-```
-These paths are hardcoded in `experiments/configs/gepa/gaia.yaml` and
-`gpqa.yaml`. Update them if you re-run the milestone experiments.
-
-### Step 1 — install the `gepa` package
+Install the `gepa` package and prepare the training data:
 
 ```bash
+# Install gepa into the conda env
 sbatch jobs/gepa/001_install_gepa_deps.job
 # or: pip install gepa==0.0.22
-```
 
-### Step 2 — generate splits
-
-```bash
+# Download Search-R1 + DeepMath and write all_examples.json + splits JSON
 sbatch jobs/gepa/000_prep_gepa_data.job
+# or directly:
+python src/gepa_integration/data/prepare.py \
+    --preset gaia --output-dir data/gepa/gaia \
+    --splits-out experiments/configs/gepa/splits/gaia_gepa_splits.json --seed 1
+python src/gepa_integration/data/prepare.py \
+    --preset math --output-dir data/gepa/math \
+    --splits-out experiments/configs/gepa/splits/math_gepa_splits.json --seed 1
 ```
 
-Writes (or overwrites) `experiments/configs/gepa/splits/{gaia,gpqa}_splits.json`.
-Pre-generated splits are already committed — only re-run if you change the
-source `raw_results.json` or split sizes.
+Pre-generated splits are committed to the repo at
+`experiments/configs/gepa/splits/`. Only re-run `prepare.py` if you change
+the data composition or split sizes.
 
-### Step 3 — smoke tests
+### Step 1 — smoke tests
 
 ```bash
 sbatch jobs/gepa/002_smoke_gepa.job        # CPU: imports, splits, evaluator
@@ -331,34 +371,38 @@ The GPU smoke test runs the full pipeline (optimize → evaluate → diff) on a
 2-example subset with the real Qwen3-32B reflector. Only proceed to the full
 run once this passes.
 
-### Step 4 — full optimisation
+### Step 2 — full optimisation
+
+GAIA and MATH are independent jobs — submit them separately or together:
 
 ```bash
-sbatch jobs/gepa/004_run_gepa.job
+sbatch jobs/gepa/006_run_gepa_gaia.job   # ~24h, 3×H100
+sbatch jobs/gepa/007_run_gepa_math.job   # ~24h, 3×H100
 ```
 
-Runs sequentially: GAIA optimise (3h) → GAIA evaluate → GPQA optimise (3h) →
-GPQA evaluate. Supports env-var overrides:
+Or step-by-step manually (Qwen3-32B reflector must be running on port 8001):
 
 ```bash
-sbatch --export=ALL,REGEN_SPLITS=1 jobs/gepa/004_run_gepa.job   # regenerate splits first
-sbatch --export=ALL,SKIP_GAIA=1    jobs/gepa/004_run_gepa.job   # GPQA only
-sbatch --export=ALL,SKIP_GPQA=1    jobs/gepa/004_run_gepa.job   # GAIA only
+python scripts/run_gepa.py --mode optimize --config experiments/configs/gepa/gaia.yaml
+python scripts/run_gepa.py --mode evaluate --config experiments/configs/gepa/gaia.yaml
+python scripts/run_gepa.py --mode diff     --config experiments/configs/gepa/gaia.yaml
 ```
 
-### Step 5 — analyse results
+### Step 3 — analyse results
 
-Each job run writes to `experiments/results/gepa/<benchmark>/<TIMESTAMP>_<JOB_ID>/`;
-replace `<run>` below with the specific subdirectory you want to analyse.
+Each job writes to `experiments/results/gepa/<benchmark>/<TIMESTAMP>_<JOB_ID>/`;
+replace `<run>` below with the specific subdirectory.
 
 ```bash
 # Accuracy + tool stats on the held-out test set
 python scripts/analyze_results.py experiments/results/gepa/gaia/<run>/gepa_results.json --by-level --tools
-python scripts/analyze_results.py experiments/results/gepa/gpqa/<run>/gepa_results.json --tools
+python scripts/analyze_results.py experiments/results/gepa/math/<run>/gepa_results.json --tools
 
-# Diff between seed and optimised prompts (pass the same --run-dir used by the job)
-python scripts/run_gepa.py --mode diff --config experiments/configs/gepa/gaia.yaml --run-dir experiments/results/gepa/gaia/<run>
-python scripts/run_gepa.py --mode diff --config experiments/configs/gepa/gpqa.yaml --run-dir experiments/results/gepa/gpqa/<run>
+# Diff between seed and optimised prompts
+python scripts/run_gepa.py --mode diff --config experiments/configs/gepa/gaia.yaml \
+    --run-dir experiments/results/gepa/gaia/<run>
+python scripts/run_gepa.py --mode diff --config experiments/configs/gepa/math.yaml \
+    --run-dir experiments/results/gepa/math/<run>
 ```
 
 ---
@@ -390,27 +434,25 @@ states = orchestrator.run_batch(
 )
 ```
 
-Or, to run a full experiment via `run_experiment.py`, create a new YAML config
-that points to the dataset + model you want and manually set the system prompt
-template to the optimised text (edit the relevant YAML template under
-`src/agent_engine/prompts/templates/system/`) — or patch `PromptBuilder` to
-load from the `best_candidate.json` directly.
-
 ---
 
 ## Config reference (`experiments/configs/gepa/*.yaml`)
 
 ```yaml
 benchmark: "gaia"           # dataset name — must match DatasetRegistry key
-dataset_split: "all_validation"
-data_dir: "./data"
 thinking_mode: "ORCHESTRATOR_ONLY"
 seed: 1
 max_turns: 15
+cache_dir: "./cache"
+
+# GEPA data — generated by src/gepa_integration/data/prepare.py
+gepa_data_file: "data/gepa/gaia/all_examples.json"
+splits_file: "experiments/configs/gepa/splits/gaia_gepa_splits.json"
 
 model:
   name: "Qwen3-8B"
   path_or_id: "Qwen/Qwen3-8B"
+  family: "qwen3"
   role: "orchestrator"
 
 reflector:                  # Qwen3-32B served via vllm serve on port 8001
@@ -424,45 +466,38 @@ tools:
   web_tool_provider: "serper"
   max_search_limit: 10
 
-splits_file: "experiments/configs/gepa/splits/gaia_splits.json"
-existing_results: "experiments/results/.../raw_results.json"
-
-splits:
-  train_n: 80
-  val_n: 45                 # remaining ~40 become held-out test
-
 gepa:
-  rollout_budget: 150       # total agent rollouts during optimisation
-  minibatch_size: 10        # examples per reflector call
-  merge_proposer: true      # whether to use GEPA's merge proposer
+  rollout_budget: 750       # total agent rollouts (≥ 15 × |D_pareto| = 15 × 50)
+  minibatch_size: 3         # examples per reflector call (GEPA paper default)
+  merge_proposer: true
+  track_best_outputs: true
   run_dir: "experiments/results/gepa/gaia"   # base dir; jobs append <TIMESTAMP>_<JOB_ID>
+
+wandb:
+  enabled: true
+  project: "gepa"
+  name: "gepa_gaia_qwen3_8b"
+  tags: ["gaia", "gepa", "qwen3-8b", "search-r1", "deepmath"]
 ```
 
 ---
 
 ## Outputs
 
-Each invocation of `004_run_gepa.job` (or `003_smoke_gepa_gpu.job`) writes to a
-timestamped + job-id subdirectory so successive runs never overwrite each
-other:
+Each job run writes to a timestamped + job-id subdirectory:
 
 ```
 experiments/results/gepa/<benchmark>/<YYYY-MM-DD-HH-MM-SS>_<SLURM_JOB_ID>/
 ```
 
-The job script computes the path once and passes it via `--run-dir` to every
-mode (`optimize`, `evaluate`, `diff`). When invoking `run_gepa.py` manually
-without `--run-dir`, the base path from `gepa.run_dir` in the YAML is used as-is.
-
-Files in each run directory:
-
 | File | Contents |
 |---|---|
-| `seed_candidate.json` | `{"system_prompt": ..., "planning_suffix": ...}` — the starting point (written by `run_gepa.py`) |
-| `best_candidate.json` | Same schema — the best candidate found by GEPA (written by `run_gepa.py`) |
+| `seed_candidate.json` | `{"system_prompt": ..., "planning_suffix": ...}` — the starting point |
+| `best_candidate.json` | Same schema — the best candidate found by GEPA |
 | `gepa_results.json` | Held-out test evaluation; same schema as `raw_results.json` — readable by `analyze_results.py` |
-| `gepa_state.bin` | Full GEPA optimisation state (pickled `GEPAState`); written by the GEPA library after each step. Can be used to resume an interrupted run — GEPA automatically reads it when `run_dir` already contains this file. |
-| `generated_best_outputs_valset/` | Per-task best rollout outputs on the validation set (written by GEPA when `track_best_outputs=True`). |
+| `gepa_state.bin` | Full GEPA optimisation state (pickled); written after each step. Can resume an interrupted run — GEPA reads it automatically when `run_dir` already contains this file. |
+| `generated_best_outputs_valset/` | Per-task best rollout outputs on the validation set (written when `track_best_outputs=True`). |
+| `optimize.stderr` / `evaluate.stderr` | Per-step stderr logs (vLLM tqdm/INFO); replayed to stderr on failure. |
 
 ---
 
@@ -472,14 +507,16 @@ Files in each run directory:
 pytest tests/gepa_integration/ -v
 ```
 
-76 unit tests covering: `ExecutionState.raw_query_analysis`,
-`_DEFAULT_PLANNING_SUFFIX_TOOLS` constant, `build_seed_candidate` (structure,
-planning suffix match, tool schema embedding), `build_splits` (sizes,
-no-overlap, failure ratio, JSON output), `_extract_thinking`, all
-`AgentGEPAAdapter` methods (`evaluate`, `make_reflective_dataset`, balanced
-sampling cap), the `_diagnose` feedback function (score breakdown,
-normalised-form line, empty-prediction, format-mismatch, verbosity, high-f1,
+Covers: `ExecutionState.raw_query_analysis`, `_DEFAULT_PLANNING_SUFFIX_TOOLS`
+constant, `build_seed_candidate` (structure, planning suffix match, tool schema
+embedding), `build_splits` (sizes, no-overlap, class distribution, JSON output),
+GEPA data preparation (`_norm_to_example`, `make_gepa_splits`, `build_gepa_examples`,
+full pipeline round-trip, `load_gepa_examples`), `_extract_thinking`, all
+`AgentGEPAAdapter` methods (`evaluate` with alias + data_source stashing,
+`make_reflective_dataset`, balanced sampling cap), the `_diagnose` feedback
+function (score breakdown, normalised-form line, empty-prediction,
+format-mismatch with `_FACTUAL_QA_SOURCES` gate, verbosity, high-f1,
 parametric-memory, tool-error counting, max-turns, multiple-choice skip),
-and Iteration 2 additions (unified 800-char thinking cap, last-turn
+and reflective record structure (unified 800-char thinking cap, last-turn
 thinking inclusion/skip, planning record `plan`/`thinking_in_plan` split,
 seeded `_balanced_sample` shuffle determinism).
