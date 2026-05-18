@@ -1,5 +1,6 @@
 #!/bin/bash
-#SBATCH --partition=cpu
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
 #SBATCH --job-name=PrepGEPADataV2
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
