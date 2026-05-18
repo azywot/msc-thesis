@@ -378,3 +378,45 @@ def test_first_turn_thinking_capped_at_800_chars():
     # 800 chars + "…[truncated]" suffix
     assert len(snippet) <= 800 + len("…[truncated]")
     assert snippet.endswith("…[truncated]")
+
+
+# ── _balanced_sample shuffle ─────────────────────────────────────────────────
+
+def _wrong_states_with_distinguishable_ids(n):
+    """n wrong states, each with question_id i so we can verify ordering."""
+    return [_make_state(i, "Q", "x", correct=False) for i in range(n)]
+
+
+def test_balanced_sample_is_deterministic_given_seed():
+    a = AgentGEPAAdapter(model_provider=MagicMock(), tool_registry=ToolRegistry(),
+                         use_thinking=True, max_turns=3, sample_seed=42)
+    states = _wrong_states_with_distinguishable_ids(20)
+    scores = [0.0] * 20
+    first = [s.question_id for s, _ in a._balanced_sample(states, scores)]
+    second = [s.question_id for s, _ in a._balanced_sample(states, scores)]
+    assert first == second  # same seed → same selection
+
+
+def test_balanced_sample_shuffles_off_head_of_list():
+    a = AgentGEPAAdapter(model_provider=MagicMock(), tool_registry=ToolRegistry(),
+                         use_thinking=True, max_turns=3, sample_seed=0)
+    states = _wrong_states_with_distinguishable_ids(20)
+    scores = [0.0] * 20
+    picked = [s.question_id for s, _ in a._balanced_sample(states, scores)]
+    head = list(range(4))  # what head-of-list slicing would return for half=4
+    assert picked != head, (
+        "Expected shuffled selection to differ from the first 4 IDs; "
+        "if this collides, change sample_seed in the test."
+    )
+
+
+def test_balanced_sample_different_seeds_give_different_order():
+    states = _wrong_states_with_distinguishable_ids(20)
+    scores = [0.0] * 20
+    a0 = AgentGEPAAdapter(model_provider=MagicMock(), tool_registry=ToolRegistry(),
+                          use_thinking=True, max_turns=3, sample_seed=0)
+    a1 = AgentGEPAAdapter(model_provider=MagicMock(), tool_registry=ToolRegistry(),
+                          use_thinking=True, max_turns=3, sample_seed=1)
+    p0 = [s.question_id for s, _ in a0._balanced_sample(states, scores)]
+    p1 = [s.question_id for s, _ in a1._balanced_sample(states, scores)]
+    assert p0 != p1

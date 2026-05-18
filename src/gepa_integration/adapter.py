@@ -10,6 +10,7 @@ condition and provide rich <think> traces for the reflector.
 
 from __future__ import annotations
 
+import random
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Optional
@@ -63,12 +64,14 @@ class AgentGEPAAdapter:
         use_thinking: bool = True,
         max_turns: int = 15,
         tool_limits: Optional[dict[str, int]] = None,
+        sample_seed: int = 0,
     ) -> None:
         self.model_provider = model_provider
         self.tool_registry = tool_registry
         self.use_thinking = use_thinking
         self.max_turns = max_turns
         self.tool_limits = tool_limits or {"web_search": 10}
+        self._sample_seed = sample_seed
 
     # ------------------------------------------------------------------ #
     # GEPAAdapter protocol                                                 #
@@ -263,9 +266,17 @@ class AgentGEPAAdapter:
     def _balanced_sample(
         self, states: list[ExecutionState], scores: list[float]
     ) -> list[tuple[ExecutionState, float]]:
-        """Return up to MAX_RECORDS pairs balanced between correct and wrong."""
+        """Return up to MAX_RECORDS pairs balanced between correct and wrong.
+
+        Shuffled with a fixed seed before slicing so the records the reflector
+        sees are not biased by the minibatch's arrival order, while keeping
+        repeated GEPA runs reproducible.
+        """
         correct = [(s, sc) for s, sc in zip(states, scores) if sc > 0]
         wrong = [(s, sc) for s, sc in zip(states, scores) if sc == 0]
+        rng = random.Random(self._sample_seed)
+        rng.shuffle(correct)
+        rng.shuffle(wrong)
         half = self._MAX_RECORDS // 2
         return correct[:half] + wrong[:half]
 
