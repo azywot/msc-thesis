@@ -190,3 +190,14 @@ class TestEvaluationSmoke:
         # ground truth contained in a longer prediction
         result = evaluate_answer("The answer is Paris, France", "Paris")
         assert result["correct"] is True
+
+    def test_alias_hit_scores_correct(self):
+        # primary answer is "New York", prediction matches alias "NYC"
+        result = evaluate_answer("NYC", "New York", answer_aliases=["NYC", "New York City"])
+        assert result["correct"] is True
+        assert result["accuracy"] == 1.0
+
+    def test_no_alias_behaviour_unchanged(self):
+        # without aliases, mismatching prediction still scores wrong
+        result = evaluate_answer("NYC", "New York")
+        assert result["correct"] is False

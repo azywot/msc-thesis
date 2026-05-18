@@ -412,7 +412,8 @@ def run_evaluate(cfg: dict, config_path: Path) -> None:
     for state, ex in zip(states, test_examples):
         prediction = state.answer or ""
         choices = ex.metadata.get("choices")
-        eval_result = evaluate_answer(prediction, ex.answer, choices=choices)
+        aliases = ex.metadata.get("answer_aliases") or []
+        eval_result = evaluate_answer(prediction, ex.answer, choices=choices, answer_aliases=aliases)
         correct = bool(eval_result["correct"])
         if correct:
             n_correct += 1

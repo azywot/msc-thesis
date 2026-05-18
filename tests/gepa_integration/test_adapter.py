@@ -99,6 +99,24 @@ def test_evaluate_score_wrong():
     assert result.scores[0] == 0.0
 
 
+def test_evaluate_score_correct_via_alias():
+    """Prediction matching an alias (not primary answer) should score 1.0."""
+    adapter = _make_adapter()
+    candidate = {"system_prompt": "sys", "planning_suffix": "plan"}
+    example = DatasetExample(
+        question_id=1, question="Where is the UN HQ?",
+        answer="New York City",
+        metadata={"answer_aliases": ["New York City", "New York", "NYC"]},
+    )
+    # prediction matches alias but not primary
+    state = ExecutionState(question_id=1, question="Where is the UN HQ?",
+                           messages=[], answer="NYC", finished=True)
+    with patch("gepa_integration.adapter.AgenticOrchestrator") as MockOrch:
+        MockOrch.return_value.run_batch.return_value = [state]
+        result = adapter.evaluate([example], candidate)
+    assert result.scores[0] == 1.0
+
+
 def test_evaluate_captures_trajectories():
     adapter = _make_adapter()
     candidate = {"system_prompt": "sys", "planning_suffix": "plan"}

@@ -111,7 +111,8 @@ class AgentGEPAAdapter:
         for state, example in zip(states, batch):
             prediction = state.answer or ""
             choices = example.metadata.get("choices")
-            result = evaluate_answer(prediction, example.answer, choices=choices)
+            aliases = example.metadata.get("answer_aliases") or []
+            result = evaluate_answer(prediction, example.answer, choices=choices, answer_aliases=aliases)
             outputs.append(prediction)
             scores.append(float(result["accuracy"]))
             # Stash everything make_reflective_dataset needs so it can build
