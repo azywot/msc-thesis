@@ -283,3 +283,236 @@ class TestLoadGEPAExamples:
         from gepa_integration.data.loader import load_gepa_examples
         with pytest.raises(FileNotFoundError):
             load_gepa_examples(tmp_path / "missing.json", [0])
+
+
+# ---------------------------------------------------------------------------
+# G4: _norm_to_example fallback when no golden_answers (DeepMath rows)
+# ---------------------------------------------------------------------------
+
+class TestNormToExampleFallback:
+    def test_math_row_aliases_fall_back_to_answer(self):
+        """DeepMath rows have no golden_answers — aliases should be [answer]."""
+        from gepa_integration.data.prepare import build_gepa_examples
+        rows = _make_math_rows(1)  # extra_info has no golden_answers
+        examples = build_gepa_examples(
+            feedback_search=rows, feedback_math=[],
+            pareto_search=[], pareto_math=[],
+            test_search=[], test_math=[],
+            seed=1,
+        )
+        assert examples[0]["answer_aliases"] == [examples[0]["answer"]]
+
+    def test_search_row_aliases_use_golden_answers(self):
+        """Search-R1 rows have golden_answers — aliases should be that list."""
+        from gepa_integration.data.prepare import build_gepa_examples
+        rows = _make_search_rows(1)  # golden_answers = ["Answer 0", "Alt 0"]
+        examples = build_gepa_examples(
+            feedback_search=rows, feedback_math=[],
+            pareto_search=[], pareto_math=[],
+            test_search=[], test_math=[],
+            seed=1,
+        )
+        assert examples[0]["answer_aliases"] == ["Answer 0", "Alt 0"]
+
+
+# ---------------------------------------------------------------------------
+# G5: full pipeline round-trip (build → save → load → DatasetExample)
+# ---------------------------------------------------------------------------
+
+class TestFullPipelineRoundTrip:
+    def test_round_trip_returns_correct_dataset_examples(self, tmp_path):
+        from gepa_integration.data.prepare import build_gepa_examples, make_gepa_splits, save_gepa_data
+        from gepa_integration.data.loader import load_gepa_examples
+        from agent_engine.datasets.base import DatasetExample
+
+        search = _make_search_rows(5)
+        math   = _make_math_rows(3)
+        examples = build_gepa_examples(
+            feedback_search=search[:3], feedback_math=math[:1],
+            pareto_search=search[3:4],  pareto_math=math[1:2],
+            test_search=search[4:],     test_math=math[2:],
+            seed=1,
+        )
+        all_ids = [ex["question_id"] for ex in examples]
+        splits = make_gepa_splits(all_ids, n_feedback=4, n_pareto=2, n_test=2, seed=1)
+
+        data_file   = tmp_path / "all_examples.json"
+        splits_file = tmp_path / "splits.json"
+        save_gepa_data(examples, splits, data_file, splits_file)
+
+        feedback_examples = load_gepa_examples(data_file, splits["train"])
+        assert len(feedback_examples) == 4
+        assert all(isinstance(ex, DatasetExample) for ex in feedback_examples)
+        assert all(ex.question_id in splits["train"] for ex in feedback_examples)
+
+    def test_round_trip_no_id_leaks_across_splits(self, tmp_path):
+        """No question_id appears in more than one split after round-trip."""
+        from gepa_integration.data.prepare import build_gepa_examples, make_gepa_splits, save_gepa_data
+        from gepa_integration.data.loader import load_gepa_examples
+
+        examples = build_gepa_examples(
+            feedback_search=_make_search_rows(6), feedback_math=_make_math_rows(4),
+            pareto_search=_make_search_rows(3),   pareto_math=_make_math_rows(2),
+            test_search=_make_search_rows(3),     test_math=_make_math_rows(2),
+            seed=42,
+        )
+        all_ids = [ex["question_id"] for ex in examples]
+        splits = make_gepa_splits(all_ids, n_feedback=10, n_pareto=5, n_test=5, seed=42)
+
+        data_file   = tmp_path / "all_examples.json"
+        splits_file = tmp_path / "splits.json"
+        save_gepa_data(examples, splits, data_file, splits_file)
+
+        feedback = {ex.question_id for ex in load_gepa_examples(data_file, splits["train"])}
+        pareto   = {ex.question_id for ex in load_gepa_examples(data_file, splits["val"])}
+        test     = {ex.question_id for ex in load_gepa_examples(data_file, splits["test"])}
+
+        assert feedback & pareto == set()
+        assert feedback & test   == set()
+        assert pareto   & test   == set()
+        assert len(feedback) + len(pareto) + len(test) == 20
+
+
+# ---------------------------------------------------------------------------
+# G2: _load_examples in run_gepa.py with gepa_data_file
+# ---------------------------------------------------------------------------
+
+class TestRunGepaLoadExamples:
+    def _write_data_file(self, tmp_path):
+        raw = [
+            {"question_id": i, "question": f"Q{i}", "answer": f"A{i}",
+             "answer_aliases": [f"A{i}"], "data_source": "hotpotqa"}
+            for i in range(5)
+        ]
+        p = tmp_path / "all_examples.json"
+        p.write_text(json.dumps(raw))
+        return p
+
+    def _import_load_examples(self):
+        # run_gepa.py is a script under scripts/; import via path manipulation
+        scripts_dir = str(Path(__file__).parent.parent.parent / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import run_gepa  # noqa: PLC0415
+        return run_gepa._load_examples
+
+    def test_gepa_data_file_path_used(self, tmp_path):
+        """When gepa_data_file is set, returns DatasetExample objects from file."""
+        from agent_engine.datasets.base import DatasetExample
+        data_file = self._write_data_file(tmp_path)
+        cfg = {"gepa_data_file": str(data_file)}
+        load_fn = self._import_load_examples()
+
+        result = load_fn(cfg, [0, 2, 4])
+        assert len(result) == 3
+        assert all(isinstance(ex, DatasetExample) for ex in result)
+        assert {ex.question_id for ex in result} == {0, 2, 4}
+
+    def test_gepa_data_file_filters_by_ids(self, tmp_path):
+        data_file = self._write_data_file(tmp_path)
+        cfg = {"gepa_data_file": str(data_file)}
+        load_fn = self._import_load_examples()
+
+        result = load_fn(cfg, [1])
+        assert len(result) == 1
+        assert result[0].question == "Q1"
+        assert result[0].answer == "A1"
+
+    def test_gepa_data_file_relative_path_resolved(self, tmp_path, monkeypatch):
+        """Relative gepa_data_file is resolved from cwd."""
+        self._write_data_file(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        cfg = {"gepa_data_file": "all_examples.json"}
+        load_fn = self._import_load_examples()
+
+        result = load_fn(cfg, [0])
+        assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# G1: prepare() integration with mocked HF downloads
+# ---------------------------------------------------------------------------
+
+class TestPrepareIntegration:
+    def _fake_splits(self, n_feedback, n_pareto, n_test):
+        """Return the three-tuple that _download_* functions return."""
+        return (
+            _make_search_rows(n_feedback),
+            _make_search_rows(n_pareto),
+            _make_search_rows(n_test),
+        )
+
+    def _fake_math_splits(self, n_feedback, n_pareto, n_test):
+        return (
+            _make_math_rows(n_feedback),
+            _make_math_rows(n_pareto),
+            _make_math_rows(n_test),
+        )
+
+    def test_prepare_gaia_produces_300_examples(self, tmp_path):
+        from unittest.mock import patch
+        from gepa_integration.data.prepare import prepare
+
+        fake_search = self._fake_splits(112, 37, 75)
+        fake_math   = self._fake_math_splits(38, 13, 25)
+
+        with patch("gepa_integration.data.prepare._download_search_r1", return_value=fake_search), \
+             patch("gepa_integration.data.prepare._download_deepmath",   return_value=fake_math):
+            examples, splits = prepare("gaia", tmp_path, tmp_path / "splits.json", seed=1)
+
+        assert len(examples) == 300
+        assert len(splits["train"]) == 150
+        assert len(splits["val"])   == 50
+        assert len(splits["test"])  == 100
+
+    def test_prepare_gaia_writes_files(self, tmp_path):
+        from unittest.mock import patch
+        from gepa_integration.data.prepare import prepare
+
+        fake_search = self._fake_splits(112, 37, 75)
+        fake_math   = self._fake_math_splits(38, 13, 25)
+
+        with patch("gepa_integration.data.prepare._download_search_r1", return_value=fake_search), \
+             patch("gepa_integration.data.prepare._download_deepmath",   return_value=fake_math):
+            prepare("gaia", tmp_path, tmp_path / "splits.json", seed=1)
+
+        assert (tmp_path / "all_examples.json").exists()
+        assert (tmp_path / "splits.json").exists()
+
+    def test_prepare_math_produces_300_examples(self, tmp_path):
+        from unittest.mock import patch
+        from gepa_integration.data.prepare import prepare
+
+        # math preset: search=(38,13,25), math=(112,37,75)
+        fake_search = self._fake_splits(38, 13, 25)
+        fake_math   = self._fake_math_splits(112, 37, 75)
+
+        with patch("gepa_integration.data.prepare._download_search_r1", return_value=fake_search), \
+             patch("gepa_integration.data.prepare._download_deepmath",   return_value=fake_math):
+            examples, splits = prepare("math", tmp_path, tmp_path / "splits.json", seed=1)
+
+        assert len(examples) == 300
+        assert len(splits["train"]) == 150
+        assert len(splits["val"])   == 50
+        assert len(splits["test"])  == 100
+
+    def test_prepare_unknown_preset_raises(self, tmp_path):
+        from gepa_integration.data.prepare import prepare
+        with pytest.raises(ValueError, match="Unknown preset"):
+            prepare("unknown", tmp_path, tmp_path / "splits.json")
+
+    def test_prepare_no_overlap_across_splits(self, tmp_path):
+        from unittest.mock import patch
+        from gepa_integration.data.prepare import prepare
+
+        fake_search = self._fake_splits(112, 37, 75)
+        fake_math   = self._fake_math_splits(38, 13, 25)
+
+        with patch("gepa_integration.data.prepare._download_search_r1", return_value=fake_search), \
+             patch("gepa_integration.data.prepare._download_deepmath",   return_value=fake_math):
+            _, splits = prepare("gaia", tmp_path, tmp_path / "splits.json", seed=1)
+
+        train, val, test = set(splits["train"]), set(splits["val"]), set(splits["test"])
+        assert train & val  == set()
+        assert train & test == set()
+        assert val   & test == set()
