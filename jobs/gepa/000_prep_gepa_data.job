@@ -9,10 +9,13 @@
 
 # Generate (or regenerate) failure-stratified train/val/test splits for GEPA.
 #
-# Reads milestone raw_results.json for GAIA and GPQA, classifies failures
-# using the six-mode taxonomy, and writes:
-#   experiments/configs/gepa/splits/gaia_splits.json
+# Reads milestone raw_results.json for GPQA, classifies failures using the
+# six-mode taxonomy, and writes:
 #   experiments/configs/gepa/splits/gpqa_splits.json
+#
+# NOTE: GAIA splits are now handled by job 005_prep_gepa_data.job, which
+# downloads Search-R1 + DeepMath data for the new gaia.yaml config.
+# The old gaia_splits.json (thesis-benchmark based) is no longer used.
 #
 # Does NOT require the gepa package — only agent_engine + failure_modes.
 # Safe to re-run: overwrites splits files with a deterministic result (seed=1).
@@ -45,8 +48,9 @@ export PYTHONNOUSERSITE=1
 
 echo ""
 echo "── GAIA splits ──────────────────────────────────────"
-python scripts/run_gepa.py --mode splits \
-    --config experiments/configs/gepa/gaia.yaml
+echo "NOTE: gaia.yaml now uses Search-R1/DeepMath data."
+echo "      Run jobs/gepa/005_prep_gepa_data.job to prepare gaia data."
+echo "      Skipping gaia here."
 
 echo ""
 echo "── GPQA splits ──────────────────────────────────────"
@@ -59,7 +63,7 @@ python - <<'PY'
 import json
 from pathlib import Path
 
-for benchmark in ("gaia", "gpqa"):
+for benchmark in ("gpqa",):
     path = Path(f"experiments/configs/gepa/splits/{benchmark}_splits.json")
     splits = json.loads(path.read_text())
     train, val, test = splits["train"], splits["val"], splits["test"]
