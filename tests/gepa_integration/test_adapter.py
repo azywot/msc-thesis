@@ -420,3 +420,61 @@ def test_balanced_sample_different_seeds_give_different_order():
     p0 = [s.question_id for s, _ in a0._balanced_sample(states, scores)]
     p1 = [s.question_id for s, _ in a1._balanced_sample(states, scores)]
     assert p0 != p1
+
+
+# ── last-turn thinking ───────────────────────────────────────────────────────
+
+def _multi_turn_state(qid, first_think, last_think, correct=True):
+    """ExecutionState with two assistant turns (first tool call + final answer)."""
+    state = _make_state(qid, "Q?", "answer", correct=correct)
+    state.output_messages = [
+        {"role": "assistant", "content": f"<think>{first_think}</think><tool_call>{{}}</tool_call>"},
+        {"role": "tool", "content": "tool result"},
+        {"role": "assistant", "content": f"<think>{last_think}</think>The answer is X."},
+    ]
+    return state
+
+
+def test_last_turn_thinking_included_when_multi_turn():
+    adapter = _make_adapter()
+    state = _multi_turn_state(1, "first reasoning here", "last reasoning here")
+    batch = GEPAEvaluationBatch(outputs=["answer"], scores=[1.0], trajectories=[state])
+    result = adapter.make_reflective_dataset({}, batch, ["system_prompt"])
+    outputs = result["system_prompt"][0]["Generated Outputs"]
+    assert "thinking_at_last_turn" in outputs
+    assert "last reasoning" in outputs["thinking_at_last_turn"]
+    # First-turn field still populated and distinct
+    assert "first reasoning" in outputs["thinking_before_first_tool"]
+
+
+def test_last_turn_thinking_truncated_at_800():
+    adapter = _make_adapter()
+    long = "y" * 2000
+    state = _multi_turn_state(1, "first", long)
+    batch = GEPAEvaluationBatch(outputs=["answer"], scores=[1.0], trajectories=[state])
+    result = adapter.make_reflective_dataset({}, batch, ["system_prompt"])
+    snippet = result["system_prompt"][0]["Generated Outputs"]["thinking_at_last_turn"]
+    assert len(snippet) <= 800 + len("…[truncated]")
+    assert snippet.endswith("…[truncated]")
+
+
+def test_last_turn_thinking_omitted_when_single_assistant_turn():
+    adapter = _make_adapter()
+    state = _make_state(1, "Q?", "answer", correct=True)
+    state.output_messages = [
+        {"role": "assistant", "content": "<think>only turn</think>final"},
+    ]
+    batch = GEPAEvaluationBatch(outputs=["answer"], scores=[1.0], trajectories=[state])
+    result = adapter.make_reflective_dataset({}, batch, ["system_prompt"])
+    outputs = result["system_prompt"][0]["Generated Outputs"]
+    assert "thinking_at_last_turn" not in outputs
+
+
+def test_last_turn_thinking_omitted_when_output_messages_empty():
+    adapter = _make_adapter()
+    state = _make_state(1, "Q?", "answer", correct=True)
+    state.output_messages = []  # explicit
+    batch = GEPAEvaluationBatch(outputs=["answer"], scores=[1.0], trajectories=[state])
+    result = adapter.make_reflective_dataset({}, batch, ["system_prompt"])
+    outputs = result["system_prompt"][0]["Generated Outputs"]
+    assert "thinking_at_last_turn" not in outputs

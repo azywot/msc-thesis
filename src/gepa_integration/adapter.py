@@ -285,10 +285,11 @@ class AgentGEPAAdapter:
     ) -> list[dict]:
         records = []
         for state, score in self._balanced_sample(states, scores):
+            assistant_msgs = [
+                m for m in state.output_messages if m.get("role") == "assistant"
+            ]
             first_thinking = (
-                _extract_thinking(state.output_messages[0]["content"])
-                if state.output_messages
-                else ""
+                _extract_thinking(assistant_msgs[0]["content"]) if assistant_msgs else ""
             )
             if len(first_thinking) > self._THINKING_SNIPPET_LEN:
                 first_thinking = first_thinking[: self._THINKING_SNIPPET_LEN] + "…[truncated]"
@@ -300,13 +301,24 @@ class AgentGEPAAdapter:
                 }
                 for a in state.action_history
             ]
+            generated_outputs: dict[str, Any] = {
+                "predicted_answer": state.answer or "",
+                "thinking_before_first_tool": first_thinking,
+                "action_steps": action_steps,
+            }
+            # Include last-turn thinking only when there's a distinct last
+            # assistant turn — otherwise the field would just duplicate
+            # thinking_before_first_tool under a misleading name.
+            if len(assistant_msgs) >= 2:
+                last_thinking = _extract_thinking(assistant_msgs[-1]["content"])
+                if len(last_thinking) > self._THINKING_SNIPPET_LEN:
+                    last_thinking = (
+                        last_thinking[: self._THINKING_SNIPPET_LEN] + "…[truncated]"
+                    )
+                generated_outputs["thinking_at_last_turn"] = last_thinking
             records.append({
                 "Inputs": {"question": state.question},
-                "Generated Outputs": {
-                    "predicted_answer": state.answer or "",
-                    "thinking_before_first_tool": first_thinking,
-                    "action_steps": action_steps,
-                },
+                "Generated Outputs": generated_outputs,
                 "Feedback": self._diagnose(state, score),
             })
         return records
