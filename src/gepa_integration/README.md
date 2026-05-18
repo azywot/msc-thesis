@@ -183,14 +183,80 @@ dataset = adapter.make_reflective_dataset(
 - The orchestrator's predicted answer
 - The first `<think>` block before the first tool call
 - All action steps (tool name, sub-goal, result snippet)
-- `CORRECT` or `WRONG — ground truth: X. Predicted: Y.` feedback
+- The enriched `Feedback` string (see [§ Feedback design](#feedback-design-μf-for-cosmas) below)
 
 **`planning_suffix` records** include:
 - The question
 - The raw planning output (including `<think>` tags via `raw_query_analysis`)
 - The list of tools subsequently used
 - Number of turns taken
-- `CORRECT — the planning analysis led to a successful solution.` or `WRONG — the planning analysis was: '...'.` feedback
+- The enriched `Feedback` string — same `_diagnose()` output as the system-prompt records
+
+### Feedback design (μ_f for CoSMAS)
+
+The GEPA paper describes a *feedback function* (μ_f) that returns more than a
+scalar — it surfaces the natural-language signal the environment produced
+while scoring (compiler errors, failed rubrics, retrieval gaps). For
+benchmarks like GAIA/GPQA where the "environment" is just an answer scorer,
+we approximate μ_f deterministically: we read everything the orchestrator and
+`evaluate_answer` already produced, and turn it into a per-failure-mode
+diagnosis. **No second LLM judge is involved** — that was deliberately ruled
+out (see [§ Why not an LLM judge?](#why-not-an-llm-judge)).
+
+The feedback is assembled by `AgentGEPAAdapter._diagnose(state, score)`.
+
+**Correct cases** (one line, kept short so they don't crowd the reflector):
+```
+CORRECT. Predicted '42'; tools={'web_search': 2}; turns=4.
+```
+
+**Wrong cases** (multi-line; each line is an independent signal the
+reflector can credit-assign to a prompt change):
+
+| Line | When it fires | Signal for the reflector |
+|---|---|---|
+| `WRONG. Ground truth: '…'. Predicted: '…'.` | always | basic disagreement |
+| `Scoring: em=…, f1=…` | always | partial-credit shape |
+| `Normalised: '…' vs '…'.` | normalised forms differ but are non-empty | hides irrelevant whitespace/punct/article differences so the reflector sees the real mismatch |
+| `No final answer was produced.` | prediction is empty | extraction or convergence failure |
+| `Format mismatch: gold is numeric/symbolic; prediction is prose.` | `is_math_answer(gt)` and not `is_math_answer(pred)` (skipped for MC) | needs a stricter answer-format instruction |
+| `Prediction is much longer than the gold answer …` | pred word count > 4 × gt word count (skipped for MC) | gold answers are short — the model is over-explaining |
+| `Token overlap is high (f1 ≥ 0.5) …` | f1 ≥ 0.5 (skipped for MC) | right *content*, wrong *precision/format* — typically a unit or rounding fix |
+| `Tools used: {…}` / `No tools called — … parametric memory only.` | always | flags hallucination-from-memory and over/under-tooling |
+| `N/M tool calls returned an error.` | ≥ 1 action-history result starts with `error/exception/traceback/failed` | infrastructure or query-phrasing problem |
+| `Max turns (K) reached without a final answer.` | `state.metadata["max_turns_reached"]` is True | planning didn't converge — usually a `planning_suffix` target |
+
+Multiple-choice questions (GPQA, with `example.metadata["choices"]` set)
+skip the format/verbosity/f1 lines: gold is one letter and the heuristics
+would misfire.
+
+Both record types use the same `_diagnose` output, by design. The
+`system_prompt` and `planning_suffix` records differ in their
+`Generated Outputs` payload (one shows the `<think>` block + action steps,
+the other the raw planning analysis + downstream tool list) — the reflector
+already has the per-component context it needs, so the *feedback* itself can
+be component-agnostic.
+
+#### Why not an LLM judge?
+
+The natural next step would be an extra Qwen3-32B pass that writes a free-form
+"why was this wrong" paragraph and prepends it to the feedback. We chose not
+to, for two reasons:
+
+1. **Redundancy with the reflector.** GEPA's reflection LM already performs
+   what the paper calls "implicit credit assignment" over the full trajectory.
+   A same-family judge would duplicate that work and consume reflector
+   context budget for no new signal.
+2. **Confabulation risk.** A judge LM trained on similar data to the
+   orchestrator confidently invents failure stories for hard questions
+   (especially questions the orchestrator itself couldn't solve). Wrong
+   diagnoses become wrong prompt edits.
+
+If a future setting really needs LLM-judged feedback (e.g. open-ended
+benchmarks without a deterministic scorer), the right place to plug it in is
+a new branch inside `_diagnose` — keep the deterministic lines and *append*
+the judge's paragraph after them, so the reflector still has the structured
+signal as a sanity floor.
 
 ---
 
@@ -392,9 +458,11 @@ Files in each run directory:
 pytest tests/gepa_integration/ -v
 ```
 
-32 unit tests covering: `ExecutionState.raw_query_analysis`,
+58 unit tests covering: `ExecutionState.raw_query_analysis`,
 `_DEFAULT_PLANNING_SUFFIX_TOOLS` constant, `build_seed_candidate` (structure,
 planning suffix match, tool schema embedding), `build_splits` (sizes,
-no-overlap, failure ratio, JSON output), `_extract_thinking`, and all
-`AgentGEPAAdapter` methods (`evaluate`, `make_reflective_dataset`, feedback
-strings, balanced sampling cap).
+no-overlap, failure ratio, JSON output), `_extract_thinking`, all
+`AgentGEPAAdapter` methods (`evaluate`, `make_reflective_dataset`, balanced
+sampling cap), and the `_diagnose` feedback function (score breakdown,
+normalised-form line, empty-prediction, format-mismatch, verbosity, high-f1,
+parametric-memory, tool-error counting, max-turns, multiple-choice skip).

@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased] — feat/gepa-integration
 
+### Changed
+- **GEPA reflective feedback enriched** (`src/gepa_integration/adapter.py`) — the `Feedback` string passed to the Qwen3-32B reflector now exposes the deterministic environment-derived signals GEPA's μ_f calls for, instead of the previous one-line `WRONG — ground truth: X. Predicted: Y.` placeholder
+  - New `AgentGEPAAdapter._diagnose(state, score)` builds the feedback for both `system_prompt` and `planning_suffix` records; per-component differentiation moves to `Generated Outputs` (the records already carry different payloads)
+  - `evaluate()` now stashes the full `evaluate_answer` dict and the GPQA `choices` into `state.metadata`, so the reflective pass has em/f1 (not just accuracy) and can skip prose-shape heuristics on multiple-choice questions
+  - Wrong-case feedback now surfaces (each line conditional on its signal): em+f1 score breakdown, normalised pred/gt forms, empty-prediction flag, numeric-vs-prose format mismatch, "verbose for short gold" (pred > 4× gt word count), high-f1 partial-credit hint, tool usage map or parametric-memory flag, count of tool calls that returned an error (prefix match on `error/exception/traceback/failed`), and `max_turns_reached`
+  - Correct-case feedback is now one line carrying tool counts and turn count, so successful trajectories give the reflector positive structural signal (not just `CORRECT`)
+  - Token-budget impact: ~150 extra tokens per wrong record; at `_MAX_RECORDS = 8` the per-reflective-call overhead is ≤1.2 K tokens — well inside the existing 32 K reflector budget
+  - Deliberately *not* an LLM judge: a same-family Qwen3-32B judge would duplicate the reflector's "implicit credit assignment" job and confabulate failure stories for hard questions. The deterministic path keeps the structured signal as a sanity floor; future open-ended benchmarks can *append* a judge paragraph to `_diagnose` without removing the lines
+  - Documented in `src/gepa_integration/README.md` (new "Feedback design (μ_f for CoSMAS)" section with the line-by-line failure-mode table) and as a dated addendum in `docs/superpowers/specs/2026-05-15-gepa-integration-design.md`
+- **`tests/gepa_integration/test_adapter.py`** — +14 tests covering each `_diagnose` line plus an end-to-end check that the tool-error signal reaches both reflective record types; `test_make_reflective_dataset_correct_feedback` relaxed from exact `== "CORRECT"` to `.startswith("CORRECT")` for the new one-line correct format. Total test count in `tests/gepa_integration/` is now 58 (was 32)
+
 ### Added
 - **GEPA prompt optimisation** (`src/gepa_integration/`) — system adaptation chapter implementation
   - `seed.py` — `build_seed_candidate()` renders the two-component seed (`system_prompt` + `planning_suffix`) from YAML templates; `build_splits()` generates failure-stratified train / random val / random test splits from any existing `raw_results.json`

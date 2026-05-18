@@ -374,3 +374,119 @@ Connect back to failure modes: does the optimized planning suffix address the pl
 - **GPQA choices field:** `DataInst` must carry the `choices` list for GPQA so `evaluate_answer()` routes to the MC scorer. Already handled via `example.metadata["choices"]`.
 - **Attachment-bearing GAIA questions:** The orchestrator already handles attachment paths correctly via `_inject_attachment_path()`. No special handling needed in the adapter or splits — include attachment-bearing questions normally.
 - **Math benchmark identity:** The failure-mode analysis inventory only includes `aime` (20 questions) for math tasks. The MATH500-200-subset run is not in the inventory. Confirm which math benchmark and result path to use for split generation. If MATH500 was run separately (not part of the milestone 1 inventory), add its path to the `existing_results` field in `math.yaml`. If only AIME is available, note that 20 questions is too small for a meaningful GEPA split — in that case MATH500 should be prioritised.
+
+---
+
+## Addendum 2026-05-18: Enriched feedback function (μ_f)
+
+The §5 design shipped a minimal feedback string (`CORRECT` or
+`WRONG — ground truth: X. Predicted: Y.`). Inspection of the GEPA paper and
+the first set of reflective traces from `experiments/results/gepa/gaia/`
+showed this was too sparse: the reflector had to re-derive every failure
+mode from raw `<think>` content, which is slow and noisy and biases prompt
+edits toward whichever failure mode happens to be most visible in any one
+trace.
+
+The paper's μ_f is the *environment-derived* signal produced while scoring
+— compiler errors, failed rubrics, retrieval-hop diagnostics. For QA
+benchmarks the environment is the answer scorer plus the tool stack, so the
+analogous deterministic signal is already on the `ExecutionState`. The
+addendum below specifies how it's surfaced.
+
+### Where it lives
+
+A new method `AgentGEPAAdapter._diagnose(state, score) -> str` builds the
+`Feedback` string. Both `_system_prompt_records` and `_planning_suffix_records`
+call it — the per-component differentiation lives in `Generated Outputs`,
+which keeps the feedback itself component-agnostic.
+
+### Required state mutations (in `evaluate()`)
+
+```python
+state.metadata["eval_result"] = result          # full dict from evaluate_answer
+state.metadata["choices"]     = example.metadata.get("choices")
+```
+
+Adding to existing `state.metadata["ground_truth"]` so the reflective pass
+can read em/f1 (not just accuracy) and route format heuristics around
+multiple-choice questions.
+
+### Feedback schema
+
+**Correct (one line):**
+```
+CORRECT. Predicted '<pred>'; tools={tool_counts}; turns=<turn>.
+```
+
+**Wrong (multi-line, one signal per line):**
+```
+WRONG. Ground truth: '<gt>'. Predicted: '<pred>' | (empty).
+  Scoring: em=<x>, f1=<y>.
+  [Normalised: '<n_gt>' vs '<n_pred>'.]              # if non-empty & differ
+  [No final answer was produced.]                    # if pred is empty
+  [Format mismatch: gold is numeric/symbolic; …]     # numeric gt, prose pred (non-MC)
+  [Prediction is much longer than the gold answer …] # pred >4× gt word count (non-MC)
+  [Token overlap is high (f1 ≥ 0.5) …]               # partial credit hint (non-MC)
+  Tools used: {…} | No tools called — … parametric memory only.
+  [N/M tool calls returned an error.]                # action_history result startswith
+                                                     #   error/exception/traceback/failed
+  [Max turns (K) reached without a final answer.]
+```
+
+Lines wrapped in `[ ]` are conditional — they fire only when their
+underlying signal is present.
+
+### What each line is meant to teach the reflector
+
+- **Scoring em+f1** distinguishes "right content, wrong format" from "wrong
+  content" — a high-f1 wrong answer should prompt format-tightening, not
+  reasoning changes.
+- **Normalised forms** hide whitespace/punct/article differences so the
+  reflector doesn't waste edits on issues that the scorer already
+  forgives.
+- **Format mismatch / verbosity** are dual checks for the same failure
+  ("prose where a short token was expected") — verbosity catches cases
+  where `is_math_answer(gt)` is False (text gold answers).
+- **Tool errors** are detected via a prefix match on the action result
+  string. The orchestrator already inlines `ToolResult.error` into the
+  human-readable result, so no `success: bool` field has to be added to
+  `action_history`. If false positives become an issue, the cleaner fix is
+  to add an explicit `error: bool` to the entry written in
+  `orchestrator._record_tool_call`.
+- **Parametric memory** flags the case where the orchestrator never called
+  any tool — by far the most common pattern in confidently-wrong
+  hallucinations and a high-leverage target for prompt fixes.
+
+### Why not an LLM judge
+
+The natural alternative is to insert a Qwen3-32B pass between
+`evaluate_answer` and `make_reflective_dataset` that writes a free-form
+diagnosis. We deliberately did not:
+
+1. GEPA's reflection LM already performs the paper's "implicit credit
+   assignment" over the trajectory. A same-family judge duplicates that
+   work and uses reflector context budget for no new information.
+2. A same-family judge confabulates plausible-but-wrong failure stories
+   for questions the orchestrator itself couldn't solve, especially when
+   the *gold* answer is unfamiliar. Wrong diagnoses → wrong prompt edits.
+
+If an open-ended benchmark without a deterministic scorer is added later
+(e.g. HLE long-form), the right pattern is to *append* an LLM judge's
+paragraph to the deterministic lines inside `_diagnose`, not to replace
+them — keeping the structured signal as a sanity floor underneath the
+judge.
+
+### Token-budget impact
+
+The wrong-case feedback grows from ~1 line to typically 5–8 lines (~150
+extra tokens). With `_MAX_RECORDS = 8`, the per-reflective-call overhead
+is at most ~1.2 K tokens — well inside the existing 32 K reflector budget.
+No change to `_THINKING_SNIPPET_LEN` or `_RESULT_SNIPPET_LEN` is needed.
+
+### Tests
+
+`tests/gepa_integration/test_adapter.py` gains 14 new tests under the
+`_diagnose` section covering each conditional line independently plus an
+end-to-end check that the tool-error signal reaches both the
+`system_prompt` and `planning_suffix` reflective records. Total
+`tests/gepa_integration/` count is now 58.

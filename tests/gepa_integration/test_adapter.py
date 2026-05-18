@@ -156,7 +156,9 @@ def test_make_reflective_dataset_correct_feedback():
     states = [_make_state(1, "Q", "correct_answer", correct=True)]
     batch = GEPAEvaluationBatch(outputs=["correct_answer"], scores=[1.0], trajectories=states)
     result = adapter.make_reflective_dataset({}, batch, ["system_prompt"])
-    assert result["system_prompt"][0]["Feedback"] == "CORRECT"
+    feedback = result["system_prompt"][0]["Feedback"]
+    assert feedback.startswith("CORRECT")
+    assert "correct_answer" in feedback  # the predicted answer is echoed back
 
 
 def test_make_reflective_dataset_wrong_contains_gt():
@@ -183,3 +185,173 @@ def test_make_reflective_dataset_capped_at_12():
     batch = GEPAEvaluationBatch(outputs=["A"] * 20, scores=[1.0] * 20, trajectories=states)
     result = adapter.make_reflective_dataset({}, batch, ["system_prompt"])
     assert len(result["system_prompt"]) <= 12
+
+
+# ── _diagnose (enriched feedback) ────────────────────────────────────────────
+
+def _wrong_state(qid, pred, gt, eval_result=None, tool_counts=None,
+                 action_history=None, max_turns_reached=False, choices=None):
+    """Build an ExecutionState as evaluate() would leave it for a wrong answer."""
+    state = ExecutionState(question_id=qid, question="Q?", messages=[], answer=pred, finished=True)
+    state.metadata["ground_truth"] = gt
+    state.metadata["eval_result"] = eval_result or {"em": 0.0, "f1": 0.0, "accuracy": 0.0}
+    state.metadata["choices"] = choices
+    if max_turns_reached:
+        state.metadata["max_turns_reached"] = True
+    if tool_counts:
+        state.tool_counts.update(tool_counts)
+    state.action_history = action_history or []
+    state.turn = sum((tool_counts or {}).values())
+    return state
+
+
+def test_diagnose_correct_includes_tools_and_turns():
+    adapter = _make_adapter()
+    state = _make_state(1, "Q", "Paris", correct=True)
+    state.tool_counts["web_search"] = 2
+    state.turn = 3
+    fb = adapter._diagnose(state, score=1.0)
+    assert fb.startswith("CORRECT")
+    assert "web_search" in fb
+    assert "turns=3" in fb
+
+
+def test_diagnose_correct_no_tools_says_none():
+    adapter = _make_adapter()
+    state = _make_state(1, "Q", "Paris", correct=True)
+    fb = adapter._diagnose(state, score=1.0)
+    assert "tools=none" in fb
+
+
+def test_diagnose_wrong_includes_score_breakdown():
+    adapter = _make_adapter()
+    state = _wrong_state(1, "Berlin", "Paris",
+                         eval_result={"em": 0.0, "f1": 0.0, "accuracy": 0.0})
+    fb = adapter._diagnose(state, score=0.0)
+    assert fb.startswith("WRONG.")
+    assert "em=0.00" in fb
+    assert "f1=0.00" in fb
+
+
+def test_diagnose_wrong_includes_normalised_forms():
+    adapter = _make_adapter()
+    state = _wrong_state(1, "Berlin.", "Paris!")
+    fb = adapter._diagnose(state, score=0.0)
+    assert "Normalised:" in fb
+    assert "'berlin'" in fb
+    assert "'paris'" in fb
+
+
+def test_diagnose_wrong_empty_prediction():
+    adapter = _make_adapter()
+    state = _wrong_state(1, "", "Paris")
+    fb = adapter._diagnose(state, score=0.0)
+    assert "No final answer was produced." in fb
+
+
+def test_diagnose_wrong_format_mismatch_numeric_vs_prose():
+    adapter = _make_adapter()
+    # Punctuation in the prediction guarantees is_math_answer returns False
+    # (MATH_TOKEN_PATTERN allows letters/digits/operators but not commas).
+    state = _wrong_state(
+        1,
+        "pi, the ratio of a circle's circumference to its diameter",
+        "3.14",
+    )
+    fb = adapter._diagnose(state, score=0.0)
+    assert "Format mismatch" in fb
+
+
+def test_diagnose_wrong_verbose_for_short_gold():
+    adapter = _make_adapter()
+    state = _wrong_state(
+        1,
+        "The capital city of France is the famous city of Paris located in Europe",
+        "Berlin",
+    )
+    fb = adapter._diagnose(state, score=0.0)
+    assert "much longer than the gold answer" in fb
+
+
+def test_diagnose_wrong_high_f1_hint():
+    adapter = _make_adapter()
+    state = _wrong_state(
+        1, "42 hours", "42",
+        eval_result={"em": 0.0, "f1": 0.66, "accuracy": 0.0},
+    )
+    fb = adapter._diagnose(state, score=0.0)
+    assert "Token overlap is high" in fb
+
+
+def test_diagnose_wrong_parametric_memory_flag():
+    adapter = _make_adapter()
+    state = _wrong_state(1, "Berlin", "Paris")  # no tools called
+    fb = adapter._diagnose(state, score=0.0)
+    assert "parametric memory" in fb
+
+
+def test_diagnose_wrong_counts_tool_errors():
+    adapter = _make_adapter()
+    state = _wrong_state(
+        1, "x", "Paris",
+        tool_counts={"web_search": 3},
+        action_history=[
+            {"tool_name": "web_search", "result": "Error: timeout"},
+            {"tool_name": "web_search", "result": "Some valid content"},
+            {"tool_name": "web_search", "result": "Exception: 429 rate limited"},
+        ],
+    )
+    fb = adapter._diagnose(state, score=0.0)
+    assert "2/3 tool calls returned an error" in fb
+
+
+def test_diagnose_wrong_max_turns_reached():
+    adapter = _make_adapter()
+    state = _wrong_state(1, "", "Paris", max_turns_reached=True)
+    fb = adapter._diagnose(state, score=0.0)
+    assert "Max turns" in fb
+    assert "without a final answer" in fb
+
+
+def test_diagnose_wrong_multiple_choice_skips_format_checks():
+    adapter = _make_adapter()
+    # GPQA-style: gold is a letter, pred is a letter — none of the numeric/
+    # verbose heuristics should fire because choices is set.
+    state = _wrong_state(1, "B", "A", choices=["w", "x", "y", "z"])
+    fb = adapter._diagnose(state, score=0.0)
+    assert "Format mismatch" not in fb
+    assert "much longer than the gold" not in fb
+
+
+def test_evaluate_stashes_eval_result_and_choices():
+    adapter = _make_adapter()
+    candidate = {"system_prompt": "sys", "planning_suffix": "plan"}
+    examples = [_make_example(1, "Q", "A", choices=["a", "b", "c", "d"])]
+    state = ExecutionState(question_id=1, question="Q", messages=[], answer="A", finished=True)
+    with patch("gepa_integration.adapter.AgenticOrchestrator") as MockOrch:
+        MockOrch.return_value.run_batch.return_value = [state]
+        adapter.evaluate(examples, candidate, capture_traces=True)
+    assert "eval_result" in state.metadata
+    assert state.metadata["eval_result"]["accuracy"] in (0.0, 1.0)
+    assert state.metadata["choices"] == ["a", "b", "c", "d"]
+
+
+def test_make_reflective_dataset_wrong_includes_tool_signal():
+    """End-to-end check: the new feedback reaches the reflective record."""
+    adapter = _make_adapter()
+    state = _wrong_state(
+        1, "Berlin", "Paris",
+        tool_counts={"web_search": 2},
+        action_history=[
+            {"tool_name": "web_search", "result": "Error: search failed"},
+            {"tool_name": "web_search", "result": "ok"},
+        ],
+    )
+    state.raw_query_analysis = state.query_analysis = "plan"
+    batch = GEPAEvaluationBatch(outputs=["Berlin"], scores=[0.0], trajectories=[state])
+    result = adapter.make_reflective_dataset({}, batch, ["system_prompt", "planning_suffix"])
+    sys_fb = result["system_prompt"][0]["Feedback"]
+    plan_fb = result["planning_suffix"][0]["Feedback"]
+    assert "1/2 tool calls returned an error" in sys_fb
+    # Both record types share _diagnose, so both surface the same signal.
+    assert "1/2 tool calls returned an error" in plan_fb
