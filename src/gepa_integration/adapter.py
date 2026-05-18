@@ -328,12 +328,17 @@ class AgentGEPAAdapter:
     ) -> list[dict]:
         records = []
         for state, score in self._balanced_sample(states, scores):
-            raw_plan = state.raw_query_analysis or state.query_analysis or ""
+            thinking_in_plan = _extract_thinking(state.raw_query_analysis or "")
+            if len(thinking_in_plan) > self._THINKING_SNIPPET_LEN:
+                thinking_in_plan = (
+                    thinking_in_plan[: self._THINKING_SNIPPET_LEN] + "…[truncated]"
+                )
             tools_used = [tc["name"] for tc in state.tool_calls]
             records.append({
                 "Inputs": {"question": state.question},
                 "Generated Outputs": {
-                    "raw_planning_output": raw_plan,
+                    "plan": state.query_analysis or "",
+                    "thinking_in_plan": thinking_in_plan,
                     "tools_subsequently_used": tools_used,
                     "num_turns_taken": state.turn,
                 },

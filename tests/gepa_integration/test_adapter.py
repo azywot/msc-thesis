@@ -170,13 +170,17 @@ def test_make_reflective_dataset_wrong_contains_gt():
     assert "real_answer" in result["system_prompt"][0]["Feedback"]
 
 
-def test_make_reflective_dataset_planning_uses_raw():
+def test_make_reflective_dataset_planning_extracts_thinking():
+    """Planning records expose the <think> block as its own field, not buried
+    inside a raw blob (Iteration 2)."""
     adapter = _make_adapter()
     state = _make_state(1, "Q", "A", correct=True, raw_plan="<think>reasoning</think>plan")
+    state.query_analysis = "plan"
     batch = GEPAEvaluationBatch(outputs=["A"], scores=[1.0], trajectories=[state])
     result = adapter.make_reflective_dataset({}, batch, ["planning_suffix"])
-    raw = result["planning_suffix"][0]["Generated Outputs"]["raw_planning_output"]
-    assert "<think>reasoning</think>" in raw
+    outputs = result["planning_suffix"][0]["Generated Outputs"]
+    assert outputs["thinking_in_plan"] == "reasoning"
+    assert outputs["plan"] == "plan"
 
 
 def test_make_reflective_dataset_capped_at_12():
@@ -478,3 +482,46 @@ def test_last_turn_thinking_omitted_when_output_messages_empty():
     result = adapter.make_reflective_dataset({}, batch, ["system_prompt"])
     outputs = result["system_prompt"][0]["Generated Outputs"]
     assert "thinking_at_last_turn" not in outputs
+
+
+# ── planning thinking extraction ─────────────────────────────────────────────
+
+def test_planning_records_have_plan_and_thinking_fields():
+    adapter = _make_adapter()
+    state = _make_state(1, "Q", "A", correct=True,
+                        raw_plan="<think>plan reasoning</think>stripped plan text")
+    state.query_analysis = "stripped plan text"
+    batch = GEPAEvaluationBatch(outputs=["A"], scores=[1.0], trajectories=[state])
+    result = adapter.make_reflective_dataset({}, batch, ["planning_suffix"])
+    outputs = result["planning_suffix"][0]["Generated Outputs"]
+    assert "plan" in outputs
+    assert "thinking_in_plan" in outputs
+    assert "raw_planning_output" not in outputs
+    assert outputs["plan"] == "stripped plan text"
+    assert "plan reasoning" in outputs["thinking_in_plan"]
+    assert "<think>" not in outputs["plan"]  # plan field is strictly stripped
+
+
+def test_planning_thinking_truncated_at_800():
+    adapter = _make_adapter()
+    long = "z" * 2000
+    state = _make_state(1, "Q", "A", correct=True,
+                        raw_plan=f"<think>{long}</think>plan")
+    state.query_analysis = "plan"
+    batch = GEPAEvaluationBatch(outputs=["A"], scores=[1.0], trajectories=[state])
+    result = adapter.make_reflective_dataset({}, batch, ["planning_suffix"])
+    snippet = result["planning_suffix"][0]["Generated Outputs"]["thinking_in_plan"]
+    assert len(snippet) <= 800 + len("…[truncated]")
+    assert snippet.endswith("…[truncated]")
+
+
+def test_planning_thinking_empty_when_no_think_tags():
+    adapter = _make_adapter()
+    state = _make_state(1, "Q", "A", correct=True,
+                        raw_plan="no thinking tags, just a plan")
+    state.query_analysis = "no thinking tags, just a plan"
+    batch = GEPAEvaluationBatch(outputs=["A"], scores=[1.0], trajectories=[state])
+    result = adapter.make_reflective_dataset({}, batch, ["planning_suffix"])
+    outputs = result["planning_suffix"][0]["Generated Outputs"]
+    assert outputs["thinking_in_plan"] == ""
+    assert outputs["plan"] == "no thinking tags, just a plan"
