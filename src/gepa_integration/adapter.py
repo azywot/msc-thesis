@@ -169,6 +169,12 @@ class AgentGEPAAdapter:
     # over-explanations without firing on borderline cases.
     _VERBOSITY_RATIO = 4
 
+    def _truncate_thinking(self, text: str) -> str:
+        """Cap a <think> snippet at _THINKING_SNIPPET_LEN with an ellipsis suffix."""
+        if len(text) > self._THINKING_SNIPPET_LEN:
+            return text[: self._THINKING_SNIPPET_LEN] + "…[truncated]"
+        return text
+
     def _diagnose(self, state: ExecutionState, score: float) -> str:
         """Build the Feedback string shown to the reflector.
 
@@ -288,11 +294,9 @@ class AgentGEPAAdapter:
             assistant_msgs = [
                 m for m in state.output_messages if m.get("role") == "assistant"
             ]
-            first_thinking = (
+            first_thinking = self._truncate_thinking(
                 _extract_thinking(assistant_msgs[0]["content"]) if assistant_msgs else ""
             )
-            if len(first_thinking) > self._THINKING_SNIPPET_LEN:
-                first_thinking = first_thinking[: self._THINKING_SNIPPET_LEN] + "…[truncated]"
             action_steps = [
                 {
                     "tool": a["tool_name"],
@@ -310,12 +314,9 @@ class AgentGEPAAdapter:
             # assistant turn — otherwise the field would just duplicate
             # thinking_before_first_tool under a misleading name.
             if len(assistant_msgs) >= 2:
-                last_thinking = _extract_thinking(assistant_msgs[-1]["content"])
-                if len(last_thinking) > self._THINKING_SNIPPET_LEN:
-                    last_thinking = (
-                        last_thinking[: self._THINKING_SNIPPET_LEN] + "…[truncated]"
-                    )
-                generated_outputs["thinking_at_last_turn"] = last_thinking
+                generated_outputs["thinking_at_last_turn"] = self._truncate_thinking(
+                    _extract_thinking(assistant_msgs[-1]["content"])
+                )
             records.append({
                 "Inputs": {"question": state.question},
                 "Generated Outputs": generated_outputs,
@@ -328,11 +329,9 @@ class AgentGEPAAdapter:
     ) -> list[dict]:
         records = []
         for state, score in self._balanced_sample(states, scores):
-            thinking_in_plan = _extract_thinking(state.raw_query_analysis or "")
-            if len(thinking_in_plan) > self._THINKING_SNIPPET_LEN:
-                thinking_in_plan = (
-                    thinking_in_plan[: self._THINKING_SNIPPET_LEN] + "…[truncated]"
-                )
+            thinking_in_plan = self._truncate_thinking(
+                _extract_thinking(state.raw_query_analysis or "")
+            )
             tools_used = [tc["name"] for tc in state.tool_calls]
             records.append({
                 "Inputs": {"question": state.question},
