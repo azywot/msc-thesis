@@ -158,7 +158,7 @@ class AgentGEPAAdapter:
     # reflective prompt comfortably under the reflector's max_model_len.
     _MAX_RECORDS = 8           # 4 correct + 4 wrong per reflective call
     _RESULT_SNIPPET_LEN = 300  # chars per tool result
-    _THINKING_SNIPPET_LEN = 1500  # chars per <think> trace (truncated)
+    _THINKING_SNIPPET_LEN = 800   # chars per <think> trace (truncated, unified across record types)
 
     # Heuristic threshold: if the prediction is more than this multiple of the
     # gold answer's word count, flag it as "verbose for a short answer". GAIA

@@ -355,3 +355,26 @@ def test_make_reflective_dataset_wrong_includes_tool_signal():
     assert "1/2 tool calls returned an error" in sys_fb
     # Both record types share _diagnose, so both surface the same signal.
     assert "1/2 tool calls returned an error" in plan_fb
+
+
+# ── thinking-snippet caps ────────────────────────────────────────────────────
+
+def _state_with_thinking(qid, thinking_text, correct=True):
+    """ExecutionState whose first assistant message wraps `thinking_text` in <think>."""
+    state = _make_state(qid, "Q?", "answer", correct=correct)
+    state.output_messages = [
+        {"role": "assistant", "content": f"<think>{thinking_text}</think>some output"},
+    ]
+    return state
+
+
+def test_first_turn_thinking_capped_at_800_chars():
+    adapter = _make_adapter()
+    long_think = "x" * 2000
+    state = _state_with_thinking(1, long_think, correct=True)
+    batch = GEPAEvaluationBatch(outputs=["answer"], scores=[1.0], trajectories=[state])
+    result = adapter.make_reflective_dataset({}, batch, ["system_prompt"])
+    snippet = result["system_prompt"][0]["Generated Outputs"]["thinking_before_first_tool"]
+    # 800 chars + "…[truncated]" suffix
+    assert len(snippet) <= 800 + len("…[truncated]")
+    assert snippet.endswith("…[truncated]")
