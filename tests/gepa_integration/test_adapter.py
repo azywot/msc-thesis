@@ -484,6 +484,24 @@ def test_last_turn_thinking_omitted_when_output_messages_empty():
     assert "thinking_at_last_turn" not in outputs
 
 
+def test_last_turn_thinking_present_but_empty_when_no_think_tags():
+    """Multi-turn rollout whose last assistant message has no <think> block:
+    the field is still emitted (omission only triggers on single-turn), but
+    its value is an empty string. Pins the schema state the reflector sees."""
+    adapter = _make_adapter()
+    state = _make_state(1, "Q?", "answer", correct=True)
+    state.output_messages = [
+        {"role": "assistant", "content": "<think>first reasoning</think><tool_call>{}</tool_call>"},
+        {"role": "tool", "content": "tool result"},
+        {"role": "assistant", "content": "Final answer X with no think block."},
+    ]
+    batch = GEPAEvaluationBatch(outputs=["answer"], scores=[1.0], trajectories=[state])
+    result = adapter.make_reflective_dataset({}, batch, ["system_prompt"])
+    outputs = result["system_prompt"][0]["Generated Outputs"]
+    assert "thinking_at_last_turn" in outputs
+    assert outputs["thinking_at_last_turn"] == ""
+
+
 # ── planning thinking extraction ─────────────────────────────────────────────
 
 def test_planning_records_have_plan_and_thinking_fields():

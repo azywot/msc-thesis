@@ -136,7 +136,13 @@ class AgentGEPAAdapter:
     ) -> Mapping[str, Sequence[Mapping[str, Any]]]:
         """Build per-component reflective datasets from execution traces.
 
-        Returns at most 12 records per component (6 correct, 6 wrong).
+        Returns at most ``_MAX_RECORDS`` records per component, split evenly
+        between correct and wrong (currently 4 + 4 = 8). When both
+        ``system_prompt`` and ``planning_suffix`` are requested in a single
+        call, the two component lists are sampled with the same seed and
+        therefore reference the same underlying ExecutionStates — the
+        reflector sees the same trajectories from both viewpoints, which
+        keeps the per-component feedback coherent.
         """
         states: list[ExecutionState] = eval_batch.trajectories or []
         scores: list[float] = eval_batch.scores
@@ -276,7 +282,10 @@ class AgentGEPAAdapter:
 
         Shuffled with a fixed seed before slicing so the records the reflector
         sees are not biased by the minibatch's arrival order, while keeping
-        repeated GEPA runs reproducible.
+        repeated GEPA runs reproducible. ``random.Random(self._sample_seed)``
+        is constructed fresh on every call, so calling this method twice in
+        the same ``make_reflective_dataset`` invocation (once for each
+        component) yields the same trajectory selection — by design.
         """
         correct = [(s, sc) for s, sc in zip(states, scores) if sc > 0]
         wrong = [(s, sc) for s, sc in zip(states, scores) if sc == 0]
