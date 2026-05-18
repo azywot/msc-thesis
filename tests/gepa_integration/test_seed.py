@@ -123,15 +123,26 @@ def test_build_splits_no_overlap():
     assert not set(splits["val"]) & set(splits["test"])
 
 
-def test_build_splits_train_contains_mostly_failures():
+def test_build_splits_class_distribution_matches_across_splits():
+    """All three splits should have a correct/failed ratio close to the
+    natural distribution — stratified, not enriched, so GEPA-vs-seed
+    comparisons on any split are apples-to-apples."""
     records = _make_raw_results(60, {"tool_loop_or_empty_final": 20, "retrieval_evidence_failure": 20})
-    failed_qids = {r["question_id"] for r in records if not r["correct"]}
+    correct_qids = {r["question_id"] for r in records if r["correct"]}
+    natural_correct_rate = len(correct_qids) / len(records)  # 0.60
     with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
         json.dump(records, f)
         path = Path(f.name)
     splits = build_splits(raw_results_path=path, train_n=50, val_n=20, seed=42)
-    train_failures = sum(1 for qid in splits["train"] if qid in failed_qids)
-    assert train_failures >= 25
+    for split_name in ("train", "val", "test"):
+        ids = splits[split_name]
+        if not ids:
+            continue
+        ratio = sum(1 for qid in ids if qid in correct_qids) / len(ids)
+        assert abs(ratio - natural_correct_rate) <= 0.15, (
+            f"{split_name}: correct ratio {ratio:.2f} deviates "
+            f">0.15 from natural {natural_correct_rate:.2f}"
+        )
 
 
 def test_build_splits_saves_json(tmp_path):

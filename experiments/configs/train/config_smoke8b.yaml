@@ -1,0 +1,119 @@
+# experiments/configs/train/config_smoke8b.yaml
+# Smoke-test config for Qwen3-8B — verifies the full VERL pipeline end-to-end on real hardware.
+# (8 training samples, 2 rollouts, 1 epoch)
+#
+# Uses **Qwen3-8B** (vs 4B in config_smoke.yaml) and **N_GPUS=2** to spread the larger model.
+# Qwen3-1.7B frozen sub-agent on a dedicated GPU (not shared with VERL).
+# Total: 3 H100 NVL GPUs (~94 GB each).
+#
+# GPU layout (see jobs/012):
+#   GPU 0 (exclusive): frozen sub-agent at util=0.40 (~37.6 GB)
+#   GPU 1, GPU 2 (VERL, N_GPUS=2): actor FSDP-sharded to ~8 GB/GPU;
+#     vLLM TP=1 runs data-parallel — each GPU holds a full 8B copy during rollout.
+#
+# Memory per VERL GPU — rollout phase (param_offload=True, actor on CPU):
+#   vLLM model 16 GB + KV 26.3 GB = 42.3 GB + misc 2 GB = 44.3 GB ✓  (94 GB card)
+# Memory per VERL GPU — training phase (free_cache_engine destroys KV, model stays):
+#   vLLM model 16 GB + actor shard 8 GB + ref/optimizer offloaded ≈ 26 GB ✓
+#
+# Differences from config_smoke.yaml (Qwen3-4B, N_GPUS=1):
+#   - BASE_MODEL: Qwen3-8B
+#   - N_GPUS: 2
+#   - EXPERIMENT_NAME: qwen3-8b-grpo-smoke
+#   - data dir: data/training/smoke  (same)
+#   - USE_SCRATCH_CHECKPOINTS: true (8B checkpoints → /scratch-shared/$USER/msc-thesis/training/qwen3-8b-grpo-smoke/)
+#   - train_max_samples / rollout.n / epochs: same (minimal smoke)
+#
+# Launch with:
+#   python scripts/launch_verl.py --config experiments/configs/train/config_smoke8b.yaml
+#   python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke8b.yaml
+#
+# IMPORTANT: Launch frozen sub-agent on GPU 0 before VERL (see jobs/012):
+#   VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B --port 9998 \
+#       --tensor-parallel-size 1 --gpu-memory-utilization 0.40 --max-model-len 8192
+#   export SUBAGENT_ENDPOINT=http://localhost:9998/v1
+#   CUDA_VISIBLE_DEVICES=1,2 python scripts/launch_verl.py --config experiments/configs/train/config_smoke8b.yaml
+
+env:
+  BASE_MODEL: 'Qwen/Qwen3-8B'
+  SUBAGENT_MODEL: 'Qwen/Qwen3-1.7B'
+  SUBAGENT_ENDPOINT: 'http://localhost:9998/v1'
+  N_GPUS: 2
+  ROLLOUT_TP_SIZE: 1
+  EXPERIMENT_NAME: 'qwen3-8b-grpo-smoke'
+  PROJECT_NAME: 'cosmas-rl-finetuning-smoke'
+  BASE_DATA_DIR: 'data/training/smoke'
+  ENABLE_TOOLS: ["web_search", "code_generator"]
+  TOOL_STEPS: 2
+  THINKING_MODE: 'NO'
+  TRAIN_TEMPERATURE: 0.7
+  TEST_TEMPERATURE: 0.0
+  N_WORKERS: 1
+  VERBOSITY: 'INFO'
+  USE_LORA: "false"
+  USE_SCRATCH_CHECKPOINTS: "true"
+  SAVE_OPTIMIZER: "false"
+
+python_args:
+  agentflow.port: 9999
+  ray_init.num_cpus: 16
+  algorithm.adv_estimator: 'grpo'
+  data.train_files: '${BASE_DATA_DIR}/train/combined_train.parquet'
+  data.val_files:
+    - '${BASE_DATA_DIR}/val/val_search.parquet'
+    - '${BASE_DATA_DIR}/val/val_deepmath.parquet'
+  data.train_batch_size: 4
+  data.train_max_samples: 8
+  data.dataloader_num_workers: 0
+  data.max_prompt_length: 4096
+  data.max_response_length: 2048
+  data.truncation: 'truncate'
+  actor_rollout_ref.rollout.n: 2
+  actor_rollout_ref.actor.ppo_mini_batch_size: 4
+  # N_GPUS=2 → mini-batch of 4 shards to 2 per GPU; micro_batch=1 avoids any OOM on the
+  # first training step when fragmentation from the rollout phase is still settling.
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.rollout.multi_turn.format: 'hermes'
+  actor_rollout_ref.model.path: '${BASE_MODEL}'
+  actor_rollout_ref.model.enable_gradient_checkpointing: true
+  actor_rollout_ref.model.use_remove_padding: true
+  actor_rollout_ref.actor.optim.lr: 1.0e-6
+  actor_rollout_ref.actor.use_kl_loss: true
+  actor_rollout_ref.actor.kl_loss_coef: 0.001
+  actor_rollout_ref.actor.clip_ratio_low: 0.2
+  actor_rollout_ref.actor.clip_ratio_high: 0.3
+  # N_GPUS=2 shards actor to ~8 GB/GPU; during rollout vLLM + actor shard on GPU would be
+  # 42.3 GB + 8 GB = 50.3 GB — fragmentation risk mirrors the 4B/1-GPU smoke issue.
+  # param_offload=True removes the actor shard from GPU during rollout (same fix as smoke 4B).
+  actor_rollout_ref.actor.fsdp_config.param_offload: true
+  actor_rollout_ref.actor.fsdp_config.optimizer_offload: true
+  actor_rollout_ref.ref.fsdp_config.param_offload: true
+  actor_rollout_ref.rollout.name: 'vllm'
+  # util=0.45 on H100 94 GB → 42.3 GB vLLM budget (16 GB Qwen3-8B model + 26.3 GB KV).
+  # free_cache_engine=True destroys the KV-cache engine after rollout so the FSDP actor
+  # gets a clean, unfragmented memory state before compute_log_prob (same as smoke 4B).
+  actor_rollout_ref.rollout.free_cache_engine: true
+  actor_rollout_ref.rollout.gpu_memory_utilization: 0.45
+  # Cap context to prompt + response lengths to avoid vLLM allocating full 32768-token KV.
+  actor_rollout_ref.rollout.max_model_len: 6144
+  actor_rollout_ref.rollout.max_num_batched_tokens: 6144
+  actor_rollout_ref.rollout.tensor_model_parallel_size: '${ROLLOUT_TP_SIZE}'
+  trainer.n_gpus_per_node: '${N_GPUS}'
+  trainer.logger: ['console', 'wandb']
+  trainer.project_name: '${PROJECT_NAME}'
+  trainer.experiment_name: '${EXPERIMENT_NAME}'
+  trainer.save_freq: -1
+  trainer.test_freq: -1
+  trainer.save_every_epoch: true
+  trainer.val_every_epoch: true
+  trainer.total_epochs: 1
+  trainer.val_before_train: true
+  trainer.critic_warmup: 0
+  algorithm.use_kl_in_reward: false
+
+lora:                     # applied only when USE_LORA=true
+  rank: 64
+  alpha: 64               # alpha=rank → scaling factor 1.0 (neutral LoRA initialisation)
+  target_modules: "all-linear"

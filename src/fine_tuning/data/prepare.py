@@ -65,7 +65,7 @@ from __future__ import annotations
 import argparse
 import random
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # HuggingFace dataset id (Search-R1 NQ + HotpotQA). Older Hub name
 # PeterJinGo/SearchR1-nq_hotpotqa_train was removed; use nq_hotpotqa_train.
@@ -159,6 +159,57 @@ def normalise_deepmath_row(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
         "result": answer,
         "extra_info": extra_info,
     }
+
+
+def normalise_aime_row(raw: Dict[str, Any], idx: int, year: int) -> Dict[str, Any]:
+    """Convert an AIME row (HuggingFaceH4/aime_2024 or yentinglin/aime_2025) to VERL schema.
+
+    Both repos use `problem` + `answer` fields.
+    """
+    question = str(raw.get("problem") or "")
+    answer = str(raw.get("answer") if raw.get("answer") is not None else "")
+    return {
+        "data_source": f"aime_{year}",
+        "question": question,
+        "result": answer,
+        "extra_info": {"idx": idx, "groundtruth": answer, "year": year},
+    }
+
+
+def _load_dataset_for_aime(repo_id: str) -> List[Dict[str, Any]]:
+    """Load an AIME HF dataset to a plain list. Exists as a seam for testing."""
+    from datasets import load_dataset
+    return list(load_dataset(repo_id, split="train"))
+
+
+def _download_aime_val(
+    n_2024: int,
+    n_2025: int,
+    seed: int,
+) -> List[Dict[str, Any]]:
+    """Download AIME 2024 and 2025 val rows from HuggingFace.
+
+    Shuffles each year's pool independently before taking the first n rows
+    so the sample is random but deterministic given the seed.
+    """
+    rows: List[Dict[str, Any]] = []
+    for repo_id, year, n in [
+        ("HuggingFaceH4/aime_2024", 2024, n_2024),
+        ("yentinglin/aime_2025", 2025, n_2025),
+    ]:
+        if n == 0:
+            continue
+        pool = _load_dataset_for_aime(repo_id)
+        rng = random.Random(seed)
+        rng.shuffle(pool)
+        if len(pool) < n:
+            raise RuntimeError(
+                f"AIME {year}: only {len(pool)} rows available, need {n}. "
+                f"The dataset may have changed — lower --n-val-aime-{year}."
+            )
+        for i, raw in enumerate(pool[:n]):
+            rows.append(normalise_aime_row(dict(raw), idx=i, year=year))
+    return rows
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import yaml
 
+from agent_engine.caching import CacheManager
 from agent_engine.config.schema import DatasetConfig
 from agent_engine.core import AgenticOrchestrator, ToolRegistry
 from agent_engine.datasets import DatasetRegistry
@@ -63,7 +64,7 @@ def _load_examples(cfg: dict, question_ids: list) -> list:
     return [ex for ex in all_examples if ex.question_id in id_set]
 
 
-def _build_tool_registry(cfg: dict) -> ToolRegistry:
+def _build_tool_registry(cfg: dict, model_provider=None, cache_manager=None) -> ToolRegistry:
     import os
     tools = ToolRegistry()
     tools_cfg = cfg.get("tools", {})
@@ -72,19 +73,38 @@ def _build_tool_registry(cfg: dict) -> ToolRegistry:
     top_k = tools_cfg.get("top_k_results", 5)
     max_doc_len = tools_cfg.get("max_doc_len", 3000)
 
-    # Direct mode = model_provider=None (default). Sub-agent mode would require
-    # a separate model provider; for GEPA runs we always use direct tool calls.
+    # Sub-agent thinking: only when thinking_mode includes sub-agents.
+    thinking_mode = cfg.get("thinking_mode", "NO").upper()
+    use_subagent_thinking = thinking_mode in ("SUBAGENTS_ONLY", "ALL")
+    direct = tools_cfg.get("direct_tool_call", True)
+
+    # In direct mode the tool handles everything itself (model_provider=None).
+    # In sub-agent mode the tool delegates analysis to the shared model provider.
+    sub_agent = None if direct else model_provider
+
     if "web_search" in enabled:
+        api_key_env = "SERPER_API_KEY" if provider == "serper" else "TAVILY_API_KEY"
         tools.register(WebSearchTool(
-            api_key=os.environ.get("SERPER_API_KEY" if provider == "serper" else "TAVILY_API_KEY", ""),
+            api_key=os.environ.get(api_key_env, ""),
             provider=provider,
             top_k=top_k,
             max_doc_len=max_doc_len,
+            model_provider=sub_agent,
+            use_thinking=use_subagent_thinking,
+            search_cache=cache_manager.search_cache if cache_manager else None,
+            url_cache=cache_manager.url_cache if cache_manager else None,
+            cache_manager=cache_manager,
         ))
     if "code_generator" in enabled:
-        tools.register(CodeGeneratorTool())
+        tools.register(CodeGeneratorTool(
+            model_provider=sub_agent,
+            use_thinking=use_subagent_thinking,
+        ))
     if "text_inspector" in enabled:
-        tools.register(TextInspectorTool())
+        tools.register(TextInspectorTool(
+            model_provider=sub_agent,
+            use_thinking=use_subagent_thinking,
+        ))
 
     return tools
 
@@ -109,11 +129,12 @@ def run_splits(cfg: dict, config_path: Path) -> None:
     split_cfg = cfg.get("splits", {})
     train_n = split_cfg.get("train_n", 80)
     val_n = split_cfg.get("val_n", 45)
+    test_n = split_cfg.get("test_n")  # None → all remaining
     seed = cfg.get("seed", 1)
 
     print(f"Building splits for {cfg['benchmark']}...")
     print(f"  Source: {existing_results}")
-    print(f"  Train: {train_n}, Val: {val_n}, seed: {seed}")
+    print(f"  Train: {train_n}, Val: {val_n}, Test: {test_n or 'remainder'}, seed: {seed}")
 
     splits = build_splits(
         raw_results_path=existing_results,
@@ -121,6 +142,7 @@ def run_splits(cfg: dict, config_path: Path) -> None:
         val_n=val_n,
         seed=seed,
         output_path=splits_file,
+        test_n=test_n,
     )
 
     print(f"  Train: {len(splits['train'])} examples")
@@ -153,8 +175,6 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
     val_examples = _load_examples(cfg, splits["val"])
     print(f"Loaded {len(train_examples)} train, {len(val_examples)} val examples.")
 
-    tool_registry = _build_tool_registry(cfg)
-
     from agent_engine.models.base import ModelConfig, ModelFamily, get_tool_call_format
     from agent_engine.models.vllm_provider import VLLMProvider
 
@@ -168,12 +188,23 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
     )
     model_provider = VLLMProvider(model_cfg)
 
+    provider = cfg.get("tools", {}).get("web_tool_provider", "serper")
+    cache_manager = CacheManager(
+        cache_dir=cfg.get("cache_dir", "./cache"),
+        web_tool_provider=provider,
+        dataset_name=cfg["benchmark"],
+    )
+    print(f"Search cache: ./cache/{provider}/{cfg['benchmark']}/")
+    tool_registry = _build_tool_registry(cfg, model_provider=model_provider, cache_manager=cache_manager)
+
     from gepa_integration.adapter import AgentGEPAAdapter
+    max_search_limit = cfg.get("tools", {}).get("max_search_limit", 10)
     adapter = AgentGEPAAdapter(
         model_provider=model_provider,
         tool_registry=tool_registry,
         use_thinking=True,
         max_turns=cfg.get("max_turns", 15),
+        tool_limits={"web_search": max_search_limit},
     )
 
     tool_schemas = tool_registry.get_all_schemas()
@@ -183,6 +214,7 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
         tool_schemas=tool_schemas,
         direct_tool_call=cfg.get("tools", {}).get("direct_tool_call", True),
         tool_call_format=tcf,
+        max_search_limit=cfg.get("tools", {}).get("max_search_limit", 10),
     )
     print(f"Seed candidate built. system_prompt length: {len(seed['system_prompt'])} chars.")
 
@@ -191,26 +223,76 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
     reflector_host = reflector_cfg.get("host", "localhost")
     reflector_port = reflector_cfg.get("port", 8001)
 
+    # Qwen3-32B native context is 40960. Keep some headroom for the response so
+    # the reflector is never rejected for context overflow during a long trace.
+    REFLECTOR_CTX = int(reflector_cfg.get("max_model_len", 40960))
+    REFLECTOR_RESPONSE_BUDGET = int(reflector_cfg.get("max_tokens", 4096))
+    REFLECTOR_INPUT_BUDGET = REFLECTOR_CTX - REFLECTOR_RESPONSE_BUDGET - 256  # safety margin
+
+    from transformers import AutoTokenizer
+    try:
+        _reflector_tok = AutoTokenizer.from_pretrained(reflector_model, trust_remote_code=True)
+    except Exception as e:
+        print(f"WARN: could not load reflector tokenizer ({e}); falling back to char heuristic.")
+        _reflector_tok = None
+
+    from gepa_integration.reflection import trim_prompt
+
+    import litellm
+
+    def _reflection_lm(prompt: str) -> str:
+        trimmed = trim_prompt(
+            prompt,
+            budget_tokens=REFLECTOR_INPUT_BUDGET,
+            tokenizer=_reflector_tok,
+            on_trim=print,
+        )
+        completion = litellm.completion(
+            model=f"openai/{reflector_model}",
+            messages=[{"role": "user", "content": trimmed}],
+            base_url=f"http://{reflector_host}:{reflector_port}/v1",
+            api_key="EMPTY",
+            max_tokens=REFLECTOR_RESPONSE_BUDGET,
+        )
+        return completion.choices[0].message.content
+
+    import os
+    wandb_cfg = cfg.get("wandb", {})
+    use_wandb = wandb_cfg.get("enabled", False)
+    wandb_api_key = os.environ.get("WANDB_API_KEY") if use_wandb else None
+    wandb_init_kwargs = {
+        "project": wandb_cfg.get("project", "gepa"),
+        "name": wandb_cfg.get("name", f"gepa_{cfg['benchmark']}"),
+        "tags": wandb_cfg.get("tags", [cfg["benchmark"], "gepa"]),
+        "config": {
+            "benchmark": cfg["benchmark"],
+            "model": cfg["model"]["name"],
+            "rollout_budget": gepa_cfg["rollout_budget"],
+            "minibatch_size": gepa_cfg["minibatch_size"],
+            "seed": cfg.get("seed", 1),
+        },
+    } if use_wandb else None
+
     print(f"Starting GEPA optimisation: budget={gepa_cfg['rollout_budget']}, "
-          f"minibatch={gepa_cfg['minibatch_size']}")
+          f"minibatch={gepa_cfg['minibatch_size']}, wandb={use_wandb}")
 
     result = optimize(
         seed_candidate=seed,
         trainset=train_examples,
         valset=val_examples,
         adapter=adapter,
-        reflection_lm=f"openai/{reflector_model}",
-        reflection_lm_kwargs={
-            "base_url": f"http://{reflector_host}:{reflector_port}/v1",
-            "api_key": "EMPTY",
-        },
+        reflection_lm=_reflection_lm,
         max_metric_calls=gepa_cfg["rollout_budget"],
         reflection_minibatch_size=gepa_cfg["minibatch_size"],
         use_merge=gepa_cfg.get("merge_proposer", True),
+        track_best_outputs=gepa_cfg.get("track_best_outputs", False),
         run_dir=str(run_dir),
         seed=cfg.get("seed", 1),
-        raise_on_exception=False,
+        raise_on_exception=gepa_cfg.get("raise_on_exception", True),
         display_progress_bar=True,
+        use_wandb=use_wandb,
+        wandb_api_key=wandb_api_key,
+        wandb_init_kwargs=wandb_init_kwargs,
     )
 
     best = result.best_candidate
@@ -253,8 +335,6 @@ def run_evaluate(cfg: dict, config_path: Path) -> None:
     test_examples = _load_examples(cfg, splits["test"])
     print(f"Evaluating on {len(test_examples)} held-out test examples...")
 
-    tool_registry = _build_tool_registry(cfg)
-
     from agent_engine.models.base import ModelConfig, ModelFamily
     from agent_engine.models.vllm_provider import VLLMProvider
 
@@ -268,10 +348,19 @@ def run_evaluate(cfg: dict, config_path: Path) -> None:
     )
     model_provider = VLLMProvider(model_cfg)
 
+    provider = cfg.get("tools", {}).get("web_tool_provider", "serper")
+    cache_manager = CacheManager(
+        cache_dir=cfg.get("cache_dir", "./cache"),
+        web_tool_provider=provider,
+        dataset_name=cfg["benchmark"],
+    )
+    tool_registry = _build_tool_registry(cfg, model_provider=model_provider, cache_manager=cache_manager)
+
     orchestrator = AgenticOrchestrator(
         model_provider=model_provider,
         tool_registry=tool_registry,
         max_turns=cfg.get("max_turns", 15),
+        tool_limits={"web_search": cfg.get("tools", {}).get("max_search_limit", 10)},
         use_thinking=True,
         planning_suffix=best["planning_suffix"],
     )
@@ -298,12 +387,15 @@ def run_evaluate(cfg: dict, config_path: Path) -> None:
             "question_id": ex.question_id,
             "question": ex.question,
             "prediction": prediction,
-            "answer": ex.answer,
+            "ground_truth": ex.answer,
             "correct": correct,
-            "accuracy": eval_result["accuracy"],
+            "evaluation": eval_result,
+            "query_analysis": state.query_analysis or "",
+            "action_history": state.action_history,
+            "output_messages": state.output_messages,
             "turns": state.turn,
             "tool_counts": dict(state.tool_counts),
-            "action_history": state.action_history,
+            "token_usage": state.metadata.get("token_usage", {}),
             "metadata": state.metadata,
         })
 
@@ -360,6 +452,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="GEPA prompt optimisation")
     parser.add_argument("--mode", choices=["splits", "optimize", "evaluate", "diff"], required=True)
     parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument(
+        "--run-dir",
+        default=None,
+        help="Override gepa.run_dir from config. Job scripts use this to inject a "
+             "timestamped + job-id subdirectory so optimize/evaluate/diff all read "
+             "and write the same run.",
+    )
     args = parser.parse_args()
 
     config_path = args.config
@@ -367,6 +466,8 @@ def main() -> None:
         config_path = Path.cwd() / config_path
 
     cfg = load_gepa_config(config_path)
+    if args.run_dir is not None:
+        cfg.setdefault("gepa", {})["run_dir"] = args.run_dir
     setup_logging()
     set_seed(cfg.get("seed", 1))
 

@@ -66,83 +66,95 @@ def build_splits(
     val_n: int,
     seed: int = 1,
     output_path: Optional[Path] = None,
+    test_n: Optional[int] = None,
 ) -> dict[str, list[int]]:
-    """Build failure-stratified train / random val / random test splits.
+    """Build stratified train/val/test splits with the same class
+    distribution across all three splits.
 
-    Reads an existing raw_results.json, classifies each failed record using
-    the six-mode taxonomy from scripts/failure_modes/analyze_failure_modes.py,
-    then samples:
-      - train: ~65% failures (proportional across modes) + ~35% successes
-      - val:   random sample from remaining questions
-      - test:  all remaining questions after train + val
+    Each record is labelled by class — ``"CORRECT"`` for solved questions,
+    or one of the six failure modes from
+    ``scripts/failure_modes/analyze_failure_modes.py`` for failed ones.
+    Within each class, records are allocated to train/val/test in
+    proportion to the requested split sizes (relative to the full dataset),
+    so each split preserves the natural class distribution. This keeps the
+    GEPA-vs-seed comparison apples-to-apples regardless of which split it
+    is reported on.
 
     Args:
         raw_results_path: Path to an existing raw_results.json.
-        train_n: Number of examples in the train set.
-        val_n:   Number of examples in the val (D_pareto) set.
+        train_n: Target number of examples in the train set.
+        val_n:   Target number of examples in the val (D_pareto) set.
         seed:    Random seed for reproducibility (default 1, distinct from
                  the existing experiment seed 0).
         output_path: If given, write splits dict as JSON to this path.
+        test_n:  Optional cap on the test set size. If None, test gets all
+                 remaining examples (total - train_n - val_n). If set, test
+                 is a stratified sample of this size and the surplus is
+                 discarded.
 
     Returns:
         {"train": [qid, ...], "val": [qid, ...], "test": [qid, ...]}
     """
-    from failure_modes.analyze_failure_modes import FAILURE_MODES, classify_failure
+    from failure_modes.analyze_failure_modes import classify_failure
 
     rng = random.Random(seed)
 
     with open(raw_results_path, encoding="utf-8") as f:
         records = json.load(f)
 
-    correct_ids: list[int] = []
-    failed_by_mode: dict[str, list[int]] = defaultdict(list)
+    total = len(records)
+    test_remainder = total - train_n - val_n
+    if test_remainder < 0:
+        raise ValueError(
+            f"train_n + val_n ({train_n + val_n}) exceeds dataset size ({total})"
+        )
+    if test_n is not None and test_n > test_remainder:
+        raise ValueError(
+            f"test_n ({test_n}) exceeds remaining examples after train+val ({test_remainder})"
+        )
 
+    by_class: dict[str, list[int]] = defaultdict(list)
     for rec in records:
         qid = rec["question_id"]
         if rec.get("correct"):
-            correct_ids.append(qid)
+            by_class["CORRECT"].append(qid)
         else:
-            mode = classify_failure(rec)
-            failed_by_mode[mode].append(qid)
+            by_class[classify_failure(rec)].append(qid)
 
-    all_failed_ids = [qid for ids in failed_by_mode.values() for qid in ids]
-    total_failed = len(all_failed_ids)
+    test_target = test_n if test_n is not None else test_remainder
+    denom = train_n + val_n + test_target
 
-    # --- sample failures proportionally across modes ---
-    n_failures_train = round(train_n * 0.65)
-    train_failed: list[int] = []
+    train_ids: list[int] = []
+    val_ids: list[int] = []
+    test_ids: list[int] = []
+    surplus: list[int] = []
 
-    if total_failed > 0:
-        for mode in FAILURE_MODES:
-            mode_ids = list(failed_by_mode[mode])
-            rng.shuffle(mode_ids)
-            n_from_mode = round(n_failures_train * len(mode_ids) / total_failed)
-            train_failed.extend(mode_ids[:n_from_mode])
+    # Per-class proportional allocation with floor; residuals land in the
+    # surplus pool below to be redistributed to hit exact target sizes.
+    for cls in sorted(by_class):
+        shuffled = list(by_class[cls])
+        rng.shuffle(shuffled)
+        n_class = len(shuffled)
+        # Effective per-class allocation honours what fraction of the dataset
+        # we are actually keeping: (train_n + val_n + test_target) / total.
+        scaled = n_class * denom / total
+        n_train = int(scaled * (train_n / denom))
+        n_val = int(scaled * (val_n / denom))
+        n_test = int(scaled * (test_target / denom))
+        train_ids.extend(shuffled[:n_train])
+        val_ids.extend(shuffled[n_train:n_train + n_val])
+        test_ids.extend(shuffled[n_train + n_val:n_train + n_val + n_test])
+        surplus.extend(shuffled[n_train + n_val + n_test:])
 
-        # Fix rounding: top up or trim to exactly n_failures_train
-        used_failed = set(train_failed)
-        remaining_failed = [qid for qid in all_failed_ids if qid not in used_failed]
-        rng.shuffle(remaining_failed)
-        if len(train_failed) < n_failures_train:
-            train_failed.extend(remaining_failed[: n_failures_train - len(train_failed)])
-        train_failed = train_failed[:n_failures_train]
-
-    # --- sample successes ---
-    n_success_train = train_n - len(train_failed)
-    shuffled_correct = list(correct_ids)
-    rng.shuffle(shuffled_correct)
-    train_success = shuffled_correct[:n_success_train]
-
-    train_ids = train_failed + train_success
-    rng.shuffle(train_ids)
-
-    # --- val + test from the remainder ---
-    used = set(train_ids)
-    remaining = [rec["question_id"] for rec in records if rec["question_id"] not in used]
-    rng.shuffle(remaining)
-
-    val_ids = remaining[:val_n]
-    test_ids = remaining[val_n:]
+    # Top up each split to its exact target by drawing from the surplus.
+    # Shuffle first so donations are not biased toward any single class.
+    rng.shuffle(surplus)
+    while len(train_ids) < train_n and surplus:
+        train_ids.append(surplus.pop())
+    while len(val_ids) < val_n and surplus:
+        val_ids.append(surplus.pop())
+    while len(test_ids) < test_target and surplus:
+        test_ids.append(surplus.pop())
 
     splits = {
         "train": sorted(train_ids),

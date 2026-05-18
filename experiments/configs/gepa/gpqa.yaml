@@ -26,7 +26,7 @@ tools:
     - web_search
     - code_generator
     - text_inspector
-  direct_tool_call: true
+  direct_tool_call: false
   web_tool_provider: "serper"
   max_search_limit: 10
 
@@ -39,10 +39,20 @@ splits:
   # remaining ~50 become held-out test
 
 gepa:
-  rollout_budget: 150
+  # GEPA FAQ: budget should be >= 15-30 * len(valset). With val_n=48, 15x = 720;
+  # 750 sits comfortably in the recommended range and leaves headroom for
+  # use_merge candidate evaluations.
+  rollout_budget: 750
   minibatch_size: 10
   merge_proposer: true
+  track_best_outputs: true
   run_dir: "experiments/results/gepa/gpqa"
+
+wandb:
+  enabled: true
+  project: "gepa"
+  name: "gepa_gpqa_qwen3_8b"
+  tags: ["gpqa", "gepa", "qwen3-8b"]
 
 slurm:
   partition: "gpu_h100"

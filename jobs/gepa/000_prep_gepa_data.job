@@ -1,0 +1,72 @@
+#!/bin/bash
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
+#SBATCH --job-name=PrepGEPAData
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=00:15:00
+#SBATCH --output=out/gepa/prep_gepa_data_%A.log
+
+# Generate (or regenerate) failure-stratified train/val/test splits for GEPA.
+#
+# Reads milestone raw_results.json for GAIA and GPQA, classifies failures
+# using the six-mode taxonomy, and writes:
+#   experiments/configs/gepa/splits/gaia_splits.json
+#   experiments/configs/gepa/splits/gpqa_splits.json
+#
+# Does NOT require the gepa package — only agent_engine + failure_modes.
+# Safe to re-run: overwrites splits files with a deterministic result (seed=1).
+#
+# Prerequisites: 001_setup.job completed (agent_engine conda env exists).
+
+set -euo pipefail
+
+mkdir -p out/gepa
+
+echo "=========================================="
+echo "MSC Thesis — GEPA data preparation"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+ENV_NAME="${ENV_NAME:-agent_engine}"
+echo "Activating environment: $ENV_NAME"
+source activate "$ENV_NAME"
+export PYTHONNOUSERSITE=1
+
+echo ""
+echo "── GAIA splits ──────────────────────────────────────"
+python scripts/run_gepa.py --mode splits \
+    --config experiments/configs/gepa/gaia.yaml
+
+echo ""
+echo "── GPQA splits ──────────────────────────────────────"
+python scripts/run_gepa.py --mode splits \
+    --config experiments/configs/gepa/gpqa.yaml
+
+echo ""
+echo "── Summary ──────────────────────────────────────────"
+python - <<'PY'
+import json
+from pathlib import Path
+
+for benchmark in ("gaia", "gpqa"):
+    path = Path(f"experiments/configs/gepa/splits/{benchmark}_splits.json")
+    splits = json.loads(path.read_text())
+    train, val, test = splits["train"], splits["val"], splits["test"]
+    overlap = set(train) & set(val) | set(train) & set(test) | set(val) & set(test)
+    assert not overlap, f"{benchmark}: split overlap detected!"
+    print(f"  {benchmark.upper()}: train={len(train)}, val={len(val)}, test={len(test)} — no overlap ✓")
+PY
+
+echo ""
+echo "Done at: $(date)"

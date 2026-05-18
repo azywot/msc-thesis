@@ -51,6 +51,7 @@ python_args:
     - '${BASE_DATA_DIR}/val/val_deepmath.parquet'
   data.train_batch_size: 32
   data.train_max_samples: 1800
+  data.dataloader_num_workers: 0
   data.max_prompt_length: 18432
   data.max_response_length: 4096
   data.truncation: 'truncate'

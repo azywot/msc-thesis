@@ -8,6 +8,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased] — feat/gepa-integration
 
+### Changed
+- **GEPA reflective records iteration 2** (`src/gepa_integration/adapter.py`) — record-shape and sample-selection refinements layered on top of the Iteration 1 enriched feedback (see spec addendum 2026-05-18)
+  - Unified `_THINKING_SNIPPET_LEN = 800` (was 1500); the same cap now applies to every thinking field across both record types so per-call budget is predictable. Truncation helper `_truncate_thinking` deduplicates the three call sites (first-turn, last-turn, plan thinking)
+  - `system_prompt` records gain `thinking_at_last_turn` — the `<think>` block from the last assistant turn, capped at 800 chars; omitted when there is only one distinct assistant turn so the field never duplicates `thinking_before_first_tool`. The first-turn extraction also moves off `output_messages[0]` to "first assistant message" to handle interleaved tool messages correctly
+  - `planning_suffix` records replace the unbounded `raw_planning_output` blob with two parallel fields: `plan` (= `state.query_analysis`, stripped of `<think>`) and `thinking_in_plan` (= `_extract_thinking(state.raw_query_analysis)`, capped at 800 chars). Mirrors the system_prompt record shape so the reflector sees the same structure on both components
+  - `AgentGEPAAdapter.__init__` gains `sample_seed: int = 0`; `_balanced_sample` now shuffles each bucket with `random.Random(self._sample_seed)` before slicing, replacing head-of-list selection. Re-runs remain reproducible (default seed `0`), but the records the reflector sees are no longer biased by minibatch arrival order
+  - Token-budget impact: roughly *neutral* — the first-turn snippet shrink (1500→800 across 8 records ≈ −1.4 K tokens) offsets the new `thinking_at_last_turn` field (0–1.6 K tokens at 8 records, often less when single-turn rollouts are present). The unified cap also removes the previous Iteration 1 worst-case where `raw_planning_output` could run arbitrarily long
+- **GEPA reflective feedback enriched** (`src/gepa_integration/adapter.py`) — the `Feedback` string passed to the Qwen3-32B reflector now exposes the deterministic environment-derived signals GEPA's μ_f calls for, instead of the previous one-line `WRONG — ground truth: X. Predicted: Y.` placeholder
+  - New `AgentGEPAAdapter._diagnose(state, score)` builds the feedback for both `system_prompt` and `planning_suffix` records; per-component differentiation moves to `Generated Outputs` (the records already carry different payloads)
+  - `evaluate()` now stashes the full `evaluate_answer` dict and the GPQA `choices` into `state.metadata`, so the reflective pass has em/f1 (not just accuracy) and can skip prose-shape heuristics on multiple-choice questions
+  - Wrong-case feedback now surfaces (each line conditional on its signal): em+f1 score breakdown, normalised pred/gt forms, empty-prediction flag, numeric-vs-prose format mismatch, "verbose for short gold" (pred > 4× gt word count), high-f1 partial-credit hint, tool usage map or parametric-memory flag, count of tool calls that returned an error (prefix match on `error/exception/traceback/failed`), and `max_turns_reached`
+  - Correct-case feedback is now one line carrying tool counts and turn count, so successful trajectories give the reflector positive structural signal (not just `CORRECT`)
+  - Token-budget impact: ~150 extra tokens per wrong record; at `_MAX_RECORDS = 8` the per-reflective-call overhead is ≤1.2 K tokens — well inside the existing 32 K reflector budget
+  - Deliberately *not* an LLM judge: a same-family Qwen3-32B judge would duplicate the reflector's "implicit credit assignment" job and confabulate failure stories for hard questions. The deterministic path keeps the structured signal as a sanity floor; future open-ended benchmarks can *append* a judge paragraph to `_diagnose` without removing the lines
+  - Documented in `src/gepa_integration/README.md` (new "Feedback design (μ_f for CoSMAS)" section with the line-by-line failure-mode table) and as a dated addendum in `docs/superpowers/specs/2026-05-15-gepa-integration-design.md`
+- **`tests/gepa_integration/test_adapter.py`** — +14 tests covering each `_diagnose` line plus an end-to-end check that the tool-error signal reaches both reflective record types; `test_make_reflective_dataset_correct_feedback` relaxed from exact `== "CORRECT"` to `.startswith("CORRECT")` for the new one-line correct format. Total test count in `tests/gepa_integration/` is now 58 (was 32)
+
 ### Added
 - **GEPA prompt optimisation** (`src/gepa_integration/`) — system adaptation chapter implementation
   - `seed.py` — `build_seed_candidate()` renders the two-component seed (`system_prompt` + `planning_suffix`) from YAML templates; `build_splits()` generates failure-stratified train / random val / random test splits from any existing `raw_results.json`
@@ -19,12 +36,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `--mode evaluate` — evaluate best candidate on held-out test set (GAIA: 40q, GPQA: 50q); outputs `gepa_results.json` in `raw_results.json` format for use with existing `analyze_results.py`
   - `--mode diff` — print unified diff of `system_prompt` and `planning_suffix` between seed and best candidate
 - **GEPA experiment configs** (`experiments/configs/gepa/`)
-  - `gaia.yaml` — GAIA optimisation: Qwen3-8B agent, Qwen3-32B reflector (port 8001), 150 rollouts, direct tool call
+  - `gaia.yaml` — GAIA optimisation: Qwen3-8B agent + sub-agents, Qwen3-32B reflector (port 8001), 150 rollouts, sub-agent mode (`direct_tool_call: false`) matching the milestone baseline
   - `gpqa.yaml` — GPQA Diamond: same setup, multiple-choice routing via `example.metadata["choices"]`
   - `splits/gaia_splits.json` — pre-generated splits: 80 train / 45 val / 40 test (seed=1, failure-stratified)
   - `splits/gpqa_splits.json` — pre-generated splits: 100 train / 48 val / 50 test (seed=1, failure-stratified)
-- **`jobs/011_run_gepa.job`** — SLURM job for end-to-end GEPA run (4×H100 NVL, 12h): starts Qwen3-32B reflector on GPUs 2–3, runs GEPA optimise + evaluate for GAIA then GPQA on GPUs 0–1; supports `REGEN_SPLITS=1`, `SKIP_GAIA=1`, `SKIP_GPQA=1` overrides
+- **`jobs/gepa/` — SLURM job sequence** for the full GEPA pipeline:
+  - `000_prep_gepa_data.job` — generates failure-stratified splits for GAIA and GPQA via `run_gepa.py --mode splits`; safe to re-run (deterministic, seed=1)
+  - `001_install_gepa_deps.job` — installs `gepa==0.0.22` (pinned in `requirements.txt`) into the `agent_engine` conda env; smoke-tests all imports
+  - `002_smoke_gepa.job` — CPU-only pre-flight checks: imports, seed candidate structure, source `raw_results.json` presence, splits integrity (sizes + no-overlap), dataset loading, `evaluate_answer` spot-checks
+  - `003_smoke_gepa_gpu.job` — end-to-end GPU smoke test (3×H100 NVL): Qwen3-8B agent on GPU 0 (tp=1), Qwen3-32B reflector on GPUs 1–2 (tp=2); runs 1 GEPA step on 2 GAIA train examples then evaluates on 2 held-out test examples; asserts `gepa_results.json` schema
+  - `004_run_gepa.job` — full optimisation run (4×H100 NVL, 12h): GAIA then GPQA; supports `REGEN_SPLITS=1`, `SKIP_GAIA=1`, `SKIP_GPQA=1` overrides
+- **`scripts/smoke_gepa.py`** — standalone pre-flight smoke test (no GPU); run locally or via `002_smoke_gepa.job`
+- **`experiments/configs/gepa/smoke_test.yaml`** — minimal GEPA config for `003_smoke_gepa_gpu.job`: 2 train / 2 val / 2 test examples, 1 GEPA step (budget=2, minibatch=2), Qwen3-32B reflector, `max_turns=3`
+- **`experiments/configs/gepa/splits/smoke_splits.json`** — pre-generated splits for smoke test (6 GAIA question IDs)
 - **`tests/gepa_integration/`** — 32 unit tests covering `ExecutionState.raw_query_analysis`, orchestrator `planning_suffix` param + constants, `build_seed_candidate`, `build_splits` (size, no-overlap, failure ratio, JSON output), `_extract_thinking`, and all `AgentGEPAAdapter` methods
+
+### Fixed
+- `scripts/run_gepa.py` — `_build_tool_registry` used non-existent `direct_mode=` constructor argument on all three tools; replaced with the correct `model_provider=` pattern (direct mode = `model_provider=None`, sub-agent mode = pass the shared `VLLMProvider`)
+- `scripts/run_gepa.py` — all configs changed to `direct_tool_call: false`; `_build_tool_registry` now accepts `model_provider` and wires it into tools when in sub-agent mode, with `use_thinking` derived from `thinking_mode`; model provider is created before the tool registry in both `run_optimize` and `run_evaluate` so it can be passed in
+- `scripts/run_gepa.py` — `build_seed_candidate` now reads `max_search_limit` from the YAML config instead of silently using the default
+- `scripts/run_gepa.py` — `run_evaluate` now passes `tool_limits` from the config to `AgenticOrchestrator`
+- `jobs/gepa/003_smoke_gepa_gpu.job`, `jobs/gepa/004_run_gepa.job` — removed `--enable-thinking` from `vllm serve` (not a valid server flag; thinking is a per-request sampling parameter)
 
 ### Changed
 - `src/agent_engine/core/state.py` — `ExecutionState` gains `raw_query_analysis: Optional[str] = None`; stores the full planning-turn output including `<think>` blocks before stripping
@@ -33,6 +65,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ---
 
 ## [Unreleased] — feat/fine-tuning
+
+### Added
+- **Qwen3-8B smoke-test config and job** (`experiments/configs/train/config_smoke8b.yaml`, `jobs/012_smoke_8b.job`)
+  - Mirrors `config_smoke.yaml` (4B, 1 GPU) but targets Qwen3-8B with `N_GPUS=2` — actor FSDP-sharded to ~8 GB/GPU, vLLM TP=1 data-parallel (each GPU holds a full 8B copy during rollout)
+  - Total: 3 H100 NVL GPUs — GPU 0 exclusive to frozen Qwen3-1.7B sub-agent (`util=0.40`); GPUs 1–2 for VERL
+  - `param_offload=true` / `optimizer_offload=true` / `free_cache_engine=true` retained for the same reason as the 4B smoke: vLLM + actor shard on GPU during rollout risks CUDA memory fragmentation
+  - `USE_SCRATCH_CHECKPOINTS: true` — 8B checkpoints (even from smoke runs) written to `/scratch-shared/$USER/msc-thesis/training/qwen3-8b-grpo-smoke/`; job script prints the path at startup and re-uses it in the checkpoint verification step
+  - `max_model_len: 6144` = `max_prompt_length (4096) + max_response_length (2048)` — identical to 4B smoke to keep the test fast
 
 ### Added
 - **RL fine-tuning pipeline** for the orchestrator (`src/fine_tuning/`)

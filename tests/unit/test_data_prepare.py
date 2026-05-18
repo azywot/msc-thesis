@@ -8,6 +8,7 @@ import fine_tuning.data.prepare as data_prepare
 from fine_tuning.data.prepare import (
     normalise_search_r1_row,
     normalise_deepmath_row,
+    normalise_aime_row,
     validate_parquet_schema,
     REQUIRED_COLS,
 )
@@ -166,6 +167,37 @@ class TestPassesDifficultyFilter:
         assert _passes_difficulty_filter({"difficulty": "4"}, min_difficulty=5) is False
 
 
+class TestNormaliseAime:
+    def test_basic_row_2024(self):
+        raw = {"problem": "Find the value of x", "answer": "42"}
+        row = normalise_aime_row(raw, idx=0, year=2024)
+        assert set(row.keys()) == REQUIRED_COLS
+        assert row["data_source"] == "aime_2024"
+        assert row["question"] == "Find the value of x"
+        assert row["result"] == "42"
+        assert row["extra_info"]["idx"] == 0
+        assert row["extra_info"]["groundtruth"] == "42"
+        assert row["extra_info"]["year"] == 2024
+
+    def test_basic_row_2025(self):
+        raw = {"problem": "Compute the sum", "answer": "113"}
+        row = normalise_aime_row(raw, idx=3, year=2025)
+        assert row["data_source"] == "aime_2025"
+        assert row["extra_info"]["year"] == 2025
+        assert row["extra_info"]["idx"] == 3
+
+    def test_answer_coerced_to_str(self):
+        raw = {"problem": "Q", "answer": 7}
+        row = normalise_aime_row(raw, idx=0, year=2024)
+        assert row["result"] == "7"
+        assert row["extra_info"]["groundtruth"] == "7"
+
+    def test_missing_fields_produce_empty_strings(self):
+        row = normalise_aime_row({}, idx=0, year=2024)
+        assert row["question"] == ""
+        assert row["result"] == ""
+
+
 class TestValidateSchema:
     def test_valid_df_passes(self):
         df = pd.DataFrame([
@@ -182,3 +214,56 @@ class TestValidateSchema:
         df = pd.DataFrame([{"data_source": "nq", "question": "Q?", "result": "A"}])
         with pytest.raises(ValueError, match="Missing columns"):
             validate_parquet_schema(df)
+
+
+class TestDownloadAimeVal:
+    """Tests for _download_aime_val — HF calls are mocked."""
+
+    def _fake_rows(self, n):
+        return [{"problem": f"Problem {i}", "answer": str(i)} for i in range(n)]
+
+    def test_returns_correct_count_and_sources(self):
+        from unittest.mock import patch
+        from fine_tuning.data.prepare import _download_aime_val
+
+        fake = self._fake_rows(30)
+        with patch("fine_tuning.data.prepare._load_dataset_for_aime", return_value=fake):
+            rows = _download_aime_val(n_2024=10, n_2025=10, seed=42)
+
+        assert len(rows) == 20
+        assert sum(1 for r in rows if r["data_source"] == "aime_2024") == 10
+        assert sum(1 for r in rows if r["data_source"] == "aime_2025") == 10
+
+    def test_raises_if_not_enough_rows(self):
+        from unittest.mock import patch
+        from fine_tuning.data.prepare import _download_aime_val
+
+        fake = self._fake_rows(5)  # only 5 available, need 10
+        with patch("fine_tuning.data.prepare._load_dataset_for_aime", return_value=fake):
+            with pytest.raises(RuntimeError, match="only 5 rows available"):
+                _download_aime_val(n_2024=10, n_2025=10, seed=42)
+
+    def test_zero_n_skips_that_year(self):
+        from unittest.mock import patch, call
+        from fine_tuning.data.prepare import _download_aime_val
+
+        fake = self._fake_rows(30)
+        with patch("fine_tuning.data.prepare._load_dataset_for_aime", return_value=fake) as mock_load:
+            rows = _download_aime_val(n_2024=0, n_2025=10, seed=42)
+
+        assert len(rows) == 10
+        assert all(r["data_source"] == "aime_2025" for r in rows)
+        assert mock_load.call_count == 1  # only called for 2025
+
+    def test_indices_are_per_year(self):
+        from unittest.mock import patch
+        from fine_tuning.data.prepare import _download_aime_val
+
+        fake = self._fake_rows(30)
+        with patch("fine_tuning.data.prepare._load_dataset_for_aime", return_value=fake):
+            rows = _download_aime_val(n_2024=3, n_2025=3, seed=42)
+
+        rows_2024 = [r for r in rows if r["data_source"] == "aime_2024"]
+        rows_2025 = [r for r in rows if r["data_source"] == "aime_2025"]
+        assert [r["extra_info"]["idx"] for r in rows_2024] == [0, 1, 2]
+        assert [r["extra_info"]["idx"] for r in rows_2025] == [0, 1, 2]
