@@ -34,6 +34,13 @@ from gepa.core.adapter import EvaluationBatch
 # reflector without changing the orchestrator's data shape.
 _TOOL_ERROR_PREFIXES = ("error", "tool error", "exception", "traceback", "failed")
 
+# data_source values that are factual-QA sources (Search-R1).  The format-mismatch
+# hint ("gold is numeric/symbolic; prediction is prose") is suppressed for these
+# because the reflector should not infer that the target benchmark requires
+# symbolic/numeric answer formatting from Search-R1 examples that happen to have
+# short numeric gold answers (e.g. year answers trigger is_math_answer).
+_FACTUAL_QA_SOURCES = frozenset({"hotpotqa", "nq"})
+
 
 def _extract_thinking(text: str) -> str:
     """Return the content of the first <think>…</think> block, or ''."""
@@ -120,6 +127,7 @@ class AgentGEPAAdapter:
             state.metadata["ground_truth"] = example.answer
             state.metadata["eval_result"] = result
             state.metadata["choices"] = choices
+            state.metadata["data_source"] = example.metadata.get("data_source", "")
             if capture_traces:
                 trajectories.append(state)  # type: ignore[union-attr]
 
@@ -228,7 +236,12 @@ class AgentGEPAAdapter:
         if not pred:
             parts.append("  No final answer was produced.")
         elif not is_mc:
-            if is_math_answer(gt) and not is_math_answer(pred):
+            data_source = state.metadata.get("data_source", "")
+            if (
+                is_math_answer(gt)
+                and not is_math_answer(pred)
+                and data_source not in _FACTUAL_QA_SOURCES
+            ):
                 parts.append(
                     "  Format mismatch: gold is numeric/symbolic; "
                     "prediction is prose."

@@ -16,23 +16,23 @@
 #
 # What this job does:
 #   1. Start Qwen3-32B reflector vLLM on GPUs 1–2 (port 8001); stays alive the whole job.
-#   2. Run GEPA optimisation for GAIA   (~3h): evolves system_prompt + planning_suffix.
-#   3. Evaluate GAIA best candidate on held-out test (40 questions).
-#   4. Run GEPA optimisation for GPQA   (~3h): same procedure.
-#   5. Evaluate GPQA best candidate on held-out test (50 questions).
+#   2. Run GEPA optimisation for GAIA (~9h): evolves system_prompt + planning_suffix.
+#   3. Evaluate GAIA best candidate on held-out test.
+#   4. Run GEPA optimisation for MATH (~9h): same procedure.
+#   5. Evaluate MATH best candidate on held-out test.
 #   6. Kill reflector and exit.
 #
 # Prerequisites:
 #   - Job 001 completed (agent_engine conda env exists)
-#   - Milestone-1 AgentFlow results present at paths in experiments/configs/gepa/*.yaml
-#   - Splits already generated (run_gepa.py --mode splits) or generate them here via --regen-splits
+#   - GEPA data prepared (data/gepa/gaia/ and data/gepa/math/ exist with all_examples.json)
+#     Run: python src/gepa_integration/data/prepare.py --preset gaia ...
+#          python src/gepa_integration/data/prepare.py --preset math ...
+#   - Splits files present at paths declared in experiments/configs/gepa/*.yaml
+#     (gaia_gepa_splits.json and math_gepa_splits.json under experiments/configs/gepa/splits/)
 #   - SERPER_API_KEY set in .env
 #
-# Math benchmark is intentionally omitted — confirm the result path first (see
-# experiments/configs/gepa/math.yaml once created).
-#
 # Optional: REGEN_SPLITS=1 regenerates train/val/test splits before optimising.
-# Optional: SKIP_GAIA=1 / SKIP_GPQA=1 to run only one benchmark.
+# Optional: SKIP_GAIA=1 / SKIP_MATH=1 to run only one benchmark.
 
 set -euo pipefail
 
@@ -161,17 +161,17 @@ run_benchmark() {
         python scripts/run_gepa.py --mode splits --config "$config"
     fi
 
-    # Verify splits file exists
-    splits_file="experiments/configs/gepa/splits/${benchmark}_splits.json"
+    # Verify splits file exists (path comes from the config, not assumed here)
+    splits_file=$(python -c "import yaml; c=yaml.safe_load(open('$config')); print(c['splits_file'])")
     if [[ ! -f "$splits_file" ]]; then
-        echo "ERROR: $splits_file not found."
-        echo "Run: python scripts/run_gepa.py --mode splits --config $config"
+        echo "ERROR: splits file not found: $splits_file"
+        echo "Generate it with: python src/gepa_integration/data/prepare.py --preset $benchmark ..."
         exit 1
     fi
 
     # Optimise — stderr (vLLM tqdm/INFO) goes to a step log; replayed on failure.
     echo ""
-    echo "Starting GEPA optimisation for $benchmark (budget=150 rollouts)..."
+    echo "Starting GEPA optimisation for $benchmark..."
     _ERR="$run_dir/optimize.stderr"
     python scripts/run_gepa.py --mode optimize --config "$config" --run-dir "$run_dir" 2>"$_ERR" \
         || { echo "ERROR: optimize failed for $benchmark. Stderr:"; cat "$_ERR" >&2; exit 1; }
@@ -198,10 +198,10 @@ if [[ "${SKIP_GAIA:-0}" != "1" ]]; then
     run_benchmark "gaia"
 fi
 
-# ── 3. GPQA ──────────────────────────────────────────────────────────────────
+# ── 3. MATH ──────────────────────────────────────────────────────────────────
 
-if [[ "${SKIP_GPQA:-0}" != "1" ]]; then
-    run_benchmark "gpqa"
+if [[ "${SKIP_MATH:-0}" != "1" ]]; then
+    run_benchmark "math"
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
@@ -210,7 +210,7 @@ echo ""
 echo "=========================================="
 echo "All GEPA benchmarks complete."
 echo "Results:"
-for benchmark in gaia gpqa; do
+for benchmark in gaia math; do
     run_dir="experiments/results/gepa/${benchmark}/${TIMESTAMP}_${JOB_ID}"
     result_file="$run_dir/gepa_results.json"
     if [[ -f "$result_file" ]]; then
@@ -221,7 +221,7 @@ for benchmark in gaia gpqa; do
 done
 echo ""
 echo "Optimised prompts:"
-for benchmark in gaia gpqa; do
+for benchmark in gaia math; do
     best="experiments/results/gepa/${benchmark}/${TIMESTAMP}_${JOB_ID}/best_candidate.json"
     [[ -f "$best" ]] && echo "  ${benchmark^^}: $best"
 done
