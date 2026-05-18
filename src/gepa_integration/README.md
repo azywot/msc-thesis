@@ -181,13 +181,15 @@ dataset = adapter.make_reflective_dataset(
 **`system_prompt` records** include:
 - The question
 - The orchestrator's predicted answer
-- The first `<think>` block before the first tool call
+- `thinking_before_first_tool` — the `<think>` block from the first assistant turn (capped at 800 chars)
+- `thinking_at_last_turn` — the `<think>` block from the last assistant turn (capped at 800 chars); **omitted when there is only one distinct assistant turn** to avoid duplicating the first-turn field
 - All action steps (tool name, sub-goal, result snippet)
 - The enriched `Feedback` string (see [§ Feedback design](#feedback-design-μf-for-cosmas) below)
 
 **`planning_suffix` records** include:
 - The question
-- The raw planning output (including `<think>` tags via `raw_query_analysis`)
+- `plan` — the planning turn output with `<think>` blocks stripped (i.e. `state.query_analysis`)
+- `thinking_in_plan` — the `<think>` block extracted from the raw planning output (capped at 800 chars)
 - The list of tools subsequently used
 - Number of turns taken
 - The enriched `Feedback` string — same `_diagnose()` output as the system-prompt records
@@ -232,10 +234,22 @@ would misfire.
 
 Both record types use the same `_diagnose` output, by design. The
 `system_prompt` and `planning_suffix` records differ in their
-`Generated Outputs` payload (one shows the `<think>` block + action steps,
-the other the raw planning analysis + downstream tool list) — the reflector
-already has the per-component context it needs, so the *feedback* itself can
-be component-agnostic.
+`Generated Outputs` payload (one shows first + last assistant `<think>`
+blocks + action steps, the other shows the planning `<think>` block +
+the stripped plan + the downstream tool list) — the reflector already
+has the per-component context it needs, so the *feedback* itself can be
+component-agnostic.
+
+**Iteration 2 (2026-05-18)** unified the thinking-snippet cap at 800 chars
+across every field, added `thinking_at_last_turn` to `system_prompt`
+records so the stopping decision is visible to the reflector, and split
+the planning record's raw blob into `plan` + `thinking_in_plan` for
+parity with the system-prompt record shape. `_balanced_sample` now
+shuffles each bucket with `random.Random(self._sample_seed)` (default
+seed `0`) before slicing, so the reflector's records are not biased by
+the minibatch's arrival order while remaining reproducible across runs.
+See `docs/superpowers/specs/2026-05-15-gepa-integration-design.md`
+Iteration 2 addendum for the full rationale.
 
 #### Why not an LLM judge?
 
@@ -458,11 +472,14 @@ Files in each run directory:
 pytest tests/gepa_integration/ -v
 ```
 
-58 unit tests covering: `ExecutionState.raw_query_analysis`,
+76 unit tests covering: `ExecutionState.raw_query_analysis`,
 `_DEFAULT_PLANNING_SUFFIX_TOOLS` constant, `build_seed_candidate` (structure,
 planning suffix match, tool schema embedding), `build_splits` (sizes,
 no-overlap, failure ratio, JSON output), `_extract_thinking`, all
 `AgentGEPAAdapter` methods (`evaluate`, `make_reflective_dataset`, balanced
-sampling cap), and the `_diagnose` feedback function (score breakdown,
+sampling cap), the `_diagnose` feedback function (score breakdown,
 normalised-form line, empty-prediction, format-mismatch, verbosity, high-f1,
-parametric-memory, tool-error counting, max-turns, multiple-choice skip).
+parametric-memory, tool-error counting, max-turns, multiple-choice skip),
+and Iteration 2 additions (unified 800-char thinking cap, last-turn
+thinking inclusion/skip, planning record `plan`/`thinking_in_plan` split,
+seeded `_balanced_sample` shuffle determinism).
