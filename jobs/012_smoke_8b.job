@@ -2,12 +2,13 @@
 #SBATCH --job-name=Smoke8B
 #SBATCH --partition=gpu_h100
 # Three H100 NVL GPUs (~94 GB each):
-#   GPU 0 (exclusive): frozen sub-agent Qwen3-1.7B at util=0.40 (~37.6 GB)
-#   GPUs 1–2: VERL N_GPUS=2 for Qwen3-8B — actor FSDP-sharded to ~8 GB/GPU.
-#     Rollout phase (param_offload=True): vLLM TP=1 data-parallel, util=0.45 → 42.3 GB/GPU ✓
-#     Training phase (free_cache_engine destroys KV): ~26 GB/GPU ✓
-# Upgrade from job 009 (4B, 2 GPUs) — same pipeline check before the 4-GPU full run (job 010).
-# Checkpoints: /scratch-shared/$USER/msc-thesis/training/qwen3-8b-grpo-smoke/ (USE_SCRATCH_CHECKPOINTS=true)
+#   GPU 0 (exclusive): frozen sub-agent Qwen3-1.7B at util=0.08 (~7.5 GB)
+#   GPUs 1–2: VERL N_GPUS=2 for Qwen3-8B with LoRA (USE_LORA=true, same as production).
+#     launch_verl.py overrides util→0.6, lr→1e-5, free_cache_engine→True, dynamic_bsz.
+#     Rollout phase (param_offload=True): vLLM TP=1 data-parallel, util=0.6 → 56.4 GB/GPU ✓
+#     Training phase (free_cache_engine destroys KV): vLLM model 16 GB + shard 8 GB ≈ 25 GB/GPU ✓
+# Upgrade from job 009 (4B, full-FT) — together they cover both code paths before the full run.
+# Checkpoints: /scratch-shared/$USER/fine_tuning/lora_adapters/qwen3-8b-grpo-smoke/ (LoRA, scratch)
 #SBATCH --gpus=3
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -172,12 +173,13 @@ echo "  (USE_SCRATCH_CHECKPOINTS=true — scratch-shared, not experiments/result
 # ── 2. Frozen sub-agent vLLM server (GPU 0, dedicated, never updated by VERL) ─
 echo ""
 echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998, physical GPU 0 only)..."
-# GPU 0 is exclusive to the sub-agent (not shared with VERL); util=0.40 is fine here.
-# V1 + torch.compile can leave almost no KV budget on a small util fraction (see smoke_*_subagent.log).
+# GPU 0 is exclusive to the sub-agent (not shared with VERL). util=0.08 matches production
+# (job 010) — Qwen3-1.7B in BF16 is ~3.4 GB; 0.08×94≈7.5 GB gives ample KV budget.
+# VLLM_USE_V1=0: legacy engine; V1+torch.compile at low util can allocate no KV space.
 VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
     --port 9998 \
     --tensor-parallel-size 1 \
-    --gpu-memory-utilization 0.40 \
+    --gpu-memory-utilization 0.08 \
     --max-model-len 8192 \
     > out/fine_tuning/smoke_test_8b/smoke8b_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
 SUBAGENT_PID=$!
