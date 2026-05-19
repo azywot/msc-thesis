@@ -316,7 +316,7 @@ class AgentFlowTrainer(RayPPOTrainer):
 
             n_transition = len(batch)
             # make sure divisible by k_partitions for seqlen_balancing
-            k_partitions = self.config.trainer.n_gpus_per_node  # 一般等于 num_workers 或者 8
+            k_partitions = self.config.trainer.n_gpus_per_node  # equals n_gpus_per_node (typically num_workers or 8)
             n_remained_transition = n_transition // k_partitions * k_partitions
             if n_remained_transition != n_transition:
                 batch = batch[list(range(n_remained_transition))]

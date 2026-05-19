@@ -6,7 +6,7 @@
 # Qwen3-1.7B frozen sub-agent on a dedicated GPU (not shared with VERL).
 # Total: 3 H100 NVL GPUs (~94 GB each).
 #
-# GPU layout (see jobs/012):
+# GPU layout (see jobs/fine_tuning/004_smoke_8b.job):
 #   GPU 0 (exclusive): frozen sub-agent at util=0.08 (~7.5 GB)
 #   GPU 1, GPU 2 (VERL, N_GPUS=2): LoRA actor FSDP-sharded to ~8 GB base + <1 GB adapter/GPU;
 #     vLLM TP=1 runs data-parallel — each GPU holds a full 8B copy during rollout.
@@ -19,11 +19,10 @@
 #
 # Note: gpu_memory_utilization (0.45 below) and free_cache_engine (true below) are base values;
 #   launch_verl.py overrides gpu_memory_utilization→0.6 and lr→1e-5 when USE_LORA=true.
-#   free_cache_engine is already true here (needed for both LoRA KV flush and full-FT fragmentation).
+#   free_cache_engine is already true here (needed to flush LoRA KV cache between rollout and training).
 #
-# Differences from config_smoke.yaml (Qwen3-4B, full-FT, N_GPUS=1):
+# Differences from config_smoke.yaml (Qwen3-4B, N_GPUS=1):
 #   - BASE_MODEL: Qwen3-8B
-#   - USE_LORA: true (smoke.yaml uses false — the two smokes cover both code paths)
 #   - N_GPUS: 2
 #   - EXPERIMENT_NAME: qwen3-8b-grpo-smoke
 #   - data dir: data/training/smoke  (same)
@@ -34,7 +33,7 @@
 #   python scripts/launch_verl.py --config experiments/configs/train/config_smoke8b.yaml
 #   python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke8b.yaml
 #
-# IMPORTANT: Launch frozen sub-agent on GPU 0 before VERL (see jobs/012):
+# IMPORTANT: Launch frozen sub-agent on GPU 0 before VERL (see jobs/fine_tuning/004_smoke_8b.job):
 #   VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B --port 9998 \
 #       --tensor-parallel-size 1 --gpu-memory-utilization 0.08 --max-model-len 8192
 #   export SUBAGENT_ENDPOINT=http://localhost:9998/v1

@@ -6,7 +6,7 @@
 # sub-agent; GPU 1 = VERL with one H100 (~94 GB). Full training (config.yaml) uses Qwen3-8B
 # with N_GPUS=4 on H100.
 #
-# SLURM: jobs/009 allocates **2 GPUs** — see job script for CUDA_VISIBLE_DEVICES.
+# SLURM: jobs/fine_tuning/003_smoke_4b.job allocates **2 GPUs** — see job script for CUDA_VISIBLE_DEVICES.
 #
 # Differences from config.yaml:
 #   - BASE_MODEL: Qwen3-4B (smoke only)
@@ -20,7 +20,7 @@
 #   python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml
 #   python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke.yaml
 #
-# IMPORTANT: Launch frozen sub-agent on GPU 0 before VERL (see jobs/009):
+# IMPORTANT: Launch frozen sub-agent on GPU 0 before VERL (see jobs/fine_tuning/003_smoke_4b.job):
 #   VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 \
 #       --gpu-memory-utilization 0.40 --max-model-len 8192
 #   export SUBAGENT_ENDPOINT=http://localhost:9998/v1

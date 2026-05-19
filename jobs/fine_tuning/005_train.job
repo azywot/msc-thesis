@@ -251,39 +251,6 @@ if [[ "$USE_LORA_LOWER" == "true" ]]; then
         || echo "No LoRA adapters found."
 fi
 
-# #  NOTE: Checkpoint pruning is disabled for now.
-# # ── 5. Prune checkpoints (keep latest + best) ────────────────────────────────
-# echo ""
-# echo "Pruning checkpoints: keeping latest and best..."
-
-# mapfile -t STEP_DIRS < <(find "$CKPT_DIR" -maxdepth 3 -name "global_step_*" -type d | sort -V || true)
-# if ((${#STEP_DIRS[@]} == 0)); then
-#     echo "No step checkpoints found; skipping prune."
-# else
-#     LATEST_STEP_DIR="${STEP_DIRS[-1]}"
-#     # No checkpoint_best symlink — select best manually from W&B val metrics
-
-#     echo "Latest checkpoint: $LATEST_STEP_DIR"
-#     if [[ -n "$BEST_TARGET" ]]; then
-#         echo "Best checkpoint target: $BEST_TARGET"
-#     else
-#         echo "Best checkpoint target not resolved; will keep latest only."
-#     fi
-
-#     for d in "${STEP_DIRS[@]}"; do
-#         KEEP=0
-#         [[ "$d" == "$LATEST_STEP_DIR" ]] && KEEP=1
-#         [[ -n "$BEST_TARGET" && "$d" == "$BEST_TARGET" ]] && KEEP=1
-#         if ((KEEP == 0)); then
-#             echo "Removing old checkpoint: $d"
-#             rm -rf "$d"
-#         fi
-#     done
-# fi
-
-echo "Remaining checkpoint payloads:"
-find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null \
-    | head -10 || echo "No checkpoints found."
 
 echo ""
 echo "Training complete at: $(date)"

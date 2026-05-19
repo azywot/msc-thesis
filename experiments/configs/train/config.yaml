@@ -11,7 +11,7 @@
 #       --gpu-memory-utilization 0.08 --max-model-len 8192
 #   export SUBAGENT_ENDPOINT=http://localhost:9998/v1
 #
-# SLURM: jobs/010 requests 4 H100 NVL GPUs (~94 GB each).
+# SLURM: jobs/fine_tuning/005_train.job requests 4 H100 NVL GPUs (~94 GB each).
 #   GPU 0: frozen sub-agent at util=0.08 (~7.5 GB) — low enough to share with VERL on the same card.
 #   GPUs 0–3: VERL (N_GPUS: 4, CUDA_VISIBLE_DEVICES=0,1,2,3).
 #
@@ -55,7 +55,7 @@ env:
 
 python_args:
   agentflow.port: 9999
-  # Ray must not auto-detect all cores on the node under SLURM — see jobs/010 (cpus-per-task).
+  # Ray must not auto-detect all cores on the node under SLURM — see jobs/fine_tuning/005_train.job (cpus-per-task).
   ray_init.num_cpus: 16
   algorithm.adv_estimator: 'grpo'
   data.train_files: '${BASE_DATA_DIR}/train/combined_train.parquet'
