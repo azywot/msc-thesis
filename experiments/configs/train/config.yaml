@@ -114,3 +114,7 @@ lora:                     # applied only when USE_LORA=true
   rank: 64
   alpha: 64               # alpha=rank → scaling factor 1.0 (neutral LoRA initialisation)
   target_modules: "all-linear"
+  # resume_adapter_path:  # Optional: path to a saved lora_adapter/ directory to resume from.
+  #   e.g. /scratch-shared/$USER/fine_tuning/lora_adapters/<exp>/<run-tag>/global_step_N/actor/lora_adapter
+  #   Leave unset (or null) for fresh training from the base model.
+  # merge: false           # Set true only when using the SGLang rollout backend; vLLM uses false (default).

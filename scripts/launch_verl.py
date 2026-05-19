@@ -82,12 +82,28 @@ def main():
         # rollout.log_prob_* and ref.log_prob_* inherit these via OmegaConf oc.select.
         python_args["actor_rollout_ref.actor.use_dynamic_bsz"] = True
         python_args["actor_rollout_ref.actor.ppo_max_token_len_per_gpu"] = 45056
+
+        # Resume from a previously saved adapter (multi-stage training or warm restart).
+        # Set lora.resume_adapter_path in the config to the saved lora_adapter/ directory;
+        # leave unset (or null) for fresh training from the base model.
+        resume_path = lora_cfg.get("resume_adapter_path") or None
+        if resume_path:
+            python_args["actor_rollout_ref.model.lora_adapter_path"] = str(resume_path)
+
+        # lora.merge: False for vLLM (default, adapter deltas transferred natively).
+        # Set to True only when using the SGLang rollout backend.
+        lora_merge = bool(lora_cfg.get("merge", False))
+        if lora_merge:
+            python_args["actor_rollout_ref.model.lora.merge"] = True
+
         print(
             f"  LoRA enabled: rank={rank}, alpha={alpha}, targets={targets}, "
             f"lr={lora_lr} (overrides config), "
             f"load_format=safetensors, layered_summon=True, use_shm=True, "
             f"free_cache_engine=True, gpu_memory_utilization=0.6, "
             f"use_dynamic_bsz=True (ppo_max_token_len_per_gpu=45056)"
+            + (f", resume_adapter_path={resume_path}" if resume_path else "")
+            + (", merge=True (SGLang)" if lora_merge else "")
         )
     else:
         print("  LoRA disabled: full-parameter training (USE_LORA=false)")

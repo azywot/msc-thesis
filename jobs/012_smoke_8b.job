@@ -157,7 +157,14 @@ export VERL_RUN_TAG
 echo "Run tag: $VERL_RUN_TAG"
 
 EXPERIMENT_NAME="qwen3-8b-grpo-smoke"
-CKPT_DIR="/scratch-shared/${USER}/msc-thesis/training/${EXPERIMENT_NAME}"
+# Resolve checkpoint dir the same way launch_verl.py does — respect USE_LORA from the config
+# so the verify step below finds the right directory even if USE_LORA is flipped for testing.
+USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/experiments/configs/train/config_smoke8b.yaml" | awk -F'"' '{print tolower($2)}')"
+if [[ "$USE_LORA_LOWER" == "true" ]]; then
+    CKPT_DIR="/scratch-shared/${USER}/fine_tuning/lora_adapters/${EXPERIMENT_NAME}"
+else
+    CKPT_DIR="/scratch-shared/${USER}/msc-thesis/training/${EXPERIMENT_NAME}"
+fi
 echo ""
 echo "Checkpoints will be written to: $CKPT_DIR"
 echo "  (USE_SCRATCH_CHECKPOINTS=true — scratch-shared, not experiments/results/)"
@@ -228,15 +235,23 @@ echo ""
 echo "Starting rollout workers..."
 python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke8b.yaml &
 ORCHESTRATOR_PID=$!
-wait $ORCHESTRATOR_PID
+# Wait for VERL (server) to finish training first.
+# The orchestrator is a client of VERL — waiting for it before VERL exits would deadlock.
+# After VERL exits the orchestrator loses its connection and is killed by the EXIT trap.
 wait $VERL_PID
 
 # ── 5. Verify checkpoint was written ─────────────────────────────────────────
 echo ""
 echo "Verifying checkpoint under: $CKPT_DIR"
+find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null \
+    | head -10 || echo "No checkpoints found."
+if [[ "$USE_LORA_LOWER" == "true" ]]; then
+    echo "LoRA adapters:"
+    find "$CKPT_DIR" -maxdepth 4 -name "adapter_model.safetensors" 2>/dev/null | head -10 \
+        || echo "No LoRA adapters found."
+fi
 if find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null | grep -q .; then
-    echo "PASS — checkpoint found:"
-    find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" | head -5
+    echo "PASS — checkpoint found."
 else
     echo "FAIL — no checkpoint found under $CKPT_DIR"
     exit 1
