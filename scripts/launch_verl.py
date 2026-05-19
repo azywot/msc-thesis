@@ -145,8 +145,10 @@ def main():
     python_args["trainer.default_local_dir"] = ckpt_dir
     print(f"  Checkpoint dir: {ckpt_dir}")
 
-    # AgentFlowTrainer-only; VERL's structured trainer config rejects unknown keys without +.
-    for _key in ("trainer.val_every_epoch", "trainer.save_every_epoch"):
+    # Keys not in VERL's structured Hydra schema must be prefixed with + (append, not override).
+    # ray_init.num_cpus: custom key passed to our AgentFlowTrainer's ray.init() call.
+    # trainer.val_every_epoch / save_every_epoch: AgentFlowTrainer-only extensions.
+    for _key in ("ray_init.num_cpus", "trainer.val_every_epoch", "trainer.save_every_epoch"):
         if _key in python_args:
             python_args[f"+{_key}"] = python_args.pop(_key)
 

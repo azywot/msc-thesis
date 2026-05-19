@@ -309,7 +309,7 @@ msc-thesis/
 | `data.max_response_length` | `4096` | Max response tokens per rollout; doubled from AgentFlow default to cover multi-turn orchestrator trajectories + thinking traces |
 | `actor_rollout_ref.rollout.n` | `8` | Rollouts per question (GRPO group size) |
 | `actor_rollout_ref.model.lora_rank` | `64` | LoRA rank (~130 MB checkpoints) |
-| `actor_rollout_ref.actor.kl_loss_coef` | `0.001` | KL penalty weight (keeps policy close to reference) |
+| `actor_rollout_ref.actor.kl_loss_coef` | `0.01` | KL penalty weight (keeps policy close to reference) |
 | `trainer.total_epochs` | `5` | Training epochs |
 | `trainer.save_freq` | `1` | Save checkpoint every epoch |
 | `trainer.test_freq` | `1` | Run validation every epoch |
