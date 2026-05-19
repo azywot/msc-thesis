@@ -231,25 +231,28 @@ wait $VERL_PID
 echo ""
 EXPERIMENT_NAME="qwen3-8b-grpo-search-math"
 # Checkpoints land in scratch-shared (USE_SCRATCH_CHECKPOINTS=true). Path depends on USE_LORA:
-#   LoRA:    /scratch-shared/$USER/fine_tuning/lora_adapters/<exp>/<run-tag>/global_step_<N>/actor/
-#              ├── model_world_size_*_rank_*.pt  (FSDP full-state-dict shard, ~17 GB for Qwen3-8B bf16)
-#              └── lora_adapter/{adapter_model.safetensors, adapter_config.json}  (~250 MB)
+#   LoRA (launch_verl.py drops 'model' from save_contents → adapter-only checkpoints):
+#     /scratch-shared/$USER/fine_tuning/lora_adapters/<exp>/<run-tag>/global_step_<N>/actor/
+#       ├── lora_adapter/{adapter_model.safetensors, adapter_config.json}  (~250-500 MB)
+#       ├── optim_world_size_*_rank_*.pt    (LoRA-only optimizer state, ~1 GB)
+#       └── extra_state_world_size_*.pt     (RNG / scheduler, ~tiny)
 #   Full FT: /scratch-shared/$USER/msc-thesis/fine_tuning/<exp>/<run-tag>/global_step_<N>/actor/
-#              └── model_world_size_*_rank_*.pt  (~47 GB)
+#              └── model_world_size_*_rank_*.pt  (~47 GB FSDP shard)
 USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/experiments/configs/fine_tuning/config.yaml" | awk -F'"' '{print tolower($2)}')"
 if [[ "$USE_LORA_LOWER" == "true" ]]; then
     CKPT_DIR="/scratch-shared/${USER}/fine_tuning/lora_adapters/${EXPERIMENT_NAME}"
+    CKPT_GLOB_NAME="adapter_model.safetensors"
+    CKPT_GLOB_MAXDEPTH=5
+    CKPT_GLOB_PATHFILTER="*/actor/lora_adapter/*"
 else
     CKPT_DIR="/scratch-shared/${USER}/msc-thesis/fine_tuning/${EXPERIMENT_NAME}"
+    CKPT_GLOB_NAME="model_world_size_*_rank_*.pt"
+    CKPT_GLOB_MAXDEPTH=4
+    CKPT_GLOB_PATHFILTER="*/actor/*"
 fi
 echo "Checkpoints written under: $CKPT_DIR"
-find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null \
+find "$CKPT_DIR" -maxdepth "$CKPT_GLOB_MAXDEPTH" -name "$CKPT_GLOB_NAME" -path "$CKPT_GLOB_PATHFILTER" 2>/dev/null \
     | head -10 || echo "No checkpoints found."
-if [[ "$USE_LORA_LOWER" == "true" ]]; then
-    echo "LoRA adapters:"
-    find "$CKPT_DIR" -maxdepth 4 -name "adapter_model.safetensors" 2>/dev/null | head -10 \
-        || echo "No LoRA adapters found."
-fi
 
 
 echo ""

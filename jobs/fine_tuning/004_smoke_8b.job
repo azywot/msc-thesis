@@ -245,16 +245,23 @@ ORCHESTRATOR_PID=$!
 wait $VERL_PID
 
 # ── 5. Verify checkpoint was written ─────────────────────────────────────────
+# LoRA runs: launch_verl.py drops 'model' from save_contents → only lora_adapter/
+# is written (adapter_model.safetensors at <run-tag>/global_step_<N>/actor/lora_adapter/).
+# Full-FT runs: success criterion is the FSDP-sharded state dict shard.
 echo ""
 echo "Verifying checkpoint under: $CKPT_DIR"
-find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null \
-    | head -10 || echo "No checkpoints found."
 if [[ "$USE_LORA_LOWER" == "true" ]]; then
-    echo "LoRA adapters:"
-    find "$CKPT_DIR" -maxdepth 4 -name "adapter_model.safetensors" 2>/dev/null | head -10 \
-        || echo "No LoRA adapters found."
+    CKPT_GLOB_NAME="adapter_model.safetensors"
+    CKPT_GLOB_MAXDEPTH=5
+    CKPT_GLOB_PATHFILTER="*/actor/lora_adapter/*"
+else
+    CKPT_GLOB_NAME="model_world_size_*_rank_*.pt"
+    CKPT_GLOB_MAXDEPTH=4
+    CKPT_GLOB_PATHFILTER="*/actor/*"
 fi
-if find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null | grep -q .; then
+find "$CKPT_DIR" -maxdepth "$CKPT_GLOB_MAXDEPTH" -name "$CKPT_GLOB_NAME" -path "$CKPT_GLOB_PATHFILTER" 2>/dev/null \
+    | head -10 || echo "No checkpoints found."
+if find "$CKPT_DIR" -maxdepth "$CKPT_GLOB_MAXDEPTH" -name "$CKPT_GLOB_NAME" -path "$CKPT_GLOB_PATHFILTER" 2>/dev/null | grep -q .; then
     echo "PASS — checkpoint found."
 else
     echo "FAIL — no checkpoint found under $CKPT_DIR"

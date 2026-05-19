@@ -244,10 +244,21 @@ else
     CKPT_BASE="/scratch-shared/${USER}/msc-thesis/fine_tuning/${EXPERIMENT_NAME}"
 fi
 echo "Checkpoint base: $CKPT_BASE"
-# VERL writes: <base>/<run-tag>/global_step_<N>/actor/model_world_size_*_rank_*.pt
-if find "$CKPT_BASE" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null | grep -q .; then
+# LoRA runs: launch_verl.py drops 'model' from save_contents, so verl writes only the
+# adapter (<base>/<run-tag>/global_step_<N>/actor/lora_adapter/adapter_model.safetensors).
+# Full-FT runs: model_world_size_*_rank_*.pt is the FSDP-sharded state dict.
+if [[ "$USE_LORA_LOWER" == "true" ]]; then
+    CKPT_GLOB_NAME="adapter_model.safetensors"
+    CKPT_GLOB_MAXDEPTH=5
+    CKPT_GLOB_PATHFILTER="*/actor/lora_adapter/*"
+else
+    CKPT_GLOB_NAME="model_world_size_*_rank_*.pt"
+    CKPT_GLOB_MAXDEPTH=4
+    CKPT_GLOB_PATHFILTER="*/actor/*"
+fi
+if find "$CKPT_BASE" -maxdepth "$CKPT_GLOB_MAXDEPTH" -name "$CKPT_GLOB_NAME" -path "$CKPT_GLOB_PATHFILTER" 2>/dev/null | grep -q .; then
     echo "PASS — checkpoint found:"
-    find "$CKPT_BASE" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" | head -5
+    find "$CKPT_BASE" -maxdepth "$CKPT_GLOB_MAXDEPTH" -name "$CKPT_GLOB_NAME" -path "$CKPT_GLOB_PATHFILTER" | head -5
 else
     echo "FAIL — no checkpoint found under $CKPT_BASE"
     exit 1

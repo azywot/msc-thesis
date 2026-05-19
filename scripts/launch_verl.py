@@ -110,14 +110,24 @@ def main():
 
     # Save optimizer state only when explicitly requested (needed for resume; omit by default to save disk).
     # VERL controls checkpoint contents via actor_rollout_ref.actor.checkpoint.save_contents.
+    #
+    # LoRA branch: drop 'model' from save_contents. For LoRA, verl's FSDPCheckpointManager
+    # writes the FULL PEFT-wrapped state dict (base + LoRA, ~17 GB for Qwen3-4B / ~33 GB for
+    # Qwen3-8B) into model_world_size_*_rank_*.pt — base weights are identical to the HF cache
+    # so this is pure disk waste. The LoRA adapter is saved separately and unconditionally in
+    # fsdp_workers.py:1194-1223 (~250-500 MB), so dropping 'model' leaves a usable checkpoint.
+    # Resume from a LoRA-only ckpt uses lora.resume_adapter_path → lora_adapter/ (warm restart;
+    # mid-run auto-resume is not supported because the optimizer's tied-to-base FSDP state
+    # cannot be reconstructed without model_world_size_*.pt).
     save_optimizer = os.environ.get("SAVE_OPTIMIZER", "false").strip().lower() in ("1", "true", "yes", "on")
-    if save_optimizer:
-        python_args["actor_rollout_ref.actor.checkpoint.save_contents"] = "['model','optimizer','extra']"
-        python_args["actor_rollout_ref.actor.checkpoint.load_contents"] = "['model','optimizer','extra']"
+    if use_lora:
+        contents = ["optimizer", "extra"] # if save_optimizer else ["extra"]
     else:
-        python_args["actor_rollout_ref.actor.checkpoint.save_contents"] = "['model']"
-        python_args["actor_rollout_ref.actor.checkpoint.load_contents"] = "['model']"
-    print(f"  Save optimizer state: {save_optimizer} (save_contents={'model,optimizer,extra' if save_optimizer else 'model only'})")
+        contents = ["model", "optimizer", "extra"] if save_optimizer else ["model"]
+    contents_str = "[" + ",".join(f"'{c}'" for c in contents) + "]"
+    python_args["actor_rollout_ref.actor.checkpoint.save_contents"] = contents_str
+    python_args["actor_rollout_ref.actor.checkpoint.load_contents"] = contents_str
+    print(f"  Save optimizer state: {save_optimizer} (save_contents={','.join(contents)})")
 
     # Build unique checkpoint dir: <base>/<experiment>/<DD-MM-YYYY_HH-MM>-<SLURM_JOB_ID>
     # USE_SCRATCH_CHECKPOINTS=true  → /scratch-shared/$USER/.../fine_tuning  (large quota, production).
