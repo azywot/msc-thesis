@@ -48,7 +48,8 @@ def main():
         print(f"  ray_init.num_cpus={slurm_cpus} (from SLURM_CPUS_PER_TASK)")
 
     # USE_LORA was exported above via the env: loop; read it back now.
-    use_lora = os.environ.get("USE_LORA", "false").strip().lower() in ("1", "true", "yes", "on")
+    # Default is "1" (LoRA on) — full-FT requires an explicit USE_LORA=false in config.yaml.
+    use_lora = os.environ.get("USE_LORA", "1").strip().lower() in ("1", "true", "yes", "on")
     if use_lora:
         lora_cfg = config.get("lora", {}) or {}
         rank = int(lora_cfg.get("rank", 64))
@@ -69,10 +70,24 @@ def main():
         # LoRA trains ~1% of parameters; a 10× higher LR than full FT is standard practice.
         lora_lr = 1e-5
         python_args["actor_rollout_ref.actor.optim.lr"] = lora_lr
+        # KV cache must be flushed between rollouts: vllm's add_lora swaps adapter weights but
+        # cached prefixes were computed under the previous adapter → silent drift otherwise.
+        # Verl's Qwen3-8B LoRA example leaves the default True; we override the full-FT False here.
+        python_args["actor_rollout_ref.rollout.free_cache_engine"] = True
+        # LoRA frees ~24 GB optimizer + ~4 GB ref shard per GPU → vLLM can take more KV cache.
+        # Matches verl/examples/tuning/lora/run_qwen3_8b_fsdp.sh which uses 0.6 on the same model.
+        python_args["actor_rollout_ref.rollout.gpu_memory_utilization"] = 0.6
+        # Dynamic batching packs sequences up to ppo_max_token_len_per_gpu — at 22528 ctx the
+        # default 16384 forces one-seq-per-pass and wastes throughput. 45056 = 2× (prompt+resp).
+        # rollout.log_prob_* and ref.log_prob_* inherit these via OmegaConf oc.select.
+        python_args["actor_rollout_ref.actor.use_dynamic_bsz"] = True
+        python_args["actor_rollout_ref.actor.ppo_max_token_len_per_gpu"] = 45056
         print(
             f"  LoRA enabled: rank={rank}, alpha={alpha}, targets={targets}, "
             f"lr={lora_lr} (overrides config), "
-            f"load_format=safetensors, layered_summon=True, use_shm=True"
+            f"load_format=safetensors, layered_summon=True, use_shm=True, "
+            f"free_cache_engine=True, gpu_memory_utilization=0.6, "
+            f"use_dynamic_bsz=True (ppo_max_token_len_per_gpu=45056)"
         )
     else:
         print("  LoRA disabled: full-parameter training (USE_LORA=false)")
@@ -100,7 +115,12 @@ def main():
     )
     if use_scratch:
         _user = os.environ.get("USER") or os.environ.get("LOGNAME") or "user"
-        ckpt_base = f"/scratch-shared/{_user}/msc-thesis/training"
+        # LoRA runs share a dedicated scratch root so adapters don't mix with full-FT shards.
+        # Verl writes the adapter at <ckpt_dir>/global_step_<N>/actor/lora_adapter/.
+        if use_lora:
+            ckpt_base = f"/scratch-shared/{_user}/fine_tuning/lora_adapters"
+        else:
+            ckpt_base = f"/scratch-shared/{_user}/msc-thesis/training"
     else:
         ckpt_base = "experiments/results/training"
     ckpt_dir = f"{ckpt_base}/{experiment_name}/{run_tag}"

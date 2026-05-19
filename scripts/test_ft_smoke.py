@@ -50,9 +50,9 @@ def check_agentflow():
 
 @check("import fine_tuning")
 def check_fine_tuning():
-    from fine_tuning import FinetuningConfig, OrchestratorReward  # noqa: F401
+    from fine_tuning import OrchestratorReward  # noqa: F401
     from fine_tuning.rollout import OrchestratorRollout  # noqa: F401
-    return "FinetuningConfig, OrchestratorReward, OrchestratorRollout imported"
+    return "OrchestratorReward, OrchestratorRollout imported"
 
 
 @check("import agent_engine")
@@ -97,13 +97,11 @@ def check_reward_none():
 @check("config loading — smoke config")
 def check_config(config_path: str):
     import yaml
-    from fine_tuning.config import FinetuningConfig
     p = Path(config_path)
     if not p.exists():
         return f"SKIP — {p} not found (create it first)"
     with open(p) as f:
         raw = yaml.safe_load(f)
-    # FinetuningConfig reads from a flat dict; just verify YAML parses cleanly
     env = raw.get("env", {})
     assert "BASE_MODEL" in env, "BASE_MODEL missing from env block"
     assert "THINKING_MODE" in env, "THINKING_MODE missing from env block"

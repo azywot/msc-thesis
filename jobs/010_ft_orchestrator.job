@@ -3,8 +3,15 @@
 #SBATCH --partition=gpu_h100
 # Four H100 NVL GPUs (~94 GB each). Sub-agent starts on GPU 0 at util=0.08 (~7.5 GB), leaving
 # ~86 GB for VERL on GPU 0. VERL uses all 4 GPUs (CUDA_VISIBLE_DEVICES=0,1,2,3, N_GPUS=4).
-# Budget per VERL GPU: actor 4 GB + opt 24 GB + grads 4 GB + ref 4 GB + vLLM 42.3 GB + misc 3 GB
-# = 81.3 GB (GPUs 1–3) / 88.8 GB (GPU 0 with sub-agent). Both < 94 GB.
+#
+# FULL FT (USE_LORA=false), vLLM util=0.45:
+#   per VERL GPU: actor 4 + opt 24 + grads 4 + ref 4 + vLLM 42.3 + misc 3 = 81.3 GB.
+#   GPU 0 + sub-agent ≈ 88.8 GB / 94 GB.
+#
+# LoRA (USE_LORA=true), vLLM util=0.6 (set by launch_verl.py LoRA branch):
+#   ref_in_actor=true (no ref shard) and adapter-only optimizer save ~28 GB per GPU.
+#   per VERL GPU: base 4 + adapter <1 + opt <1 + activations 8 + vLLM 56.4 + misc 3 ≈ 72 GB.
+#   GPU 0 + sub-agent ≈ 80 GB / 94 GB (14 GB headroom).
 #SBATCH --gpus=4
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -223,12 +230,26 @@ wait $VERL_PID
 # ── 4. Verify checkpoint ─────────────────────────────────────────────────────
 echo ""
 EXPERIMENT_NAME="qwen3-8b-grpo-search-math"
-# Full fine-tuning checkpoints (~47 GB/step) land in scratch-shared (set by USE_SCRATCH_CHECKPOINTS=true).
-# VERL writes: <base>/<experiment>/<run-tag>/global_step_<N>/actor/model_world_size_*_rank_*.pt
-CKPT_DIR="/scratch-shared/${USER}/msc-thesis/training/${EXPERIMENT_NAME}"
+# Checkpoints land in scratch-shared (USE_SCRATCH_CHECKPOINTS=true). Path depends on USE_LORA:
+#   LoRA:    /scratch-shared/$USER/fine_tuning/lora_adapters/<exp>/<run-tag>/global_step_<N>/actor/
+#              ├── model_world_size_*_rank_*.pt  (FSDP full-state-dict shard, ~17 GB for Qwen3-8B bf16)
+#              └── lora_adapter/{adapter_model.safetensors, adapter_config.json}  (~250 MB)
+#   Full FT: /scratch-shared/$USER/msc-thesis/training/<exp>/<run-tag>/global_step_<N>/actor/
+#              └── model_world_size_*_rank_*.pt  (~47 GB)
+USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/experiments/configs/train/config.yaml" | awk -F'"' '{print tolower($2)}')"
+if [[ "$USE_LORA_LOWER" == "true" ]]; then
+    CKPT_DIR="/scratch-shared/${USER}/fine_tuning/lora_adapters/${EXPERIMENT_NAME}"
+else
+    CKPT_DIR="/scratch-shared/${USER}/msc-thesis/training/${EXPERIMENT_NAME}"
+fi
 echo "Checkpoints written under: $CKPT_DIR"
 find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null \
     | head -10 || echo "No checkpoints found."
+if [[ "$USE_LORA_LOWER" == "true" ]]; then
+    echo "LoRA adapters:"
+    find "$CKPT_DIR" -maxdepth 4 -name "adapter_model.safetensors" 2>/dev/null | head -10 \
+        || echo "No LoRA adapters found."
+fi
 
 # #  NOTE: Checkpoint pruning is disabled for now.
 # # ── 5. Prune checkpoints (keep latest + best) ────────────────────────────────
@@ -267,7 +288,16 @@ find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor
 echo ""
 echo "Training complete at: $(date)"
 echo ""
-echo "Next step — locate latest checkpoint and evaluate (USE_LORA=false → full weights, no merge needed):"
-echo "  LATEST_CKPT=\$(find $CKPT_DIR -maxdepth 3 -name 'global_step_*' -type d | sort -V | tail -1)"
-echo "  # Load actor/model_world_size_*_rank_*.pt directly with from_pretrained"
-echo "  # Or if USE_LORA=true was set: merge with scripts/merge_lora.py"
+if [[ "$USE_LORA_LOWER" == "true" ]]; then
+    echo "Next step — locate latest checkpoint and merge LoRA adapter into base weights:"
+    echo "  LATEST_CKPT=\$(find $CKPT_DIR -maxdepth 3 -name 'global_step_*' -type d | sort -V | tail -1)"
+    echo "  python scripts/merge_lora.py \\"
+    echo "    --checkpoint \"\$LATEST_CKPT\" \\"
+    echo "    --base-model Qwen/Qwen3-8B \\"
+    echo "    --output-dir /scratch-shared/$USER/fine_tuning/lora_adapters/${EXPERIMENT_NAME}/merged"
+    echo "  # merge_lora.py prefers \$LATEST_CKPT/actor/lora_adapter/ (hyperparams from adapter_config.json)."
+else
+    echo "Next step — locate latest checkpoint and evaluate (full FT — no merge needed):"
+    echo "  LATEST_CKPT=\$(find $CKPT_DIR -maxdepth 3 -name 'global_step_*' -type d | sort -V | tail -1)"
+    echo "  # Load actor/model_world_size_*_rank_*.pt directly with from_pretrained."
+fi

@@ -12,13 +12,15 @@ See the failure-mode rationale: `docs/failure_modes_fine_tuning_alignment.md`
 
 ```
 fine_tuning/
-├── config.py        # FinetuningConfig dataclass — LoRA, GRPO, paths
 ├── reward.py        # OrchestratorReward — binary exact-match via metrics.py
 ├── rollout.py       # OrchestratorRollout(LitAgent) — wraps AgenticOrchestrator for VERL
 ├── trainer.py       # Unused stub (training uses agentflow.Trainer directly)
 └── data/
     └── prepare.py   # Download Search-R1 + DeepMath, write VERL parquet files
 ```
+
+Training hyperparameters live in `experiments/configs/train/config.yaml` and are
+forwarded to verl by `scripts/launch_verl.py` (no Python config dataclass).
 
 ---
 
@@ -92,7 +94,7 @@ python $HOME/azywot/AgentFlow/util/model_merger.py \
     --output_dir "experiments/results/training/qwen3-8b-grpo-search-math/${RUN_TAG}/merged_model/"
 ```
 
-When `USE_LORA=false` (current default), `model_world_size_1_rank_0.pt` is the full model — no merge needed, load directly with `from_pretrained`.
+When `USE_LORA=false`, `model_world_size_1_rank_0.pt` is the full model — no merge needed, load directly with `from_pretrained`. (LoRA is the default; full-FT requires an explicit `USE_LORA: "false"` in `config.yaml`.)
 
 Then update any experiment YAML:
 ```yaml
@@ -289,8 +291,9 @@ python $HOME/azywot/AgentFlow/util/model_merger.py \
     --output_dir experiments/results/training/qwen3-8b-grpo-search-math/<run-tag>/merged_model/
 ```
 
-When `USE_LORA=false` (current smoke config), `model_world_size_1_rank_0.pt` is the full model and
-can be loaded directly with `from_pretrained`.
+When `USE_LORA=false`, `model_world_size_1_rank_0.pt` is the full model and can be loaded
+directly with `from_pretrained`. (LoRA is the default in `config.yaml`; the smoke configs
+still pin `USE_LORA: "false"` to exercise the full-FT path.)
 
 ---
 

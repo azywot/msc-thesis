@@ -14,10 +14,20 @@
 # SLURM: jobs/010 requests 4 H100 NVL GPUs (~94 GB each).
 #   GPU 0: frozen sub-agent at util=0.08 (~7.5 GB) — low enough to share with VERL on the same card.
 #   GPUs 0–3: VERL (N_GPUS: 4, CUDA_VISIBLE_DEVICES=0,1,2,3).
-# Memory per VERL GPU at util=0.45 (rollout-phase peak, grads freed from previous step):
+#
+# Memory per VERL GPU — FULL FINE-TUNING (USE_LORA=false), util=0.45:
 #   actor shard 4 GB + optimizer 24 GB + ref shard 4 GB + vLLM 42.3 GB (16 GB model + 26.3 GB KV) + misc 3 GB = 77.3 GB.
-# GPU 0 also hosts sub-agent at util=0.08 (~7.5 GB) → 84.8 GB / 94 GB (9.2 GB headroom).
-# During actor update (after vLLM sleep frees KV, model stays at 16 GB): 16+4+24+4+4+4+3 = 55 GB per GPU.
+#   GPU 0 also hosts sub-agent at util=0.08 (~7.5 GB) → 84.8 GB / 94 GB (9.2 GB headroom).
+#   During actor update (vLLM sleep frees KV, model stays at 16 GB): 16+4+24+4+4+4+3 = 55 GB per GPU.
+#
+# Memory per VERL GPU — LoRA (USE_LORA=true), util=0.6:
+#   With rank=64 all-linear on Qwen3-8B: ~250 MB trainable params per rank.
+#   Two big wins vs full FT (handled by verl 0.7.1 automatically):
+#     - ref_in_actor=true: no separate ref shard; ref logprobs use actor with disable_adapter() — saves ~4 GB.
+#     - optimizer state is over LoRA-only params: ~10s of MB AdamW state vs 24 GB for full FT — saves ~24 GB.
+#   Budget: base shard 4 GB + LoRA adapter <1 GB + opt <1 GB + activations 8 GB + vLLM 56.4 GB
+#           (16 GB model + 40.4 GB KV) + misc 3 GB ≈ 72 GB. GPU 0 + sub-agent ≈ 80 GB / 94 GB (14 GB headroom).
+#
 # ROLLOUT_TP_SIZE is 1; N_GPUS=4 is valid (TP=2 also works with 4 GPUs but adds overhead).
 
 env:
@@ -36,7 +46,7 @@ env:
   TEST_TEMPERATURE: 0.0
   N_WORKERS: 1
   VERBOSITY: 'INFO'
-  USE_LORA: "false"
+  USE_LORA: "true"
   USE_SCRATCH_CHECKPOINTS: "true"
   SAVE_OPTIMIZER: "false"
 

@@ -39,7 +39,6 @@ msc-thesis/
 │   │   └── utils/             # parsing/logging helpers
 │   │
 │   ├── fine_tuning/           # RL fine-tuning pipeline (orchestrator only)
-│   │   ├── config.py          # FinetuningConfig dataclass
 │   │   ├── reward.py          # OrchestratorReward — binary via metrics.py
 │   │   ├── rollout.py         # OrchestratorRollout(LitAgent) — VERL rollout worker
 │   │   └── data/

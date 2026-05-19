@@ -240,7 +240,6 @@ msc-thesis/
 │
 ├── src/fine_tuning/
 │   ├── __init__.py              lazy imports (heavy deps optional)
-│   ├── config.py                FinetuningConfig dataclass
 │   ├── reward.py                OrchestratorReward — binary via metrics.py
 │   ├── rollout.py               OrchestratorRollout(LitAgent)
 │   ├── trainer.py               unused stub (agentflow.Trainer used directly)

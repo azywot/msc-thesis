@@ -1,26 +1,35 @@
 """Merge LoRA adapter weights from a VERL FSDP checkpoint into the base model.
 
-VERL saves actor checkpoints as model_world_size_W_rank_0.pt in:
+VERL 0.7.1 saves actor checkpoints to:
     <ckpt_dir>/global_step_<N>/actor/
+        ├── model_world_size_<W>_rank_*.pt            # FSDP full-state-dict (base + LoRA layers)
+        └── lora_adapter/                             # written only when USE_LORA=true
+            ├── adapter_model.safetensors             # PEFT-format LoRA tensors
+            └── adapter_config.json                   # rank/alpha/target_modules baked in
 
-For LoRA training (USE_LORA=true), the checkpoint state dict contains both base
-weights and LoRA adapter weights (keys with .lora_A. / .lora_B.).
+This script prefers the PEFT-format ``lora_adapter/`` dir when present — no CLI
+hyperparams needed, since they're already in ``adapter_config.json``.
+If the adapter dir is missing (e.g. an older checkpoint), it falls back to the
+FSDP shard path and reconstructs the PEFT model from CLI args.
 
-For full-parameter training (USE_LORA=false), only standard HuggingFace keys are
-present and the script saves the checkpoint directly without merging.
+For full-parameter training (USE_LORA=false) there are no LoRA keys; the script
+saves the base model with the FSDP-shard state dict applied.
+
+Default LoRA adapter root on Snellius (set by ``scripts/launch_verl.py`` when
+USE_LORA=true): ``/scratch-shared/$USER/fine_tuning/lora_adapters/<experiment>/<run-tag>/``.
 
 Usage:
     python scripts/merge_lora.py \\
-        --checkpoint experiments/results/training/<exp>/<run>/global_step_<N> \\
+        --checkpoint /scratch-shared/$USER/fine_tuning/lora_adapters/<exp>/<run>/global_step_<N> \\
         --base-model Qwen/Qwen3-8B \\
         --output-dir <output_path>
 
-    # LoRA hyperparams (must match training config):
+    # Fallback path (no lora_adapter/ subdir) — must pass LoRA hyperparams that match training:
     python scripts/merge_lora.py \\
         --checkpoint /path/to/global_step_5 \\
         --base-model Qwen/Qwen3-8B \\
         --output-dir merged_model/ \\
-        --lora-rank 64 --lora-alpha 16 --lora-target-modules all-linear
+        --lora-rank 64 --lora-alpha 64 --lora-target-modules all-linear
 """
 
 from __future__ import annotations
@@ -67,10 +76,19 @@ def main() -> None:
         "--output-dir", required=True,
         help="Directory to write the merged (or full-param) HuggingFace model",
     )
-    parser.add_argument("--lora-rank", type=int, default=64)
-    parser.add_argument("--lora-alpha", type=int, default=16)
-    parser.add_argument("--lora-target-modules", default="all-linear",
-                        help="Comma-separated list or 'all-linear'")
+    parser.add_argument(
+        "--lora-rank", type=int, default=64,
+        help="Fallback only — used if actor/lora_adapter/ is missing.",
+    )
+    parser.add_argument(
+        "--lora-alpha", type=int, default=64,
+        help="Fallback only — used if actor/lora_adapter/ is missing. "
+             "MUST match training (see lora.alpha in experiments/configs/train/config.yaml).",
+    )
+    parser.add_argument(
+        "--lora-target-modules", default="all-linear",
+        help="Fallback only — comma-separated list or 'all-linear'.",
+    )
     parser.add_argument(
         "--dtype", default="bfloat16",
         choices=["float16", "bfloat16", "float32"],
@@ -88,16 +106,6 @@ def main() -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    shard_path = find_model_shard(actor_dir)
-    print(f"Loading checkpoint: {shard_path}")
-    state_dict = torch.load(shard_path, map_location="cpu", weights_only=True)
-    print(f"  {len(state_dict)} keys")
-
-    lora_keys = [k for k in state_dict if ".lora_A." in k or ".lora_B." in k]
-    is_lora = bool(lora_keys)
-    print(f"  Type: {'LoRA' if is_lora else 'full-parameter'} "
-          f"({len(lora_keys)} adapter keys)")
-
     dtype_map = {
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
@@ -105,15 +113,35 @@ def main() -> None:
     }
     dtype = dtype_map[args.dtype]
 
+    adapter_dir = actor_dir / "lora_adapter"
+    has_peft_adapter = (adapter_dir / "adapter_model.safetensors").exists() and (
+        adapter_dir / "adapter_config.json"
+    ).exists()
+
     print(f"Loading base model: {args.base_model}")
-    model = AutoModelForCausalLM.from_pretrained(
+    base_model = AutoModelForCausalLM.from_pretrained(
         args.base_model, torch_dtype=dtype, trust_remote_code=True,
     )
 
-    if is_lora:
-        _merge_lora(model, state_dict, lora_keys, args, output_dir)
+    if has_peft_adapter:
+        print(f"Found verl-written PEFT adapter at: {adapter_dir}")
+        _merge_from_peft_dir(base_model, adapter_dir, output_dir, dtype_str=args.dtype)
     else:
-        _save_full_param(model, state_dict, output_dir)
+        # Older checkpoint or full-FT — read the FSDP shard.
+        shard_path = find_model_shard(actor_dir)
+        print(f"No lora_adapter/ found; falling back to FSDP shard: {shard_path}")
+        state_dict = torch.load(shard_path, map_location="cpu", weights_only=True)
+        print(f"  {len(state_dict)} keys")
+
+        lora_keys = [k for k in state_dict if ".lora_A." in k or ".lora_B." in k]
+        is_lora = bool(lora_keys)
+        print(f"  Type: {'LoRA' if is_lora else 'full-parameter'} "
+              f"({len(lora_keys)} adapter keys)")
+
+        if is_lora:
+            _merge_from_shard(base_model, state_dict, lora_keys, args, output_dir)
+        else:
+            _save_full_param(base_model, state_dict, output_dir)
 
     # Copy tokenizer from checkpoint's huggingface/ subdir if present.
     hf_dir = actor_dir / "huggingface"
@@ -132,17 +160,37 @@ def main() -> None:
     print(f"Load with: AutoModelForCausalLM.from_pretrained('{output_dir}')")
 
 
-def _merge_lora(
+def _merge_from_peft_dir(
+    base_model: "AutoModelForCausalLM",
+    adapter_dir: Path,
+    output_dir: Path,
+    dtype_str: str,
+) -> None:
+    """Preferred path: verl 0.7.1 writes a PEFT-format adapter dir.
+
+    Hyperparams (rank, alpha, target_modules) live in adapter_config.json so the
+    caller doesn't have to pass them — eliminates a class of silent-merge bugs.
+    """
+    from peft import PeftModel
+
+    peft_model = PeftModel.from_pretrained(base_model, str(adapter_dir))
+    print("Merging LoRA adapter into base weights ...")
+    merged = peft_model.merge_and_unload()
+    merged.save_pretrained(output_dir, safe_serialization=True)
+    print(f"  Saved merged model ({dtype_str})")
+
+
+def _merge_from_shard(
     base_model: "AutoModelForCausalLM",
     state_dict: dict,
     lora_keys: list[str],
     args: argparse.Namespace,
     output_dir: Path,
 ) -> None:
+    """Fallback path: reconstruct PEFT model from CLI args and load the FSDP shard."""
     from peft import LoraConfig, TaskType, get_peft_model
 
     target_modules = args.lora_target_modules
-    # Accept comma-separated list as well as the bare "all-linear" string.
     if "," in target_modules:
         target_modules = [m.strip() for m in target_modules.split(",")]
 
@@ -154,14 +202,14 @@ def _merge_lora(
         lora_dropout=0.0,
         bias="none",
     )
-    print(f"LoRA config: rank={args.lora_rank}, alpha={args.lora_alpha}, "
+    print(f"LoRA config (from CLI args): rank={args.lora_rank}, alpha={args.lora_alpha}, "
           f"target_modules={target_modules}")
+    print("  WARNING: these must match training — mismatched alpha silently rescales the merge.")
 
     peft_model = get_peft_model(base_model, lora_config)
 
     # VERL saves FSDP state dict with HF-style keys (no base_model.model. prefix).
     # PeftModel.load_state_dict expects keys prefixed with "base_model.model.".
-    # Add the prefix so load_state_dict can match PeftModel's parameter paths.
     sample = lora_keys[0]
     if not sample.startswith("base_model.model."):
         print("  Normalising checkpoint keys: adding 'base_model.model.' prefix")
@@ -171,7 +219,6 @@ def _merge_lora(
     if result.unexpected_keys:
         print(f"  Unexpected keys after load ({len(result.unexpected_keys)}): "
               f"{result.unexpected_keys[:5]}")
-    # missing_keys are non-LoRA layers initialised from the base model — expected.
 
     print("Merging LoRA adapter into base weights ...")
     merged = peft_model.merge_and_unload()
