@@ -9,8 +9,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --time=02:00:00
-#SBATCH --output=out/fine_tuning/smoke_test/smoke_%A.log
-#SBATCH --error=out/fine_tuning/smoke_test/smoke_%A.err
+#SBATCH --output=out/fine_tuning/smoke_test_4b/smoke_%A.log
+#SBATCH --error=out/fine_tuning/smoke_test_4b/smoke_%A.err
 
 # Smoke-test the fine-tuning pipeline end-to-end:
 #   1. Pre-flight checks (no GPU): imports, reward, config, parquet schema
