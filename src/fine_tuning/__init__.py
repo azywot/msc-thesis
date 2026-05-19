@@ -5,7 +5,7 @@ lightweight submodules (reward, data.prepare) can be used without installing
 the full training stack.
 
 Training is launched via ``scripts/launch_verl.py`` which reads
-``experiments/configs/train/config.yaml`` directly and forwards Hydra overrides
+``experiments/configs/fine_tuning/config.yaml`` directly and forwards Hydra overrides
 to verl — there is no Python config dataclass.
 """
 

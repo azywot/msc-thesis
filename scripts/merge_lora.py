@@ -83,7 +83,7 @@ def main() -> None:
     parser.add_argument(
         "--lora-alpha", type=int, default=64,
         help="Fallback only — used if actor/lora_adapter/ is missing. "
-             "MUST match training (see lora.alpha in experiments/configs/train/config.yaml).",
+             "MUST match training (see lora.alpha in experiments/configs/fine_tuning/config.yaml).",
     )
     parser.add_argument(
         "--lora-target-modules", default="all-linear",

@@ -19,7 +19,7 @@ fine_tuning/
     └── prepare.py   # Download Search-R1 + DeepMath, write VERL parquet files
 ```
 
-Training hyperparameters live in `experiments/configs/train/config.yaml` and are
+Training hyperparameters live in `experiments/configs/fine_tuning/config.yaml` and are
 forwarded to verl by `scripts/launch_verl.py` (no Python config dataclass).
 
 ---
@@ -71,11 +71,11 @@ Or manually (three terminals, after `conda activate cosmas-train` in each):
 vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.15
 
 # Terminal 2 — VERL server (after sub-agent server is up)
-python scripts/launch_verl.py --config experiments/configs/train/config.yaml
+python scripts/launch_verl.py --config experiments/configs/fine_tuning/config.yaml
 
 # Terminal 3 — rollout workers (after VERL vLLM is up, ~120s)
 # SUBAGENT_ENDPOINT is read from config.yaml env block (default: http://localhost:9998/v1)
-python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml
+python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config.yaml
 ```
 
 ### 3. Merge LoRA and evaluate
@@ -86,12 +86,12 @@ When `USE_LORA=true`, merge the adapter before inference:
 conda activate cosmas-train
 # Find the run tag printed by launch_verl.py at startup (also in the SLURM log)
 RUN_TAG="<DD-MM-YYYY_HH-MM-JOBID>"
-CKPT_STEP="experiments/results/training/qwen3-8b-grpo-search-math/${RUN_TAG}/global_step_<N>"
+CKPT_STEP="experiments/results/fine_tuning/qwen3-8b-grpo-search-math/${RUN_TAG}/global_step_<N>"
 
 python $HOME/azywot/AgentFlow/util/model_merger.py \
     --base_model Qwen/Qwen3-8B \
     --lora_path "${CKPT_STEP}/actor/model_world_size_1_rank_0.pt" \
-    --output_dir "experiments/results/training/qwen3-8b-grpo-search-math/${RUN_TAG}/merged_model/"
+    --output_dir "experiments/results/fine_tuning/qwen3-8b-grpo-search-math/${RUN_TAG}/merged_model/"
 ```
 
 When `USE_LORA=false`, `model_world_size_1_rank_0.pt` is the full model — no merge needed, load directly with `from_pretrained`. (LoRA is the default; full-FT requires an explicit `USE_LORA: "false"` in `config.yaml`.)
@@ -100,7 +100,7 @@ Then update any experiment YAML:
 ```yaml
 models:
   orchestrator:
-    path_or_id: /path/to/experiments/results/training/<experiment>/<run-tag>/merged_model/
+    path_or_id: /path/to/experiments/results/fine_tuning/<experiment>/<run-tag>/merged_model/
     # all other fields (family, role, tensor_parallel_size, etc.) unchanged
 ```
 
@@ -135,7 +135,7 @@ the production run — so checkpoint selection does not have to wait for epoch b
 
 | Metric | Source | What it tells you |
 |---|---|---|
-| `val/reward_mean` | `val_combined.parquet` | Accuracy on the 50-row mixed val set (20 Search-R1 + 10 DeepMath + 20 AIME) — main checkpoint-selection signal. Per-domain breakdown available offline from the per-source `val_*.parquet` files or from rollout JSONs via the `data_source` field |
+| `val/reward` | `val_combined.parquet` | Accuracy on the 50-row mixed val set (20 Search-R1 + 10 DeepMath + 20 AIME) — main checkpoint-selection signal and the key used by `_rotate_checkpoints` to update `best_checkpoint/`. Per-domain breakdown available offline from the per-source `val_*.parquet` files or from rollout JSONs via the `data_source` field |
 | `actor/reward_mean` | training rollouts | Mean reward across both domains per step |
 | `actor/reward_std` | training rollouts | Diversity signal — near-zero means all rollouts tied (bad) |
 | `actor/kl_divergence` | GRPO | Should stay low; spike = policy drifting from reference |
@@ -145,7 +145,7 @@ the production run — so checkpoint selection does not have to wait for epoch b
 
 ### Rollout JSONs (disk, per episode)
 
-Every episode is persisted to `experiments/results/training/<experiment>/<run-tag>/rollout_data/train|val/idx_N/rollout_<uuid8>.json`. With `rollout_n=8`, each training question produces 8 files (one per GRPO sample).
+Every episode is persisted to `experiments/results/fine_tuning/<experiment>/<run-tag>/rollout_data/train|val/idx_N/rollout_<uuid8>.json`. With `rollout_n=8`, each training question produces 8 files (one per GRPO sample).
 
 Each record contains:
 ```json
@@ -195,7 +195,7 @@ the model away from long thinking traces — the opposite of what you want.
 **How to detect:** in the first epoch, watch `val/reward_mean` on the DeepMath
 val split in W&B. If it drops or stays near zero while training reward is rising,
 truncation is likely. Fix: increase `data.max_response_length` to `8192` in
-`experiments/configs/train/config.yaml` and relaunch.
+`experiments/configs/fine_tuning/config.yaml` and relaunch.
 
 ---
 
@@ -206,15 +206,15 @@ The run tag `<DD-MM-YYYY_HH-MM-JOBID>` is printed at startup and shared by check
 
 | Config | Checkpoint base |
 |---|---|
-| `config_smoke.yaml`, `config_smoke8b.yaml` (`USE_SCRATCH_CHECKPOINTS: false`) | `experiments/results/training/<experiment>/<run-tag>/` |
-| `config.yaml` (`USE_SCRATCH_CHECKPOINTS: true`) | `/scratch-shared/$USER/msc-thesis/training/<experiment>/<run-tag>/` |
+| `config_smoke.yaml`, `config_smoke8b.yaml` (`USE_SCRATCH_CHECKPOINTS: false`) | `experiments/results/fine_tuning/<experiment>/<run-tag>/` |
+| `config.yaml` (`USE_SCRATCH_CHECKPOINTS: true`) | `/scratch-shared/$USER/msc-thesis/fine_tuning/<experiment>/<run-tag>/` |
 
-Rollout JSONs always land in `experiments/results/training/<experiment>/<run-tag>/rollout_data/`.
+Rollout JSONs always land in `experiments/results/fine_tuning/<experiment>/<run-tag>/rollout_data/`.
 
 For the smoke run the checkpoint tree looks like:
 
 ```
-experiments/results/training/qwen3-4b-grpo-smoke/<run-tag>/
+experiments/results/fine_tuning/qwen3-4b-grpo-smoke/<run-tag>/
 │
 ├── latest_checkpointed_iteration.txt   # Contains the last saved global step number (e.g. "2").
 │                                       # VERL reads this to find the latest checkpoint on resume.
@@ -287,7 +287,7 @@ experiments/results/training/qwen3-4b-grpo-smoke/<run-tag>/
 Leave `trainer.resume_from_path` unset (the default) and VERL will auto-resume from the step recorded
 in `latest_checkpointed_iteration.txt`, which always points at the `latest_checkpoint/` symlink.
 To resume from the best checkpoint instead, set `trainer.resume_from_path` to the resolved path of
-`best_checkpoint/` (e.g. `/scratch-shared/$USER/msc-thesis/training/<experiment>/<run-tag>/best_checkpoint`).
+`best_checkpoint/` (e.g. `/scratch-shared/$USER/msc-thesis/fine_tuning/<experiment>/<run-tag>/best_checkpoint`).
 
 `SAVE_OPTIMIZER=true` (all three configs: config.yaml, config_smoke.yaml, config_smoke8b.yaml) stores
 Adam moments and LR-scheduler state alongside the model weights, so the resumed run is byte-for-byte
@@ -303,14 +303,14 @@ frozen base weights are not stored. Merge before inference:
 # Smoke (USE_SCRATCH_CHECKPOINTS=false):
 python $HOME/azywot/AgentFlow/util/model_merger.py \
     --base_model Qwen/Qwen3-4B \
-    --lora_path experiments/results/training/qwen3-4b-grpo-smoke/<run-tag>/global_step_<N>/actor/model_world_size_1_rank_0.pt \
-    --output_dir experiments/results/training/qwen3-4b-grpo-smoke/<run-tag>/merged_model/
+    --lora_path experiments/results/fine_tuning/qwen3-4b-grpo-smoke/<run-tag>/global_step_<N>/actor/model_world_size_1_rank_0.pt \
+    --output_dir experiments/results/fine_tuning/qwen3-4b-grpo-smoke/<run-tag>/merged_model/
 
 # Full training (USE_SCRATCH_CHECKPOINTS=true):
 python $HOME/azywot/AgentFlow/util/model_merger.py \
     --base_model Qwen/Qwen3-8B \
-    --lora_path /scratch-shared/$USER/msc-thesis/training/qwen3-8b-grpo-search-math/<run-tag>/global_step_<N>/actor/model_world_size_1_rank_0.pt \
-    --output_dir experiments/results/training/qwen3-8b-grpo-search-math/<run-tag>/merged_model/
+    --lora_path /scratch-shared/$USER/msc-thesis/fine_tuning/qwen3-8b-grpo-search-math/<run-tag>/global_step_<N>/actor/model_world_size_1_rank_0.pt \
+    --output_dir experiments/results/fine_tuning/qwen3-8b-grpo-search-math/<run-tag>/merged_model/
 ```
 
 When `USE_LORA=false`, `model_world_size_1_rank_0.pt` is the full model and can be loaded
@@ -323,7 +323,7 @@ directly with `from_pretrained`. (All three configs — `config.yaml`, `config_s
 
 | Variable | Where to set |
 |---|---|
-| `SERPER_API_KEY` or `TAVILY_API_KEY` | Snellius login script or `experiments/configs/train/config.yaml` env block |
+| `SERPER_API_KEY` or `TAVILY_API_KEY` | Snellius login script or `experiments/configs/fine_tuning/config.yaml` env block |
 | `SUBAGENT_ENDPOINT` | Set to `http://localhost:9998/v1` after starting the frozen sub-agent server |
 | `WANDB_API_KEY` | Snellius login script |
 | `HF_TOKEN` | Snellius login script (for gated datasets) |

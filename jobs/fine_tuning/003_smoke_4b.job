@@ -146,7 +146,7 @@ echo ""
 echo "Running pre-flight checks..."
 python scripts/test_ft_smoke.py \
     --data-dir data/training/smoke \
-    --config   experiments/configs/train/config_smoke.yaml
+    --config   experiments/configs/fine_tuning/config_smoke.yaml
 
 echo ""
 echo "Pre-flight checks passed. Starting training..."
@@ -187,7 +187,7 @@ export PYTHONUNBUFFERED=1
 VERL_LOG="out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_verl.log"
 echo ""
 echo "Starting VERL server (config_smoke.yaml)..."
-python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml \
+python scripts/launch_verl.py --config experiments/configs/fine_tuning/config_smoke.yaml \
     > "$VERL_LOG" 2>&1 &
 VERL_PID=$!
 start_crash_monitor "$VERL_LOG" "VERL"
@@ -223,7 +223,7 @@ fi
 # ── 4. Rollout workers ───────────────────────────────────────────────────────
 echo ""
 echo "Starting rollout workers..."
-python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke.yaml &
+python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config_smoke.yaml &
 ORCHESTRATOR_PID=$!
 # Wait for VERL (server) to finish training first.
 # The orchestrator is a client of VERL — waiting for it before VERL exits would deadlock.
@@ -234,14 +234,14 @@ wait $VERL_PID
 echo ""
 echo "Verifying checkpoint..."
 EXPERIMENT_NAME="qwen3-4b-grpo-smoke"
-USE_SCRATCH_LOWER="$(grep -E '^[[:space:]]*USE_SCRATCH_CHECKPOINTS:' "$PROJECT_DIR/experiments/configs/train/config_smoke.yaml" | awk -F'"' '{print tolower($2)}')"
-USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/experiments/configs/train/config_smoke.yaml" | awk -F'"' '{print tolower($2)}')"
+USE_SCRATCH_LOWER="$(grep -E '^[[:space:]]*USE_SCRATCH_CHECKPOINTS:' "$PROJECT_DIR/experiments/configs/fine_tuning/config_smoke.yaml" | awk -F'"' '{print tolower($2)}')"
+USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/experiments/configs/fine_tuning/config_smoke.yaml" | awk -F'"' '{print tolower($2)}')"
 if [[ "$USE_SCRATCH_LOWER" != "true" ]]; then
-    CKPT_BASE="${PROJECT_DIR}/experiments/results/training/${EXPERIMENT_NAME}"
+    CKPT_BASE="${PROJECT_DIR}/experiments/results/fine_tuning/${EXPERIMENT_NAME}"
 elif [[ "$USE_LORA_LOWER" == "true" ]]; then
     CKPT_BASE="/scratch-shared/${USER}/fine_tuning/lora_adapters/${EXPERIMENT_NAME}"
 else
-    CKPT_BASE="/scratch-shared/${USER}/msc-thesis/training/${EXPERIMENT_NAME}"
+    CKPT_BASE="/scratch-shared/${USER}/msc-thesis/fine_tuning/${EXPERIMENT_NAME}"
 fi
 echo "Checkpoint base: $CKPT_BASE"
 # VERL writes: <base>/<run-tag>/global_step_<N>/actor/model_world_size_*_rank_*.pt

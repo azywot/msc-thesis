@@ -1,4 +1,4 @@
-# experiments/configs/train/config_smoke.yaml
+# experiments/configs/fine_tuning/config_smoke.yaml
 # Minimal smoke-test config — verifies the full VERL pipeline end-to-end on real hardware
 # (8 training samples, 2 rollouts, 1 epoch).
 #
@@ -17,14 +17,14 @@
 #     are tiny so GPFS home quota is not a concern)
 #
 # Launch with:
-#   python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml
-#   python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke.yaml
+#   python scripts/launch_verl.py --config experiments/configs/fine_tuning/config_smoke.yaml
+#   python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config_smoke.yaml
 #
 # IMPORTANT: Launch frozen sub-agent on GPU 0 before VERL (see jobs/fine_tuning/003_smoke_4b.job):
 #   VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 \
 #       --gpu-memory-utilization 0.40 --max-model-len 8192
 #   export SUBAGENT_ENDPOINT=http://localhost:9998/v1
-#   CUDA_VISIBLE_DEVICES=1 python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml
+#   CUDA_VISIBLE_DEVICES=1 python scripts/launch_verl.py --config experiments/configs/fine_tuning/config_smoke.yaml
 
 env:
   BASE_MODEL: 'Qwen/Qwen3-4B'
@@ -75,22 +75,23 @@ python_args:
   actor_rollout_ref.actor.kl_loss_coef: 0.001
   actor_rollout_ref.actor.clip_ratio_low: 0.2
   actor_rollout_ref.actor.clip_ratio_high: 0.3
-  # N_GPUS=1 → optimizer is NOT sharded: 4B × 12 bytes (fp32 Adam) = 32 GB if kept on GPU.
-  # param_offload=True for smoke test: during the training rollout, vLLM AND the FSDP actor
-  # params would both be on GPU (42.3 GB + 8 GB = 50.3 GB) causing a CUDA illegal memory access
-  # in the vLLM kernels (reported asynchronously at the next sync, i.e. compute_log_prob).
-  # Offloading actor params to CPU removes the 8 GB duplication during the rollout phase.
-  # (config.yaml uses param_offload=false because N_GPUS=4 shards the model to ~2 GB/GPU.)
+  # N_GPUS=1 → base model is NOT sharded across GPUs (full 8 GB on-GPU during training).
+  # LoRA: optimizer state is only ~10s of MB, so optimizer_offload is conservative but harmless.
+  # param_offload=True: during rollout, vLLM takes 56.4 GB (util=0.6 set by launch_verl.py for
+  # LoRA) and the 8 GB FSDP actor shard would sit alongside it → 64.4 GB. With H100 94 GB
+  # that fits (29.6 GB headroom), but offloading actor params to CPU during rollout leaves an
+  # extra cushion and avoids any memory-fragmentation risk before compute_log_prob.
+  # (config.yaml uses param_offload=false because N_GPUS=4 shards the actor to ~2 GB/GPU.)
   actor_rollout_ref.actor.fsdp_config.param_offload: true
   actor_rollout_ref.actor.fsdp_config.optimizer_offload: true
   actor_rollout_ref.ref.fsdp_config.param_offload: true
   actor_rollout_ref.rollout.name: 'vllm'
-  # H100 94 GB: util=0.45 → 42.3 GB vLLM budget (8 GB Qwen3-4B model + 34.3 GB KV).
-  # Reduced from 0.55 to avoid GPU memory fragmentation before compute_log_prob.
-  # free_cache_engine=True destroys the vLLM KV-cache engine on each sleep() so the
-  # FSDP actor gets a clean, unfragmented memory state before compute_log_prob runs.
-  # Without this, the async rollout leaves fragmented CUDA memory that causes an
-  # "illegal memory access" when TensorDict's _to_consolidated does a non_blocking GPU copy.
+  # gpu_memory_utilization=0.45 is the base value; launch_verl.py overrides it to 0.6 for LoRA
+  # → 56.4 GB vLLM budget (8 GB Qwen3-4B model + 48.4 GB KV) on H100 94 GB.
+  # free_cache_engine=True (required for LoRA): destroys the vLLM KV-cache engine after each
+  # rollout so (a) LoRA adapter weights are cleanly swapped and (b) the FSDP actor gets a
+  # defragmented memory state before compute_log_prob. Without this, async rollout leaves
+  # fragmented CUDA memory that causes an "illegal memory access" at the next GPU copy.
   actor_rollout_ref.rollout.free_cache_engine: true
   actor_rollout_ref.rollout.gpu_memory_utilization: 0.45
   actor_rollout_ref.rollout.max_model_len: 6144
