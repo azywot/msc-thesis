@@ -5,11 +5,21 @@ import os
 from contextlib import contextmanager
 from typing import List, Optional, TYPE_CHECKING
 
-import agentops.sdk.core
 import agentops
-from agentops.sdk.core import TracingCore
-from agentops.sdk.processors import SpanProcessor
 from opentelemetry.sdk.trace import ReadableSpan
+
+try:
+    import agentops.sdk.core
+    from agentops.sdk.core import TracingCore
+    from agentops.sdk.processors import SpanProcessor
+    _AGENTOPS_SDK_AVAILABLE = True
+except ImportError:
+    # agentops < 0.3 does not have the sdk subpackage.
+    # AgentOpsTracer will raise at runtime if used, but the module can still be imported
+    # so other tracers (TripletExporter) remain accessible.
+    _AGENTOPS_SDK_AVAILABLE = False
+    TracingCore = None  # type: ignore[assignment,misc]
+    SpanProcessor = object  # type: ignore[assignment,misc]
 
 from fine_tuning.agentflow.instrumentation.agentops import AgentOpsServerManager
 from fine_tuning.agentflow.instrumentation import instrument_all, uninstrument_all
@@ -96,6 +106,11 @@ class AgentOpsTracer(BaseTracer):
         uninstrument_all()
 
     def init_worker(self, worker_id: int):
+        if not _AGENTOPS_SDK_AVAILABLE:
+            raise RuntimeError(
+                "AgentOpsTracer requires agentops>=0.3 (agentops.sdk subpackage). "
+                "Upgrade with: pip install 'agentops>=0.3'"
+            )
         super().init_worker(worker_id)
         logger.info(f"[Worker {worker_id}] Setting up tracer...")  # worker_id included in process name
 
