@@ -30,27 +30,31 @@ fine_tuning/
 conda activate cosmas-train
 python src/fine_tuning/data/prepare.py \
     --n-search 900 --n-math 900 \
-    --n-val-search 100 --n-val-math 100 \
+    --n-val-search 20 --n-val-math 10 --n-val-aime 20 \
+    --aime-jsonl-path data/AIME/train.jsonl \
     --n-test-search 100 --n-test-math 100 \
     --search-source both --hotpot-ratio 0.85 \
-    --deepmath-min-difficulty 5 \
+    --deepmath-min-difficulty 3 \
     --output-dir data/training --seed 42
 ```
 
 This writes:
 - `data/training/train/combined_train.parquet` — 1800 mixed questions (900 Search-R1 + 900 DeepMath, shuffled)
-- `data/training/val/val_search.parquet` — 100 held-out Search-R1 (NQ + HotpotQA)
-- `data/training/val/val_deepmath.parquet` — 100 held-out DeepMath (difficulty ≥ 5)
-- `data/training/val/val_combined.parquet` — both merged (offline analysis only)
+- `data/training/val/val_search.parquet` — 20 held-out Search-R1 (NQ + HotpotQA) — offline reference
+- `data/training/val/val_deepmath.parquet` — 10 held-out DeepMath (difficulty ≥ 3) — offline reference
+- `data/training/val/val_aime.parquet` — 20 AIME problems sampled from `data/AIME/train.jsonl` (val-only signal) — offline reference
+- `data/training/val/val_combined.parquet` — all three merged (50 rows) — **VERL reads this**
 - `data/training/test/test_search.parquet` — 100 held-out Search-R1 (same proportions as train)
-- `data/training/test/test_deepmath.parquet` — 100 held-out DeepMath (difficulty ≥ 5)
+- `data/training/test/test_deepmath.parquet` — 100 held-out DeepMath (difficulty ≥ 3)
 - `data/training/test/test_combined.parquet` — both merged (final reporting only, never used during training)
 
-Source proportions (85% HotpotQA / 15% NQ; 50/50 search/math) are identical across all three splits.
+Search-R1/DeepMath proportions (85% HotpotQA / 15% NQ; 50/50 search/math) are identical across train and test splits.
 Rows are carved in order — test first, then val, then train — so there is zero cross-split contamination.
 
-**Note:** AIME is an evaluation benchmark and must not be used for checkpoint selection (selection bias).
-The test split is held out entirely and used only once, for final metric reporting after checkpoint selection.
+**Note on validation:** VERL reads a single `val_combined.parquet` so W&B logs one `val/*` series. The per-domain
+parquets are written for offline inspection (you can also reconstruct per-domain breakdowns from rollout JSONs
+via the `data_source` field). The test split is held out entirely and used only once, for final metric reporting
+after checkpoint selection — AIME held-out evaluation must remain disjoint from the val sample.
 
 ### 2. Start training (Snellius)
 
@@ -106,9 +110,9 @@ models:
 |---|---|---|
 | Algorithm | Flow GRPO, n=8 rollouts | No value network; same as AgentFlow. Final reward propagated to all turns so planning and tool-call steps receive gradient signal |
 | Training data | Search-R1 (NQ+HotpotQA) + DeepMath-103K | Targets the two dominant failure modes: direct reasoning without action on retrieval tasks and math tasks |
-| Training data mix | 85% HotpotQA / 15% NQ within Search-R1; 50/50 search/math overall | HotpotQA requires multi-hop evidence aggregation → stronger retrieval-policy signal than single-hop NQ; DeepMath difficulty ≥ 5 → harder problems produce cleaner GRPO reward signal |
-| Validation | 100 held-out Search-R1 + 100 held-out DeepMath | AIME is an eval benchmark — must not be used for checkpoint selection; two separate val files so W&B logs `val_0/reward_mean` (search) and `val_1/reward_mean` (math) independently |
-| Test split | 100 held-out Search-R1 + 100 held-out DeepMath | Held out entirely; used only for final reporting after checkpoint selection via val; same source proportions as train and val |
+| Training data mix | 85% HotpotQA / 15% NQ within Search-R1; 50/50 search/math overall | HotpotQA requires multi-hop evidence aggregation → stronger retrieval-policy signal than single-hop NQ; DeepMath difficulty ≥ 3 → medium-hard problems produce cleaner GRPO reward signal |
+| Validation | 50 mixed rows: 20 Search-R1 + 10 DeepMath + 20 AIME (sampled from `data/AIME/train.jsonl`) | Single `val_combined.parquet` keeps W&B logging simple (one `val/*` series); AIME slice gives an early-warning signal for AIME-flavoured regressions during training. AIME val sample must remain disjoint from the held-out AIME eval set used for final reporting |
+| Test split | 100 held-out Search-R1 + 100 held-out DeepMath | Held out entirely; used only for final reporting after checkpoint selection via val; same source proportions as train |
 | Reward | Binary exact-match via `metrics.py` | Directly comparable to benchmark numbers |
 | Model weights | LoRA rank-64, all-linear | ~130 MB checkpoints vs ~16 GB full fine-tune |
 | Thinking mode | `THINKING_MODE: NO` (current config) | **Verify before training.** Config is set to `NO`. The recommended value is `ORCHESTRATOR_ONLY` — it matches the evaluation condition and exposes the "direct reasoning without action" failure to the gradient (model reasons in `<think>`, skips tool call, gets reward=0). Training with `NO` removes that signal. |
@@ -127,8 +131,7 @@ VERL logs automatically via `trainer.logger: ['console', 'wandb']` into the proj
 
 | Metric | Source | What it tells you |
 |---|---|---|
-| `val_0/reward_mean` | `val_search.parquet` | Accuracy on held-out Search-R1 (NQ + HotpotQA) — `web_search` improving |
-| `val_1/reward_mean` | `val_deepmath.parquet` | Accuracy on held-out DeepMath — `code_generator` improving |
+| `val/reward_mean` | `val_combined.parquet` | Accuracy on the 50-row mixed val set (20 Search-R1 + 10 DeepMath + 20 AIME) — main checkpoint-selection signal. Per-domain breakdown available offline from the per-source `val_*.parquet` files or from rollout JSONs via the `data_source` field |
 | `actor/reward_mean` | training rollouts | Mean reward across both domains per step |
 | `actor/reward_std` | training rollouts | Diversity signal — near-zero means all rollouts tied (bad) |
 | `actor/kl_divergence` | GRPO | Should stay low; spike = policy drifting from reference |

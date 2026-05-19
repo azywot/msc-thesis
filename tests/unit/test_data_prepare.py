@@ -9,6 +9,7 @@ from fine_tuning.data.prepare import (
     normalise_search_r1_row,
     normalise_deepmath_row,
     normalise_aime_row,
+    normalise_aime_local_row,
     validate_parquet_schema,
     REQUIRED_COLS,
 )
@@ -196,6 +197,107 @@ class TestNormaliseAime:
         row = normalise_aime_row({}, idx=0, year=2024)
         assert row["question"] == ""
         assert row["result"] == ""
+
+
+class TestNormaliseAimeLocal:
+    def test_basic_row_capitalised_fields(self):
+        raw = {"ID": 7, "Question": "Find n", "Answer": "42", "Year": 2024}
+        row = normalise_aime_local_row(raw, idx=2)
+        assert set(row.keys()) == REQUIRED_COLS
+        assert row["data_source"] == "aime_2024"
+        assert row["question"] == "Find n"
+        assert row["result"] == "42"
+        assert row["extra_info"]["idx"] == 2
+        assert row["extra_info"]["groundtruth"] == "42"
+        assert row["extra_info"]["year"] == 2024
+        assert row["extra_info"]["aime_id"] == 7
+
+    def test_year_2025(self):
+        raw = {"Question": "Q", "Answer": "1", "Year": 2025}
+        row = normalise_aime_local_row(raw, idx=0)
+        assert row["data_source"] == "aime_2025"
+        assert row["extra_info"]["year"] == 2025
+
+    def test_missing_year_defaults_to_zero(self):
+        raw = {"Question": "Q", "Answer": "1"}
+        row = normalise_aime_local_row(raw, idx=0)
+        assert row["data_source"] == "aime"
+        assert row["extra_info"]["year"] == 0
+
+    def test_answer_coerced_to_str(self):
+        raw = {"Question": "Q", "Answer": 7, "Year": 2024}
+        row = normalise_aime_local_row(raw, idx=0)
+        assert row["result"] == "7"
+
+    def test_lowercase_field_fallback(self):
+        # If a caller passes the HF-style problem/answer keys, still work.
+        raw = {"problem": "Q", "answer": "5", "Year": 2024}
+        row = normalise_aime_local_row(raw, idx=0)
+        assert row["question"] == "Q"
+        assert row["result"] == "5"
+
+    def test_missing_id_not_in_extra_info(self):
+        raw = {"Question": "Q", "Answer": "1", "Year": 2024}
+        row = normalise_aime_local_row(raw, idx=0)
+        assert "aime_id" not in row["extra_info"]
+
+
+class TestLoadAimeLocal:
+    def test_n_zero_returns_empty_without_reading(self, tmp_path):
+        from fine_tuning.data.prepare import _load_aime_local
+        rows = _load_aime_local(tmp_path / "missing.jsonl", n=0, seed=1)
+        assert rows == []
+
+    def test_missing_file_raises(self, tmp_path):
+        from fine_tuning.data.prepare import _load_aime_local
+        with pytest.raises(FileNotFoundError):
+            _load_aime_local(tmp_path / "missing.jsonl", n=5, seed=1)
+
+    def test_returns_correct_count_and_schema(self, tmp_path):
+        from unittest.mock import patch
+        from fine_tuning.data.prepare import _load_aime_local
+
+        fake = [
+            {"ID": i, "Question": f"Q{i}", "Answer": str(i), "Year": 2024}
+            for i in range(30)
+        ]
+        path = tmp_path / "aime.jsonl"
+        path.write_text("non-empty")  # _load_aime_local checks existence
+        with patch("fine_tuning.data.prepare._read_jsonl", return_value=fake):
+            rows = _load_aime_local(path, n=20, seed=42)
+
+        assert len(rows) == 20
+        assert all(set(r.keys()) == REQUIRED_COLS for r in rows)
+        assert all(r["data_source"] == "aime_2024" for r in rows)
+        assert [r["extra_info"]["idx"] for r in rows] == list(range(20))
+
+    def test_deterministic_for_same_seed(self, tmp_path):
+        from unittest.mock import patch
+        from fine_tuning.data.prepare import _load_aime_local
+
+        fake = [
+            {"ID": i, "Question": f"Q{i}", "Answer": str(i), "Year": 2024}
+            for i in range(30)
+        ]
+        path = tmp_path / "aime.jsonl"
+        path.write_text("non-empty")
+        with patch("fine_tuning.data.prepare._read_jsonl", return_value=fake):
+            a = _load_aime_local(path, n=5, seed=42)
+            b = _load_aime_local(path, n=5, seed=42)
+        assert [r["extra_info"]["aime_id"] for r in a] == [
+            r["extra_info"]["aime_id"] for r in b
+        ]
+
+    def test_raises_if_not_enough_rows(self, tmp_path):
+        from unittest.mock import patch
+        from fine_tuning.data.prepare import _load_aime_local
+
+        fake = [{"ID": 1, "Question": "Q", "Answer": "1", "Year": 2024}]
+        path = tmp_path / "aime.jsonl"
+        path.write_text("non-empty")
+        with patch("fine_tuning.data.prepare._read_jsonl", return_value=fake):
+            with pytest.raises(RuntimeError, match="only 1 rows"):
+                _load_aime_local(path, n=20, seed=1)
 
 
 class TestValidateSchema:

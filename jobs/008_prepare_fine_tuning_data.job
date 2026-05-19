@@ -8,13 +8,15 @@
 #SBATCH --output=out/fine_tuning/prepare_data_%A.log
 
 # Download Search-R1 + DeepMath-103K and write VERL parquet files.
-# Splits (proportions held constant across all three):
+# Splits (proportions held constant across train+test; val composition is custom):
 #   data/training/train/combined_train.parquet  (900 search + 900 math = 1800 train)
-#   data/training/val/val_*.parquet             (100 search + 100 math = 200 val)
+#   data/training/val/val_*.parquet             (20 search + 10 math + 20 AIME = 50 val)
 #   data/training/test/test_*.parquet           (100 search + 100 math = 200 test)
 #
 # Search-R1 composition: 85% HotpotQA (multi-hop) + 15% NQ.
-# DeepMath: difficulty >= 5 only (cleaner GRPO signal, avoids trivial problems).
+# DeepMath: difficulty >= 3 only (cleaner GRPO signal, avoids trivial problems).
+# AIME val sample is drawn from local data/AIME/train.jsonl (val-only signal —
+# never mixed into the training pool).
 # Row order: test carved first, then val, then train — no cross-split contamination.
 #
 # Also writes a small smoke-test subset to data/training/smoke/ for job 009.
@@ -68,17 +70,19 @@ mkdir -p out/fine_tuning
 
 # ── 1. Full training data ────────────────────────────────────────────────────
 echo ""
-echo "Preparing curated training data (1800 train / 200 val / 200 test)..."
+echo "Preparing curated training data (1800 train / 50 val / 200 test)..."
 python src/fine_tuning/data/prepare.py \
     --n-search       900 \
     --n-math         900 \
-    --n-val-search   100 \
-    --n-val-math     100 \
+    --n-val-search   20 \
+    --n-val-math     10 \
+    --n-val-aime     20 \
+    --aime-jsonl-path data/AIME/train.jsonl \
     --n-test-search  100 \
     --n-test-math    100 \
     --search-source  both \
     --hotpot-ratio   0.85 \
-    --deepmath-min-difficulty 5 \
+    --deepmath-min-difficulty 3 \
     --output-dir data/training \
     --seed 42
 
@@ -87,6 +91,7 @@ echo "Full data written:"
 ls -lh data/training/train/combined_train.parquet
 ls -lh data/training/val/val_search.parquet
 ls -lh data/training/val/val_deepmath.parquet
+ls -lh data/training/val/val_aime.parquet
 ls -lh data/training/val/val_combined.parquet
 ls -lh data/training/test/test_search.parquet
 ls -lh data/training/test/test_deepmath.parquet
@@ -100,6 +105,9 @@ python src/fine_tuning/data/prepare.py \
     --n-math      50 \
     --n-val-search 3 \
     --n-val-math   3 \
+    --n-val-aime   3 \
+    --aime-jsonl-path data/AIME/train.jsonl \
+    --deepmath-min-difficulty 3 \
     --output-dir data/training/smoke \
     --seed 42
 
@@ -108,6 +116,7 @@ echo "Smoke data written:"
 ls -lh data/training/smoke/train/combined_train.parquet
 ls -lh data/training/smoke/val/val_search.parquet
 ls -lh data/training/smoke/val/val_deepmath.parquet
+ls -lh data/training/smoke/val/val_aime.parquet
 ls -lh data/training/smoke/val/val_combined.parquet
 
 echo ""

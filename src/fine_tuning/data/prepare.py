@@ -16,22 +16,33 @@ mostly single-hop factual lookups that produce shallow retrieval trajectories
 and provide weaker RL signal for learning *when* and *how* to search.  A small
 NQ fraction (~15%) preserves diversity without diluting the multi-hop signal.
 
-DeepMath difficulty filtering (default: difficulty >= 5)
+DeepMath difficulty filtering (default: difficulty >= 3)
 --------------------------------------------------------
 Hard mathematical reasoning problems produce cleaner RL signals for GRPO:
 the model must reason deeply before converging on an answer, which encourages
 long-horizon thinking traces.  Easy problems are solved trivially in one step,
 contributing near-zero gradient signal.  The ``difficulty`` field in
-zwhe99/DeepMath-103K is an integer 1–9; the default threshold of 5 retains
-medium-hard and hard problems.
+zwhe99/DeepMath-103K is an integer 1–9; the default threshold of 3 retains
+medium-hard and hard problems while keeping the pool large enough to draw
+non-overlapping train/val/test splits without backfilling.
+
+AIME validation signal (val-only)
+---------------------------------
+20 AIME problems are sampled (deterministically, seed-controlled) from the
+local ``data/AIME/train.jsonl`` and included **in the validation split only**
+— never in the training mix.  Purpose: track an AIME-flavoured reward signal
+during training so we can spot AIME-specific regressions early.  The held-out
+AIME eval set used for final reporting must remain disjoint from this val
+sample (verified upstream, not here).
 
 Usage:
     python src/fine_tuning/data/prepare.py \\
         --n-search 900 --n-math 900 \\
-        --n-val-search 100 --n-val-math 100 \\
+        --n-val-search 20 --n-val-math 10 --n-val-aime 20 \\
         --n-test-search 100 --n-test-math 100 \\
         --search-source both --hotpot-ratio 0.85 \\
-        --deepmath-min-difficulty 5 \\
+        --deepmath-min-difficulty 3 \\
+        --aime-jsonl-path data/AIME/train.jsonl \\
         --output-dir data/training --seed 42
 
 Splits:
@@ -45,19 +56,19 @@ Splits:
 
     Files written:
         <output-dir>/train/combined_train.parquet  — train (search + math)
-        <output-dir>/val/val_search.parquet        — val Search-R1
-        <output-dir>/val/val_deepmath.parquet      — val DeepMath
-        <output-dir>/val/val_combined.parquet      — val merged (used by VERL)
+        <output-dir>/val/val_search.parquet        — val Search-R1 (offline ref)
+        <output-dir>/val/val_deepmath.parquet      — val DeepMath (offline ref)
+        <output-dir>/val/val_aime.parquet          — val AIME local jsonl (offline ref)
+        <output-dir>/val/val_combined.parquet      — val merged (all three) ← VERL reads this
         <output-dir>/test/test_search.parquet      — test Search-R1
         <output-dir>/test/test_deepmath.parquet    — test DeepMath
         <output-dir>/test/test_combined.parquet    — test merged (final eval)
 
-    VERL's data.val_files points at val_combined.parquet.  The test split is
-    held out entirely and used only for final reporting — never for checkpoint
-    selection.
-
-    AIME is an evaluation benchmark and must not be used here —
-    see docs/failure_modes_fine_tuning_alignment.md §6.3.
+    VERL's ``data.val_files`` points at ``val_combined.parquet`` only so W&B
+    logs a single val/* series — per-domain breakdowns can be reconstructed
+    offline from the per-domain parquets or from rollout JSONs (``data_source``
+    field).  The test split is held out entirely and used only for final
+    reporting — never for checkpoint selection.
 """
 
 from __future__ import annotations
@@ -210,6 +221,76 @@ def _download_aime_val(
         for i, raw in enumerate(pool[:n]):
             rows.append(normalise_aime_row(dict(raw), idx=i, year=year))
     return rows
+
+
+def normalise_aime_local_row(raw: Dict[str, Any], idx: int) -> Dict[str, Any]:
+    """Convert a local data/AIME/train.jsonl row to VERL schema.
+
+    The local jsonl uses capitalised field names: ``Question`` / ``Answer`` /
+    ``Year`` (plus ``ID``, ``Solution``, ``Url``, ``input_output``).  Year may
+    be missing on forks; default to 0 so downstream code can still group.
+    """
+    question = str(raw.get("Question") or raw.get("problem") or "")
+    answer_val = raw.get("Answer")
+    if answer_val is None:
+        answer_val = raw.get("answer", "")
+    answer = str(answer_val) if answer_val is not None else ""
+    year_val = raw.get("Year")
+    try:
+        year = int(year_val) if year_val is not None else 0
+    except (TypeError, ValueError):
+        year = 0
+    extra_info: Dict[str, Any] = {"idx": idx, "groundtruth": answer, "year": year}
+    aime_id = raw.get("ID")
+    if aime_id is not None:
+        extra_info["aime_id"] = aime_id
+    return {
+        "data_source": f"aime_{year}" if year else "aime",
+        "question": question,
+        "result": answer,
+        "extra_info": extra_info,
+    }
+
+
+def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
+    """Read a jsonl file into a list of dicts. Exists as a seam for testing."""
+    import json
+    rows: List[Dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+    return rows
+
+
+def _load_aime_local(
+    jsonl_path: Path,
+    n: int,
+    seed: int,
+) -> List[Dict[str, Any]]:
+    """Sample ``n`` rows from a local AIME jsonl (``data/AIME/train.jsonl``).
+
+    Random but deterministic given ``seed``.  Raises if fewer than n rows are
+    available or the file does not exist.
+    """
+    if n == 0:
+        return []
+    if not jsonl_path.exists():
+        raise FileNotFoundError(
+            f"AIME jsonl not found at {jsonl_path}. "
+            f"Pass --aime-jsonl-path or set --n-val-aime 0 to skip."
+        )
+    pool = list(_read_jsonl(jsonl_path))  # copy so we don't mutate caller's list
+    if len(pool) < n:
+        raise RuntimeError(
+            f"AIME local: only {len(pool)} rows in {jsonl_path}, need {n}. "
+            f"Lower --n-val-aime."
+        )
+    rng = random.Random(seed)
+    rng.shuffle(pool)
+    return [normalise_aime_local_row(raw, idx=i) for i, raw in enumerate(pool[:n])]
 
 
 # ---------------------------------------------------------------------------
@@ -495,28 +576,30 @@ def _write_val(rows: List[Dict[str, Any]], path: Path) -> Path:
 def build_val_files(
     search_val_rows: List[Dict[str, Any]],
     deepmath_val_rows: List[Dict[str, Any]],
+    aime_val_rows: List[Dict[str, Any]],
     output_dir: Path,
     seed: int,
 ) -> Dict[str, Path]:
-    """Write three val parquet files under <output_dir>/val/.
+    """Write the per-domain val parquet files under <output_dir>/val/.
 
-    Returns a dict with keys "search", "deepmath", "combined".
+    Returns a dict with keys "search", "deepmath", "aime", "combined".
 
-    val_search.parquet    — Search-R1 held-out (NQ + HotpotQA)
-    val_deepmath.parquet  — DeepMath held-out
-    val_combined.parquet  — both merged and shuffled; used by VERL's data.val_files
-                            so that val/reward_mean covers both domains.
-                            Per-domain breakdown available offline from the
-                            separate files and from rollout JSONs (data_source field).
+    val_search.parquet    — Search-R1 held-out (NQ + HotpotQA) — offline reference
+    val_deepmath.parquet  — DeepMath held-out — offline reference
+    val_aime.parquet      — AIME sample from local jsonl — offline reference
+    val_combined.parquet  — all three merged and shuffled — this is what VERL reads.
+                            W&B logs a single val/* series; per-domain
+                            breakdowns come from rollout JSONs offline.
     """
     val_dir = output_dir / "val"
 
     search_path = _write_val(search_val_rows, val_dir / "val_search.parquet")
     deepmath_path = _write_val(deepmath_val_rows, val_dir / "val_deepmath.parquet")
+    aime_path = _write_val(aime_val_rows, val_dir / "val_aime.parquet") if aime_val_rows else None
 
-    # Combined: re-index so idx is unique across both sets
+    # Combined: re-index so idx is unique across all three sets
     combined = []
-    for i, row in enumerate(search_val_rows + deepmath_val_rows):
+    for i, row in enumerate(search_val_rows + deepmath_val_rows + aime_val_rows):
         row = dict(row)
         row["extra_info"] = {**row["extra_info"], "idx": i}
         combined.append(row)
@@ -524,7 +607,10 @@ def build_val_files(
     rng.shuffle(combined)
     combined_path = _write_val(combined, val_dir / "val_combined.parquet")
 
-    return {"search": search_path, "deepmath": deepmath_path, "combined": combined_path}
+    paths = {"search": search_path, "deepmath": deepmath_path, "combined": combined_path}
+    if aime_path is not None:
+        paths["aime"] = aime_path
+    return paths
 
 
 def build_test_files(
@@ -586,12 +672,26 @@ def main():
         ),
     )
     parser.add_argument(
-        "--n-val-search", type=int, default=100,
-        help="Number of Search-R1 rows held out for validation (default: 100)",
+        "--n-val-search", type=int, default=20,
+        help="Number of Search-R1 rows held out for validation (default: 20)",
     )
     parser.add_argument(
-        "--n-val-math", type=int, default=100,
-        help="Number of DeepMath rows held out for validation (default: 100)",
+        "--n-val-math", type=int, default=10,
+        help="Number of DeepMath rows held out for validation (default: 10)",
+    )
+    parser.add_argument(
+        "--n-val-aime", type=int, default=20,
+        help=(
+            "Number of AIME rows sampled from --aime-jsonl-path for validation "
+            "(default: 20). AIME is val-only — never mixed into the train pool."
+        ),
+    )
+    parser.add_argument(
+        "--aime-jsonl-path", type=str, default="data/AIME/train.jsonl",
+        help=(
+            "Path to the local AIME jsonl used for the val sample "
+            "(default: data/AIME/train.jsonl). Set --n-val-aime 0 to skip."
+        ),
     )
     parser.add_argument(
         "--n-test-search", type=int, default=100,
@@ -618,11 +718,11 @@ def main():
         ),
     )
     parser.add_argument(
-        "--deepmath-min-difficulty", type=int, default=5,
+        "--deepmath-min-difficulty", type=int, default=3,
         help=(
-            "Minimum difficulty score for DeepMath rows (default: 5, range 1–9). "
-            "Hard problems produce cleaner GRPO signal and encourage long reasoning traces. "
-            "Lower this if you cannot collect enough rows after filtering."
+            "Minimum difficulty score for DeepMath rows (default: 3, range 1–9). "
+            "Medium-hard and hard problems produce cleaner GRPO signal and encourage "
+            "long reasoning traces. Lower this if you cannot collect enough rows after filtering."
         ),
     )
     parser.add_argument(
@@ -664,8 +764,24 @@ def main():
         min_difficulty=args.deepmath_min_difficulty,
     )
 
+    print(
+        f"Sampling AIME val ({args.n_val_aime} rows from {args.aime_jsonl_path}; "
+        f"val-only — never mixed into the training pool)..."
+    )
+    aime_val_rows = _load_aime_local(
+        Path(args.aime_jsonl_path),
+        n=args.n_val_aime,
+        seed=args.seed,
+    )
+
     build_combined_train(search_train_rows, math_train_rows, output_dir, args.seed)
-    build_val_files(search_val_rows, math_val_rows, output_dir, args.seed)
+    build_val_files(
+        search_val_rows,
+        math_val_rows,
+        aime_val_rows,
+        output_dir,
+        args.seed,
+    )
     build_test_files(search_test_rows, math_test_rows, output_dir, args.seed)
     print("Done.")
 

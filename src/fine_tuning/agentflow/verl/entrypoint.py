@@ -3,7 +3,6 @@ import os
 import hydra
 import ray
 
-from . import peft_vllm_weight_sync_patch
 from .dataset import AgentDataset
 from .trainer import AgentFlowTrainer
 from verl.trainer.ppo.reward import load_reward_manager
@@ -22,8 +21,6 @@ def run_ppo(config) -> None:
     if _v1 not in ("1", "true", "yes", "on"):
         os.environ["VLLM_USE_V1"] = "1"
 
-    peft_vllm_weight_sync_patch.apply_patch()
-
     if not ray.is_initialized():
         # this is for local ray cluster
         ray.init(
@@ -34,8 +31,6 @@ def run_ppo(config) -> None:
                     "VLLM_LOGGING_LEVEL": "WARN",
                     "VLLM_USE_V1": "1",
                 },
-                # GPU / CPU Ray workers import verl separately; patch VERL before FSDP+vLLM sync.
-                "worker_process_setup_hook": peft_vllm_weight_sync_patch.apply_patch,
             },
             num_cpus=config.ray_init.num_cpus,
             include_dashboard=False,
@@ -49,8 +44,6 @@ def run_ppo(config) -> None:
 @ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head
 class TaskRunner:
     def run(self, config):
-        peft_vllm_weight_sync_patch.apply_patch()
-
         # print initial config
         from pprint import pprint
 

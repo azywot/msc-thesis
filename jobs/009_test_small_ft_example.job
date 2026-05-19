@@ -83,8 +83,7 @@ mkdir -p out/fine_tuning/smoke_test
 
 for required_file in \
     data/training/smoke/train/combined_train.parquet \
-    data/training/smoke/val/val_search.parquet \
-    data/training/smoke/val/val_deepmath.parquet
+    data/training/smoke/val/val_combined.parquet
 do
     if [[ ! -f "$required_file" ]]; then
         echo "ERROR: Missing required smoke data file: $required_file"

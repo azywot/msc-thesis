@@ -84,8 +84,7 @@ mkdir -p out/fine_tuning/orchestrator_ft
 
 for required_file in \
     data/training/train/combined_train.parquet \
-    data/training/val/val_search.parquet \
-    data/training/val/val_deepmath.parquet
+    data/training/val/val_combined.parquet
 do
     if [[ ! -f "$required_file" ]]; then
         echo "ERROR: Missing required training data file: $required_file"

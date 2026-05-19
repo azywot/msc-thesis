@@ -60,8 +60,7 @@ python_args:
   algorithm.adv_estimator: 'grpo'
   data.train_files: '${BASE_DATA_DIR}/train/combined_train.parquet'
   data.val_files:
-    - '${BASE_DATA_DIR}/val/val_search.parquet'
-    - '${BASE_DATA_DIR}/val/val_deepmath.parquet'
+    - '${BASE_DATA_DIR}/val/val_combined.parquet'
   data.train_batch_size: 4
   data.train_max_samples: 8
   data.dataloader_num_workers: 0

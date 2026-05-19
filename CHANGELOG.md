@@ -9,6 +9,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased] — feat/gepa-integration
 
 ### Changed
+- **RL fine-tuning val split reshaped (200 → 50 rows, AIME signal added)** — switched from the original 200-row dev set (100 Search-R1 + 100 DeepMath) to a 50-row mixed val set: **20 Search-R1 + 10 DeepMath + 20 AIME** sampled deterministically (seed=42) from local `data/AIME/train.jsonl`. AIME is val-only — never mixed into the training pool — and gives an early-warning signal for AIME-flavoured regressions during GRPO. The held-out AIME eval set used for final reporting must remain disjoint from this sample (verified upstream, not here). VERL now reads a single `val_combined.parquet` (one `val/*` series in W&B) instead of multiple per-domain parquets; per-domain breakdowns are still written to disk for offline analysis. Files touched: `src/fine_tuning/data/prepare.py` (added `normalise_aime_local_row` / `_read_jsonl` / `_load_aime_local`; `--n-val-search` default 100→20, `--n-val-math` 100→10, new `--n-val-aime` (20) and `--aime-jsonl-path`; `build_val_files` now accepts AIME rows), `experiments/configs/train/config*.yaml` (collapsed `data.val_files` to `val_combined.parquet` only), `jobs/008_prepare_fine_tuning_data.job` / `jobs/009` / `jobs/010` / `jobs/012` (updated CLI flags and existence checks), `tests/unit/test_data_prepare.py` (added `TestNormaliseAimeLocal` + `TestLoadAimeLocal`).
+- **DeepMath difficulty floor 5 → 3** — relaxed the `--deepmath-min-difficulty` default from 5 to 3 (CLI default + docstring + job scripts). Medium-hard problems still produce a useful GRPO signal and the larger filtered pool buys more headroom for clean non-overlapping train/val/test splits.
+
+- **VERL training stack upgrade — v0.5.0 → v0.7.1** (`jobs/environment_train.yml`, `pyproject.toml [training]`) — bumped verl for first-class LoRA RLVR support (actor/ref share, LoRA-adapter-only refit, native vLLM V1 compatibility). Cascaded version changes forced by vllm 0.17.0's `requirements/cuda.txt`:
+  - `verl`: 0.5.0 → 0.7.1
+  - `vllm`: 0.9.2 → 0.17.0
+  - `torch`: 2.7.0 → 2.10.0
+  - `torchvision`: 0.22.0 → 0.25.0
+  - `torchaudio`: 2.7.0 → 2.10.0
+  - `transformers`: 4.53.3 → 4.56.0
+  - `python`: 3.11 → 3.12 (flash-attn 2.8.1 only ships torch-2.10 wheels for cp312/cp313; cp311 would force a multi-hour source build)
+  - **Removed**: `src/fine_tuning/agentflow/verl/peft_vllm_weight_sync_patch.py` (the monkey-patch that worked around verl 0.5's two FSDP→vLLM LoRA sync bugs — re-added `.base_layer.` keys, and missing `llm_engine` on vLLM V1). verl 0.6.0 deprecated `ShardingManager` entirely, so the patched class no longer exists; the workaround targets dead code
+  - **Removed**: `from . import peft_vllm_weight_sync_patch` and the three `apply_patch()` call sites (main process, Ray `worker_process_setup_hook`, and `TaskRunner.run`) in `src/fine_tuning/agentflow/verl/entrypoint.py`
+  - `flash-attn==2.8.1` (installed separately after env creation) may need a newer wheel for torch 2.10 — verify on first smoke run before deciding
+  - Documented in `docs/fine_tuning_v2/verl_upgrade_0.7.1.md`
+  - **Not yet validated on Snellius** — needs `jobs/009_test_small_ft_example.job` smoke run to confirm rollout, FSDP→vLLM weight sync, and reward path. If the new rollout-server architecture surfaces a regression analogous to the old V1 issue, the patch file is recoverable from git history at this commit's parent
 - **GEPA reflective records iteration 2** (`src/gepa_integration/adapter.py`) — record-shape and sample-selection refinements layered on top of the Iteration 1 enriched feedback (see spec addendum 2026-05-18)
   - Unified `_THINKING_SNIPPET_LEN = 800` (was 1500); the same cap now applies to every thinking field across both record types so per-call budget is predictable. Truncation helper `_truncate_thinking` deduplicates the three call sites (first-turn, last-turn, plan thinking)
   - `system_prompt` records gain `thinking_at_last_turn` — the `<think>` block from the last assistant turn, capped at 800 chars; omitted when there is only one distinct assistant turn so the field never duplicates `thinking_before_first_tool`. The first-turn extraction also moves off `output_messages[0]` to "first assistant message" to handle interleaved tool messages correctly
