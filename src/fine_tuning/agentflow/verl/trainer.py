@@ -480,8 +480,7 @@ class AgentFlowTrainer(RayPPOTrainer):
                 if run_val:
                     with _timer("validate", timing_raw):
                         val_metrics: dict = self._validate()
-                        if is_last_step:
-                            last_val_metrics = val_metrics
+                        last_val_metrics = val_metrics
                     metrics.update(val_metrics)
 
                 if not save_every_epoch:
@@ -491,6 +490,16 @@ class AgentFlowTrainer(RayPPOTrainer):
                     if run_save:
                         with _timer("save_checkpoint", timing_raw):
                             self._save_checkpoint()
+                        # Retain only latest + best (on val/reward). Only re-evaluate "best"
+                        # when a fresh val ran this step — otherwise just refresh "latest".
+                        if run_val:
+                            val_reward = val_metrics.get("val/reward", float("-inf"))
+                            is_best = val_reward > best_val_reward
+                            if is_best:
+                                best_val_reward = val_reward
+                            self._rotate_checkpoints(is_best=is_best, epoch=epoch, val_reward=val_reward)
+                        else:
+                            self._rotate_checkpoints(is_best=False, epoch=epoch, val_reward=float("-inf"))
 
                 # step metrics
                 metrics.update(

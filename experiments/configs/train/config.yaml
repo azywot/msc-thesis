@@ -48,7 +48,10 @@ env:
   VERBOSITY: 'INFO'
   USE_LORA: "true"
   USE_SCRATCH_CHECKPOINTS: "true"
-  SAVE_OPTIMIZER: "false"
+  # Save optimizer + extras (scheduler/RNG) so training can be resumed from latest_checkpoint.
+  # For LoRA, optimizer state is over LoRA-only params (~10s of MB), so disk cost is negligible
+  # — rotation keeps only latest + best, so we never accumulate more than 2 checkpoints.
+  SAVE_OPTIMIZER: "true"
 
 python_args:
   agentflow.port: 9999
@@ -100,11 +103,15 @@ python_args:
   trainer.logger: ['console', 'wandb']
   trainer.project_name: '${PROJECT_NAME}'
   trainer.experiment_name: '${EXPERIMENT_NAME}'
-  trainer.save_freq: -1
-  trainer.test_freq: -1
+  # Step-based val + save: ~56 steps/epoch (1800/32) → ~6 evals + 6 saves per epoch, 28 total.
+  # save_freq == test_freq so every saved checkpoint has a fresh val/reward for best-tracking;
+  # _rotate_checkpoints keeps only latest_checkpoint/ and best_checkpoint/ symlinks (older dirs
+  # are deleted asynchronously in trainer.py).
+  trainer.save_freq: 10
+  trainer.test_freq: 10
   # true: post-epoch val/checkpoint; false: every test_freq/save_freq steps.
-  trainer.val_every_epoch: true
-  trainer.save_every_epoch: true
+  trainer.val_every_epoch: false
+  trainer.save_every_epoch: false
   trainer.total_epochs: 5
   trainer.val_before_train: true
   trainer.critic_warmup: 0

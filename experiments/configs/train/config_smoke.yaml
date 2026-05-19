@@ -42,6 +42,8 @@ env:
   VERBOSITY: 'INFO'
   USE_LORA: "false"
   USE_SCRATCH_CHECKPOINTS: "false"
+  # Full-FT 4B optimizer state is ~32 GB per step — keep disabled to stay under GPFS home quota.
+  # Production config.yaml uses SAVE_OPTIMIZER=true (LoRA optimizer is tiny + on scratch).
   SAVE_OPTIMIZER: "false"
 
 python_args:
