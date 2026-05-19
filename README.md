@@ -667,7 +667,9 @@ python scripts/run_gepa.py --mode diff      --config experiments/configs/gepa/ga
 | `best_candidate.json` | Optimised `{"system_prompt": ..., "planning_suffix": ...}` |
 | `seed_candidate.json` | Seed candidate used at optimisation start (for diff) |
 | `gepa_results.json` | Held-out test evaluation in `raw_results.json` format |
-| `candidate_tree.html` | GEPA candidate evolution tree visualisation |
+| `gepa_state.bin` | Full GEPA optimisation state (pickled); written after each step. Auto-resumes if `run_dir` already contains it. |
+| `generated_best_outputs_valset/` | Per-task best rollout outputs on the validation set (written when `track_best_outputs=true`) |
+| `optimize.stderr` / `evaluate.stderr` | Per-step stderr logs (vLLM tqdm/INFO); replayed to stderr on failure |
 
 ### Design
 
