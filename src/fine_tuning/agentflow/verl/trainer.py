@@ -208,20 +208,7 @@ class AgentFlowTrainer(RayPPOTrainer):
                 self.async_rollout_manager.sleep()
 
             if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
-                with _timer("gen_max", timing_raw):
-                    gen_baseline_batch = deepcopy(gen_batch)
-                    gen_baseline_batch.meta_info["do_sample"] = False
-                    gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
-
-                    batch = batch.union(gen_baseline_output)
-                    reward_baseline_tensor = self.reward_fn(batch)
-                    reward_baseline_tensor = reward_baseline_tensor.sum(dim=-1)
-
-                    batch.pop(batch_keys=list(gen_baseline_output.batch.keys()))
-
-                    batch.batch["reward_baselines"] = reward_baseline_tensor
-
-                    del gen_baseline_batch, gen_baseline_output
+                raise NotImplementedError("REMAX is not supported; use GRPO (adv_estimator=grpo) instead.")
 
             # uid is used for algorithm like GRPO, should be aligned to data id
             batch.non_tensor_batch["uid"] = batch.non_tensor_batch["data_id_list"]
@@ -440,8 +427,7 @@ class AgentFlowTrainer(RayPPOTrainer):
         self.agent_mode_daemon.start()
 
         # perform validation before training
-        # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
+        if self.config.trainer.get("val_before_train", True):
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
             print(f"Initial validation metrics: {val_metrics}")
@@ -473,7 +459,7 @@ class AgentFlowTrainer(RayPPOTrainer):
                 # val_every_epoch / save_every_epoch always delegate to the post-epoch block below,
                 # which fires even on the final epoch (inner loop exits via break, not return).
                 run_val = False
-                if self.val_reward_fn is not None and not val_every_epoch:
+                if not val_every_epoch:
                     run_val = self.config.trainer.test_freq > 0 and (
                         is_last_step or self.global_steps % self.config.trainer.test_freq == 0
                     )
@@ -521,7 +507,7 @@ class AgentFlowTrainer(RayPPOTrainer):
 
             # Post-epoch: validate first so the score drives checkpoint selection,
             # then save and rotate latest/best symlinks.
-            if val_every_epoch and self.val_reward_fn is not None:
+            if val_every_epoch:
                 timing_raw_epoch = {}
                 with _timer("validate", timing_raw_epoch):
                     val_metrics = self._validate()
