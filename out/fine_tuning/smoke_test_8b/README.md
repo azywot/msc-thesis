@@ -22,7 +22,7 @@ experiments/results/training/qwen3-8b-grpo-smoke/
 
 ### W&B run
 
-Project `cosmas-rl-finetuning-smoke`, run `qwen3-8b-grpo-smoke` (`z7sl2ei7`).
+Project `msc-thesis-fine-tuning`, run `qwen3-8b-grpo-smoke`.
 
 ## What to check
 

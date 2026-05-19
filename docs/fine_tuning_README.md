@@ -164,7 +164,7 @@ sbatch jobs/009_test_small_ft_example.job
 
 The job runs in two phases:
 1. **Pre-flight checks** (CPU, no VERL): imports, reward routing for all data sources, config parsing, parquet schema validation, `OrchestratorRollout` instantiation.
-2. **Mini training run**: 1 epoch on `config_smoke.yaml` (**2 Slurm GPUs**; orchestrator **Qwen3-4B** in smoke vs **Qwen3-8B** in `config.yaml` so FSDP + vLLM fit one training GPU). See config header. W&B project `cosmas-rl-finetuning-smoke`.
+2. **Mini training run**: 1 epoch on `config_smoke.yaml` (**2 Slurm GPUs**; orchestrator **Qwen3-4B** in smoke vs **Qwen3-8B** in `config.yaml` so FSDP + vLLM fit one training GPU). See config header. W&B project `msc-thesis-fine-tuning`.
 
 Run the pre-flight checks locally at any time (no GPU, no VERL needed):
 ```bash
@@ -290,7 +290,7 @@ msc-thesis/
 | `N_GPUS` | `3` | **Training** GPU count seen by Ray/VERL after `CUDA_VISIBLE_DEVICES=1,2,3`; must match `#SBATCH --gpus=4` minus the sub-agent GPU |
 | `ROLLOUT_TP_SIZE` | `1` | Rollout vLLM tensor parallelism (TP=2 requires `N_GPUS` divisible by 2) |
 | `EXPERIMENT_NAME` | `qwen3-8b-grpo-search-math` | Checkpoint dir name and W&B run name |
-| `PROJECT_NAME` | `cosmas-rl-finetuning` | W&B project |
+| `PROJECT_NAME` | `msc-thesis-fine-tuning` | W&B project |
 | `BASE_DATA_DIR` | `data/training` | Root of train/val parquet files |
 | `ENABLE_TOOLS` | `["web_search", "code_generator"]` | Tools available to orchestrator during rollout |
 | `TOOL_STEPS` | `5` | Max tool calls per rollout episode |
@@ -331,7 +331,7 @@ msc-thesis/
 | `ppo_micro_batch_size_per_gpu` | 4 | 1 |
 | `BASE_DATA_DIR` | `data/training` | `data/training/smoke` |
 | `EXPERIMENT_NAME` | `qwen3-8b-grpo-search-math` | `qwen3-4b-grpo-smoke` |
-| `PROJECT_NAME` | `cosmas-rl-finetuning` | `cosmas-rl-finetuning-smoke` |
+| `PROJECT_NAME` | `msc-thesis-fine-tuning` | `msc-thesis-fine-tuning` |
 
 ---
 
