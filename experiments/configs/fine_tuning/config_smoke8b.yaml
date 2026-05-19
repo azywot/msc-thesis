@@ -105,6 +105,9 @@ python_args:
   # Cap context to prompt + response lengths to avoid vLLM allocating full 32768-token KV.
   actor_rollout_ref.rollout.max_model_len: 6144
   actor_rollout_ref.rollout.max_num_batched_tokens: 6144
+  # Cap concurrent vLLM seqs per the verl LoRA reference recipe
+  # (docs/fine_tuning_v2/verl_documentation_lora.md). Matches the 4B smoke + prod configs.
+  actor_rollout_ref.rollout.max_num_seqs: 64
   actor_rollout_ref.rollout.tensor_model_parallel_size: '${ROLLOUT_TP_SIZE}'
   trainer.n_gpus_per_node: '${N_GPUS}'
   trainer.logger: ['console', 'wandb']

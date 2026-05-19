@@ -92,17 +92,26 @@ echo "Python: $(which python) — $(python --version)"
 echo ""
 echo "Installing flash-attn (robust pinned setup)..."
 
-# IMPORTANT:
-# 2.8.x cu12 torch2.6 wheels are known to have ABI instability in some clusters
-# (undefined symbol c10::Error / std::__cxx11 issues).
-# See: common flash-attn 2.8.x + torch2.6 incompatibility reports.
+# Match torch 2.7.1 (vllm 0.10.1.1's hard-pin). PyTorch 2.5+ Linux x86_64 pip
+# wheels ship with the new CXX11 ABI (manylinux_2_28), so the matching
+# flash-attn wheel must be cxx11abiTRUE. The previous 2.7.4.post1 cu12torch2.6
+# cxx11abiFALSE wheel breaks with `undefined symbol _ZN3c105ErrorC2ENS_14SourceLocationESs`
+# (old-ABI std::string) once torch is bumped to 2.7.
+FA_WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.7cxx11abiTRUE-cp311-cp311-linux_x86_64.whl"
 
-# Safer known-stable wheel for torch 2.6 + CUDA 12 stack:
-FA_WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"
-
-pip install --no-build-isolation "$FA_WHEEL_URL"
+pip install --force-reinstall --no-deps --no-build-isolation "$FA_WHEEL_URL"
 
 echo "flash-attn installed successfully"
+
+# ── flashinfer ─────────────────────────────────────────────────────────────────
+# Optional vLLM accelerator for top-k/top-p sampling. Without it vLLM falls back
+# to a slower PyTorch-native sampler (logs: "FlashInfer is not available").
+# 0.2.6.post1 is the version vllm 0.10.1.1 was tested against.
+echo ""
+echo "Installing flashinfer-python..."
+pip install --no-deps flashinfer-python==0.2.6.post1
+
+echo "flashinfer installed successfully"
 
 # ── msc-thesis package (editable) ──────────────────────────────────────────────
 echo ""
@@ -128,6 +137,7 @@ python -c "import transformers; print(f'Transformers: {transformers.__version__}
 python -c "import vllm; print(f'vLLM:         {vllm.__version__}')"
 python -c "import verl; print(f'verl:         {verl.__version__}')" || echo "Warning: verl import failed"
 python -c "import flash_attn; print(f'flash-attn:   {flash_attn.__version__}')" || echo "Warning: flash-attn import failed"
+python -c "import flashinfer; print(f'flashinfer:   {flashinfer.__version__}')" || echo "Warning: flashinfer import failed"
 python -c "import agent_engine; print('agent_engine: import OK')"
 python -c "import fine_tuning; print('fine_tuning:  import OK')" || echo "Warning: fine_tuning import failed"
 

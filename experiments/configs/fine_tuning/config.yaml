@@ -98,6 +98,12 @@ python_args:
   # KV memory than needed and risking "no available memory for cache blocks" at init time.
   actor_rollout_ref.rollout.max_model_len: 22528
   actor_rollout_ref.rollout.max_num_batched_tokens: 22528
+  # Cap concurrent vLLM seqs per the verl LoRA reference recipe
+  # (docs/fine_tuning_v2/verl_documentation_lora.md). vLLM's 1024 default is
+  # unreachable because max_num_batched_tokens=22528 ÷ max_prompt_length=18432
+  # only fits ~1 prefill at a time; decode parallelism caps at ~5 at max_response_length.
+  # 64 is well above what the scheduler ever uses and matches the documented LoRA setup.
+  actor_rollout_ref.rollout.max_num_seqs: 64
   actor_rollout_ref.rollout.tensor_model_parallel_size: '${ROLLOUT_TP_SIZE}'
   trainer.n_gpus_per_node: '${N_GPUS}'
   trainer.logger: ['console', 'wandb']

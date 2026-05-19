@@ -97,6 +97,11 @@ python_args:
   actor_rollout_ref.rollout.max_model_len: 6144
   # max_num_batched_tokens must be >= max_model_len so a single full-length sequence can be processed.
   actor_rollout_ref.rollout.max_num_batched_tokens: 6144
+  # Cap concurrent vLLM seqs to match the verl LoRA reference recipe
+  # (docs/fine_tuning_v2/verl_documentation_lora.md). vLLM defaults to 1024,
+  # which is unreachable here (rollout.n=2 × batch=4 = 8 fanout) and just gives
+  # the scheduler slack. 64 is plenty and matches the documented LoRA setup.
+  actor_rollout_ref.rollout.max_num_seqs: 64
   actor_rollout_ref.rollout.tensor_model_parallel_size: '${ROLLOUT_TP_SIZE}'
   trainer.n_gpus_per_node: '${N_GPUS}'
   trainer.logger: ['console', 'wandb']

@@ -20,12 +20,22 @@ dependencies:
       # =========================================================
       # INFERENCE BACKEND (MATCHED TO verl EXPECTATIONS)
       # =========================================================
-      - vllm>=0.8.3,<0.9.0
+      # verl 0.7.1 needs AsyncLLM APIs not present in vllm < 0.10:
+      #   reset_mm_cache (since 0.9), wait_for_requests_to_drain (since 0.10),
+      #   output_processor, engine_core. 0.10.1.1 has all of them and a
+      #   run_headless export (so the entrypoint shim is a no-op).
+      - vllm==0.10.1.1
+      # vllm 0.10.1.1 hard-pins these; listing for reproducibility / clarity.
+      - torch==2.7.1
+      - xformers==0.0.31
+      - ray[cgraph]>=2.48.0,<3.0
+      # flash-attn is installed separately (prebuilt CUDA wheel).
+      #   pip install --force-reinstall --no-deps flash-attn==2.8.3
 
       # =========================================================
       # HF STACK (SAFE ZONE)
       # =========================================================
-      - transformers>=4.40,<5.0
+      - transformers>=4.55.0,<5.0  # vllm 0.10.1.1 requires >=4.55.0
       - datasets>=2.20
       - accelerate>=0.30
 
