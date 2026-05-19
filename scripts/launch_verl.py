@@ -145,6 +145,15 @@ def main():
     python_args["trainer.default_local_dir"] = ckpt_dir
     print(f"  Checkpoint dir: {ckpt_dir}")
 
+    # Inject --served-model-name via engine_kwargs.vllm so vLLM registers the HF id used by the
+    # orchestrator. Skipped if the user has already pinned a value in the config.
+    base_model = os.environ.get("BASE_MODEL", "").strip()
+    if base_model:
+        smn_key = "actor_rollout_ref.rollout.engine_kwargs.vllm.served_model_name"
+        if smn_key not in python_args and f"+{smn_key}" not in python_args:
+            python_args[f"+{smn_key}"] = base_model
+            print(f"  served_model_name={base_model} (forwarded to vLLM HTTP server)")
+
     # Keys not in VERL's structured Hydra schema must be prefixed with + (append, not override).
     # ray_init.num_cpus: custom key passed to our AgentFlowTrainer's ray.init() call.
     # trainer.val_every_epoch / save_every_epoch: AgentFlowTrainer-only extensions.

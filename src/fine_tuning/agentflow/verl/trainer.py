@@ -112,7 +112,10 @@ class AgentFlowTrainer(RayPPOTrainer):
             raise ValueError("Validation data is empty. Check your validation dataset.")
 
         test_batch = DataProto.from_single_dict(test_data)
-        self.async_rollout_manager.wake_up()
+        # vLLM is awake here: fit() calls checkpoint_manager.update_weights() before
+        # the first validation, and every _train_step ends with update_weights so the
+        # engine is ready for the next gen / val. HYBRID rollout mode rejects an
+        # explicit wake_up() — see vllm_async_server.py:619-621.
         self.agent_mode_daemon.set_up_data_and_server(
             test_batch.non_tensor_batch,
             self.async_rollout_manager.server_addresses,
@@ -152,7 +155,8 @@ class AgentFlowTrainer(RayPPOTrainer):
         test_metrics = self.agent_mode_daemon.get_test_metrics()
 
         self.agent_mode_daemon.clear_data_and_server()
-        self.async_rollout_manager.sleep()
+        # Leave the engine awake — next _train_step will gen with it awake and then
+        # sleep_replicas itself. This matches native verl's _validate (ray_trainer.py:546+).
         return test_metrics
 
     def _train_step(self, batch_dict: dict) -> dict:
@@ -184,8 +188,9 @@ class AgentFlowTrainer(RayPPOTrainer):
             gen_batch = batch
 
             # generate a batch
+            # vLLM is awake at entry: fit() ran update_weights(0) at startup, and
+            # every prior _train_step ends with update_weights, which wakes it.
             with _timer("gen", timing_raw):
-                self.async_rollout_manager.wake_up()
                 self.agent_mode_daemon.set_up_data_and_server(
                     gen_batch.non_tensor_batch, self.async_rollout_manager.server_addresses
                 )
@@ -205,7 +210,9 @@ class AgentFlowTrainer(RayPPOTrainer):
                 )
                 metrics.update(agent_metrics)
                 self.agent_mode_daemon.clear_data_and_server()
-                self.async_rollout_manager.sleep()
+                # Sleep vLLM so the actor/ref FSDP forward+backward gets the GPU.
+                # update_weights() at the end of this step will wake it back up.
+                self.checkpoint_manager.sleep_replicas()
 
             if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                 raise NotImplementedError("REMAX is not supported; use GRPO (adv_estimator=grpo) instead.")
@@ -335,6 +342,12 @@ class AgentFlowTrainer(RayPPOTrainer):
                 actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                 metrics.update(actor_output_metrics)
 
+            # Sync freshly-trained FSDP actor weights → vLLM and wake the rollout
+            # engine so the next _train_step / _validate finds it ready. This is the
+            # canonical HYBRID-mode wake path (verl ray_trainer.py:1532-1533).
+            with _timer("update_weights", timing_raw):
+                self.checkpoint_manager.update_weights(self.global_steps)
+
         # compute training metrics
         metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
         metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
@@ -425,6 +438,13 @@ class AgentFlowTrainer(RayPPOTrainer):
             max_empty_retries=self.config.agentflow.get("max_empty_retries", 2),
         )
         self.agent_mode_daemon.start()
+
+        # Sync loaded checkpoint weights → vLLM and wake the rollout engine.
+        # init_workers() ends with sleep_replicas() (verl ray_trainer.py:852); without
+        # this call the first _validate / _train_step would find the engine asleep,
+        # and HYBRID mode rejects an explicit replica.wake_up() (vllm_async_server.py:619).
+        # Matches native verl fit() at ray_trainer.py:1252.
+        self.checkpoint_manager.update_weights(self.global_steps)
 
         # perform validation before training
         if self.config.trainer.get("val_before_train", True):
