@@ -1,9 +1,9 @@
-# experiments/configs/train/config.yaml
+# experiments/configs/fine_tuning/config.yaml
 # Training configuration for CoSMAS orchestrator RL fine-tuning.
 #
 # Launch with:
-#   python scripts/launch_verl.py --config experiments/configs/train/config.yaml      (VERL server)
-#   python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml  (rollout workers)
+#   python scripts/launch_verl.py --config experiments/configs/fine_tuning/config.yaml      (VERL server)
+#   python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config.yaml  (rollout workers)
 #
 # IMPORTANT: Before starting rollout workers, launch a separate frozen sub-agent
 # vLLM server and export SUBAGENT_ENDPOINT, or set it in this file (VLLM_USE_V1=0 avoids V1 KV OOM):

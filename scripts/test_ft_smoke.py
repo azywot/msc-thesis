@@ -165,7 +165,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data/training/smoke",
                         help="Directory containing smoke train/val parquet files")
-    parser.add_argument("--config", default="experiments/configs/train/config_smoke.yaml",
+    parser.add_argument("--config", default="experiments/configs/fine_tuning/config_smoke.yaml",
                         help="Smoke training config YAML to validate")
     args = parser.parse_args()
 

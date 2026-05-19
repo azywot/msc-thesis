@@ -5,7 +5,7 @@ so ``agentops``, ``flask``, and ``setproctitle`` must be installed even though t
 script only uses ``NullTracer`` at runtime.
 
 Usage:
-    python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml
+    python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config.yaml
 
 This script:
   1. Reads the training config and sets environment variables
@@ -67,7 +67,7 @@ def _get_git_hash() -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="Start OrchestratorRollout workers.")
-    parser.add_argument("--config", type=str, default="experiments/configs/train/config.yaml")
+    parser.add_argument("--config", type=str, default="experiments/configs/fine_tuning/config.yaml")
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
@@ -95,7 +95,7 @@ def main():
     experiment_name = str(env.get("EXPERIMENT_NAME", "cosmas-train"))
     job_id = os.environ.get("SLURM_JOB_ID", "local")
     run_subdir = os.environ.get("VERL_RUN_TAG") or f"{datetime.now().strftime('%d-%m-%Y_%H-%M')}-{job_id}"
-    output_dir = Path("experiments/results/training") / experiment_name / run_subdir
+    output_dir = Path("experiments/results/fine_tuning") / experiment_name / run_subdir
 
     # ── 3. Validate sub-agent endpoint ──────────────────────────────────────
     if not subagent_endpoint:

@@ -1,4 +1,4 @@
-# experiments/configs/train/config_smoke8b.yaml
+# experiments/configs/fine_tuning/config_smoke8b.yaml
 # Smoke-test config for Qwen3-8B with LoRA — verifies the FULL production code path end-to-end.
 # (8 training samples, 2 rollouts, 1 epoch)
 #
@@ -30,14 +30,14 @@
 #   - train_max_samples / rollout.n / epochs: same (minimal smoke)
 #
 # Launch with:
-#   python scripts/launch_verl.py --config experiments/configs/train/config_smoke8b.yaml
-#   python scripts/train_orchestrator.py --config experiments/configs/train/config_smoke8b.yaml
+#   python scripts/launch_verl.py --config experiments/configs/fine_tuning/config_smoke8b.yaml
+#   python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config_smoke8b.yaml
 #
 # IMPORTANT: Launch frozen sub-agent on GPU 0 before VERL (see jobs/fine_tuning/004_smoke_8b.job):
 #   VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B --port 9998 \
 #       --tensor-parallel-size 1 --gpu-memory-utilization 0.08 --max-model-len 8192
 #   export SUBAGENT_ENDPOINT=http://localhost:9998/v1
-#   CUDA_VISIBLE_DEVICES=1,2 python scripts/launch_verl.py --config experiments/configs/train/config_smoke8b.yaml
+#   CUDA_VISIBLE_DEVICES=1,2 python scripts/launch_verl.py --config experiments/configs/fine_tuning/config_smoke8b.yaml
 
 env:
   BASE_MODEL: 'Qwen/Qwen3-8B'

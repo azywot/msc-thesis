@@ -185,7 +185,7 @@ export PYTHONUNBUFFERED=1
 VERL_LOG="out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_verl.log"
 echo ""
 echo "Starting VERL server..."
-python scripts/launch_verl.py --config experiments/configs/train/config.yaml \
+python scripts/launch_verl.py --config experiments/configs/fine_tuning/config.yaml \
     > "$VERL_LOG" 2>&1 &
 VERL_PID=$!
 start_crash_monitor "$VERL_LOG" "VERL"
@@ -220,7 +220,7 @@ fi
 # ── 3. Rollout workers ───────────────────────────────────────────────────────
 echo ""
 echo "Starting rollout workers..."
-python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml &
+python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config.yaml &
 ORCHESTRATOR_PID=$!
 # Wait for VERL (server) to finish training first.
 # The orchestrator is a client of VERL — waiting for it before VERL exits would deadlock.
@@ -234,13 +234,13 @@ EXPERIMENT_NAME="qwen3-8b-grpo-search-math"
 #   LoRA:    /scratch-shared/$USER/fine_tuning/lora_adapters/<exp>/<run-tag>/global_step_<N>/actor/
 #              ├── model_world_size_*_rank_*.pt  (FSDP full-state-dict shard, ~17 GB for Qwen3-8B bf16)
 #              └── lora_adapter/{adapter_model.safetensors, adapter_config.json}  (~250 MB)
-#   Full FT: /scratch-shared/$USER/msc-thesis/training/<exp>/<run-tag>/global_step_<N>/actor/
+#   Full FT: /scratch-shared/$USER/msc-thesis/fine_tuning/<exp>/<run-tag>/global_step_<N>/actor/
 #              └── model_world_size_*_rank_*.pt  (~47 GB)
-USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/experiments/configs/train/config.yaml" | awk -F'"' '{print tolower($2)}')"
+USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/experiments/configs/fine_tuning/config.yaml" | awk -F'"' '{print tolower($2)}')"
 if [[ "$USE_LORA_LOWER" == "true" ]]; then
     CKPT_DIR="/scratch-shared/${USER}/fine_tuning/lora_adapters/${EXPERIMENT_NAME}"
 else
-    CKPT_DIR="/scratch-shared/${USER}/msc-thesis/training/${EXPERIMENT_NAME}"
+    CKPT_DIR="/scratch-shared/${USER}/msc-thesis/fine_tuning/${EXPERIMENT_NAME}"
 fi
 echo "Checkpoints written under: $CKPT_DIR"
 find "$CKPT_DIR" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null \

@@ -49,7 +49,7 @@ Training time
           │  ├── WebSearchTool  → sub-agent LLM @ :9998      │
           │  ├── CodeGeneratorTool → sub-agent LLM @ :9998   │
           │  │   (sub-agents use a SEPARATE frozen server:   │
-          │  │    Qwen3-1.7B, never updated during training)  │
+          │  │    Qwen3-1.7B, never updated during training) │
           │  └── OrchestratorReward  ← binary via metrics.py │
           └──────────────────────────────────────────────────┘
 
@@ -171,7 +171,7 @@ Run the pre-flight checks locally at any time (no GPU, no VERL needed):
 conda activate cosmas-train
 python scripts/test_ft_smoke.py \
     --data-dir data/training/smoke \
-    --config   experiments/configs/train/config_smoke.yaml
+    --config   experiments/configs/fine_tuning/config_smoke.yaml
 ```
 
 ### Step 3 — Full training run
@@ -186,18 +186,18 @@ Or manually (three terminals, after activating `cosmas-train` in all):
 vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.15
 
 # Terminal 2 — VERL server (start after sub-agent server is up)
-python scripts/launch_verl.py --config experiments/configs/train/config.yaml
+python scripts/launch_verl.py --config experiments/configs/fine_tuning/config.yaml
 
 # Terminal 3 — rollout workers (start after VERL vLLM is up, ~120s)
 # SUBAGENT_ENDPOINT is read from the config.yaml env block (default: http://localhost:9998/v1)
 # Override here only if using a non-default port:
 # export SUBAGENT_ENDPOINT=http://localhost:<port>/v1
-python scripts/train_orchestrator.py --config experiments/configs/train/config.yaml
+python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config.yaml
 ```
 
 Training runs for 5 epochs. Checkpoints every epoch:
 ```
-experiments/results/training/qwen3-8b-grpo-search-math/
+experiments/results/fine_tuning/qwen3-8b-grpo-search-math/
 ├── config.yaml                        copy of config at run start
 ├── checkpoint_step_1/actor/lora_weights.pt
 ├── checkpoint_step_2/actor/lora_weights.pt
@@ -217,15 +217,15 @@ The SLURM launcher (`jobs/010_ft_orchestrator.job`) then prunes checkpoint paylo
 conda activate cosmas-train
 python $HOME/azywot/AgentFlow/util/model_merger.py \
     --base_model Qwen/Qwen3-8B \
-    --lora_path experiments/results/training/qwen3-8b-grpo-search-math/checkpoint_best/actor/lora_weights.pt \
-    --output_dir experiments/results/training/qwen3-8b-grpo-search-math/merged_model/
+    --lora_path experiments/results/fine_tuning/qwen3-8b-grpo-search-math/checkpoint_best/actor/lora_weights.pt \
+    --output_dir experiments/results/fine_tuning/qwen3-8b-grpo-search-math/merged_model/
 ```
 
 Then update an existing experiment YAML to use the fine-tuned model:
 ```yaml
 models:
   orchestrator:
-    path_or_id: /path/to/experiments/results/training/qwen3-8b-grpo-search-math/merged_model/
+    path_or_id: /path/to/experiments/results/fine_tuning/qwen3-8b-grpo-search-math/merged_model/
     # all other fields unchanged
 ```
 
@@ -247,11 +247,11 @@ msc-thesis/
 │       └── prepare.py           download + split + write parquet files
 │
 ├── scripts/
-│   ├── launch_verl.py           starts VERL server (reads experiments/configs/train/config.yaml)
+│   ├── launch_verl.py           starts VERL server (reads experiments/configs/fine_tuning/config.yaml)
 │   ├── train_orchestrator.py    starts rollout workers (connects to VERL + frozen sub-agent server)
 │   └── test_ft_smoke.py         pre-flight checks — runs without GPU or VERL
 │
-├── experiments/configs/train/
+├── experiments/configs/fine_tuning/
 │   ├── config.yaml              full training config (5 epochs, 4×A100)
 │   └── config_smoke.yaml        smoke-test config (2 GPUs, 1 epoch)
 │
@@ -280,7 +280,7 @@ msc-thesis/
 
 ## 5. Config Reference
 
-### `experiments/configs/train/config.yaml` — `env` block
+### `experiments/configs/fine_tuning/config.yaml` — `env` block
 
 | Key | Value | Notes |
 |---|---|---|
@@ -299,7 +299,7 @@ msc-thesis/
 | `TEST_TEMPERATURE` | `0.0` | Greedy decoding for validation rollouts |
 | `N_WORKERS` | `1` | Number of parallel rollout worker processes |
 
-### `experiments/configs/train/config.yaml` — `python_args` block (key parameters)
+### `experiments/configs/fine_tuning/config.yaml` — `python_args` block (key parameters)
 
 | Key | Value | Notes |
 |---|---|---|
@@ -315,7 +315,7 @@ msc-thesis/
 | `trainer.test_freq` | `1` | Run validation every epoch |
 | `trainer.val_before_train` | `true` | Runs validation before epoch 1 (baseline measurement) |
 
-### Smoke test differences (`experiments/configs/train/config_smoke.yaml`)
+### Smoke test differences (`experiments/configs/fine_tuning/config_smoke.yaml`)
 
 | Parameter | Full config | Smoke config |
 |---|---|---|
@@ -360,7 +360,7 @@ VERL logs to the project set in `PROJECT_NAME`. `data.val_files` is a two-elemen
 | `actor/kl_divergence` spike | Policy diverging | Increase `kl_loss_coef` from `0.001` to `0.01` |
 | W&B run missing | `WANDB_API_KEY` not set | Set in login script before `sbatch` |
 
-Per-domain breakdown is also available offline from the rollout JSON files saved during training. Each record at `experiments/results/training/<run>/rollout_data/val/idx_*/rollout_*.json` contains `data_source`, `reward`, `output_messages`, and (for DeepMath) `extra_info.difficulty`. See `src/fine_tuning/README.md §Logging and Analysis` for the full list of plots computable from these files (reward-by-domain, pass@k, tool call counts, thinking trace lengths, reward-by-difficulty).
+Per-domain breakdown is also available offline from the rollout JSON files saved during training. Each record at `experiments/results/fine_tuning/<run>/rollout_data/val/idx_*/rollout_*.json` contains `data_source`, `reward`, `output_messages`, and (for DeepMath) `extra_info.difficulty`. See `src/fine_tuning/README.md §Logging and Analysis` for the full list of plots computable from these files (reward-by-domain, pass@k, tool call counts, thinking trace lengths, reward-by-difficulty).
 
 ---
 
@@ -401,8 +401,8 @@ conda activate cosmas-train
 RUN="qwen3-8b-grpo-search-math"
 python $HOME/azywot/AgentFlow/util/model_merger.py \
     --base_model Qwen/Qwen3-8B \
-    --lora_path  experiments/results/training/${RUN}/checkpoint_best/actor/lora_weights.pt \
-    --output_dir experiments/results/training/${RUN}/merged_model/
+    --lora_path  experiments/results/fine_tuning/${RUN}/checkpoint_best/actor/lora_weights.pt \
+    --output_dir experiments/results/fine_tuning/${RUN}/merged_model/
 ```
 
 The merged model is a standard HuggingFace checkpoint. Use it in any existing experiment config:
@@ -413,7 +413,7 @@ models:
   orchestrator:
     name: "Qwen3-8B-FT"
     family: "qwen3"
-    path_or_id: "/path/to/experiments/results/training/qwen3-8b-grpo-search-math/merged_model/"
+    path_or_id: "/path/to/experiments/results/fine_tuning/qwen3-8b-grpo-search-math/merged_model/"
     role: "orchestrator"
 # everything else unchanged
 ```

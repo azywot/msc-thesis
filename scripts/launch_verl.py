@@ -4,7 +4,7 @@ Mirrors AgentFlow's train/train_agent.py: reads the training config, sets
 environment variables, and spawns `python -m fine_tuning.agentflow.verl key=value ...`.
 
 Usage:
-    python scripts/launch_verl.py --config experiments/configs/train/config.yaml
+    python scripts/launch_verl.py --config experiments/configs/fine_tuning/config.yaml
 """
 
 import argparse
@@ -18,7 +18,7 @@ import yaml
 
 def main():
     parser = argparse.ArgumentParser(description="Launch VERL training server.")
-    parser.add_argument("--config", type=str, default="experiments/configs/train/config.yaml")
+    parser.add_argument("--config", type=str, default="experiments/configs/fine_tuning/config.yaml")
     args, unknown = parser.parse_known_args()
 
     # VERL workers forbid ROCR_VISIBLE_DEVICES alongside CUDA_VISIBLE_DEVICES (see
@@ -120,9 +120,11 @@ def main():
     print(f"  Save optimizer state: {save_optimizer} (save_contents={'model,optimizer,extra' if save_optimizer else 'model only'})")
 
     # Build unique checkpoint dir: <base>/<experiment>/<DD-MM-YYYY_HH-MM>-<SLURM_JOB_ID>
-    # USE_SCRATCH_CHECKPOINTS=true → /scratch-shared/$USER/msc-thesis/training (large quota).
-    # Both smoke and full training use scratch: Qwen3-4B fp32 AdamW optimizer state is ~48 GB,
-    # which exceeds GPFS home quotas. Set USE_SCRATCH_CHECKPOINTS=false only for tiny LoRA runs.
+    # USE_SCRATCH_CHECKPOINTS=true  → /scratch-shared/$USER/.../fine_tuning  (large quota, production).
+    # USE_SCRATCH_CHECKPOINTS=false → experiments/results/fine_tuning        (GPFS home, smoke tests).
+    # All three configs use LoRA; optimizer state is tiny (~10s MB). Smoke tests use false because
+    # checkpoint volume is small enough for GPFS home. Production uses true for the rollout JSONs
+    # (8 rollouts × 1800 questions × 5 epochs = 72 000 JSON files) which can fill GPFS home fast.
     experiment_name = os.environ.get("EXPERIMENT_NAME", "unknown")
     job_id = os.environ.get("SLURM_JOB_ID", "local")
     run_tag = os.environ.get("VERL_RUN_TAG") or f"{datetime.now().strftime('%d-%m-%Y_%H-%M')}-{job_id}"
@@ -136,9 +138,9 @@ def main():
         if use_lora:
             ckpt_base = f"/scratch-shared/{_user}/fine_tuning/lora_adapters"
         else:
-            ckpt_base = f"/scratch-shared/{_user}/msc-thesis/training"
+            ckpt_base = f"/scratch-shared/{_user}/msc-thesis/fine_tuning"
     else:
-        ckpt_base = "experiments/results/training"
+        ckpt_base = "experiments/results/fine_tuning"
     ckpt_dir = f"{ckpt_base}/{experiment_name}/{run_tag}"
     python_args["trainer.default_local_dir"] = ckpt_dir
     print(f"  Checkpoint dir: {ckpt_dir}")
