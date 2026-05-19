@@ -1,9 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=SmokeFT
+#SBATCH --job-name=Smoke4B
 #SBATCH --partition=gpu_h100
 # Two GPUs: GPU 0 = frozen sub-agent; GPU 1 = VERL (N_GPUS=1). Smoke uses **Qwen3-4B** (not 8B)
-# to keep the test fast (smaller model = fewer tokens/step). Full training (job 010, N_GPUS=4)
-# uses Qwen3-8B on H100. H100 NVL cards here have ~94 GB.
+# to keep the test fast. Full training (005_train.job, N_GPUS=4) uses Qwen3-8B on H100.
+# USE_LORA=true (LoRA rank-64, same code path as production). Checkpoints → experiments/results/.
+# H100 NVL cards here have ~94 GB.
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -16,8 +17,8 @@
 #   2. One epoch of GRPO training on 16 questions with config_smoke.yaml
 #   3. Verify checkpoint was written and W&B run exists
 #
-# Run AFTER job 008 (creates cosmas-train + data — must already be prepared).
-# If this passes, the full training job (010) is safe to submit.
+# Run AFTER 001_prepare_data.job (creates cosmas-train + data — must already be prepared).
+# If this passes, 004_smoke_8b.job (8B, same code path) or 005_train.job (full run) is safe to submit.
 #
 # Optional: put SKIP_PIP_SETUP=1 in .env to skip editable installs + reconcile when
 # cosmas-train is already warm (PATH + import check still run).
@@ -57,10 +58,10 @@ if [[ -z "${WANDB_API_KEY:-}" ]]; then
     echo "Warning: WANDB_API_KEY is not set; W&B logging may fail."
 fi
 
-# cosmas-train is created once by jobs/008_prepare_fine_tuning_data.job.
+# cosmas-train is created once by jobs/fine_tuning/000_create_environment.job (or 001_prepare_data.job).
 if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
     echo "ERROR: conda env 'cosmas-train' not found."
-    echo "Run jobs/008_prepare_fine_tuning_data.job first (creates env + training data)."
+    echo "Run jobs/fine_tuning/001_prepare_data.job first (creates env + training data)."
     exit 1
 fi
 
@@ -87,7 +88,7 @@ for required_file in \
 do
     if [[ ! -f "$required_file" ]]; then
         echo "ERROR: Missing required smoke data file: $required_file"
-        echo "Run jobs/008_prepare_fine_tuning_data.job first."
+        echo "Run jobs/fine_tuning/001_prepare_data.job first."
         exit 1
     fi
 done
@@ -232,8 +233,18 @@ wait $VERL_PID
 # ── 5. Verify checkpoint was written ─────────────────────────────────────────
 echo ""
 echo "Verifying checkpoint..."
-CKPT_BASE="experiments/results/training/qwen3-4b-grpo-smoke"
-# VERL writes: <base>/<experiment>/<run-tag>/global_step_<N>/actor/model_world_size_*_rank_*.pt
+EXPERIMENT_NAME="qwen3-4b-grpo-smoke"
+USE_SCRATCH_LOWER="$(grep -E '^[[:space:]]*USE_SCRATCH_CHECKPOINTS:' "$PROJECT_DIR/experiments/configs/train/config_smoke.yaml" | awk -F'"' '{print tolower($2)}')"
+USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/experiments/configs/train/config_smoke.yaml" | awk -F'"' '{print tolower($2)}')"
+if [[ "$USE_SCRATCH_LOWER" != "true" ]]; then
+    CKPT_BASE="${PROJECT_DIR}/experiments/results/training/${EXPERIMENT_NAME}"
+elif [[ "$USE_LORA_LOWER" == "true" ]]; then
+    CKPT_BASE="/scratch-shared/${USER}/fine_tuning/lora_adapters/${EXPERIMENT_NAME}"
+else
+    CKPT_BASE="/scratch-shared/${USER}/msc-thesis/training/${EXPERIMENT_NAME}"
+fi
+echo "Checkpoint base: $CKPT_BASE"
+# VERL writes: <base>/<run-tag>/global_step_<N>/actor/model_world_size_*_rank_*.pt
 if find "$CKPT_BASE" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" 2>/dev/null | grep -q .; then
     echo "PASS — checkpoint found:"
     find "$CKPT_BASE" -maxdepth 3 -name "model_world_size_*_rank_*.pt" -path "*/actor/*" | head -5
@@ -244,4 +255,4 @@ fi
 
 echo ""
 echo "Smoke test complete at: $(date)"
-echo "Submit 010_ft_orchestrator.job for the full training run."
+echo "Submit jobs/fine_tuning/005_train.job for the full training run."

@@ -61,7 +61,7 @@ after checkpoint selection — AIME held-out evaluation must remain disjoint fro
 ### 2. Start training (Snellius)
 
 ```bash
-sbatch jobs/010_ft_orchestrator.job
+sbatch jobs/fine_tuning/005_train.job
 ```
 
 Or manually (three terminals, after `conda activate cosmas-train` in each):
@@ -126,10 +126,12 @@ models:
 
 Training progress is captured in two places.
 
-### W&B (live, per epoch)
+### W&B (live, step-based)
 
 VERL logs automatically via `trainer.logger: ['console', 'wandb']` into the project set by `PROJECT_NAME`.
-`val_before_train: true` runs a validation pass before epoch 1, giving a baseline measurement at epoch 0.
+`val_before_train: true` runs a validation pass at step 0, giving a baseline before any gradient update.
+`trainer.test_freq: 10` (production) / `1` (smoke) runs validation every N steps — ~6 evals per epoch for
+the production run — so checkpoint selection does not have to wait for epoch boundaries.
 
 | Metric | Source | What it tells you |
 |---|---|---|
@@ -204,7 +206,7 @@ The run tag `<DD-MM-YYYY_HH-MM-JOBID>` is printed at startup and shared by check
 
 | Config | Checkpoint base |
 |---|---|
-| `config_smoke.yaml` (`USE_SCRATCH_CHECKPOINTS: false`) | `experiments/results/training/<experiment>/<run-tag>/` |
+| `config_smoke.yaml`, `config_smoke8b.yaml` (`USE_SCRATCH_CHECKPOINTS: false`) | `experiments/results/training/<experiment>/<run-tag>/` |
 | `config.yaml` (`USE_SCRATCH_CHECKPOINTS: true`) | `/scratch-shared/$USER/msc-thesis/training/<experiment>/<run-tag>/` |
 
 Rollout JSONs always land in `experiments/results/training/<experiment>/<run-tag>/rollout_data/`.
@@ -214,10 +216,20 @@ For the smoke run the checkpoint tree looks like:
 ```
 experiments/results/training/qwen3-4b-grpo-smoke/<run-tag>/
 │
-├── latest_checkpointed_iteration.txt   # Contains the last saved global step number (e.g. "1").
-│                                       # Used by VERL to find the latest checkpoint when resuming.
+├── latest_checkpointed_iteration.txt   # Contains the last saved global step number (e.g. "2").
+│                                       # VERL reads this to find the latest checkpoint on resume.
 │
-└── global_step_<N>/                    # One directory per saved step (save_freq: 1 → every step).
+├── latest_checkpoint -> global_step_2/ # Symlink → most recently saved step dir.
+│                                       # Updated by _rotate_checkpoints after every save.
+│
+├── best_checkpoint -> global_step_1/   # Symlink → step with highest val/reward_mean so far.
+│                                       # Updated only when a fresh val beats the running best.
+│                                       # If save_freq > test_freq it may lag one save behind.
+│
+└── global_step_<N>/                    # Concrete checkpoint dir for step N.
+    │                                   # Rotation keeps at most 2 dirs: the one pointed to by
+    │                                   # latest_checkpoint and the one pointed to by best_checkpoint.
+    │                                   # All other dirs are deleted asynchronously after rotation.
     │
     ├── data.pt                         # Dataloader state dict (StatefulDataLoader).
     │                                   # Stores the RNG state + sampler position so training can
@@ -232,10 +244,13 @@ experiments/results/training/qwen3-4b-grpo-smoke/<run-tag>/
         │                                   # world_size and rank are part of the filename so multi-GPU
         │                                   # runs shard across multiple files (e.g. _rank_0, _rank_1…).
         │
-        ├── optim_world_size_1_rank_0.pt    # Adam optimizer state for rank 0 (~30 GB — first & second
-        │                                   # moment estimates, one tensor pair per parameter).
-        │                                   # Required to resume training with identical behaviour.
-        │                                   # Can be deleted if you only need inference.
+        ├── optim_world_size_1_rank_0.pt    # Adam optimizer state for rank 0.
+        │                                   # LoRA runs (~10s of MB, LoRA params only): saved by
+        │                                   # all three configs (config.yaml, config_smoke.yaml,
+        │                                   # config_smoke8b.yaml) — SAVE_OPTIMIZER=true.
+        │                                   # Full-FT runs (~30 GB): set SAVE_OPTIMIZER=false if
+        │                                   # disk is tight; optimizer restarts from scratch on resume.
+        │                                   # Can be deleted from any checkpoint kept for inference only.
         │
         ├── extra_state_world_size_1_rank_0.pt  # LR scheduler state + RNG state (~15 KB).
         │                                       # Needed for exact learning-rate resume.
@@ -269,8 +284,15 @@ experiments/results/training/qwen3-4b-grpo-smoke/<run-tag>/
 
 ### Resuming training
 
-Set `trainer.resume_from_path` in the config to `global_step_<N>`, or leave it unset and VERL will
-auto-resume from the step in `latest_checkpointed_iteration.txt`.
+Leave `trainer.resume_from_path` unset (the default) and VERL will auto-resume from the step recorded
+in `latest_checkpointed_iteration.txt`, which always points at the `latest_checkpoint/` symlink.
+To resume from the best checkpoint instead, set `trainer.resume_from_path` to the resolved path of
+`best_checkpoint/` (e.g. `/scratch-shared/$USER/msc-thesis/training/<experiment>/<run-tag>/best_checkpoint`).
+
+`SAVE_OPTIMIZER=true` (all three configs: config.yaml, config_smoke.yaml, config_smoke8b.yaml) stores
+Adam moments and LR-scheduler state alongside the model weights, so the resumed run is byte-for-byte
+identical to an uninterrupted run. For hypothetical full-FT runs, set `SAVE_OPTIMIZER=false` if disk
+is tight — the optimizer will restart from scratch, which affects the first few gradient steps.
 
 ### Converting to a usable model (LoRA runs)
 
@@ -292,8 +314,8 @@ python $HOME/azywot/AgentFlow/util/model_merger.py \
 ```
 
 When `USE_LORA=false`, `model_world_size_1_rank_0.pt` is the full model and can be loaded
-directly with `from_pretrained`. (LoRA is the default in `config.yaml`; the smoke configs
-still pin `USE_LORA: "false"` to exercise the full-FT path.)
+directly with `from_pretrained`. (All three configs — `config.yaml`, `config_smoke.yaml`,
+`config_smoke8b.yaml` — use `USE_LORA: "true"` by default.)
 
 ---
 

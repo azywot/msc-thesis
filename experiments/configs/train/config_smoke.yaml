@@ -13,6 +13,8 @@
 #   - data dir: data/training/smoke
 #   - train_max_samples: 8, rollout.n: 2, total_epochs: 1
 #   - smaller batch / micro-batch sizes
+#   - USE_SCRATCH_CHECKPOINTS: false (checkpoints stay in experiments/results/ — LoRA adapters
+#     are tiny so GPFS home quota is not a concern)
 #
 # Launch with:
 #   python scripts/launch_verl.py --config experiments/configs/train/config_smoke.yaml
@@ -40,11 +42,11 @@ env:
   TEST_TEMPERATURE: 0.0
   N_WORKERS: 1
   VERBOSITY: 'INFO'
-  USE_LORA: "false"
-  USE_SCRATCH_CHECKPOINTS: "false"
-  # Full-FT 4B optimizer state is ~32 GB per step — keep disabled to stay under GPFS home quota.
-  # Production config.yaml uses SAVE_OPTIMIZER=true (LoRA optimizer is tiny + on scratch).
-  SAVE_OPTIMIZER: "false"
+  USE_LORA: "true"
+  USE_SCRATCH_CHECKPOINTS: "false"   # LoRA adapters are tiny; GPFS home quota is not a concern
+  # LoRA optimizer state is only ~10s of MB — enabling matches production config.yaml and
+  # config_smoke8b.yaml. Rotation keeps only latest + best, so disk cost stays bounded.
+  SAVE_OPTIMIZER: "true"
 
 python_args:
   agentflow.port: 9999
@@ -99,12 +101,12 @@ python_args:
   trainer.logger: ['console', 'wandb']
   trainer.project_name: '${PROJECT_NAME}'
   trainer.experiment_name: '${EXPERIMENT_NAME}'
-  trainer.save_freq: -1
-  trainer.test_freq: -1
-  # true: post-epoch checkpoint; false: every save_freq steps.
-  trainer.save_every_epoch: true
-  # true: post-epoch val; false: every test_freq steps.
-  trainer.val_every_epoch: true
+  # Step-based val + save: smoke has 8/4 = 2 steps → freq=1 exercises the step-mode code path
+  # on every step (+ val_before_train at step 0). _rotate_checkpoints keeps latest + best.
+  trainer.save_freq: 1
+  trainer.test_freq: 1
+  trainer.save_every_epoch: false
+  trainer.val_every_epoch: false
   trainer.total_epochs: 1
   trainer.val_before_train: true
   trainer.critic_warmup: 0

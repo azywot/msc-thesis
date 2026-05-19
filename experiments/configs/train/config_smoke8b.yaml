@@ -27,7 +27,7 @@
 #   - N_GPUS: 2
 #   - EXPERIMENT_NAME: qwen3-8b-grpo-smoke
 #   - data dir: data/training/smoke  (same)
-#   - USE_SCRATCH_CHECKPOINTS: true (LoRA adapters → /scratch-shared/$USER/fine_tuning/lora_adapters/qwen3-8b-grpo-smoke/)
+#   - USE_SCRATCH_CHECKPOINTS: false (LoRA adapters are tiny; checkpoints stay in experiments/results/)
 #   - train_max_samples / rollout.n / epochs: same (minimal smoke)
 #
 # Launch with:
@@ -57,8 +57,10 @@ env:
   N_WORKERS: 1
   VERBOSITY: 'INFO'
   USE_LORA: "true"
-  USE_SCRATCH_CHECKPOINTS: "true"
-  SAVE_OPTIMIZER: "false"
+  USE_SCRATCH_CHECKPOINTS: "false"   # LoRA adapters are tiny; GPFS home quota is not a concern
+  # LoRA optimizer state is only ~10s of MB — enabling matches production config.yaml.
+  # Rotation keeps only latest + best, so disk cost stays bounded.
+  SAVE_OPTIMIZER: "true"
 
 python_args:
   agentflow.port: 9999
@@ -109,10 +111,12 @@ python_args:
   trainer.logger: ['console', 'wandb']
   trainer.project_name: '${PROJECT_NAME}'
   trainer.experiment_name: '${EXPERIMENT_NAME}'
-  trainer.save_freq: -1
-  trainer.test_freq: -1
-  trainer.save_every_epoch: true
-  trainer.val_every_epoch: true
+  # Step-based val + save: smoke has 8/4 = 2 steps → freq=1 exercises the step-mode code path
+  # on every step (+ val_before_train at step 0). _rotate_checkpoints keeps latest + best.
+  trainer.save_freq: 1
+  trainer.test_freq: 1
+  trainer.save_every_epoch: false
+  trainer.val_every_epoch: false
   trainer.total_epochs: 1
   trainer.val_before_train: true
   trainer.critic_warmup: 0

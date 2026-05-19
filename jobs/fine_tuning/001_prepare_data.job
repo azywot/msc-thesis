@@ -19,7 +19,7 @@
 # never mixed into the training pool).
 # Row order: test carved first, then val, then train — no cross-split contamination.
 #
-# Also writes a small smoke-test subset to data/training/smoke/ for job 009.
+# Also writes a small smoke-test subset to data/training/smoke/ for 003_smoke_4b.job / 004_smoke_8b.job.
 
 set -euo pipefail
 

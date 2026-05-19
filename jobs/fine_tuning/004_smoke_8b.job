@@ -7,8 +7,8 @@
 #     launch_verl.py overrides util→0.6, lr→1e-5, free_cache_engine→True, dynamic_bsz.
 #     Rollout phase (param_offload=True): vLLM TP=1 data-parallel, util=0.6 → 56.4 GB/GPU ✓
 #     Training phase (free_cache_engine destroys KV): vLLM model 16 GB + shard 8 GB ≈ 25 GB/GPU ✓
-# Upgrade from job 009 (4B, full-FT) — together they cover both code paths before the full run.
-# Checkpoints: /scratch-shared/$USER/fine_tuning/lora_adapters/qwen3-8b-grpo-smoke/ (LoRA, scratch)
+# Upgrade from 003_smoke_4b.job (4B, LoRA) — 4B catches fast failures; 8B verifies production memory layout.
+# Checkpoints: experiments/results/training/qwen3-8b-grpo-smoke/ (USE_SCRATCH_CHECKPOINTS=false)
 #SBATCH --gpus=3
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -21,8 +21,8 @@
 #   2. One epoch of GRPO training on 8 questions with config_smoke8b.yaml
 #   3. Verify checkpoint was written and W&B run exists
 #
-# Run AFTER job 008 (creates cosmas-train + data — must already be prepared).
-# If this passes, the full training job (010) is safe to submit.
+# Run AFTER 001_prepare_data.job (creates cosmas-train + data — must already be prepared).
+# If this passes, 005_train.job (full run) is safe to submit.
 #
 # Optional: SKIP_PIP_SETUP=1 in .env skips editable installs + reconcile when
 # cosmas-train is already warm (PATH + import check still run).
@@ -64,7 +64,7 @@ fi
 
 if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
     echo "ERROR: conda env 'cosmas-train' not found."
-    echo "Run jobs/008_prepare_fine_tuning_data.job first (creates env + training data)."
+    echo "Run jobs/fine_tuning/001_prepare_data.job first (creates env + training data)."
     exit 1
 fi
 
@@ -91,7 +91,7 @@ for required_file in \
 do
     if [[ ! -f "$required_file" ]]; then
         echo "ERROR: Missing required smoke data file: $required_file"
-        echo "Run jobs/008_prepare_fine_tuning_data.job first."
+        echo "Run jobs/fine_tuning/001_prepare_data.job first."
         exit 1
     fi
 done
@@ -158,23 +158,25 @@ export VERL_RUN_TAG
 echo "Run tag: $VERL_RUN_TAG"
 
 EXPERIMENT_NAME="qwen3-8b-grpo-smoke"
-# Resolve checkpoint dir the same way launch_verl.py does — respect USE_LORA from the config
-# so the verify step below finds the right directory even if USE_LORA is flipped for testing.
+# Resolve checkpoint dir the same way launch_verl.py does — check both USE_SCRATCH_CHECKPOINTS
+# and USE_LORA so the verify step finds the right directory even if the config is later changed.
+USE_SCRATCH_LOWER="$(grep -E '^[[:space:]]*USE_SCRATCH_CHECKPOINTS:' "$PROJECT_DIR/experiments/configs/train/config_smoke8b.yaml" | awk -F'"' '{print tolower($2)}')"
 USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/experiments/configs/train/config_smoke8b.yaml" | awk -F'"' '{print tolower($2)}')"
-if [[ "$USE_LORA_LOWER" == "true" ]]; then
+if [[ "$USE_SCRATCH_LOWER" != "true" ]]; then
+    CKPT_DIR="${PROJECT_DIR}/experiments/results/training/${EXPERIMENT_NAME}"
+elif [[ "$USE_LORA_LOWER" == "true" ]]; then
     CKPT_DIR="/scratch-shared/${USER}/fine_tuning/lora_adapters/${EXPERIMENT_NAME}"
 else
     CKPT_DIR="/scratch-shared/${USER}/msc-thesis/training/${EXPERIMENT_NAME}"
 fi
 echo ""
 echo "Checkpoints will be written to: $CKPT_DIR"
-echo "  (USE_SCRATCH_CHECKPOINTS=true — scratch-shared, not experiments/results/)"
 
 # ── 2. Frozen sub-agent vLLM server (GPU 0, dedicated, never updated by VERL) ─
 echo ""
 echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998, physical GPU 0 only)..."
 # GPU 0 is exclusive to the sub-agent (not shared with VERL). util=0.08 matches production
-# (job 010) — Qwen3-1.7B in BF16 is ~3.4 GB; 0.08×94≈7.5 GB gives ample KV budget.
+# (005_train.job) — Qwen3-1.7B in BF16 is ~3.4 GB; 0.08×94≈7.5 GB gives ample KV budget.
 # VLLM_USE_V1=0: legacy engine; V1+torch.compile at low util can allocate no KV space.
 VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
     --port 9998 \
@@ -261,4 +263,4 @@ fi
 
 echo ""
 echo "8B smoke test complete at: $(date)"
-echo "Submit 010_ft_orchestrator.job for the full training run."
+echo "Submit jobs/fine_tuning/005_train.job for the full training run."

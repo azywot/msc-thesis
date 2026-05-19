@@ -20,13 +20,13 @@
 #SBATCH --error=out/fine_tuning/orchestrator_ft/ft_%A.err
 
 # Full orchestrator fine-tuning run.
-#   5 epochs, 100k training questions, n=8 rollouts, thinking enabled.
-#   Checkpoint every epoch; written to /scratch-shared/$USER/msc-thesis/training/<experiment>/<run-tag>/global_step_<N>/.
-#   After training, prune to keep only latest + best checkpoint payloads.
+#   5 epochs, 1800 training questions (900 Search-R1 + 900 DeepMath), n=8 rollouts.
+#   Step-based checkpointing every 10 steps (trainer.save_freq=10); rotation keeps latest + best.
+#   Checkpoints → /scratch-shared/$USER/fine_tuning/lora_adapters/<experiment>/<run-tag>/ (LoRA, USE_SCRATCH_CHECKPOINTS=true).
 #
 # Prerequisites:
-#   - Job 008 completed (creates cosmas-train + data/training/)
-#   - Job 009 passed (smoke test — 2 GPUs; pipeline check before this 4-GPU run)
+#   - 001_prepare_data.job completed (creates cosmas-train + data/training/)
+#   - 003_smoke_4b.job and/or 004_smoke_8b.job passed (pipeline checks before this 4-GPU run)
 #
 # Optional: SKIP_PIP_SETUP=1 in .env skips editable installs + reconcile when the env is warm.
 
@@ -65,10 +65,10 @@ if [[ -z "${WANDB_API_KEY:-}" ]]; then
     echo "Warning: WANDB_API_KEY is not set; W&B logging may fail."
 fi
 
-# cosmas-train is created once by jobs/008_prepare_fine_tuning_data.job.
+# cosmas-train is created once by jobs/fine_tuning/001_prepare_data.job.
 if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
     echo "ERROR: conda env 'cosmas-train' not found."
-    echo "Run jobs/008_prepare_fine_tuning_data.job first (creates env + training data)."
+    echo "Run jobs/fine_tuning/001_prepare_data.job first (creates env + training data)."
     exit 1
 fi
 
@@ -95,7 +95,7 @@ for required_file in \
 do
     if [[ ! -f "$required_file" ]]; then
         echo "ERROR: Missing required training data file: $required_file"
-        echo "Run jobs/008_prepare_fine_tuning_data.job first."
+        echo "Run jobs/fine_tuning/001_prepare_data.job first."
         exit 1
     fi
 done
