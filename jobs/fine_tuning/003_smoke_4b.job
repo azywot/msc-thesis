@@ -9,8 +9,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --time=02:00:00
-#SBATCH --output=out/fine_tuning/smoke_test/smoke_%A.log
-#SBATCH --error=out/fine_tuning/smoke_test/smoke_%A.err
+#SBATCH --output=out/fine_tuning/smoke_test_4b/smoke_%A.log
+#SBATCH --error=out/fine_tuning/smoke_test_4b/smoke_%A.err
 
 # Smoke-test the fine-tuning pipeline end-to-end:
 #   1. Pre-flight checks (no GPU): imports, reward, config, parquet schema
@@ -80,7 +80,7 @@ case "${SKIP_PIP_SETUP:-}" in
 esac
 python -c "import agent_engine, fine_tuning, verl, vllm; from fine_tuning.agentflow import LitAgent, Trainer, reward; print('Training imports OK')"
 
-mkdir -p out/fine_tuning/smoke_test
+mkdir -p out/fine_tuning/smoke_test_4b
 
 for required_file in \
     data/training/smoke/train/combined_train.parquet \
@@ -167,14 +167,14 @@ VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
     --tensor-parallel-size 1 \
     --gpu-memory-utilization 0.40 \
     --max-model-len 8192 \
-    > out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
+    > out/fine_tuning/smoke_test_4b/smoke_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
 SUBAGENT_PID=$!
 export SUBAGENT_ENDPOINT="http://localhost:9998/v1"
 
 echo "Waiting 60s for sub-agent vLLM to be ready..."
 sleep 60
 if ! kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
-    echo "FAIL — sub-agent server exited during startup. See out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_subagent.log"
+    echo "FAIL — sub-agent server exited during startup. See out/fine_tuning/smoke_test_4b/smoke_${SLURM_JOB_ID:-local}_subagent.log"
     wait "$SUBAGENT_PID"
 fi
 
@@ -184,7 +184,7 @@ export CUDA_VISIBLE_DEVICES=1
 # ── 3. VERL server ───────────────────────────────────────────────────────────
 # Unbuffered Python so *_verl.log updates live under SLURM file redirection (also applies to train_orchestrator below).
 export PYTHONUNBUFFERED=1
-VERL_LOG="out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_verl.log"
+VERL_LOG="out/fine_tuning/smoke_test_4b/smoke_${SLURM_JOB_ID:-local}_verl.log"
 echo ""
 echo "Starting VERL server (config_smoke.yaml)..."
 python scripts/launch_verl.py --config experiments/configs/fine_tuning/config_smoke.yaml \
@@ -195,7 +195,7 @@ start_crash_monitor "$VERL_LOG" "VERL"
 echo "Waiting up to 3 min for Ray + worker bootstrap; N_GPUS=1 + FSDP + colocated vLLM can take 15–25 min before AgentFlow answers /task."
 sleep 180
 if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
-    echo "FAIL — VERL server exited during startup. See out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_verl.log"
+    echo "FAIL — VERL server exited during startup. See out/fine_tuning/smoke_test_4b/smoke_${SLURM_JOB_ID:-local}_verl.log"
     wait "$VERL_PID"
 fi
 
@@ -209,7 +209,7 @@ while (( SECONDS < _deadline )); do
         break
     fi
     if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
-        echo "FAIL — VERL exited before AgentFlow came up. See out/fine_tuning/smoke_test/smoke_${SLURM_JOB_ID:-local}_verl.log"
+        echo "FAIL — VERL exited before AgentFlow came up. See out/fine_tuning/smoke_test_4b/smoke_${SLURM_JOB_ID:-local}_verl.log"
         wait "$VERL_PID" || true
         exit 1
     fi
