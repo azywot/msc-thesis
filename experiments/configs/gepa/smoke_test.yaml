@@ -1,0 +1,61 @@
+name: "GEPA_smoke_qwen3_8b"
+description: "Smoke test: 1 GEPA step on 2 GAIA examples. Qwen3-8B agent (sub-agent mode), Qwen3-32B reflector, 3×H100."
+
+benchmark: "gaia"
+dataset_split: "all_validation"
+data_dir: "./data"
+thinking_mode: "ORCHESTRATOR_ONLY"
+seed: 1
+max_turns: 3
+
+model:
+  name: "Qwen3-8B"
+  path_or_id: "Qwen/Qwen3-8B"
+  role: "orchestrator"
+
+reflector:
+  name: "Qwen3-32B"
+  path_or_id: "Qwen/Qwen3-32B"
+  host: "localhost"
+  port: 8001
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+  direct_tool_call: false
+  web_tool_provider: "serper"
+  max_search_limit: 10
+
+splits_file: "experiments/configs/gepa/splits/smoke_splits.json"
+existing_results: "experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/gaia/qwen8B_subagent_tools_orchestrator/all_validation_2026-03-15-20-55-53_20752049/raw_results.json"
+
+splits:
+  train_n: 2
+  val_n: 2
+  test_n: 2
+
+gepa:
+  # Budget must exceed val_n so the reflective mutation loop runs at least
+  # once (otherwise the seed val eval consumes the whole budget and the
+  # reflector is never invoked). 10 covers: seed val (2) + 1 reflection
+  # iteration (2 curr + 2 new + 2 new-val accept) = 8, with slack.
+  rollout_budget: 10
+  minibatch_size: 2
+  merge_proposer: false
+  run_dir: "experiments/results/gepa/smoke_test"
+
+wandb:
+  enabled: false
+  project: "gepa"
+  name: "gepa_smoke_test"
+  tags: ["gaia", "gepa", "smoke_test"]
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 3
+  ntasks: 1
+  cpus_per_task: 16
+  time: "01:00:00"
+  conda_env: "agent_engine"

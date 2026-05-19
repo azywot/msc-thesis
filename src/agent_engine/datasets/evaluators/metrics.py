@@ -204,19 +204,12 @@ def evaluate_with_math_verify(prediction: str, ground_truth: str) -> bool:
 # Unified evaluator (single entry point for all datasets)
 # ---------------------------------------------------------------------------
 
-def evaluate_answer(
+def _evaluate_answer_single(
     prediction: str,
     ground_truth: str,
     choices: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Evaluate a prediction against its ground truth.
-
-    Returns a dict with keys:
-        correct   bool  – primary correctness flag (= accuracy > 0)
-        accuracy  float – 1.0 / 0.0 (math_verify where applicable)
-        em        float – exact match after normalisation
-        f1        float – SQuAD-style token F1
-    """
+    """Core evaluation logic for a single (prediction, ground_truth) pair."""
     pred = (prediction or "").strip()
     gt = (ground_truth or "").strip()
 
@@ -265,6 +258,38 @@ def evaluate_answer(
         "em": em_score,
         "f1": f1_score,
     }
+
+
+def evaluate_answer(
+    prediction: str,
+    ground_truth: str,
+    choices: Optional[List[str]] = None,
+    answer_aliases: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Evaluate prediction against ground_truth (and optional answer aliases).
+
+    Returns a dict with keys:
+        correct   bool  – primary correctness flag (= accuracy > 0)
+        accuracy  float – 1.0 / 0.0 (math_verify where applicable)
+        em        float – exact match after normalisation
+        f1        float – SQuAD-style token F1
+
+    When answer_aliases is provided, the returned score is the maximum across
+    the primary ground_truth and all aliases.  Iteration short-circuits on the
+    first perfect score (accuracy == 1.0).
+    """
+    result = _evaluate_answer_single(prediction, ground_truth, choices)
+    if not answer_aliases or result["accuracy"] >= 1.0:
+        return result
+    for alias in answer_aliases:
+        if alias == ground_truth:
+            continue
+        alias_result = _evaluate_answer_single(prediction, alias, choices)
+        if alias_result["accuracy"] > result["accuracy"]:
+            result = alias_result
+        if result["accuracy"] >= 1.0:
+            break
+    return result
 
 
 def _mc_correct(prediction: str, ground_truth: str, choices: List[str]) -> bool:
