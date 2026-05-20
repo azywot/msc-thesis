@@ -6,21 +6,71 @@
 #          jobs/scripts/track_job.sh --track ALL      # track every job in `squeue -u $USER`
 #          jobs/scripts/track_job.sh --stop <jobid>   # stop a watcher
 #          jobs/scripts/track_job.sh --stop ALL       # stop all watchers
+#          jobs/scripts/track_job.sh --attach         # attach to the watcher tmux session
+#
+# Watchers are launched inside a persistent tmux session (default name
+# "slurmwatch") so they survive terminal close on hosts where logout reaps
+# user processes (e.g. Snellius). The session is created on first use and
+# auto-closes once the last watcher exits (or is stopped via --stop).
+#
+# Attach with `--attach` (or `tmux attach -t slurmwatch`). Once attached:
+#   Ctrl-b d        detach (session keeps running in background)
+#   Ctrl-b n / p    next / previous window (switch between job-<id> watchers)
+#   Ctrl-b w        interactive window list
+#   Ctrl-b [        scroll mode (arrows/PageUp; press q to exit)
+# Closing the terminal without detaching is also safe — tmux keeps running.
 #
 # Recipient address is read from <repo>/.env (key SLURM_WATCH_EMAIL).
 # Override via env: SLURM_WATCH_EMAIL=... jobs/scripts/track_job.sh ...
 #
 # Other env overrides:
-#   SLURM_WATCH_INTERVAL  (default: 30 seconds)
-#   SLURM_WATCH_STATE_DIR (default: <repo>/.slurm-watch)
-#   NO_COLOR=1            disable ANSI colors
+#   SLURM_WATCH_INTERVAL      (default: 30 seconds)
+#   SLURM_WATCH_STATE_DIR     (default: <repo>/.slurm-watch)
+#   SLURM_WATCH_TMUX_SESSION  (default: slurmwatch)
+#   SLURM_WATCH_NO_TMUX=1     fall back to setsid+nohup (no terminal survival)
+#   NO_COLOR=1                disable ANSI colors
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 STATE_DIR="${SLURM_WATCH_STATE_DIR:-$REPO_ROOT/.slurm-watch}"
 INTERVAL="${SLURM_WATCH_INTERVAL:-30}"
+TMUX_SESSION="${SLURM_WATCH_TMUX_SESSION:-slurmwatch}"
 mkdir -p "$STATE_DIR"
+
+# ---------- tmux session (so watchers survive logout) -------------------------
+tmux_available() {
+    [[ -z "${SLURM_WATCH_NO_TMUX:-}" ]] && command -v tmux >/dev/null 2>&1
+}
+
+ensure_tmux_session() {
+    tmux has-session -t "$TMUX_SESSION" 2>/dev/null && return 0
+    # Holding window acts as a reaper: keeps the session alive while there
+    # are job-* watcher windows, then auto-kills the session when the last
+    # one exits (natural completion) or is stopped via --stop. The 30s
+    # startup grace gives the launch loop time to create the first window.
+    tmux new-session -d -s "$TMUX_SESSION" -n holding "
+        sleep 30
+        while tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' 2>/dev/null \
+              | grep -q '^job-'; do
+            sleep 30
+        done
+        tmux kill-session -t '$TMUX_SESSION' 2>/dev/null
+    "
+}
+
+attach_tmux_session() {
+    if ! command -v tmux >/dev/null 2>&1; then
+        echo "error: tmux not found in PATH" >&2
+        exit 1
+    fi
+    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        printf '%s(no tmux session "%s" — start a watcher first)%s\n' \
+            "$C_DIM" "$TMUX_SESSION" "$C_RESET"
+        exit 0
+    fi
+    exec tmux attach -t "$TMUX_SESSION"
+}
 
 # Pull just SLURM_WATCH_EMAIL out of .env — don't source the file blindly.
 load_env_email() {
@@ -260,9 +310,17 @@ ${C_BOLD}track_job.sh${C_RESET}  -  email me when SLURM jobs change status
   ${C_CYN}$(basename "$0")${C_RESET} --track <jobid>|ALL   register one watcher (or all my queued jobs)
   ${C_CYN}$(basename "$0")${C_RESET} --list                show active watchers
   ${C_CYN}$(basename "$0")${C_RESET} --stop <jobid>|ALL    cancel one watcher (or all)
+  ${C_CYN}$(basename "$0")${C_RESET} --attach              attach to the watcher tmux session
 
   recipient: \$SLURM_WATCH_EMAIL  (loaded from <repo>/.env)
+  watchers live in tmux session "${TMUX_SESSION}"
   poll every ${INTERVAL}s
+
+  ${C_DIM}inside the tmux session:${C_RESET}
+    Ctrl-b d        detach (session keeps running)
+    Ctrl-b n / p    next / previous watcher window
+    Ctrl-b w        interactive window list
+    Ctrl-b [        scroll mode (q to exit)
 EOF
 }
 
@@ -283,6 +341,7 @@ case "$1" in
         exit 0
         ;;
     -h|--help)    usage; exit 0 ;;
+    --attach|-a)  attach_tmux_session ;;
     --watch)      shift; watch_job "${1:?need jobid}"; exit 0 ;;
     --track)
         shift
@@ -301,8 +360,14 @@ case "$1" in
 esac
 
 require_email
-printf '%sregistering watchers%s  (poll %ss, recipient via .env)\n' \
-    "$C_BOLD" "$C_RESET" "$INTERVAL"
+if tmux_available; then
+    ensure_tmux_session
+    launch_mode="tmux session \"$TMUX_SESSION\""
+else
+    launch_mode="setsid+nohup (no terminal survival)"
+fi
+printf '%sregistering watchers%s  (poll %ss, %s, recipient via .env)\n' \
+    "$C_BOLD" "$C_RESET" "$INTERVAL" "$launch_mode"
 
 for job in "$@"; do
     if [[ ! "$job" =~ ^[0-9]+$ ]]; then
@@ -317,9 +382,24 @@ for job in "$@"; do
         continue
     fi
     # Self-call in --watch mode. No secrets in argv; child loads .env itself.
-    setsid nohup bash "$SCRIPT_DIR/track_job.sh" --watch "$job" \
-        </dev/null >>"$STATE_DIR/$job.log" 2>&1 &
-    pid=$!
+    if tmux_available; then
+        window="job-$job"
+        # Close any stale window of the same name before re-creating it.
+        tmux kill-window -t "$TMUX_SESSION:$window" 2>/dev/null || true
+        tmux new-window -d -t "$TMUX_SESSION:" -n "$window" \
+            "bash '$SCRIPT_DIR/track_job.sh' --watch $job >> '$STATE_DIR/$job.log' 2>&1"
+        # Pane PID is the bash process running --watch; killing it closes the pane.
+        pid=$(tmux list-panes -t "$TMUX_SESSION:$window" -F '#{pane_pid}' 2>/dev/null | head -n1)
+        if [[ -z "$pid" ]]; then
+            printf '  %s[!]%s failed to launch tmux window for job %s\n' \
+                "$C_RED" "$C_RESET" "$job"
+            continue
+        fi
+    else
+        setsid nohup bash "$SCRIPT_DIR/track_job.sh" --watch "$job" \
+            </dev/null >>"$STATE_DIR/$job.log" 2>&1 &
+        pid=$!
+    fi
     echo "$pid" > "$pidfile"
     printf '  %s[+]%s tracking job %s%s%s  pid %s  %slog %s%s\n' \
         "$C_GRN" "$C_RESET" "$C_BOLD" "$job" "$C_RESET" "$pid" \
