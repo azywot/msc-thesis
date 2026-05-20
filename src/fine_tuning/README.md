@@ -7,10 +7,31 @@ never updated, so the tool interface seen during training is identical to the on
 **Motivation:** Failure analysis across 2,534 MAS failures identifies *direct reasoning without action*
 as the dominant failure mode. The orchestrator answers from parametric knowledge instead of
 delegating to a sub-agent. GRPO on retrieval-intensive (Search-R1 / HotpotQA+NQ) and math-intensive
-(DeepMath) training data *hopefully* creates pressure toward tool use - tool-less rollouts lose reward,
+(DeepMath) training data *hopefully* creates pressure toward tool use — tool-less rollouts lose reward,
 tool-using rollouts win.
 
 Full failure-mode analysis: `docs/failure_modes_fine_tuning_alignment.md`
+
+---
+
+## TL;DR
+
+| What | Detail |
+|---|---|
+| **Model trained** | Qwen3-8B orchestrator only (sub-agents frozen at Qwen3-1.7B) |
+| **Method** | Flow GRPO — final reward propagated to every turn in the trajectory (planning + tool calls + synthesis) |
+| **Reward** | Binary: 1.0 if correct, 0.0 otherwise (same `evaluate_answer()` as benchmark eval) |
+| **Training data** | 1800 questions: 900 Search-R1 (HotpotQA 85% + NQ 15%) + 900 DeepMath (difficulty ≥ 3) |
+| **Val / Test** | 50-row val (20 search + 10 math + 20 AIME) for checkpoint selection; 200-row test held out for final reporting |
+| **LoRA** | Rank 64, alpha 64, all-linear; adapter ~250–500 MB vs ~16 GB full FT |
+| **Effective LR** | `1e-5` (set by `launch_verl.py`; config.yaml shows `1e-6` which is the full-FT baseline) |
+| **Hardware** | 4 × H100 NVL (94 GB each): GPU 0 hosts frozen sub-agent + VERL, GPUs 1–3 VERL only |
+| **Rollouts** | 8 per question during training (GRPO group); 1 per question during validation (greedy) |
+| **Validation** | Every 10 steps on `val_combined.parquet` (50 rows); `best_checkpoint/` symlink updated when val reward improves |
+| **Checkpoints** | Only **latest** and **best** adapter dirs kept; all others deleted asynchronously after rotation |
+| **Run time** | 5 epochs, ~280 steps; SLURM budget 72 h (actual ~10–24 h depending on search API latency) |
+| **Launch** | `sbatch jobs/fine_tuning/005_train.job` (after smoke test passes: `004_smoke_8b.job`) |
+| **Merge & eval** | `python scripts/merge_lora.py --checkpoint <best_checkpoint> --base-model Qwen/Qwen3-8B --output-dir <path>` |
 
 ---
 
@@ -195,7 +216,12 @@ sbatch jobs/fine_tuning/005_train.job
 ```
 
 **5 epochs**, 1800 training questions, n=8 rollouts, **4 H100 GPUs** (1 sub-agent + 4 VERL), step-based
-checkpointing every 10 steps.
+checkpointing every 10 steps. The SLURM budget is **72 h** — a generous ceiling for a run whose
+actual duration is dominated by search API latency (Serper round-trips per rollout). Back-of-envelope:
+~280 steps × ~60–70 s/step (generation-bound, N_WORKERS=4 fills vLLM's batcher) ≈ 5–6 h of pure
+compute, but real Serper latency under concurrent load can stretch each step to 2–3 min, putting the
+realistic range at **10–24 h**. The 72 h limit avoids job re-submission if the cluster is busy or
+the API is slow on a given day.
 
 **Manual launch** (three terminals, after `conda activate cosmas-train` in all):
 ```bash
