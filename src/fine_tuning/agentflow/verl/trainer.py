@@ -1,6 +1,5 @@
 import json
 import os
-import random
 import shutil
 import threading
 from contextlib import contextmanager
@@ -209,6 +208,11 @@ class AgentFlowTrainer(RayPPOTrainer):
                     device=gen_batch.batch["fake_ids"].device,
                 )
                 metrics.update(agent_metrics)
+                if batch is None:
+                    raise ValueError(
+                        "All completed rollout traces had empty prompt+response IDs; "
+                        "cannot run a training step. Check rollout workers and proxy token injection."
+                    )
                 self.agent_mode_daemon.clear_data_and_server()
                 # Sleep vLLM so the actor/ref FSDP forward+backward gets the GPU.
                 # update_weights() at the end of this step will wake it back up.
@@ -300,10 +304,6 @@ class AgentFlowTrainer(RayPPOTrainer):
             # next, round to minibatch size
             mini_batch_size = self.config.actor_rollout_ref.actor.ppo_mini_batch_size
             n_transition = len(batch)
-
-            random_indices = list(range(n_transition))
-            random.shuffle(random_indices)
-            batch.reorder(torch.tensor(random_indices).type(torch.int32))
             n_remained_transition = n_transition // mini_batch_size * mini_batch_size
             batch = batch[list(range(n_remained_transition))]
             metrics["agent_mode/n_dropped_sample_because_of_mini_batch"] = n_transition - n_remained_transition

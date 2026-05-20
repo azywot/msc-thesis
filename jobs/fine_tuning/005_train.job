@@ -16,7 +16,7 @@
 #SBATCH --gpus=4
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --time=72:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=out/fine_tuning/orchestrator_ft/ft_%A.log
 #SBATCH --error=out/fine_tuning/orchestrator_ft/ft_%A.err
 

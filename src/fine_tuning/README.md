@@ -29,7 +29,7 @@ Full failure-mode analysis: `docs/failure_modes_fine_tuning_alignment.md`
 | **Rollouts** | 8 per question during training (GRPO group); 1 per question during validation (greedy) |
 | **Validation** | Every 10 steps on `val_combined.parquet` (50 rows); `best_checkpoint/` symlink updated when val reward improves |
 | **Checkpoints** | Only **latest** and **best** adapter dirs kept; all others deleted asynchronously after rotation |
-| **Run time** | 5 epochs, ~280 steps; SLURM budget 72 h (actual ~10–24 h depending on search API latency) |
+| **Run time** | 5 epochs, ~280 steps; SLURM budget 48 h (actual ~10–24 h depending on search API latency) |
 | **Launch** | `sbatch jobs/fine_tuning/005_train.job` (after smoke test passes: `004_smoke_8b.job`) |
 | **Merge & eval** | `python scripts/merge_lora.py --checkpoint <best_checkpoint> --base-model Qwen/Qwen3-8B --output-dir <path>` |
 
@@ -217,11 +217,11 @@ sbatch jobs/fine_tuning/005_train.job
 ```
 
 **5 epochs**, 1800 training questions, n=8 rollouts, **4 H100 GPUs** (1 sub-agent + 4 VERL), step-based
-checkpointing every 10 steps. The SLURM budget is **72 h** — a generous ceiling for a run whose
+checkpointing every 10 steps. The SLURM budget is **48 h** — a generous ceiling for a run whose
 actual duration is dominated by search API latency (Serper round-trips per rollout). Back-of-envelope:
 ~280 steps × ~60–70 s/step (generation-bound, N_WORKERS=4 fills vLLM's batcher) ≈ 5–6 h of pure
 compute, but real Serper latency under concurrent load can stretch each step to 2–3 min, putting the
-realistic range at **10–24 h**. The 72 h limit avoids job re-submission if the cluster is busy or
+realistic range at **10–24 h**. The 48 h limit avoids job re-submission if the cluster is busy or
 the API is slow on a given day.
 
 **Manual launch** (three terminals, after `conda activate cosmas-train` in all):
@@ -750,7 +750,7 @@ msc-thesis/
 │   ├── 002_inspect_data.job         SLURM: verify parquet schema + row counts
 │   ├── 003_smoke_4b.job             SLURM: 4B smoke test (2 GPUs)
 │   ├── 004_smoke_8b.job             SLURM: 8B smoke test (3 GPUs) ← run before 005
-│   └── 005_train.job                SLURM: full 5-epoch training (4 GPUs, 72h)
+│   └── 005_train.job                SLURM: full 5-epoch training (4 GPUs, 48h)
 │
 └── data/training/               Created by job 001
     ├── train/combined_train.parquet   1800 rows
