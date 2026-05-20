@@ -39,6 +39,7 @@ msc-thesis/
 │   │   └── utils/             # parsing/logging helpers
 │   │
 │   ├── fine_tuning/           # RL fine-tuning pipeline (orchestrator only)
+│   │   ├── README.md          # Master fine-tuning reference (pipeline, reward, data, GPU, LoRA, hparams)
 │   │   ├── reward.py          # OrchestratorReward — binary via metrics.py
 │   │   ├── rollout.py         # OrchestratorRollout(LitAgent) — VERL rollout worker
 │   │   └── data/
@@ -85,7 +86,6 @@ msc-thesis/
 │   └── results/               # Default output root
 │
 ├── docs/
-│   ├── fine_tuning_README.md                          # Full fine-tuning guide
 │   ├── failure_modes_fine_tuning_alignment.md         # Failure modes → FT design linkage
 │   └── superpowers/specs/
 │       ├── 2026-05-06-orchestrator-finetuning-design.md
@@ -131,7 +131,7 @@ msc-thesis/
 | Dataset loaders + metrics | `src/agent_engine/datasets/` |
 | SLURM job scripts | `jobs/` |
 | Single-tool sanity checks | `examples/` |
-| Fine-tuning the orchestrator | `docs/fine_tuning_README.md` |
+| Fine-tuning the orchestrator | `src/fine_tuning/README.md` |
 | Fine-tuning ↔ failure mode analysis | `docs/failure_modes_fine_tuning_alignment.md` |
 | GEPA prompt optimisation | `scripts/run_gepa.py` + `experiments/configs/gepa/` + `src/gepa_integration/` |
 | GEPA design spec | `docs/superpowers/specs/2026-05-15-gepa-integration-design.md` |

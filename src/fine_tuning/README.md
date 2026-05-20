@@ -1,33 +1,148 @@
-# fine_tuning — RL Fine-Tuning Pipeline
+# RL Fine-Tuning Pipeline
 
-GRPO-based reinforcement learning pipeline for fine-tuning the CoSMAS orchestrator (Qwen3-8B).
-Only the orchestrator is trained; sub-agents (web search analyser, code generator) remain frozen.
+GRPO-based reinforcement learning pipeline for fine-tuning the orchestrator model (**Qwen3-8B**).
+Only the orchestrator is trained; sub-agents run on a **separate, frozen** vLLM server and are
+never updated, so the tool interface seen during training is identical to the one seen at evaluation.
 
-See the design spec: `docs/superpowers/specs/2026-05-06-orchestrator-finetuning-design.md`
-See the failure-mode rationale: `docs/failure_modes_fine_tuning_alignment.md`
+**Motivation:** Failure analysis across 2,534 MAS failures identifies *direct reasoning without action*
+as the dominant failure mode. The orchestrator answers from parametric knowledge instead of
+delegating to a sub-agent. GRPO on retrieval-intensive (Search-R1 / HotpotQA+NQ) and math-intensive
+(DeepMath) training data *hopefully* creates pressure toward tool use - tool-less rollouts lose reward,
+tool-using rollouts win.
 
----
-
-## Structure
-
-```
-fine_tuning/
-├── reward.py        # OrchestratorReward — binary exact-match via metrics.py
-├── rollout.py       # OrchestratorRollout(LitAgent) — wraps AgenticOrchestrator for VERL
-├── trainer.py       # Unused stub (training uses agentflow.Trainer directly)
-└── data/
-    └── prepare.py   # Download Search-R1 + DeepMath, write VERL parquet files
-```
-
-Training hyperparameters live in `experiments/configs/fine_tuning/config.yaml` and are
-forwarded to verl by `scripts/launch_verl.py` (no Python config dataclass).
+Full failure-mode analysis: `docs/failure_modes_fine_tuning_alignment.md`
 
 ---
 
-## Quick Start
+## Table of Contents
 
-### 1. Prepare training data
+1. [Architecture](#1-architecture)
+2. [Prerequisites](#2-prerequisites)
+3. [Training Data](#3-training-data)
+4. [Running Training](#4-running-training)
+5. [Reward Design: Flow GRPO](#5-reward-design-flow-grpo)
+6. [Training Configuration](#6-training-configuration)
+7. [GPU Allocation](#7-gpu-allocation)
+8. [W&B Metrics](#8-wb-metrics)
+9. [Checkpoint Layout](#9-checkpoint-layout)
+10. [Merge LoRA and Evaluate](#10-merge-lora-and-evaluate)
+11. [Troubleshooting](#11-troubleshooting)
+12. [Design Decisions](#12-design-decisions)
 
+---
+
+## 1. Architecture
+
+```
+Training time
+────────────────────────────────────────────────────────────────
+
+          ┌──────────────────────────────────────────────────┐
+          │  agentflow.verl  (VERL 0.7.1 backend, Ray)       │
+          │                                                  │
+          │  AgentFlowTrainer(RayPPOTrainer)                 │
+          │  ├── GRPO advantage estimator (n=8 rollouts)     │
+          │  ├── FSDP actor: Qwen3-8B + LoRA rank-64         │
+          │  ├── Reference policy: ref_in_actor (no extra    │
+          │  │   shard; base + disabled adapter)             │
+          │  └── AgentModeDaemon  :9999                      │
+          └──────────────┬───────────────────────────────────┘
+                         │  HTTP  (tasks ↓ / rewards ↑)
+          ┌──────────────▼───────────────────────────────────┐
+          │  OrchestratorRollout (LitAgent)                  │
+          │  ├── AgenticOrchestrator  ← model being trained  │
+          │  │     thinking_mode: NO  (current config;       │
+          │  │     ORCHESTRATOR_ONLY recommended - see §12)  │
+          │  ├── WebSearchTool  → sub-agent LLM @ :9998      │
+          │  ├── CodeGeneratorTool → sub-agent LLM @ :9998   │
+          │  │   (sub-agents: Qwen3-1.7B, frozen server,     │
+          │  │    never updated during training)             │
+          │  └── OrchestratorReward  ← binary via metrics.py │
+          └──────────────────────────────────────────────────┘
+
+Inference (unchanged after training)
+────────────────────────────────────────────────────────────────
+
+  merge lora_adapter/ → merged HF model → path_or_id in YAML
+                                           ↓
+                                     VLLMProvider (no changes)
+```
+
+GRPO optimises only the orchestrator (LoRA updates on actor). Sub-agent token generations are
+treated as environment interactions - they never enter the GRPO objective. After training, merge
+the LoRA adapter and point any existing experiment YAML at the merged model path; tools, evaluators,
+and run scripts are untouched.
+
+---
+
+## 2. Prerequisites
+
+### Conda environments
+
+Two separate environments are required. **Never mix them.**
+
+| Environment | Purpose | Key packages |
+|---|---|---|
+| `cosmas-train` | Training: VERL, rollout workers, AgentFlow | VERL 0.7.1, vLLM 0.17.0, Python 3.12 |
+| `agent_engine` | Inference and evaluation | vLLM 0.12.0 |
+
+The split is a hard constraint: VERL 0.7.1 requires vLLM 0.17.0; the inference stack pins 0.12.0.
+
+Create the training environment (Snellius):
+```bash
+sbatch jobs/fine_tuning/000_create_environment.job
+# or locally:
+conda env create -f jobs/fine_tuning/environment_train.yml
+```
+
+### AgentFlow
+
+AgentFlow is vendored into this repo at `src/fine_tuning/agentflow/`. No external clone is needed -
+it is installed as part of the project when you run:
+```bash
+pip install -e ".[training]"
+```
+The `000_create_environment.job` does this automatically.
+
+### Environment variables
+
+Set in your Snellius login script (`~/.bashrc`) or in the SLURM job before launching:
+
+| Variable | Required for | Notes |
+|---|---|---|
+| `SERPER_API_KEY` or `TAVILY_API_KEY` | Rollout workers (every training step) | Missing → immediate `EnvironmentError` |
+| `SUBAGENT_ENDPOINT` | Rollout workers | Set after starting the frozen sub-agent server (default `http://localhost:9998/v1`) |
+| `WANDB_API_KEY` | W&B logging | Optional but strongly recommended |
+| `HF_TOKEN` | Gated HuggingFace datasets | Required for DeepMath download |
+
+---
+
+## 3. Training Data
+
+### Data composition
+
+| Split | Search-R1 rows | DeepMath rows | AIME rows | Total | Purpose |
+|---|---|---|---|---|---|
+| Train | 900 (85% HotpotQA / 15% NQ) | 900 (difficulty ≥ 3) | - | 1800 | GRPO training |
+| Val | 20 | 10 | 20 | 50 | Checkpoint selection (VERL reads `val_combined.parquet`) |
+| Test | 100 | 100 | - | 200 | Final reporting only, never used during training |
+
+**Why this mix:**
+- **HotpotQA (85 %)** requires multi-hop evidence aggregation → strong retrieval-policy signal.
+- **NQ (15 %)** adds single-hop diversity; higher share dilutes the multi-hop signal.
+- **DeepMath difficulty ≥ 3** produces cleaner GRPO signal; easy problems resolve in one step with near-zero gradient.
+- **AIME in val** gives an early-warning signal for AIME-flavoured regressions during training. The AIME val sample must remain disjoint from the held-out AIME eval set used for final reporting.
+
+**Contamination guarantee:** rows are carved in order - test first, then val, then train. Zero cross-split overlap.
+
+### Preparing the data
+
+**SLURM (recommended):**
+```bash
+sbatch jobs/fine_tuning/001_prepare_data.job
+```
+
+**Locally:**
 ```bash
 conda activate cosmas-train
 python src/fine_tuning/data/prepare.py \
@@ -40,116 +155,281 @@ python src/fine_tuning/data/prepare.py \
     --output-dir data/training --seed 42
 ```
 
-This writes:
-- `data/training/train/combined_train.parquet` — 1800 mixed questions (900 Search-R1 + 900 DeepMath, shuffled)
-- `data/training/val/val_search.parquet` — 20 held-out Search-R1 (NQ + HotpotQA) — offline reference
-- `data/training/val/val_deepmath.parquet` — 10 held-out DeepMath (difficulty ≥ 3) — offline reference
-- `data/training/val/val_aime.parquet` — 20 AIME problems sampled from `data/AIME/train.jsonl` (val-only signal) — offline reference
-- `data/training/val/val_combined.parquet` — all three merged (50 rows) — **VERL reads this**
-- `data/training/test/test_search.parquet` — 100 held-out Search-R1 (same proportions as train)
-- `data/training/test/test_deepmath.parquet` — 100 held-out DeepMath (difficulty ≥ 3)
-- `data/training/test/test_combined.parquet` — both merged (final reporting only, never used during training)
+Files written to `data/training/`:
+```
+train/combined_train.parquet      1800 rows  (shuffled, 900 search + 900 math)
+val/val_search.parquet              20 rows  NQ + HotpotQA - offline reference
+val/val_deepmath.parquet            10 rows  DeepMath (difficulty ≥ 3) - offline reference
+val/val_aime.parquet                20 rows  sampled from data/AIME/train.jsonl - offline reference
+val/val_combined.parquet            50 rows  all three merged ← VERL reads this
+test/test_search.parquet           100 rows  held-out Search-R1
+test/test_deepmath.parquet         100 rows  held-out DeepMath (difficulty ≥ 3)
+test/test_combined.parquet         200 rows  both merged - final reporting only
+```
 
-Search-R1/DeepMath proportions (85% HotpotQA / 15% NQ; 50/50 search/math) are identical across train and test splits.
-Rows are carved in order — test first, then val, then train — so there is zero cross-split contamination.
+<!-- **Note on Search-R1 reproducibility:** `_download_search_r1()` uses HuggingFace streaming mode with
+reservoir-buffer shuffle. The same `--seed` produces a *similar* but not bit-for-bit identical subset
+across runs (shard download order can vary). `DeepMath` uses non-streaming shuffle and is fully
+reproducible. -->
 
-**Note on validation:** VERL reads a single `val_combined.parquet` so W&B logs one `val/*` series. The per-domain
-parquets are written for offline inspection (you can also reconstruct per-domain breakdowns from rollout JSONs
-via the `data_source` field). The test split is held out entirely and used only once, for final metric reporting
-after checkpoint selection — AIME held-out evaluation must remain disjoint from the val sample.
+---
 
-### 2. Start training (Snellius)
+## 4. Running Training
+
+### Step 1 - Smoke test (run before the full production run)
+
+Verifies the full pipeline end-to-end: **Qwen3-8B** (same model as production), LoRA, 8 training
+samples, 2 rollouts, 1 epoch, on **3 H100 GPUs** (1 sub-agent + 2 VERL).
+
+```bash
+sbatch jobs/fine_tuning/004_smoke_8b.job
+```
+
+Pre-flight checks run automatically (imports, reward routing, parquet schema). A passing smoke test
+prints `ALL 9 checks passed` and completes 2 gradient steps with a checkpoint saved.
+
+### Step 2 - Full training run
 
 ```bash
 sbatch jobs/fine_tuning/005_train.job
 ```
 
-Or manually (three terminals, after `conda activate cosmas-train` in each):
+**5 epochs**, 1800 training questions, n=8 rollouts, **4 H100 GPUs** (1 sub-agent + 4 VERL), step-based
+checkpointing every 10 steps.
 
+**Manual launch** (three terminals, after `conda activate cosmas-train` in all):
 ```bash
-# Terminal 1 — frozen sub-agent server (start first, never needs restarting)
-# util=0.12 (~11 GB) matches jobs/fine_tuning/005_train.job and gives ~7.5 GB KV cache,
-# enough to absorb the concurrent tool-call traffic from N_WORKERS=4 × batch=32 × n=8.
-vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.12
+# Terminal 1 - frozen sub-agent server (start first, GPU 0 only)
+VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
+    --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.08 --max-model-len 8192
+export SUBAGENT_ENDPOINT=http://localhost:9998/v1
 
-# Terminal 2 — VERL server (after sub-agent server is up)
-python scripts/launch_verl.py --config experiments/configs/fine_tuning/config.yaml
+# Terminal 2 - VERL server (after sub-agent is up)
+CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/launch_verl.py \
+    --config experiments/configs/fine_tuning/config.yaml
 
-# Terminal 3 — rollout workers (after VERL vLLM is up, ~120s)
-# SUBAGENT_ENDPOINT is read from config.yaml env block (default: http://localhost:9998/v1)
+# Terminal 3 - rollout workers (after VERL vLLM is ready, ~60–90 s)
 python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config.yaml
 ```
 
-### 3. Merge LoRA and evaluate
+### Job reference
 
-When `USE_LORA=true`, merge the adapter before inference:
-
-```bash
-conda activate cosmas-train
-# Find the run tag printed by launch_verl.py at startup (also in the SLURM log)
-RUN_TAG="<DD-MM-YYYY_HH-MM-JOBID>"
-CKPT_STEP="experiments/results/fine_tuning/qwen3-8b-grpo-search-math/${RUN_TAG}/global_step_<N>"
-
-python $HOME/azywot/AgentFlow/util/model_merger.py \
-    --base_model Qwen/Qwen3-8B \
-    --lora_path "${CKPT_STEP}/actor/model_world_size_1_rank_0.pt" \
-    --output_dir "experiments/results/fine_tuning/qwen3-8b-grpo-search-math/${RUN_TAG}/merged_model/"
-```
-
-When `USE_LORA=false`, `model_world_size_1_rank_0.pt` is the full model — no merge needed, load directly with `from_pretrained`. (LoRA is the default; full-FT requires an explicit `USE_LORA: "false"` in `config.yaml`.)
-
-Then update any experiment YAML:
-```yaml
-models:
-  orchestrator:
-    path_or_id: /path/to/experiments/results/fine_tuning/<experiment>/<run-tag>/merged_model/
-    # all other fields (family, role, tensor_parallel_size, etc.) unchanged
-```
-
----
-
-## Key Design Decisions
-
-| Decision | Choice | Why |
+| Job | GPUs | Purpose |
 |---|---|---|
-| Algorithm | Flow GRPO, n=8 rollouts | No value network; same as AgentFlow. Final reward propagated to all turns so planning and tool-call steps receive gradient signal |
-| Training data | Search-R1 (NQ+HotpotQA) + DeepMath-103K | Targets the two dominant failure modes: direct reasoning without action on retrieval tasks and math tasks |
-| Training data mix | 85% HotpotQA / 15% NQ within Search-R1; 50/50 search/math overall | HotpotQA requires multi-hop evidence aggregation → stronger retrieval-policy signal than single-hop NQ; DeepMath difficulty ≥ 3 → medium-hard problems produce cleaner GRPO reward signal |
-| Validation | 50 mixed rows: 20 Search-R1 + 10 DeepMath + 20 AIME (sampled from `data/AIME/train.jsonl`) | Single `val_combined.parquet` keeps W&B logging simple (one `val/*` series); AIME slice gives an early-warning signal for AIME-flavoured regressions during training. AIME val sample must remain disjoint from the held-out AIME eval set used for final reporting |
-| Test split | 100 held-out Search-R1 + 100 held-out DeepMath | Held out entirely; used only for final reporting after checkpoint selection via val; same source proportions as train |
-| Reward | Binary exact-match via `metrics.py` | Directly comparable to benchmark numbers |
-| Model weights | LoRA rank-64, all-linear | ~130 MB checkpoints vs ~16 GB full fine-tune |
-| Thinking mode | `THINKING_MODE: NO` (current config) | **Verify before training.** Config is set to `NO`. The recommended value is `ORCHESTRATOR_ONLY` — it matches the evaluation condition and exposes the "direct reasoning without action" failure to the gradient (model reasons in `<think>`, skips tool call, gets reward=0). Training with `NO` removes that signal. |
-| Response budget | `max_prompt_length: 16384` / `max_response_length: 2048` | Sized from smoke-rollout token analysis (43 episodes, real Qwen3-8B tokenizer): assistant turn p95 = 992 tokens, tool response p95 = 4502 tokens, prompt_max already 6368 on AIME at just 2 turns. 16384 prompt fits typical 5-turn multi-hop HotpotQA with web responses; 2048 response is ~1.8× safety over observed max (1131). If first-epoch logs show `prompt_length/clip_ratio > 0` or `n_dropped_sample_because_of_prompt > 0`, bump prompt cap to 20480. With `THINKING_MODE=ORCHESTRATOR_ONLY`, raise response cap to 3072 (thinking adds ~500–1500). |
+| `jobs/fine_tuning/000_create_environment.job` | CPU | Create `cosmas-train` conda env |
+| `jobs/fine_tuning/001_prepare_data.job` | CPU | Download datasets, write parquet files |
+| `jobs/fine_tuning/002_inspect_data.job` | CPU | Verify parquet schema and row counts |
+| `jobs/fine_tuning/003_smoke_4b.job` | 2 H100 | Smoke test with Qwen3-4B (fast sanity check) |
+| `jobs/fine_tuning/004_smoke_8b.job` | 3 H100 | Smoke test with Qwen3-8B (production code path) |
+| `jobs/fine_tuning/005_train.job` | 4 H100 | Full 5-epoch training run |
 
 ---
 
-## Logging and Analysis
+## 5. Reward Design: Flow GRPO
 
-Training progress is captured in two places.
+### What Flow GRPO does
 
-### W&B (live, step-based)
+The orchestrator produces a **multi-turn trajectory** per rollout: a planning turn, one or
+more tool-call turns, and a final synthesis turn. VERL captures each turn as a `Triplet`
+(prompt token IDs, response token IDs, reward).
 
-VERL logs automatically via `trainer.logger: ['console', 'wandb']` into the project set by `PROJECT_NAME`.
+**Flow GRPO assigns the same final sparse reward to every triplet in the trajectory.**
+This is critical because:
+
+- The **planning step** is where the "direct reasoning without action" failure occurs - the model
+  decides whether to call a tool at all. Without gradient signal on the planning triplet, training
+  cannot reinforce correct tool-dispatch decisions.
+- The **tool-call formulation** (which tool, which query) is also part of the policy. Reward only
+  on the synthesis step lets the model get credit for stumbling to a good answer via a bad tool call.
+- All triplets from the same rollout share the same `uid`, so GRPO advantage normalisation
+  (within the n=8 group) is consistent across all turns.
+
+GRPO advantage normalisation itself is unchanged - Flow GRPO only affects *which turns receive
+the reward*, not how advantages are computed.
+
+### Reward function
+
+`OrchestratorReward` (`reward.py`) returns **binary**: **1.0** if correct, **0.0** otherwise.
+It calls `evaluate_answer(prediction, ground_truth)` from `agent_engine/datasets/evaluators/metrics.py`.
+
+- `ground_truth` is `task["result"]`, which is the **first** golden answer from the dataset's
+  `golden_answers` list.
+- NQ and HotpotQA questions sometimes have 2–4 valid aliases. A prediction matching a non-first
+  alias scores 0.0 at training time but 1.0 at evaluation time (where all aliases are checked).
+  Effect is minor - `evaluate_answer` uses containment matching and most aliases are covered.
+
+### Answer format
+
+The thesis inference stack uses `\boxed{ANSWER}` as the final-answer format (parsed by
+`extract_answer()` in `parsing.py`). AgentFlow's rollout code appends `<answer>...</answer>` tags
+- this suffix is **not injected** in `_build_rollout_question()`. The reward function calls
+`extract_answer()` which looks for `\boxed{}`, so injecting `<answer>` tags would cause reward = 0.
+
+---
+
+## 6. Training Configuration
+
+All configuration lives in `experiments/configs/fine_tuning/config.yaml`.
+`launch_verl.py` reads it, resolves the `env:` block, and forwards `python_args` to VERL
+as Hydra overrides. **When `USE_LORA=true`, `launch_verl.py` additionally overrides several
+defaults** - see the LoRA overrides column.
+
+### `env:` block
+
+| Key | Production value | Notes |
+|---|---|---|
+| `BASE_MODEL` | `Qwen/Qwen3-8B` | HuggingFace model ID or local path |
+| `SUBAGENT_MODEL` | `Qwen/Qwen3-1.7B` | Frozen sub-agent (separate server, port 9998) |
+| `N_GPUS` | `4` | VERL GPU count (CUDA_VISIBLE_DEVICES=0,1,2,3) |
+| `ROLLOUT_TP_SIZE` | `1` | Rollout vLLM tensor parallelism |
+| `EXPERIMENT_NAME` | `qwen3-8b-grpo-search-math` | Checkpoint dir name + W&B run name |
+| `PROJECT_NAME` | `msc-thesis-fine-tuning` | W&B project |
+| `BASE_DATA_DIR` | `data/training` | Root of train/val parquet files |
+| `ENABLE_TOOLS` | `["web_search", "code_generator"]` | Tools available during rollout |
+| `TOOL_STEPS` | `5` | Max tool calls per rollout episode |
+| `THINKING_MODE` | `NO` | **Currently set to NO.** See §12 for why `ORCHESTRATOR_ONLY` is recommended. |
+| `TRAIN_TEMPERATURE` | `0.7` | Sampling temperature for training rollouts |
+| `TEST_TEMPERATURE` | `0.0` | Greedy decoding for validation |
+| `N_WORKERS` | `4` | Parallel rollout worker processes |
+| `USE_LORA` | `"true"` | Default is LoRA; full-FT requires explicit `"false"` |
+| `USE_SCRATCH_CHECKPOINTS` | `"true"` | LoRA adapters → `/scratch-shared/$USER/fine_tuning/lora_adapters/` |
+| `SAVE_OPTIMIZER` | `"true"` | Save Adam moments + LR-scheduler state (tiny for LoRA; enables resume) |
+
+### Key `python_args:` (selected; see config.yaml for full list)
+
+| Key | Production value | LoRA override (launch_verl.py) | Notes |
+|---|---|---|---|
+| `data.train_batch_size` | `32` | - | Questions per training step |
+| `data.train_max_samples` | `1800` | - | Full training split per epoch |
+| `data.max_prompt_length` | `16384` | - | Bump to 20480 if `prompt_length/clip_ratio > 0` in VERL logs |
+| `data.max_response_length` | `2048` | - | Bump to 3072 if switching to `THINKING_MODE: ORCHESTRATOR_ONLY` |
+| `actor_rollout_ref.rollout.n` | `8` | - | GRPO group size (rollouts per question) |
+| `actor_rollout_ref.actor.optim.lr` | `1e-6` | **`1e-5`** | LoRA trains ~1% of params; 10× higher LR is standard |
+| `actor_rollout_ref.actor.kl_loss_coef` | `0.01` | - | KL penalty; scale proportionally if LR is increased |
+| `actor_rollout_ref.actor.clip_ratio_low/high` | `0.2 / 0.3` | - | PPO clip range |
+| `actor_rollout_ref.rollout.gpu_memory_utilization` | `0.45` | **`0.70`** | LoRA frees ~28 GB vs full-FT; extra KV pool boosts rollout throughput |
+| `actor_rollout_ref.rollout.max_model_len` | `18432` | - | 16384 prompt + 2048 response |
+| `actor_rollout_ref.rollout.max_num_seqs` | `128` | - | Decode parallelism cap |
+| `actor_rollout_ref.rollout.free_cache_engine` | `false` | **`true`** | LoRA requires KV flush between rollout and training (adapter swap invalidates cached prefixes) |
+| `actor_rollout_ref.actor.use_dynamic_bsz` | - | **`true`** | Pack sequences up to `ppo_max_token_len_per_gpu` |
+| `trainer.total_epochs` | `5` | - | |
+| `trainer.save_freq` | `10` | - | Step-based (~6 saves/epoch) |
+| `trainer.test_freq` | `10` | - | Step-based (~6 evals/epoch) |
+| `trainer.val_before_train` | `true` | - | Baseline measurement at step 0 |
+
+### LoRA parameters (`lora:` block)
+
+| Key | Value | Notes |
+|---|---|---|
+| `rank` | `64` | ~130 MB adapter vs ~16 GB full-FT weights |
+| `alpha` | `64` | alpha = rank → scaling factor 1.0 (neutral initialisation) |
+| `target_modules` | `all-linear` | Applies LoRA to all linear layers |
+| `resume_adapter_path` | _(unset)_ | Set to a saved `lora_adapter/` path for warm restarts |
+
+**LoRA learning rate note:** 1e-6 in config.yaml is for full-FT. `launch_verl.py` overrides to
+**1e-5** when `USE_LORA=true`. This is the actual LR used during training.
+
+### Smoke test differences (`config_smoke8b.yaml`)
+
+| Parameter | Production (`config.yaml`) | Smoke 8B (`config_smoke8b.yaml`) |
+|---|---|---|
+| `N_GPUS` | 4 | 2 |
+| `data.train_max_samples` | 1800 | 8 |
+| `actor_rollout_ref.rollout.n` | 8 | 2 |
+| `trainer.total_epochs` | 5 | 1 |
+| `TOOL_STEPS` | 5 | 2 |
+| `data.max_prompt_length` | 16384 | 4096 |
+| `trainer.save_freq / test_freq` | 10 | 1 |
+| `USE_SCRATCH_CHECKPOINTS` | `"true"` | `"false"` (adapters fit in GPFS home) |
+| `N_WORKERS` | 4 | 1 |
+| `BASE_DATA_DIR` | `data/training` | `data/training/smoke` |
+
+### Max turns: training vs evaluation
+
+| Setting | Training (`OrchestratorRollout`) | Evaluation (`run_experiment.py`) |
+|---|---|---|
+| `max_turns` | 5 | 15 (from config YAML) |
+| `max_tokens` (sub-agent) | 2048 | 8192 (from config) |
+| Temperature (orchestrator) | 0.7 train / 0.0 val | 0.0 greedy |
+| Planning turn | enabled | enabled (unless `baseline: true`) |
+
+Fewer turns during training keeps rollouts short and reduces token-budget overflow risk. Training
+questions (NQ, HotpotQA, DeepMath) typically resolve in 1–3 tool calls; the distribution shift
+at eval time (more turns available) does not harm the trained policy.
+
+---
+
+## 7. GPU Allocation
+
+Training uses **4 × H100 NVL GPUs (~94 GB each)**.
+
+### Memory envelope
+
+| Component | GPU 0 | GPUs 1–3 |
+|---|---|---|
+| Frozen sub-agent (Qwen3-1.7B, util=0.08) | ~7.5 GB | - |
+| VERL vLLM (Qwen3-8B model, util=0.70) | ~66 GB KV+model | ~66 GB |
+| FSDP actor shard (LoRA) | ~4 GB base + <1 GB adapter | ~4 GB + <1 GB |
+| Activations + misc | ~8 GB | ~8 GB |
+| **Total** | **~89 GB / 94 GB (5 GB headroom)** | **~82 GB / 94 GB** |
+
+GPU 0 is the tight one - it hosts both the sub-agent and VERL. Watch `out/fine_tuning/orchestrator_ft/ft_<jobid>_gpu.csv`
+(the `nvidia-smi` sidecar started by `005_train.job`) during the first 10 minutes. If GPU 0 memory
+approaches 94 GB, drop sub-agent `--gpu-memory-utilization` from `0.08` to `0.06`.
+
+### Throughput tuning
+
+The training loop is rollout-bound: ~60 % of each step is `timing_s/gen` (HTTP → VERL vLLM,
+HTTP → sub-agent, Serper API). The knobs below maximise GPU utilisation.
+
+| Knob | Production value | Rationale |
+|---|---|---|
+| `N_WORKERS` | `4` | Fills vLLM's continuous batcher; single-worker serialised 256 in-flight episodes through one Python client |
+| `gpu_memory_utilization` (LoRA) | `0.70` | LoRA frees ~28 GB vs full-FT; growing the KV pool lifts rollout throughput |
+| `max_num_seqs` | `128` | Decode parallelism cap; paged KV means this doesn't multiply by `max_model_len` |
+| Sub-agent `--gpu-memory-utilization` | `0.08` | ~7.5 GB KV for the frozen 1.7B server; absorbs concurrent tool-call traffic from N_WORKERS=4 × batch=32 × n=8 |
+
+### Health-check metrics (first production run)
+
+These should stay at zero. Non-zero means the cap is too tight and silently corrupts the GRPO signal:
+
+| Metric (in VERL log) | Non-zero fix |
+|---|---|
+| `prompt_length/clip_ratio` | Bump `data.max_prompt_length`: 16384 → 20480 |
+| `response_length/clip_ratio` | Bump `data.max_response_length`: 2048 → 3072 |
+| `n_dropped_sample_because_of_prompt` | Same as above (prompt cap) |
+| `n_trunc_sample_because_of_response` | Same as above (response cap) |
+| `n_dropped_sample_because_of_mini_batch` | Tune `ppo_max_token_len_per_gpu` (LoRA override: 45056) |
+
+---
+
+## 8. W&B Metrics
+
+VERL logs to project `msc-thesis-fine-tuning` under run name `qwen3-8b-grpo-search-math`.
 `val_before_train: true` runs a validation pass at step 0, giving a baseline before any gradient update.
-`trainer.test_freq: 10` (production) / `1` (smoke) runs validation every N steps — ~6 evals per epoch for
-the production run — so checkpoint selection does not have to wait for epoch boundaries.
+Validation and checkpoint saves happen every 10 steps (step-based mode, not epoch boundaries).
+
+### Key metrics
 
 | Metric | Source | What it tells you |
 |---|---|---|
-| `val/reward` | `val_combined.parquet` | Accuracy on the 50-row mixed val set (20 Search-R1 + 10 DeepMath + 20 AIME) — main checkpoint-selection signal and the key used by `_rotate_checkpoints` to update `best_checkpoint/`. Per-domain breakdown available offline from the per-source `val_*.parquet` files or from rollout JSONs via the `data_source` field |
-| `actor/reward_mean` | training rollouts | Mean reward across both domains per step |
-| `actor/reward_std` | training rollouts | Diversity signal — near-zero means all rollouts tied (bad) |
-| `actor/kl_divergence` | GRPO | Should stay low; spike = policy drifting from reference |
-| `actor/pg_loss` | GRPO | Policy gradient loss; should fall over epochs |
+| `val/reward` | `val_combined.parquet` (50 rows: 20 search + 10 math + 20 AIME) | Main checkpoint-selection signal; used by `_rotate_checkpoints` to maintain `best_checkpoint/` symlink |
+| `actor/reward_mean` | Training rollouts | Mean reward across both domains per step |
+| `actor/reward_std` | Training rollouts | Near-zero → all rollouts tied (bad); should stay > 0 |
+| `actor/kl_divergence` | GRPO | Should stay small; spike = policy drifting from reference |
+| `actor/pg_loss` | GRPO | Policy gradient loss; should decrease over epochs |
 
-**Gap:** `actor/reward_mean` is the combined average — W&B does not get per-domain breakdown for training rollouts. That requires offline analysis of the rollout JSONs (see below).
+**Note:** `actor/reward_mean` is a combined average - no per-domain breakdown in W&B for training
+rollouts. Per-domain breakdown requires offline analysis of rollout JSONs (see below).
 
-### Rollout JSONs (disk, per episode)
+### Rollout JSONs (disk)
 
-Every episode is persisted to `experiments/results/fine_tuning/<experiment>/<run-tag>/rollout_data/train|val/idx_N/rollout_<uuid8>.json`. With `rollout_n=8`, each training question produces 8 files (one per GRPO sample).
+Every episode is saved to:
+```
+experiments/results/fine_tuning/<experiment>/<run-tag>/rollout_data/train|val/idx_<N>/rollout_<uuid8>.json
+```
 
-Each record contains:
+Each record:
 ```json
 {
   "idx": 42,
@@ -164,172 +444,85 @@ Each record contains:
 }
 ```
 
-**What you can compute offline from the JSONs:**
+Metrics you can compute offline from the JSONs:
 
 | Plot / metric | How |
 |---|---|
-| Reward by domain per epoch | Group records by `data_source` + epoch; mean `reward` |
-| Reward distribution histogram (per epoch) | Histogram of `reward` over all 8 rollouts per question |
-| Tool call counts (`web_search` vs `code_generator`) | Count tool-call messages in `output_messages` |
+| Reward by domain per epoch | Group by `data_source` + epoch; mean `reward` |
+| Reward distribution histogram | Histogram of `reward` over all 8 rollouts per question |
+| Tool call counts per type | Count tool-call messages in `output_messages` |
 | Average turns to solution | Count assistant turns in `output_messages` |
-| Thinking trace length (tokens) | Extract `<think>...</think>` content from assistant messages |
+| Thinking trace length (tokens) | Extract `<think>...</think>` blocks from assistant messages |
 | Reward by DeepMath difficulty | Join on `extra_info.difficulty` from the parquet |
-| Pass@k curves | k ∈ {1,2,4,8} — fraction of questions with ≥1 correct rollout |
+| Pass@k curves | k ∈ {1, 2, 4, 8} - fraction of questions with ≥ 1 correct rollout |
 
-**No analysis script exists yet for the JSONs.** When writing plots, create `scripts/plots/ft_rollout_analysis.py` — pattern matches `scripts/plots/efficiency_plots.py` (loads JSON files, produces matplotlib figures).
+**No analysis script yet.** When writing plots, create `scripts/plots/ft_rollout_analysis.py`
+(pattern: `scripts/plots/efficiency_plots.py`).
 
----
+### Problem signals and fixes
 
-## Watch: Thinking Traces and the Response Budget
-
-With `THINKING_MODE: ORCHESTRATOR_ONLY`, Qwen3-8B generates a `<think>...</think>`
-block before every action. On the training data (NQ, HotpotQA, DeepMath) these
-traces are typically 300–800 tokens for simple questions and up to ~1500 tokens
-for harder DeepMath problems. Combined with tool calls and synthesis, most rollouts
-fit comfortably within the 4096 token budget.
-
-The risk is the hard tail of DeepMath: if the model thinks extensively before
-dispatching code, the total can approach or exceed 4096. When truncation happens,
-`data.truncation: 'truncate'` silently cuts the trajectory and the answer token
-is lost → reward = 0. A cluster of spurious zeros on DeepMath questions will push
-the model away from long thinking traces — the opposite of what you want.
-
-**How to detect:** in the first epoch, watch `val/reward_mean` on the DeepMath
-val split in W&B. If it drops or stays near zero while training reward is rising,
-truncation is likely. Fix: increase `data.max_response_length` to `8192` in
-`experiments/configs/fine_tuning/config.yaml` and relaunch.
-
----
-
-## GPU Efficiency and Throughput Tuning
-
-The training loop is rollout-bound: smoke-test profiling on Qwen3-8B (2× H100) showed
-`timing_s/gen` consuming ~60 % of every step, with the actor update taking only ~6 s vs
-60–70 s for generation. Memory utilisation was also low — 27 GB of 94 GB peak — because
-`free_cache_engine=True` releases the vLLM KV pool between rollout and training. The knobs
-below are tuned to fill that headroom and keep the GPUs fed.
-
-| Knob | Value | Why |
+| Signal | Likely cause | Fix |
 |---|---|---|
-| `N_WORKERS` | `4` (was 1) | Rollout loop is IO-bound (HTTP to VERL vLLM, HTTP to sub-agent, Serper). Parallel workers fill vLLM's continuous batcher; single-worker was serialising 256 in-flight episodes (`batch=32 × n=8`) through one Python client. |
-| vLLM `gpu_memory_utilization` (LoRA) | `0.70` (was 0.60) | Set in `scripts/launch_verl.py` LoRA override (not the YAML). Smoke's 27 GB / 94 GB peak left ~67 GB of headroom; bumping util grows the KV pool to ≈ 50 GB. |
-| `max_num_seqs` | `128` (was 64) | Decode parallelism cap. vLLM uses paged KV so this doesn't multiply by `max_model_len`; it just lets more in-flight sequences share the KV pool. |
-| Sub-agent `--gpu-memory-utilization` | `0.12` (was 0.08) | ~7.5 GB KV for the frozen Qwen3-1.7B server (was ~4 GB). 256 concurrent rollouts dispatching tool calls used to queue here; doubling the KV pool removes that bottleneck while staying inside GPU 0's envelope alongside VERL's vLLM. |
-
-**GPU 0 memory envelope** (the tight one — also hosts the sub-agent):
-sub-agent 11 GB + vLLM 66 GB + FSDP shard 4 GB + activations 8 GB ≈ **89 GB / 94 GB**
-(5 GB headroom). GPUs 1–3 carry only the VERL share at ≈ 82 GB. Drop sub-agent util back
-to `0.10` if `out/fine_tuning/orchestrator_ft/ft_<jobid>_gpu.csv` shows GPU 0 near 94 GB.
-
-### Ground-truth GPU monitor
-
-All three fine-tuning jobs (`003_smoke_4b.job`, `004_smoke_8b.job`, `005_train.job`)
-start an `nvidia-smi --query-gpu` sidecar (installed *after* the `trap cleanup EXIT`
-line so it's always reaped) that samples GPU SM / memory / power every 10 s into a
-CSV alongside the SLURM logs:
-
-```
-out/fine_tuning/smoke_test_4b/smoke4b_<jobid>_gpu.csv
-out/fine_tuning/smoke_test_8b/smoke8b_<jobid>_gpu.csv
-out/fine_tuning/orchestrator_ft/ft_<jobid>_gpu.csv
-```
-
-This is ground-truth (SM utilisation, real memory) to compare against VERL's own
-`perf/mfu/actor` and `perf/max_memory_allocated_gb` metrics, which only see what
-PyTorch allocated — they miss vLLM and the sub-agent server entirely.
-
-### Health-check metrics to watch on the first prod run
-
-Beyond `val/reward_mean`, the following should stay at zero. Any non-zero value means
-the corresponding cap is too tight and is silently corrupting the GRPO signal:
-
-| Metric (in `*_verl.log`) | If non-zero |
-|---|---|
-| `prompt_length/clip_ratio` | Bump `data.max_prompt_length` (16384 → 20480) |
-| `response_length/clip_ratio` | Bump `data.max_response_length` (2048 → 3072) |
-| `n_dropped_sample_because_of_prompt` | Same as above (prompt cap) |
-| `n_trunc_sample_because_of_response` | Same as above (response cap) |
-| `n_dropped_sample_because_of_mini_batch` | GRPO group is losing rollouts; tune `ppo_max_token_len_per_gpu` or `ppo_mini_batch_size` so the `n=8` fanout partitions cleanly across `N_GPUS=4` |
+| `val/reward` flat for 2+ epochs | All rollouts winning or losing | Check `actor/reward_std`; if near 0, training data may be too easy or too hard |
+| `actor/kl_divergence` spike | Policy diverging | Scale `kl_loss_coef` up proportionally (e.g. 0.05 at lr=1e-5) |
+| DeepMath rollouts drop to reward=0 while search improves | Response truncation | Increase `data.max_response_length` to `8192` |
+| W&B run missing | `WANDB_API_KEY` not set | Set in login script before `sbatch` |
 
 ---
 
-## Checkpoint Layout
+## 9. Checkpoint Layout
 
-VERL writes checkpoints to a unique run directory set by `trainer.default_local_dir` in `launch_verl.py`.
-The run tag `<DD-MM-YYYY_HH-MM-JOBID>` is printed at startup and shared by checkpoints and rollout data.
+### Paths
 
 | Config | Checkpoint base |
 |---|---|
-| `config_smoke.yaml`, `config_smoke8b.yaml` (`USE_SCRATCH_CHECKPOINTS: false`) | `experiments/results/fine_tuning/<experiment>/<run-tag>/` |
-| `config.yaml` (`USE_SCRATCH_CHECKPOINTS: true`) | `/scratch-shared/$USER/msc-thesis/fine_tuning/<experiment>/<run-tag>/` |
+| `config.yaml` (`USE_SCRATCH_CHECKPOINTS: "true"`, LoRA) | `/scratch-shared/$USER/fine_tuning/lora_adapters/<experiment>/<run-tag>/` |
+| `config_smoke8b.yaml` (`USE_SCRATCH_CHECKPOINTS: "false"`) | `experiments/results/fine_tuning/<experiment>/<run-tag>/` |
 
+The run tag `<DD-MM-YYYY_HH-MM-SLURM_JOB_ID>` is printed at VERL startup and written to log files.
 Rollout JSONs always land in `experiments/results/fine_tuning/<experiment>/<run-tag>/rollout_data/`.
 
-For the smoke run the checkpoint tree looks like:
+### Checkpoint directory tree (LoRA run, verl 0.7.1)
 
 ```
-experiments/results/fine_tuning/qwen3-4b-grpo-smoke/<run-tag>/
+<ckpt_base>/qwen3-8b-grpo-search-math/<run-tag>/
 │
-├── latest_checkpointed_iteration.txt   # Contains the last saved global step number (e.g. "2").
-│                                       # VERL reads this to find the latest checkpoint on resume.
+├── latest_checkpointed_iteration.txt   # Last saved global step (e.g. "10").
+│                                       # VERL reads this to auto-resume.
 │
-├── latest_checkpoint -> global_step_2/ # Symlink → most recently saved step dir.
-│                                       # Updated by _rotate_checkpoints after every save.
+├── latest_checkpoint -> global_step_10/  # Symlink → most recently saved step.
 │
-├── best_checkpoint -> global_step_1/   # Symlink → step with highest val/reward_mean so far.
-│                                       # Updated only when a fresh val beats the running best.
-│                                       # If save_freq > test_freq it may lag one save behind.
+├── best_checkpoint -> global_step_20/    # Symlink → step with highest val/reward so far.
+│                                         # Updated only when a fresh val improves on the best.
 │
-└── global_step_<N>/                    # Concrete checkpoint dir for step N.
-    │                                   # Rotation keeps at most 2 dirs: the one pointed to by
-    │                                   # latest_checkpoint and the one pointed to by best_checkpoint.
-    │                                   # All other dirs are deleted asynchronously after rotation.
-    │
-    ├── data.pt                         # Dataloader state dict (StatefulDataLoader).
-    │                                   # Stores the RNG state + sampler position so training can
-    │                                   # resume mid-epoch without re-seeing the same batches.
-    │
-    └── actor/                          # Actor (policy) checkpoint — the model being trained.
-        │                               # No critic/ directory: GRPO has no value network.
-        │
-        ├── model_world_size_1_rank_0.pt    # Full FSDP model state dict for rank 0 (~17 GB for Qwen3-4B).
-        │                                   # Contains all trainable parameters (full weights when
-        │                                   # USE_LORA=false; LoRA adapter + frozen base when true).
-        │                                   # world_size and rank are part of the filename so multi-GPU
-        │                                   # runs shard across multiple files (e.g. _rank_0, _rank_1…).
-        │
-        ├── optim_world_size_1_rank_0.pt    # Adam optimizer state for rank 0.
-        │                                   # LoRA runs (~10s of MB, LoRA params only): saved by
-        │                                   # all three configs (config.yaml, config_smoke.yaml,
-        │                                   # config_smoke8b.yaml) — SAVE_OPTIMIZER=true.
-        │                                   # Full-FT runs (~30 GB): set SAVE_OPTIMIZER=false if
-        │                                   # disk is tight; optimizer restarts from scratch on resume.
-        │                                   # Can be deleted from any checkpoint kept for inference only.
-        │
-        ├── extra_state_world_size_1_rank_0.pt  # LR scheduler state + RNG state (~15 KB).
-        │                                       # Needed for exact learning-rate resume.
-        │
-        ├── fsdp_config.json            # FSDP metadata: FSDP_version and world_size.
-        │                               # Used by the checkpoint loader to validate shard count.
-        │
-        └── huggingface/                # HF-format tokenizer (always saved, even without hf_model).
-            ├── config.json             # Model architecture config (vocab size, hidden dims, etc.)
-            ├── generation_config.json  # Default generation parameters (temperature, top_p…)
-            ├── tokenizer.json          # Fast tokenizer vocabulary + merge rules
-            ├── tokenizer_config.json   # Tokenizer metadata (chat template path, special tokens…)
-            ├── chat_template.jinja     # Qwen3 chat template (used by apply_chat_template)
-            ├── vocab.json              # BPE vocabulary mapping token → id
-            ├── merges.txt              # BPE merge rules
-            ├── added_tokens.json       # Special tokens added on top of the base vocab
-            └── special_tokens_map.json # Maps special token names (bos, eos…) to their strings
+├── best_checkpoint_info.json             # {"epoch": 2, "step": 20, "val_reward": 0.47}
+│
+└── global_step_<N>/
+    ├── data.pt                         # Dataloader state (RNG + sampler position for exact resume)
+    └── actor/
+        ├── lora_adapter/               # LoRA adapter (HF PEFT format, ~250–500 MB)
+        │   ├── adapter_model.safetensors
+        │   └── adapter_config.json
+        ├── optim_world_size_*_rank_*.pt    # Adam optimizer state (tiny for LoRA, ~10s of MB)
+        ├── extra_state_world_size_*_rank_*.pt  # LR scheduler + RNG state
+        ├── fsdp_config.json
+        └── huggingface/                # HF tokenizer (always saved)
+            ├── tokenizer.json
+            ├── tokenizer_config.json
+            └── ...
 ```
+
+**Note:** For LoRA runs, VERL does **not** write `model_world_size_*_rank_*.pt` (the full model
+state dict). The adapter delta is in `lora_adapter/`. Only the two checkpoint dirs referenced by
+`latest_checkpoint/` and `best_checkpoint/` are retained - older dirs are deleted asynchronously
+after rotation.
 
 ### What to keep vs. discard
 
 | File | Keep for inference | Keep for resuming training |
 |---|---|---|
-| `model_world_size_*_rank_*.pt` | Yes | Yes |
-| `optim_world_size_*_rank_*.pt` | No (large) | Yes |
+| `lora_adapter/` | Yes (merge input) | Yes |
+| `optim_world_size_*_rank_*.pt` | No | Yes |
 | `extra_state_*_rank_*.pt` | No | Yes |
 | `fsdp_config.json` | No | Yes |
 | `huggingface/` | Yes (tokenizer) | Yes |
@@ -338,46 +531,204 @@ experiments/results/fine_tuning/qwen3-4b-grpo-smoke/<run-tag>/
 
 ### Resuming training
 
-Leave `trainer.resume_from_path` unset (the default) and VERL will auto-resume from the step recorded
-in `latest_checkpointed_iteration.txt`, which always points at the `latest_checkpoint/` symlink.
-To resume from the best checkpoint instead, set `trainer.resume_from_path` to the resolved path of
-`best_checkpoint/` (e.g. `/scratch-shared/$USER/msc-thesis/fine_tuning/<experiment>/<run-tag>/best_checkpoint`).
-
-`SAVE_OPTIMIZER=true` (all three configs: config.yaml, config_smoke.yaml, config_smoke8b.yaml) stores
-Adam moments and LR-scheduler state alongside the model weights, so the resumed run is byte-for-byte
-identical to an uninterrupted run. For hypothetical full-FT runs, set `SAVE_OPTIMIZER=false` if disk
-is tight — the optimizer will restart from scratch, which affects the first few gradient steps.
-
-### Converting to a usable model (LoRA runs)
-
-When `USE_LORA=true`, `model_world_size_1_rank_0.pt` contains only the LoRA adapter deltas — the
-frozen base weights are not stored. Merge before inference:
-
-```bash
-# Smoke (USE_SCRATCH_CHECKPOINTS=false):
-python $HOME/azywot/AgentFlow/util/model_merger.py \
-    --base_model Qwen/Qwen3-4B \
-    --lora_path experiments/results/fine_tuning/qwen3-4b-grpo-smoke/<run-tag>/global_step_<N>/actor/model_world_size_1_rank_0.pt \
-    --output_dir experiments/results/fine_tuning/qwen3-4b-grpo-smoke/<run-tag>/merged_model/
-
-# Full training (USE_SCRATCH_CHECKPOINTS=true):
-python $HOME/azywot/AgentFlow/util/model_merger.py \
-    --base_model Qwen/Qwen3-8B \
-    --lora_path /scratch-shared/$USER/msc-thesis/fine_tuning/qwen3-8b-grpo-search-math/<run-tag>/global_step_<N>/actor/model_world_size_1_rank_0.pt \
-    --output_dir experiments/results/fine_tuning/qwen3-8b-grpo-search-math/<run-tag>/merged_model/
-```
-
-When `USE_LORA=false`, `model_world_size_1_rank_0.pt` is the full model and can be loaded
-directly with `from_pretrained`. (All three configs — `config.yaml`, `config_smoke.yaml`,
-`config_smoke8b.yaml` — use `USE_LORA: "true"` by default.)
+Leave `trainer.resume_from_path` unset - VERL auto-resumes from `latest_checkpointed_iteration.txt`.
+For LoRA warm-restart from a specific adapter (e.g. `best_checkpoint/`), set `lora.resume_adapter_path`
+in `config.yaml` to the resolved `<ckpt_dir>/actor/lora_adapter/` path.
 
 ---
 
-## Environment Variables Required at Runtime
+## 10. Merge LoRA and Evaluate
 
-| Variable | Where to set |
-|---|---|
-| `SERPER_API_KEY` or `TAVILY_API_KEY` | Snellius login script or `experiments/configs/fine_tuning/config.yaml` env block |
-| `SUBAGENT_ENDPOINT` | Set to `http://localhost:9998/v1` after starting the frozen sub-agent server |
-| `WANDB_API_KEY` | Snellius login script |
-| `HF_TOKEN` | Snellius login script (for gated datasets) |
+After training, the checkpoint contains only the LoRA adapter delta (`actor/lora_adapter/`).
+Merge it into the base model before running inference:
+
+```bash
+conda activate cosmas-train
+
+# Production run (USE_SCRATCH_CHECKPOINTS=true):
+RUN_TAG="<DD-MM-YYYY_HH-MM-JOBID>"   # printed by launch_verl.py at startup
+CKPT="/scratch-shared/${USER}/fine_tuning/lora_adapters/qwen3-8b-grpo-search-math/${RUN_TAG}/best_checkpoint"
+
+python scripts/merge_lora.py \
+    --checkpoint "${CKPT}" \
+    --base-model Qwen/Qwen3-8B \
+    --output-dir "/scratch-shared/${USER}/fine_tuning/merged_models/qwen3-8b-grpo-${RUN_TAG}/"
+
+# Smoke run (USE_SCRATCH_CHECKPOINTS=false):
+CKPT="experiments/results/fine_tuning/qwen3-8b-grpo-smoke/${RUN_TAG}/best_checkpoint"
+
+python scripts/merge_lora.py \
+    --checkpoint "${CKPT}" \
+    --base-model Qwen/Qwen3-8B \
+    --output-dir "experiments/results/fine_tuning/qwen3-8b-grpo-smoke/${RUN_TAG}/merged_model/"
+```
+
+`scripts/merge_lora.py` reads hyperparameters (rank, alpha, target modules) directly from
+`actor/lora_adapter/adapter_config.json` - no need to pass them on the CLI.
+
+The merged model is a standard HuggingFace checkpoint. Use it in any experiment config:
+
+```yaml
+models:
+  orchestrator:
+    name: "Qwen3-8B-FT"
+    family: "qwen3"
+    path_or_id: "/scratch-shared/<user>/fine_tuning/merged_models/qwen3-8b-grpo-<run-tag>/"
+    role: "orchestrator"
+    # all other fields (tensor_parallel_size, gpu_ids, etc.) unchanged
+```
+
+Run evaluation exactly as for any other model:
+```bash
+python scripts/run_experiment.py --config experiments/configs/qwen3/agentflow/qwen3_8b_ft_gaia.yaml
+python scripts/analyze_results.py experiments/results/<run>/raw_results.json --by-level --tools
+```
+
+No changes to `VLLMProvider`, `AgenticOrchestrator`, or evaluation scripts.
+
+---
+
+## 11. Troubleshooting
+
+| Problem | Diagnostic | Fix |
+|---|---|---|
+| `EnvironmentError: SERPER_API_KEY must be set` | Missing search API key | Export `SERPER_API_KEY` before launching rollout workers |
+| `EnvironmentError: SUBAGENT_ENDPOINT must be set` | Frozen sub-agent server not started | Start `vllm serve Qwen/Qwen3-1.7B --port 9998` first; export `SUBAGENT_ENDPOINT` |
+| Rollout workers fail to connect to VERL | VERL not ready yet | Increase sleep in job script (60 → 120 s); check `ft_<jobid>_verl.log` |
+| `ModuleNotFoundError: agentflow` | Wrong conda env | `conda activate cosmas-train` |
+| `ModuleNotFoundError: verl` | Running in inference env | `agent_engine` env doesn't have verl - use `cosmas-train` |
+| Parquet schema error in rollout | Stale data files from older `prepare.py` | Re-run `001_prepare_data.job` |
+| GPU 0 OOM | Sub-agent + VERL hitting 94 GB | Drop sub-agent `--gpu-memory-utilization` to `0.06` |
+| `val/reward` near 0 on DeepMath while search improves | Response truncation | Increase `data.max_response_length` to `8192` |
+| W&B shows no val metrics | `WANDB_API_KEY` not exported | Set in login script before `sbatch` |
+| Checkpoint not found on resume | Training crashed before first save | Lower `trainer.save_freq` to `5`; check VERL log for the step count |
+
+---
+
+## 12. Design Decisions
+
+### Algorithm: GRPO (not PPO)
+
+GRPO has no value network, reducing memory and simplifying the training loop. AgentFlow uses it; we
+replicate the setup to minimise deviation from a tested baseline.
+
+### Training data: Search-R1 + DeepMath
+
+These target the two domains where tool use is demonstrably necessary and the reward signal is clean:
+
+- **NQ / HotpotQA (Search-R1):** Specific entity-level facts the model doesn't hold in memory.
+  Direct reasoning → reward = 0 on most questions. GRPO pushes toward `web_search`.
+- **DeepMath:** Competition math with exact numerical answers. Arithmetic drift in natural-language
+  reasoning → reward = 0. GRPO pushes toward `code_generator`.
+
+GPQA/HLE expert-science failures are structurally different (web search doesn't reliably help on
+google-proof questions) and are not the primary training target.
+
+### Sub-agents: separate frozen server (not shared with VERL)
+
+At evaluation time, sub-agents run the base `Qwen/Qwen3-1.7B` through the standard `VLLMProvider`.
+If sub-agents instead shared the VERL endpoint, they would call the evolving actor snapshot at each
+step - training the orchestrator against an unstable, changing tool interface. The frozen server
+makes the tool interface at training time **identical** to the tool interface at eval time.
+
+A 1.7B server uses ~7.5 GB at util=0.08, fitting alongside the 8B VERL stack. Using 8B for
+sub-agents adds no quality benefit for the narrow sub-agent tasks (retrieve-and-summarise,
+write-and-execute).
+
+### LoRA rank 64 (not full fine-tune)
+
+Checkpoints are ~250–500 MB (adapter only) vs ~16 GB for full fine-tune. The verl 0.7.1 upgrade
+enables `ref_in_actor` (no separate reference shard) and adapter-only optimizer state, saving
+~28 GB per GPU vs full-FT. This allows `gpu_memory_utilization=0.70` for a larger KV pool and
+higher rollout throughput.
+
+### Thinking mode: NO (current config) vs ORCHESTRATOR_ONLY (recommended)
+
+**Current config:** `THINKING_MODE: NO`.
+
+**Problem:** The dominant failure mode is the orchestrator reasoning in its head and skipping a
+tool call. With `THINKING_MODE: NO`, this failure is invisible to the gradient - the model just
+outputs an answer directly, reward = 0, but GRPO can't distinguish "skipped a tool call" from
+"tried but produced the wrong answer". With `THINKING_MODE: ORCHESTRATOR_ONLY`, the model reasons
+in its `<think>` trace, reaches a confident-but-wrong answer, skips the tool call, and gets
+reward = 0 - GRPO can now push it to dispatch a tool instead.
+
+**Train/eval consistency also favours `ORCHESTRATOR_ONLY`**: thesis results show thinking is the
+dominant performance driver, and the fine-tuned model will be evaluated with thinking enabled.
+
+**If switching:** bump `data.max_response_length` from `2048` to `3072` to accommodate thinking
+traces (~500–1500 extra tokens). Watch `response_length/clip_ratio` in the VERL log.
+
+### Reward: binary exact-match
+
+Binary reward is directly comparable to benchmark accuracy numbers. The reward function reuses
+`evaluate_answer()` from `metrics.py`, ensuring training reward and eval metric are computed
+identically.
+
+### Validation: val_combined.parquet (single file → one W&B series)
+
+VERL reads a single `val_combined.parquet` to log one `val/reward` series used for checkpoint
+selection. The 20 AIME rows in the val set provide an early-warning signal for AIME regressions
+during training. Per-domain breakdowns are available offline from the per-domain `val_*.parquet`
+files or from rollout JSONs via the `data_source` field.
+
+### Test split: held out entirely
+
+The val split selects the best checkpoint. Using the same data for checkpoint selection and final
+reporting inflates the reported numbers. The test split (100 Search-R1 + 100 DeepMath) is never
+touched during training and is used only once, for final metric reporting after checkpoint selection.
+
+---
+
+## File Map
+
+```
+msc-thesis/
+├── src/fine_tuning/
+│   ├── __init__.py              lazy imports (heavy deps optional)
+│   ├── reward.py                OrchestratorReward - binary via metrics.py
+│   ├── rollout.py               OrchestratorRollout(LitAgent) - VERL rollout worker
+│   └── data/
+│       └── prepare.py           Download + split + write parquet files
+│
+│   agentflow/                   AgentFlow training stack (VERL integration)
+│   ├── trainer.py               AgentFlowTrainer - extends RayPPOTrainer
+│   ├── reward.py                Flow GRPO reward assignment (all triplets in trajectory)
+│   ├── runner.py                Rollout worker entry point
+│   ├── server.py                AgentModeDaemon HTTP server
+│   └── verl/
+│       ├── config.yaml          Hydra base config (extends verl ppo_trainer)
+│       ├── trainer.py           VERL trainer subclass
+│       ├── dataset.py           VERL dataset adapter (reads parquet)
+│       ├── daemon.py            Async rollout daemon (task dispatch + reward collection)
+│       └── async_server.py      PatchedvLLMServer (vLLM V1 LoRA compatibility)
+│
+├── scripts/
+│   ├── launch_verl.py           Starts VERL training server (reads config.yaml, applies LoRA overrides)
+│   ├── train_orchestrator.py    Starts rollout workers (connects to VERL + sub-agent)
+│   ├── merge_lora.py            Merges LoRA adapter into base model (reads adapter_config.json for hparams)
+│   └── test_ft_smoke.py         Pre-flight checks (no GPU/VERL needed)
+│
+├── experiments/configs/fine_tuning/
+│   ├── config.yaml              Full training config (5 epochs, 4×H100)
+│   ├── config_smoke.yaml        4B smoke (2 GPUs, 1 epoch, 8 samples)
+│   └── config_smoke8b.yaml      8B smoke (3 GPUs, 1 epoch, 8 samples) ← production code path
+│
+├── jobs/fine_tuning/
+│   ├── 000_create_environment.job   SLURM: create cosmas-train conda env
+│   ├── 001_prepare_data.job         SLURM: download + write data/training/
+│   ├── 002_inspect_data.job         SLURM: verify parquet schema + row counts
+│   ├── 003_smoke_4b.job             SLURM: 4B smoke test (2 GPUs)
+│   ├── 004_smoke_8b.job             SLURM: 8B smoke test (3 GPUs) ← run before 005
+│   └── 005_train.job                SLURM: full 5-epoch training (4 GPUs, 72h)
+│
+└── data/training/               Created by job 001
+    ├── train/combined_train.parquet   1800 rows
+    ├── val/val_search.parquet          20 rows
+    │   val/val_deepmath.parquet        10 rows
+    │   val/val_aime.parquet            20 rows
+    │   val/val_combined.parquet        50 rows ← VERL reads this
+    └── test/test_search.parquet       100 rows
+         test/test_deepmath.parquet    100 rows
+         test/test_combined.parquet    200 rows (final reporting only)
+```
