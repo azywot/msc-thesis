@@ -195,17 +195,13 @@ class ProgressSaverCallback:
 
         self._run_dir.mkdir(parents=True, exist_ok=True)
 
-    def on_iteration_end(self, event):
-        state = event.get("state", None)
-        if state is None:
-            return
+    def __call__(self, gepa_state) -> bool:
+        iteration = getattr(gepa_state, "i", -1)
 
-        iteration = event.get("iteration", getattr(state, "i", -1))
+        scores = list(getattr(gepa_state, "program_full_scores_val_set", []) or [])
+        candidates = list(getattr(gepa_state, "program_candidates", []) or [])
 
-        scores = list(getattr(state, "program_full_scores_val_set", []) or [])
-        candidates = list(getattr(state, "program_candidates", []) or [])
-
-        total = getattr(state, "total_num_evals", 0)
+        total = getattr(gepa_state, "total_num_evals", 0)
         pct = 100.0 * total / self._max if self._max else 0.0
 
         best_val = max(scores) if scores else float("-inf")
@@ -292,6 +288,8 @@ class ProgressSaverCallback:
 
                 except Exception as e:
                     print(f"[gepa] checkpoint save failed: {e}", flush=True)
+
+        return False
 
 # ─────────────────────────────────────────────── MODE: optimize ────────────
 
@@ -450,7 +448,7 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
         use_wandb=use_wandb,
         wandb_api_key=wandb_api_key,
         wandb_init_kwargs=wandb_init_kwargs,
-        callbacks=[progress_saver],
+        stop_callbacks=[progress_saver],
     )
 
     best = result.best_candidate
