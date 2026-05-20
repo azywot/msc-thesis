@@ -2,7 +2,10 @@
 # Register one or more SLURM job IDs for email notifications on status change.
 # Usage:   jobs/scripts/track_job.sh <jobid> [jobid ...]
 #          jobs/scripts/track_job.sh --list           # show active watchers
+#          jobs/scripts/track_job.sh --track <jobid>  # same as bare <jobid>
+#          jobs/scripts/track_job.sh --track ALL      # track every job in `squeue -u $USER`
 #          jobs/scripts/track_job.sh --stop <jobid>   # stop a watcher
+#          jobs/scripts/track_job.sh --stop ALL       # stop all watchers
 #
 # Recipient address is read from <repo>/.env (key SLURM_WATCH_EMAIL).
 # Override via env: SLURM_WATCH_EMAIL=... jobs/scripts/track_job.sh ...
@@ -147,6 +150,20 @@ stop_watcher() {
     fi
 }
 
+stop_all_watchers() {
+    shopt -s nullglob
+    local pidfiles=( "$STATE_DIR"/*.pid )
+    if [[ ${#pidfiles[@]} -eq 0 ]]; then
+        printf '%s(no active watchers)%s\n' "$C_DIM" "$C_RESET"
+        return
+    fi
+    local pidfile job
+    for pidfile in "${pidfiles[@]}"; do
+        job=$(basename "$pidfile" .pid)
+        stop_watcher "$job"
+    done
+}
+
 # ---------- mail send (no recipient in ps args) -------------------------------
 send_mail() {
     local to="$1" subj="$2" body="$3"
@@ -240,8 +257,9 @@ usage() {
 ${C_BOLD}track_job.sh${C_RESET}  -  email me when SLURM jobs change status
 
   ${C_CYN}$(basename "$0")${C_RESET} <jobid> [jobid ...]   register watcher(s)
+  ${C_CYN}$(basename "$0")${C_RESET} --track <jobid>|ALL   register one watcher (or all my queued jobs)
   ${C_CYN}$(basename "$0")${C_RESET} --list                show active watchers
-  ${C_CYN}$(basename "$0")${C_RESET} --stop <jobid>        cancel a watcher
+  ${C_CYN}$(basename "$0")${C_RESET} --stop <jobid>|ALL    cancel one watcher (or all)
 
   recipient: \$SLURM_WATCH_EMAIL  (loaded from <repo>/.env)
   poll every ${INTERVAL}s
@@ -255,9 +273,31 @@ fi
 
 case "$1" in
     --list|-l)    list_watchers; exit 0 ;;
-    --stop)       shift; stop_watcher "${1:?need jobid}"; exit 0 ;;
+    --stop)
+        shift
+        arg="${1:?need jobid or ALL}"
+        case "$arg" in
+            ALL|all) stop_all_watchers ;;
+            *)       stop_watcher "$arg" ;;
+        esac
+        exit 0
+        ;;
     -h|--help)    usage; exit 0 ;;
     --watch)      shift; watch_job "${1:?need jobid}"; exit 0 ;;
+    --track)
+        shift
+        arg="${1:?need jobid or ALL}"
+        if [[ "$arg" == "ALL" || "$arg" == "all" ]]; then
+            mapfile -t jobs_to_track < <(squeue -h -u "$USER" -o "%i" 2>/dev/null)
+            if [[ ${#jobs_to_track[@]} -eq 0 ]]; then
+                printf '%s(no jobs in queue for %s)%s\n' "$C_DIM" "$USER" "$C_RESET"
+                exit 0
+            fi
+            set -- "${jobs_to_track[@]}"
+        else
+            set -- "$arg"
+        fi
+        ;;
 esac
 
 require_email
