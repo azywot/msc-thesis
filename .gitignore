@@ -89,3 +89,4 @@ outputs/*
 
 # Generated experiment configs (rebuilt by experiments/configs/generate_configs.py)
 experiments/configs/archive/*/
+out/fine_tuning/*/*.csv
