@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Register one or more SLURM job IDs for email notifications on status change.
-# Usage:   jobs/scripts/track_job.sh <jobid> [jobid ...]
-#          jobs/scripts/track_job.sh --list           # show active watchers
-#          jobs/scripts/track_job.sh --track <jobid>  # same as bare <jobid>
-#          jobs/scripts/track_job.sh --track ALL      # track every job in `squeue -u $USER`
-#          jobs/scripts/track_job.sh --stop <jobid>   # stop a watcher
-#          jobs/scripts/track_job.sh --stop ALL       # stop all watchers
-#          jobs/scripts/track_job.sh --attach         # attach to the watcher tmux session
+# Usage:   jobs/scripts/track_job.sh <jobid> [jobid ...]   # register + attach
+#          jobs/scripts/track_job.sh --list                # show active watchers
+#          jobs/scripts/track_job.sh --track <jobid>       # same as bare <jobid>
+#          jobs/scripts/track_job.sh --track ALL           # track every job in `squeue -u $USER`
+#          jobs/scripts/track_job.sh --stop <jobid>        # stop a watcher
+#          jobs/scripts/track_job.sh --stop ALL            # stop all watchers
+#          jobs/scripts/track_job.sh --attach              # attach to the watcher tmux session
+#
+# Flags (combine with any of the registering forms above):
+#          --no-attach          register watchers but don't auto-attach to tmux
 #
 # Watchers are launched inside a persistent tmux session (default name
 # "slurmwatch") so they survive terminal close on hosts where logout reaps
@@ -23,11 +26,17 @@
 # Recipient address is read from <repo>/.env (key SLURM_WATCH_EMAIL).
 # Override via env: SLURM_WATCH_EMAIL=... jobs/scripts/track_job.sh ...
 #
+# After registering, the script attaches you to the tmux session by default
+# so you can see the first state transition land. Pass --no-attach (or set
+# SLURM_WATCH_NO_ATTACH=1) to skip; it's also skipped when stdout isn't a
+# TTY, or when you're already inside another tmux session.
+#
 # Other env overrides:
 #   SLURM_WATCH_INTERVAL      (default: 30 seconds)
 #   SLURM_WATCH_STATE_DIR     (default: <repo>/.slurm-watch)
 #   SLURM_WATCH_TMUX_SESSION  (default: slurmwatch)
 #   SLURM_WATCH_NO_TMUX=1     fall back to setsid+nohup (no terminal survival)
+#   SLURM_WATCH_NO_ATTACH=1   register watchers but don't auto-attach
 #   NO_COLOR=1                disable ANSI colors
 set -euo pipefail
 
@@ -306,11 +315,14 @@ usage() {
     cat <<EOF
 ${C_BOLD}track_job.sh${C_RESET}  -  email me when SLURM jobs change status
 
-  ${C_CYN}$(basename "$0")${C_RESET} <jobid> [jobid ...]   register watcher(s)
+  ${C_CYN}$(basename "$0")${C_RESET} <jobid> [jobid ...]   register watcher(s) and attach
   ${C_CYN}$(basename "$0")${C_RESET} --track <jobid>|ALL   register one watcher (or all my queued jobs)
   ${C_CYN}$(basename "$0")${C_RESET} --list                show active watchers
   ${C_CYN}$(basename "$0")${C_RESET} --stop <jobid>|ALL    cancel one watcher (or all)
   ${C_CYN}$(basename "$0")${C_RESET} --attach              attach to the watcher tmux session
+
+  flags:
+    --no-attach       register watchers but don't auto-attach to tmux
 
   recipient: \$SLURM_WATCH_EMAIL  (loaded from <repo>/.env)
   watchers live in tmux session "${TMUX_SESSION}"
@@ -359,6 +371,17 @@ case "$1" in
         ;;
 esac
 
+# Strip --no-attach from anywhere in the arg list; everything else is a job id.
+NO_ATTACH="${SLURM_WATCH_NO_ATTACH:-}"
+_args=()
+for _a in "$@"; do
+    case "$_a" in
+        --no-attach) NO_ATTACH=1 ;;
+        *)           _args+=("$_a") ;;
+    esac
+done
+set -- "${_args[@]}"
+
 require_email
 if tmux_available; then
     ensure_tmux_session
@@ -405,3 +428,19 @@ for job in "$@"; do
         "$C_GRN" "$C_RESET" "$C_BOLD" "$job" "$C_RESET" "$pid" \
         "$C_DIM" "$STATE_DIR/$job.log" "$C_RESET"
 done
+
+# Auto-attach to the tmux session unless suppressed, non-interactive, or nested.
+if tmux_available && tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    if [[ -n "$NO_ATTACH" ]]; then
+        printf '%s(skipped auto-attach; use --attach when ready)%s\n' "$C_DIM" "$C_RESET"
+    elif [[ ! -t 1 ]]; then
+        : # non-interactive (piped/redirected) — silently skip
+    elif [[ -n "${TMUX:-}" ]]; then
+        printf '%s(already inside tmux — attach with: tmux switch-client -t %s)%s\n' \
+            "$C_DIM" "$TMUX_SESSION" "$C_RESET"
+    else
+        printf '%sattaching to tmux session "%s"%s  (Ctrl-b d to detach)\n' \
+            "$C_BOLD" "$TMUX_SESSION" "$C_RESET"
+        exec tmux attach -t "$TMUX_SESSION"
+    fi
+fi
