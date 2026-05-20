@@ -75,8 +75,12 @@ def main():
         # Verl's Qwen3-8B LoRA example leaves the default True; we override the full-FT False here.
         python_args["actor_rollout_ref.rollout.free_cache_engine"] = True
         # LoRA frees ~24 GB optimizer + ~4 GB ref shard per GPU → vLLM can take more KV cache.
-        # Matches verl/examples/tuning/lora/run_qwen3_8b_fsdp.sh which uses 0.6 on the same model.
-        python_args["actor_rollout_ref.rollout.gpu_memory_utilization"] = 0.6
+        # Pushed from 0.6 to 0.70 alongside max_model_len=18432 (was 22528). Smoke 8B
+        # observed only 27 GB peak torch alloc during training (94 GB H100), so growing
+        # the vLLM KV pool fills the headroom and lifts rollout throughput. GPU 0 is
+        # tightest (also hosts the sub-agent at util=0.12 ≈ 11 GB): 66 GB vLLM + 11 GB
+        # sub-agent + 4 GB FSDP shard + 8 GB activations ≈ 89 GB / 94 GB (5 GB headroom).
+        python_args["actor_rollout_ref.rollout.gpu_memory_utilization"] = 0.70
         # Dynamic batching packs sequences up to ppo_max_token_len_per_gpu — at 22528 ctx the
         # default 16384 forces one-seq-per-pass and wastes throughput. 45056 = 2× (prompt+resp).
         # rollout.log_prob_* and ref.log_prob_* inherit these via OmegaConf oc.select.

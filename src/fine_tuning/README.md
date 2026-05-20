@@ -68,7 +68,9 @@ Or manually (three terminals, after `conda activate cosmas-train` in each):
 
 ```bash
 # Terminal 1 — frozen sub-agent server (start first, never needs restarting)
-vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.15
+# util=0.12 (~11 GB) matches jobs/fine_tuning/005_train.job and gives ~7.5 GB KV cache,
+# enough to absorb the concurrent tool-call traffic from N_WORKERS=4 × batch=32 × n=8.
+vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.12
 
 # Terminal 2 — VERL server (after sub-agent server is up)
 python scripts/launch_verl.py --config experiments/configs/fine_tuning/config.yaml
@@ -118,7 +120,7 @@ models:
 | Reward | Binary exact-match via `metrics.py` | Directly comparable to benchmark numbers |
 | Model weights | LoRA rank-64, all-linear | ~130 MB checkpoints vs ~16 GB full fine-tune |
 | Thinking mode | `THINKING_MODE: NO` (current config) | **Verify before training.** Config is set to `NO`. The recommended value is `ORCHESTRATOR_ONLY` — it matches the evaluation condition and exposes the "direct reasoning without action" failure to the gradient (model reasons in `<think>`, skips tool call, gets reward=0). Training with `NO` removes that signal. |
-| Response budget | `max_response_length: 4096` | Full multi-turn orchestrator rollout is longer than AgentFlow's single-step Planner; thinking traces add ~500–1500 tokens per rollout |
+| Response budget | `max_prompt_length: 16384` / `max_response_length: 2048` | Sized from smoke-rollout token analysis (43 episodes, real Qwen3-8B tokenizer): assistant turn p95 = 992 tokens, tool response p95 = 4502 tokens, prompt_max already 6368 on AIME at just 2 turns. 16384 prompt fits typical 5-turn multi-hop HotpotQA with web responses; 2048 response is ~1.8× safety over observed max (1131). If first-epoch logs show `prompt_length/clip_ratio > 0` or `n_dropped_sample_because_of_prompt > 0`, bump prompt cap to 20480. With `THINKING_MODE=ORCHESTRATOR_ONLY`, raise response cap to 3072 (thinking adds ~500–1500). |
 
 ---
 
@@ -196,6 +198,58 @@ the model away from long thinking traces — the opposite of what you want.
 val split in W&B. If it drops or stays near zero while training reward is rising,
 truncation is likely. Fix: increase `data.max_response_length` to `8192` in
 `experiments/configs/fine_tuning/config.yaml` and relaunch.
+
+---
+
+## GPU Efficiency and Throughput Tuning
+
+The training loop is rollout-bound: smoke-test profiling on Qwen3-8B (2× H100) showed
+`timing_s/gen` consuming ~60 % of every step, with the actor update taking only ~6 s vs
+60–70 s for generation. Memory utilisation was also low — 27 GB of 94 GB peak — because
+`free_cache_engine=True` releases the vLLM KV pool between rollout and training. The knobs
+below are tuned to fill that headroom and keep the GPUs fed.
+
+| Knob | Value | Why |
+|---|---|---|
+| `N_WORKERS` | `4` (was 1) | Rollout loop is IO-bound (HTTP to VERL vLLM, HTTP to sub-agent, Serper). Parallel workers fill vLLM's continuous batcher; single-worker was serialising 256 in-flight episodes (`batch=32 × n=8`) through one Python client. |
+| vLLM `gpu_memory_utilization` (LoRA) | `0.70` (was 0.60) | Set in `scripts/launch_verl.py` LoRA override (not the YAML). Smoke's 27 GB / 94 GB peak left ~67 GB of headroom; bumping util grows the KV pool to ≈ 50 GB. |
+| `max_num_seqs` | `128` (was 64) | Decode parallelism cap. vLLM uses paged KV so this doesn't multiply by `max_model_len`; it just lets more in-flight sequences share the KV pool. |
+| Sub-agent `--gpu-memory-utilization` | `0.12` (was 0.08) | ~7.5 GB KV for the frozen Qwen3-1.7B server (was ~4 GB). 256 concurrent rollouts dispatching tool calls used to queue here; doubling the KV pool removes that bottleneck while staying inside GPU 0's envelope alongside VERL's vLLM. |
+
+**GPU 0 memory envelope** (the tight one — also hosts the sub-agent):
+sub-agent 11 GB + vLLM 66 GB + FSDP shard 4 GB + activations 8 GB ≈ **89 GB / 94 GB**
+(5 GB headroom). GPUs 1–3 carry only the VERL share at ≈ 82 GB. Drop sub-agent util back
+to `0.10` if `out/fine_tuning/orchestrator_ft/ft_<jobid>_gpu.csv` shows GPU 0 near 94 GB.
+
+### Ground-truth GPU monitor
+
+All three fine-tuning jobs (`003_smoke_4b.job`, `004_smoke_8b.job`, `005_train.job`)
+start an `nvidia-smi --query-gpu` sidecar (installed *after* the `trap cleanup EXIT`
+line so it's always reaped) that samples GPU SM / memory / power every 10 s into a
+CSV alongside the SLURM logs:
+
+```
+out/fine_tuning/smoke_test_4b/smoke4b_<jobid>_gpu.csv
+out/fine_tuning/smoke_test_8b/smoke8b_<jobid>_gpu.csv
+out/fine_tuning/orchestrator_ft/ft_<jobid>_gpu.csv
+```
+
+This is ground-truth (SM utilisation, real memory) to compare against VERL's own
+`perf/mfu/actor` and `perf/max_memory_allocated_gb` metrics, which only see what
+PyTorch allocated — they miss vLLM and the sub-agent server entirely.
+
+### Health-check metrics to watch on the first prod run
+
+Beyond `val/reward_mean`, the following should stay at zero. Any non-zero value means
+the corresponding cap is too tight and is silently corrupting the GRPO signal:
+
+| Metric (in `*_verl.log`) | If non-zero |
+|---|---|
+| `prompt_length/clip_ratio` | Bump `data.max_prompt_length` (16384 → 20480) |
+| `response_length/clip_ratio` | Bump `data.max_response_length` (2048 → 3072) |
+| `n_dropped_sample_because_of_prompt` | Same as above (prompt cap) |
+| `n_trunc_sample_because_of_response` | Same as above (response cap) |
+| `n_dropped_sample_because_of_mini_batch` | GRPO group is losing rollouts; tune `ppo_max_token_len_per_gpu` or `ppo_mini_batch_size` so the `n=8` fanout partitions cleanly across `N_GPUS=4` |
 
 ---
 

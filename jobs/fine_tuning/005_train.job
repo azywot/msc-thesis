@@ -15,7 +15,7 @@
 #SBATCH --gpus=4
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --time=56:00:00
+#SBATCH --time=72:00:00
 #SBATCH --output=out/fine_tuning/orchestrator_ft/ft_%A.log
 #SBATCH --error=out/fine_tuning/orchestrator_ft/ft_%A.err
 
@@ -107,8 +107,10 @@ VERL_PID=""
 SUBAGENT_PID=""
 ORCHESTRATOR_PID=""
 CRASH_MONITOR_PID=""
+GPU_MONITOR_PID=""
 cleanup() {
     [[ -n "${CRASH_MONITOR_PID:-}" ]] && kill "$CRASH_MONITOR_PID" 2>/dev/null || true
+    [[ -n "${GPU_MONITOR_PID:-}" ]] && kill "$GPU_MONITOR_PID" 2>/dev/null || true
     if [[ -n "${ORCHESTRATOR_PID:-}" ]] && kill -0 "$ORCHESTRATOR_PID" >/dev/null 2>&1; then
         echo "Stopping rollout workers (pid=$ORCHESTRATOR_PID)..."
         kill "$ORCHESTRATOR_PID" || true
@@ -130,6 +132,19 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+# ── GPU monitor sidecar ──────────────────────────────────────────────────────
+# nvidia-smi samples GPU SM/memory utilisation every 30s into a CSV alongside
+# VERL's perf/* metrics. Started AFTER the EXIT trap so cleanup() will always
+# reap it. Killed via $GPU_MONITOR_PID in cleanup().
+GPU_LOG="out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_gpu.csv"
+echo "Starting GPU monitor → $GPU_LOG"
+nvidia-smi \
+    --query-gpu=timestamp,index,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw \
+    --format=csv -l 30 \
+    > "$GPU_LOG" 2>&1 &
+GPU_MONITOR_PID=$!
+
 # Watch a log file; send SIGTERM to this script on fatal CUDA/NCCL errors so
 # the EXIT trap fires and cleanup kills all background processes immediately.
 # In bash, $$ inside () expands to the parent script PID, not the subshell.
@@ -159,14 +174,17 @@ echo "Run tag: $VERL_RUN_TAG"
 
 # ── 1. Frozen sub-agent vLLM server (separate from VERL, never updated) ──────
 echo ""
-echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998, GPU 0, util=0.08)..."
-# Sub-agent is pinned to GPU 0 at minimal util so VERL can also use GPU 0 (util=0.08 → ~7.5 GB,
-# leaves ~86 GB free for VERL's vLLM+FSDP on GPU 0). V1 disabled: torch.compile at low util can
-# leave no KV budget (smoke_*_subagent.log).
+echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998, GPU 0, util=0.12)..."
+# Sub-agent is pinned to GPU 0. Bumped util 0.08 → 0.12 (~11 GB) so the KV pool can
+# absorb the concurrent tool-call traffic from N_WORKERS=4 × batch=32 × n=8 = up to 256
+# in-flight rollouts. Qwen3-1.7B weights ~3.4 GB → ~7.5 GB KV (≈ 2× the previous 4 GB).
+# Stays within the GPU 0 envelope alongside VERL vLLM at util=0.70: 11 + 66 + 4 + 8 ≈
+# 89 GB / 94 GB. V1 disabled: torch.compile at low util can leave no KV budget
+# (smoke_*_subagent.log). Watch ft_*_gpu.csv during the first 10 min to confirm.
 VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
     --port 9998 \
     --tensor-parallel-size 1 \
-    --gpu-memory-utilization 0.08 \
+    --gpu-memory-utilization 0.12 \
     --max-model-len 8192 \
     > out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
 SUBAGENT_PID=$!
