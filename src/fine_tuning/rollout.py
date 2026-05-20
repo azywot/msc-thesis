@@ -162,8 +162,15 @@ def _get_task_metadata(task: Any) -> tuple[str, str, str, int]:
 
 
 def _prompt_dataset_for_data_source(data_source: str) -> str:
-    """Map training data source to the closest inference prompt family."""
-    return "deepmath" if data_source.lower() == "deepmath" else "gaia"
+    """Map training data source to the closest inference prompt family.
+
+    deepmath and all aime_* / aime variants → math template family.
+    nq / hotpotqa (Search-R1) → gaia template family.
+    """
+    ds = data_source.lower()
+    if ds == "deepmath" or ds.startswith("aime"):
+        return "deepmath"  # builder maps both "deepmath" and "aime" → math template
+    return "gaia"
 
 
 def _build_rollout_question(question_text: str) -> str:
