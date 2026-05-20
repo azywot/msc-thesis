@@ -22,14 +22,14 @@
 #
 # Memory per VERL GPU — LoRA (USE_LORA=true), util=0.70 (set by launch_verl.py for LoRA):
 #   With rank=64 all-linear on Qwen3-8B: ~250 MB trainable params per rank.
-#   Two big wins vs full FT (handled by verl 0.7.1 automatically):
-#     - ref_in_actor=true: no separate ref shard; ref logprobs use actor with disable_adapter() — saves ~4 GB.
-#     - optimizer state is over LoRA-only params: ~10s of MB AdamW state vs 24 GB for full FT — saves ~24 GB.
-#   Budget: base shard 4 GB + LoRA adapter <1 GB + opt <1 GB + activations 8 GB + vLLM 66 GB
-#           (16 GB model + 50 GB KV at max_model_len=18432) + misc 3 GB ≈ 82 GB on GPUs 1-3.
-#   GPU 0 also hosts the sub-agent at util=0.12 (~11 GB) → ≈ 89 GB / 94 GB (5 GB headroom).
+#   Key saving vs full FT: optimizer state is over LoRA-only params (~10s of MB AdamW vs 24 GB).
+#   Note: ref_in_actor is NOT in effect — a separate ref worker is spawned (~4 GB/GPU).
+#   KL divergence is computed correctly via disable_adapter() in the ref worker.
+#   Budget: base shard 4 GB + LoRA adapter <1 GB + opt <1 GB + ref shard 4 GB + activations 8 GB
+#           + vLLM 66 GB (16 GB model + 50 GB KV at max_model_len=18432) + misc 3 GB ≈ 86 GB on GPUs 1-3.
+#   GPU 0 also hosts the sub-agent at util=0.08 (~7.5 GB) → ≈ 93.5 GB / 94 GB (0.5 GB headroom).
 #   Watch ft_*_gpu.csv (nvidia-smi sidecar in 005_train.job) during the first 10 min to
-#   confirm no OOM on GPU 0; if it's tight, drop sub-agent util back to 0.10.
+#   confirm no OOM on GPU 0; if it's tight, drop sub-agent util to 0.06.
 #
 # ROLLOUT_TP_SIZE is 1; N_GPUS=4 is valid (TP=2 also works with 4 GPUs but adds overhead).
 

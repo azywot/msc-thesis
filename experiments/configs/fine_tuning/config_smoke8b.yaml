@@ -11,14 +11,16 @@
 #   GPU 1, GPU 2 (VERL, N_GPUS=2): LoRA actor FSDP-sharded to ~8 GB base + <1 GB adapter/GPU;
 #     vLLM TP=1 runs data-parallel — each GPU holds a full 8B copy during rollout.
 #
-# Memory per VERL GPU — LoRA (launch_verl.py overrides util→0.6, ref_in_actor auto, tiny optimizer):
+# Memory per VERL GPU — LoRA (launch_verl.py overrides util→0.70, tiny optimizer):
+#   Note: ref_in_actor is NOT in effect — a separate ref worker is spawned (~4 GB/GPU).
+#   KL is computed correctly via disable_adapter(). Ref shard adds ~4 GB during training phase.
 #   Rollout phase (param_offload=True, actor on CPU):
-#     vLLM 56.4 GB (0.6×94) + misc 2 GB = 58.4 GB ✓  (94 GB card)
+#     vLLM 65.8 GB (0.70×94) + misc 2 GB = 67.8 GB ✓  (94 GB card)
 #   Training phase (free_cache_engine destroys KV, model stays):
-#     vLLM model 16 GB + base shard 8 GB + LoRA adapter <1 GB ≈ 25 GB ✓
+#     vLLM model 16 GB + base shard 8 GB + ref shard 4 GB + LoRA adapter <1 GB ≈ 29 GB ✓
 #
 # Note: gpu_memory_utilization (0.45 below) and free_cache_engine (true below) are base values;
-#   launch_verl.py overrides gpu_memory_utilization→0.6 and lr→1e-5 when USE_LORA=true.
+#   launch_verl.py overrides gpu_memory_utilization→0.70 and lr→1e-5 when USE_LORA=true.
 #   free_cache_engine is already true here (needed to flush LoRA KV cache between rollout and training).
 #
 # Differences from config_smoke.yaml (Qwen3-4B, N_GPUS=1):

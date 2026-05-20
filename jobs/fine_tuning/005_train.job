@@ -8,10 +8,11 @@
 #   per VERL GPU: actor 4 + opt 24 + grads 4 + ref 4 + vLLM 42.3 + misc 3 = 81.3 GB.
 #   GPU 0 + sub-agent ≈ 88.8 GB / 94 GB.
 #
-# LoRA (USE_LORA=true), vLLM util=0.6 (set by launch_verl.py LoRA branch):
-#   ref_in_actor=true (no ref shard) and adapter-only optimizer save ~28 GB per GPU.
-#   per VERL GPU: base 4 + adapter <1 + opt <1 + activations 8 + vLLM 56.4 + misc 3 ≈ 72 GB.
-#   GPU 0 + sub-agent ≈ 80 GB / 94 GB (14 GB headroom).
+# LoRA (USE_LORA=true), vLLM util=0.70 (set by launch_verl.py LoRA branch):
+#   adapter-only optimizer saves ~24 GB/GPU vs full FT; ref worker IS spawned (ref_in_actor not
+#   in effect) — ref shard adds ~4 GB. KL computed correctly via disable_adapter().
+#   per VERL GPU: base 4 + adapter <1 + opt <1 + ref 4 + activations 8 + vLLM 65.8 + misc 3 ≈ 85 GB.
+#   GPU 0 + sub-agent at util=0.08 (~7.5 GB) ≈ 92.5 GB / 94 GB (1.5 GB headroom).
 #SBATCH --gpus=4
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -174,17 +175,15 @@ echo "Run tag: $VERL_RUN_TAG"
 
 # ── 1. Frozen sub-agent vLLM server (separate from VERL, never updated) ──────
 echo ""
-echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998, GPU 0, util=0.12)..."
-# Sub-agent is pinned to GPU 0. Bumped util 0.08 → 0.12 (~11 GB) so the KV pool can
-# absorb the concurrent tool-call traffic from N_WORKERS=4 × batch=32 × n=8 = up to 256
-# in-flight rollouts. Qwen3-1.7B weights ~3.4 GB → ~7.5 GB KV (≈ 2× the previous 4 GB).
-# Stays within the GPU 0 envelope alongside VERL vLLM at util=0.70: 11 + 66 + 4 + 8 ≈
-# 89 GB / 94 GB. V1 disabled: torch.compile at low util can leave no KV budget
-# (smoke_*_subagent.log). Watch ft_*_gpu.csv during the first 10 min to confirm.
+echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998, GPU 0, util=0.08)..."
+# Sub-agent is pinned to GPU 0 at util=0.08 (~7.5 GB total; ~4 GB KV after model weights).
+# GPU 0 budget: vLLM 65.8 (util=0.70) + sub-agent 7.5 + base shard 4 + ref shard 4 + activations 8 + misc 3 ≈ 92 GB / 94 GB.
+# V1 disabled: torch.compile at low util can leave no KV budget (smoke_*_subagent.log).
+# Watch ft_*_gpu.csv during the first 10 min; drop util to 0.06 if GPU 0 > 92 GB.
 VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
     --port 9998 \
     --tensor-parallel-size 1 \
-    --gpu-memory-utilization 0.12 \
+    --gpu-memory-utilization 0.08 \
     --max-model-len 8192 \
     > out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
 SUBAGENT_PID=$!
