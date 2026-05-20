@@ -76,7 +76,18 @@ REFLECTOR_PID=""
 cleanup() {
     if [[ -n "${REFLECTOR_PID:-}" ]] && kill -0 "$REFLECTOR_PID" >/dev/null 2>&1; then
         echo "Stopping reflector vLLM (pid=$REFLECTOR_PID)..."
-        kill "$REFLECTOR_PID" || true
+        kill -TERM "$REFLECTOR_PID" 2>/dev/null || true
+        # Wait up to 30 s for graceful shutdown, then SIGKILL.
+        # vLLM spawns Ray workers that may not exit on SIGTERM alone;
+        # without this, 'wait' blocks indefinitely and the job hangs.
+        for _i in $(seq 1 30); do
+            sleep 1
+            kill -0 "$REFLECTOR_PID" >/dev/null 2>&1 || break
+        done
+        if kill -0 "$REFLECTOR_PID" >/dev/null 2>&1; then
+            echo "Reflector still alive after 30 s — sending SIGKILL..."
+            kill -KILL "$REFLECTOR_PID" 2>/dev/null || true
+        fi
         wait "$REFLECTOR_PID" 2>/dev/null || true
     fi
 }

@@ -183,6 +183,115 @@ def run_splits(cfg: dict, config_path: Path) -> None:
     print(f"  Test:  {len(splits['test'])} examples")
     print(f"  Saved: {splits_file}")
 
+class ProgressSaverCallback:
+    def __init__(self, max_metric_calls: int, run_dir: Path):
+        self._max = max_metric_calls
+        self._run_dir = run_dir
+
+        self._best_score = float("-inf")
+        self._best_iteration = -1
+
+        self._tree = []
+
+        self._run_dir.mkdir(parents=True, exist_ok=True)
+
+    def on_iteration_end(self, event):
+        state = event.get("state", None)
+        if state is None:
+            return
+
+        iteration = event.get("iteration", getattr(state, "i", -1))
+
+        scores = list(getattr(state, "program_full_scores_val_set", []) or [])
+        candidates = list(getattr(state, "program_candidates", []) or [])
+
+        total = getattr(state, "total_num_evals", 0)
+        pct = 100.0 * total / self._max if self._max else 0.0
+
+        best_val = max(scores) if scores else float("-inf")
+
+        print(
+            f"[gepa] iter={iteration} "
+            f"budget={total}/{self._max} ({pct:.1f}%) "
+            f"best_val={best_val:.4f}",
+            flush=True,
+        )
+
+        # ─────────────────────────────────────────────
+        # TREE LOG (FULL EVOLUTION HISTORY)
+        # ─────────────────────────────────────────────
+        node = {
+            "iteration": iteration,
+            "total_evals": total,
+            "best_score": best_val,
+            "scores": scores,
+
+            # IMPORTANT: 2-PROMPT STRUCTURE AWARE
+            "candidates": [
+                {
+                    "idx": i,
+                    "system_prompt": getattr(c, "system_prompt", None),
+                    "planning_suffix": getattr(c, "planning_suffix", None),
+                }
+                for i, c in enumerate(candidates)
+            ],
+        }
+
+        self._tree.append(node)
+
+        tree_path = self._run_dir / "gepa_tree.json"
+        tmp_tree_path = self._run_dir / "gepa_tree.tmp.json"
+
+        try:
+            with open(tmp_tree_path, "w") as f:
+                json.dump(self._tree, f, indent=2)
+
+            tmp_tree_path.replace(tree_path)
+
+        except Exception as e:
+            print(f"[gepa] tree save failed: {e}", flush=True)
+
+        # ─────────────────────────────────────────────
+        # BEST CANDIDATE CHECKPOINT (WITH METADATA)
+        # ─────────────────────────────────────────────
+        if scores and candidates:
+            best_idx = max(range(len(scores)), key=scores.__getitem__)
+            best_candidate = candidates[best_idx]
+
+            if best_val > self._best_score:
+                self._best_score = best_val
+                self._best_iteration = iteration
+
+                # Top-level system_prompt / planning_suffix so that --mode evaluate
+                # and --mode diff can read this checkpoint directly without
+                # completing the full optimize() run.
+                payload = {
+                    "system_prompt": getattr(best_candidate, "system_prompt", None),
+                    "planning_suffix": getattr(best_candidate, "planning_suffix", None),
+                    # metadata (ignored by evaluate/diff, useful for debugging)
+                    "best_val": best_val,
+                    "best_iteration": iteration,
+                    "best_idx": best_idx,
+                    "total_evals": total,
+                }
+
+                best_path = self._run_dir / "best_candidate.json"
+                tmp_best_path = self._run_dir / "best_candidate.tmp.json"
+
+                try:
+                    with open(tmp_best_path, "w") as f:
+                        json.dump(payload, f, indent=2)
+
+                    tmp_best_path.replace(best_path)
+
+                    print(
+                        f"[gepa] checkpoint → {best_path} "
+                        f"(iter={iteration}, val={best_val:.4f})",
+                        flush=True,
+                    )
+
+                except Exception as e:
+                    print(f"[gepa] checkpoint save failed: {e}", flush=True)
 
 # ─────────────────────────────────────────────── MODE: optimize ────────────
 
@@ -251,6 +360,12 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
     )
     print(f"Seed candidate built. system_prompt length: {len(seed['system_prompt'])} chars.")
 
+    # Save seed immediately — before optimize() starts — so --mode diff works
+    # even if the optimization is aborted and only the callback checkpoint exists.
+    seed_path = run_dir / "seed_candidate.json"
+    with open(seed_path, "w") as f:
+        json.dump(seed, f, indent=2)
+
     reflector_cfg = cfg.get("reflector", {})
     reflector_model = reflector_cfg.get("path_or_id", "Qwen/Qwen3-32B")
     reflector_host = reflector_cfg.get("host", "localhost")
@@ -261,6 +376,9 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
     REFLECTOR_CTX = int(reflector_cfg.get("max_model_len", 40960))
     REFLECTOR_RESPONSE_BUDGET = int(reflector_cfg.get("max_tokens", 4096))
     REFLECTOR_INPUT_BUDGET = REFLECTOR_CTX - REFLECTOR_RESPONSE_BUDGET - 256  # safety margin
+    # Qwen3-32B generating REFLECTOR_RESPONSE_BUDGET tokens on 2×H100 takes ~2-4 min.
+    # 15 min is a generous upper bound; prevents a stalled reflector from freezing the job.
+    REFLECTOR_TIMEOUT_S = int(reflector_cfg.get("timeout_s", 900))
 
     from transformers import AutoTokenizer
     try:
@@ -286,6 +404,7 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
             base_url=f"http://{reflector_host}:{reflector_port}/v1",
             api_key="EMPTY",
             max_tokens=REFLECTOR_RESPONSE_BUDGET,
+            timeout=REFLECTOR_TIMEOUT_S,
         )
         return completion.choices[0].message.content
 
@@ -309,6 +428,11 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
     print(f"Starting GEPA optimisation: budget={gepa_cfg['rollout_budget']}, "
           f"minibatch={gepa_cfg['minibatch_size']}, wandb={use_wandb}")
 
+    progress_saver = ProgressSaverCallback(
+        max_metric_calls=gepa_cfg["rollout_budget"],
+        run_dir=run_dir,
+    )
+
     result = optimize(
         seed_candidate=seed,
         trainset=train_examples,
@@ -326,16 +450,13 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
         use_wandb=use_wandb,
         wandb_api_key=wandb_api_key,
         wandb_init_kwargs=wandb_init_kwargs,
+        callbacks=[progress_saver],
     )
 
     best = result.best_candidate
     best_path = run_dir / "best_candidate.json"
     with open(best_path, "w") as f:
         json.dump(best, f, indent=2)
-
-    seed_path = run_dir / "seed_candidate.json"
-    with open(seed_path, "w") as f:
-        json.dump(seed, f, indent=2)
 
     print(f"\nOptimisation complete.")
     print(f"  Best candidate: {best_path}")

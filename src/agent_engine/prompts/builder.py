@@ -83,7 +83,7 @@ class PromptBuilder:
             template_name = dataset_name
             if dataset_name.lower() in ("gaia", "hle", "musique"):
                 template_name = "gaia_baseline" if baseline else "gaia"
-            elif dataset_name.lower() in ("aime", "math500", "amc", "deepmath"):
+            elif dataset_name.lower() in ("aime", "math500", "amc", "deepmath", "math"):
                 template_name = "math_baseline" if baseline else "math"
             elif dataset_name.lower() == "gpqa":
                 template_name = "gpqa_baseline" if baseline else "gpqa"
