@@ -80,6 +80,9 @@ case "${SKIP_PIP_SETUP:-}" in
 esac
 python -c "import agent_engine, fine_tuning, verl, vllm; from fine_tuning.agentflow import LitAgent, Trainer, reward; print('Training imports OK')"
 
+# Print LoRA trainable param count (no weight load — meta-init from arch config).
+python scripts/count_lora_params.py --config experiments/configs/fine_tuning/config_smoke.yaml || true
+
 mkdir -p out/fine_tuning/smoke_test_4b
 
 for required_file in \
