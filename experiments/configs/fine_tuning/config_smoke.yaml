@@ -77,17 +77,17 @@ python_args:
   actor_rollout_ref.actor.clip_ratio_high: 0.3
   # N_GPUS=1 → base model is NOT sharded across GPUs (full 8 GB on-GPU during training).
   # LoRA: optimizer state is only ~10s of MB, so optimizer_offload is conservative but harmless.
-  # param_offload=True: during rollout, vLLM takes 56.4 GB (util=0.6 set by launch_verl.py for
-  # LoRA) and the 8 GB FSDP actor shard would sit alongside it → 64.4 GB. With H100 94 GB
-  # that fits (29.6 GB headroom), but offloading actor params to CPU during rollout leaves an
+  # param_offload=True: during rollout, vLLM takes 65.8 GB (util=0.70 set by launch_verl.py for
+  # LoRA) and the 8 GB FSDP actor shard would sit alongside it → 73.8 GB. With H100 94 GB
+  # that fits (20.2 GB headroom), but offloading actor params to CPU during rollout leaves an
   # extra cushion and avoids any memory-fragmentation risk before compute_log_prob.
   # (config.yaml uses param_offload=false because N_GPUS=4 shards the actor to ~2 GB/GPU.)
   actor_rollout_ref.actor.fsdp_config.param_offload: true
   actor_rollout_ref.actor.fsdp_config.optimizer_offload: true
   actor_rollout_ref.ref.fsdp_config.param_offload: true
   actor_rollout_ref.rollout.name: 'vllm'
-  # gpu_memory_utilization=0.45 is the base value; launch_verl.py overrides it to 0.6 for LoRA
-  # → 56.4 GB vLLM budget (8 GB Qwen3-4B model + 48.4 GB KV) on H100 94 GB.
+  # gpu_memory_utilization=0.45 is the base value; launch_verl.py overrides it to 0.70 for LoRA
+  # → 65.8 GB vLLM budget (8 GB Qwen3-4B model + 57.8 GB KV) on H100 94 GB.
   # free_cache_engine=True (required for LoRA): destroys the vLLM KV-cache engine after each
   # rollout so (a) LoRA adapter weights are cleanly swapped and (b) the FSDP actor gets a
   # defragmented memory state before compute_log_prob. Without this, async rollout leaves

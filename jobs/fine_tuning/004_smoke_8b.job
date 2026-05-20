@@ -4,9 +4,9 @@
 # Three H100 NVL GPUs (~94 GB each):
 #   GPU 0 (exclusive): frozen sub-agent Qwen3-1.7B at util=0.08 (~7.5 GB)
 #   GPUs 1–2: VERL N_GPUS=2 for Qwen3-8B with LoRA (USE_LORA=true, same as production).
-#     launch_verl.py overrides util→0.6, lr→1e-5, free_cache_engine→True, dynamic_bsz.
-#     Rollout phase (param_offload=True): vLLM TP=1 data-parallel, util=0.6 → 56.4 GB/GPU ✓
-#     Training phase (free_cache_engine destroys KV): vLLM model 16 GB + shard 8 GB ≈ 25 GB/GPU ✓
+#     launch_verl.py overrides util→0.70, lr→1e-5, free_cache_engine→True, dynamic_bsz.
+#     Rollout phase (param_offload=True): vLLM TP=1 data-parallel, util=0.70 → 65.8 GB/GPU ✓
+#     Training phase (free_cache_engine destroys KV): vLLM model 16 GB + shard 8 GB + ref shard 4 GB ≈ 29 GB/GPU ✓
 # Upgrade from 003_smoke_4b.job (4B, LoRA) — 4B catches fast failures; 8B verifies production memory layout.
 # Checkpoints: experiments/results/fine_tuning/qwen3-8b-grpo-smoke/ (USE_SCRATCH_CHECKPOINTS=false)
 #SBATCH --gpus=3

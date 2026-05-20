@@ -104,7 +104,7 @@ def main():
             f"  LoRA enabled: rank={rank}, alpha={alpha}, targets={targets}, "
             f"lr={lora_lr} (overrides config), "
             f"load_format=safetensors, layered_summon=True, use_shm=True, "
-            f"free_cache_engine=True, gpu_memory_utilization=0.6, "
+            f"free_cache_engine=True, gpu_memory_utilization={python_args['actor_rollout_ref.rollout.gpu_memory_utilization']}, "
             f"use_dynamic_bsz=True (ppo_max_token_len_per_gpu=45056)"
             + (f", resume_adapter_path={resume_path}" if resume_path else "")
             + (", merge=True (SGLang)" if lora_merge else "")

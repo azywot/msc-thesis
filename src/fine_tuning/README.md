@@ -64,8 +64,9 @@ Training time
           │  AgentFlowTrainer(RayPPOTrainer)                 │
           │  ├── GRPO advantage estimator (n=8 rollouts)     │
           │  ├── FSDP actor: Qwen3-8B + LoRA rank-64         │
-          │  ├── Reference policy: ref_in_actor (no extra    │
-          │  │   shard; base + disabled adapter)             │
+          │  ├── Reference policy: separate ref worker       │
+          │  │   (ref_in_actor not in effect; KL via         │
+          │  │    disable_adapter() on ref worker)           │
           │  └── AgentModeDaemon  :9999                      │
           └──────────────┬───────────────────────────────────┘
                          │  HTTP  (tasks ↓ / rewards ↑)
@@ -333,7 +334,7 @@ defaults** - see the LoRA overrides column.
 | `actor_rollout_ref.actor.optim.lr` | `1e-6` | **`1e-5`** | LoRA trains ~1% of params; 10× higher LR is standard |
 | `actor_rollout_ref.actor.kl_loss_coef` | `0.01` | - | KL penalty; scale proportionally if LR is increased |
 | `actor_rollout_ref.actor.clip_ratio_low/high` | `0.2 / 0.3` | - | PPO clip range |
-| `actor_rollout_ref.rollout.gpu_memory_utilization` | `0.45` | **`0.70`** | LoRA frees ~28 GB vs full-FT; extra KV pool boosts rollout throughput |
+| `actor_rollout_ref.rollout.gpu_memory_utilization` | `0.45` | **`0.70`** | LoRA optimizer savings (~24 GB/GPU vs full-FT) free headroom for a larger KV pool and higher rollout throughput |
 | `actor_rollout_ref.rollout.max_model_len` | `18432` | - | 16384 prompt + 2048 response |
 | `actor_rollout_ref.rollout.max_num_seqs` | `128` | - | Decode parallelism cap |
 | `actor_rollout_ref.rollout.free_cache_engine` | `false` | **`true`** | LoRA requires KV flush between rollout and training (adapter swap invalidates cached prefixes) |
@@ -396,12 +397,14 @@ Training uses **4 × H100 NVL GPUs (~94 GB each)**.
 | Frozen sub-agent (Qwen3-1.7B, util=0.08) | ~7.5 GB | - |
 | VERL vLLM (Qwen3-8B model, util=0.70) | ~66 GB KV+model | ~66 GB |
 | FSDP actor shard (LoRA) | ~4 GB base + <1 GB adapter | ~4 GB + <1 GB |
+| Ref shard (separate ref worker) | ~4 GB | ~4 GB |
 | Activations + misc | ~8 GB | ~8 GB |
-| **Total** | **~89 GB / 94 GB (5 GB headroom)** | **~82 GB / 94 GB** |
+| **Total** | **~93.5 GB / 94 GB (0.5 GB headroom)** | **~86 GB / 94 GB** |
 
-GPU 0 is the tight one - it hosts both the sub-agent and VERL. Watch `out/fine_tuning/orchestrator_ft/ft_<jobid>_gpu.csv`
-(the `nvidia-smi` sidecar started by `005_train.job`) during the first 10 minutes. If GPU 0 memory
-approaches 94 GB, drop sub-agent `--gpu-memory-utilization` from `0.08` to `0.06`.
+GPU 0 is the tight one — it hosts both the sub-agent and VERL, with only ~0.5 GB headroom. Watch
+`out/fine_tuning/orchestrator_ft/ft_<jobid>_gpu.csv` (the `nvidia-smi` sidecar started by
+`005_train.job`) during the first 10 minutes. If GPU 0 memory exceeds 92 GB, drop sub-agent
+`--gpu-memory-utilization` from `0.08` to `0.06`.
 
 ### Throughput tuning
 
@@ -413,7 +416,7 @@ HTTP → sub-agent, Serper API). The knobs below maximise GPU utilisation.
 | `N_WORKERS` | `4` | Fills vLLM's continuous batcher; single-worker serialised 256 in-flight episodes through one Python client |
 | `gpu_memory_utilization` (LoRA) | `0.70` | LoRA frees ~28 GB vs full-FT; growing the KV pool lifts rollout throughput |
 | `max_num_seqs` | `128` | Decode parallelism cap; paged KV means this doesn't multiply by `max_model_len` |
-| Sub-agent `--gpu-memory-utilization` | `0.08` | ~7.5 GB KV for the frozen 1.7B server; absorbs concurrent tool-call traffic from N_WORKERS=4 × batch=32 × n=8 |
+| Sub-agent `--gpu-memory-utilization` | `0.08` | ~7.5 GB total (~4 GB KV) for the frozen 1.7B server; GPU 0 budget is tight (0.5 GB headroom) — drop to 0.06 if GPU 0 > 92 GB |
 
 ### Health-check metrics (first production run)
 
@@ -663,10 +666,11 @@ write-and-execute).
 
 ### LoRA rank 64 (not full fine-tune)
 
-Checkpoints are ~250–500 MB (adapter only) vs ~16 GB for full fine-tune. The verl 0.7.1 upgrade
-enables `ref_in_actor` (no separate reference shard) and adapter-only optimizer state, saving
-~28 GB per GPU vs full-FT. This allows `gpu_memory_utilization=0.70` for a larger KV pool and
-higher rollout throughput.
+Checkpoints are ~250–500 MB (adapter only) vs ~16 GB for full fine-tune. Adapter-only optimizer
+state saves ~24 GB per GPU vs full-FT. A separate ref worker is still spawned (ref_in_actor is not
+in effect in the custom entrypoint), but KL divergence is computed correctly via `disable_adapter()`
+on the ref worker. The ~24 GB optimizer saving allows `gpu_memory_utilization=0.70` for a larger
+KV pool and higher rollout throughput.
 
 ### Thinking mode: NO (current config) vs ORCHESTRATOR_ONLY (recommended)
 
