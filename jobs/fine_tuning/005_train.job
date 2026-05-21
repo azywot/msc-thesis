@@ -21,7 +21,7 @@
 #SBATCH --error=out/fine_tuning/orchestrator_ft/ft_%A.err
 
 # Full orchestrator fine-tuning run.
-#   5 epochs, 1800 training questions (900 Search-R1 + 900 DeepMath), n=8 rollouts.
+#   2 epochs, 1800 training questions (900 Search-R1 + 900 DeepMath), n=8 rollouts.
 #   Step-based checkpointing every 10 steps (trainer.save_freq=10); rotation keeps latest + best.
 #   Checkpoints → /scratch-shared/$USER/fine_tuning/lora_adapters/<experiment>/<run-tag>/ (LoRA, USE_SCRATCH_CHECKPOINTS=true).
 #
@@ -184,7 +184,7 @@ VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
     --port 9998 \
     --tensor-parallel-size 1 \
     --gpu-memory-utilization 0.08 \
-    --max-model-len 8192 \
+    --max-model-len 16384 \
     > out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
 SUBAGENT_PID=$!
 export SUBAGENT_ENDPOINT="http://localhost:9998/v1"

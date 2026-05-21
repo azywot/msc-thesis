@@ -130,24 +130,11 @@ def token_f1(prediction: str, ground_truth: str) -> float:
 # Math-Verify based accuracy
 # ---------------------------------------------------------------------------
 
-MATH_TOKEN_PATTERN = re.compile(
-    r"""
-    ^
-    \s*
-    (                                    # valid math expression tokens
-        (?:[+\-*/^%]|\d+(?:\.\d+)?       # operator or number
-        |[a-zA-Z]+                       # variable/function name
-        |\(|\)|\{|\}
-        |\\frac|\\sqrt|\\sin|\\cos|\\tan # common LaTeX/math funcs
-        |pi|e
-        |\\[a-zA-Z]+                     # any LaTeX command
-        |\s+
-        )+
-    )
-    \s*$
-    """,
-    re.VERBOSE,
-)
+# Single character class — no alternation, no backtracking. Matches strings made
+# only of math-relevant chars (digits, operators, parens/braces, letters,
+# backslash for LaTeX, whitespace). Anything else (prose punctuation like
+# ; , ' " etc.) causes the match to fail in linear time.
+MATH_TOKEN_PATTERN = re.compile(r"^\s*[\s+\-*/^%\d.()\{\}a-zA-Z\\]+\s*$")
 
 
 def is_math_answer(s: str) -> bool:

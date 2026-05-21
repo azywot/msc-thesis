@@ -138,7 +138,7 @@ def main():
     # USE_SCRATCH_CHECKPOINTS=false → experiments/results/fine_tuning        (GPFS home, smoke tests).
     # All three configs use LoRA; optimizer state is tiny (~10s MB). Smoke tests use false because
     # checkpoint volume is small enough for GPFS home. Production uses true for the rollout JSONs
-    # (8 rollouts × 1800 questions × 5 epochs = 72 000 JSON files) which can fill GPFS home fast.
+    # (8 rollouts × 1800 questions × 2 epochs = 28 800 JSON files) which can fill GPFS home fast.
     experiment_name = os.environ.get("EXPERIMENT_NAME", "unknown")
     job_id = os.environ.get("SLURM_JOB_ID", "local")
     run_tag = os.environ.get("VERL_RUN_TAG") or f"{datetime.now().strftime('%d-%m-%Y_%H-%M')}-{job_id}"

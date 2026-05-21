@@ -142,7 +142,7 @@ JOB_ID="${SLURM_JOB_ID:-local}"
 
 BENCHMARK="math"
 CONFIG="experiments/configs/gepa/${BENCHMARK}.yaml"
-RUN_DIR="experiments/results/gepa/${BENCHMARK}/${TIMESTAMP}_${JOB_ID}"
+RUN_DIR="${RUN_DIR:-experiments/results/gepa/${BENCHMARK}/${TIMESTAMP}_${JOB_ID}}"
 mkdir -p "$RUN_DIR"
 
 echo ""

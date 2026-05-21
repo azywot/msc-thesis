@@ -125,7 +125,7 @@ python_args:
   trainer.logger: ['console', 'wandb']
   trainer.project_name: '${PROJECT_NAME}'
   trainer.experiment_name: '${EXPERIMENT_NAME}'
-  # Step-based val + save: ~56 steps/epoch (1800/32) → ~6 evals + 6 saves per epoch, 28 total.
+  # Step-based val + save: ~56 steps/epoch (1800/32) → ~6 evals + 6 saves per epoch, ~12 total.
   # save_freq == test_freq so every saved checkpoint has a fresh val/reward for best-tracking;
   # _rotate_checkpoints keeps only latest_checkpoint/ and best_checkpoint/ symlinks (older dirs
   # are deleted asynchronously in trainer.py).
@@ -134,7 +134,7 @@ python_args:
   # true: post-epoch val/checkpoint; false: every test_freq/save_freq steps.
   trainer.val_every_epoch: false
   trainer.save_every_epoch: false
-  trainer.total_epochs: 5
+  trainer.total_epochs: 2
   trainer.val_before_train: true
   trainer.critic_warmup: 0
   algorithm.use_kl_in_reward: false

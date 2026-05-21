@@ -29,7 +29,7 @@ Full failure-mode analysis: `docs/failure_modes_fine_tuning_alignment.md`
 | **Rollouts** | 8 per question during training (GRPO group); 1 per question during validation (greedy) |
 | **Validation** | Every 10 steps on `val_combined.parquet` (50 rows); `best_checkpoint/` symlink updated when val reward improves |
 | **Checkpoints** | Only **latest** and **best** adapter dirs kept; all others deleted asynchronously after rotation |
-| **Run time** | 5 epochs, ~280 steps; SLURM budget 48 h (actual ~10–24 h depending on search API latency) |
+| **Run time** | 2 epochs, ~112 steps; SLURM budget 48 h (observed ~20 min/step → ~40 h end-to-end) |
 | **Launch** | `sbatch jobs/fine_tuning/005_train.job` (after smoke test passes: `004_smoke_8b.job`) |
 | **Merge & eval** | `python scripts/merge_lora.py --checkpoint <best_checkpoint> --base-model Qwen/Qwen3-8B --output-dir <path>` |
 
@@ -216,19 +216,20 @@ prints `ALL 9 checks passed` and completes 2 gradient steps with a checkpoint sa
 sbatch jobs/fine_tuning/005_train.job
 ```
 
-**5 epochs**, 1800 training questions, n=8 rollouts, **4 H100 GPUs** (1 sub-agent + 4 VERL), step-based
-checkpointing every 10 steps. The SLURM budget is **48 h** — a generous ceiling for a run whose
-actual duration is dominated by search API latency (Serper round-trips per rollout). Back-of-envelope:
-~280 steps × ~60–70 s/step (generation-bound, N_WORKERS=4 fills vLLM's batcher) ≈ 5–6 h of pure
-compute, but real Serper latency under concurrent load can stretch each step to 2–3 min, putting the
-realistic range at **10–24 h**. The 48 h limit avoids job re-submission if the cluster is busy or
-the API is slow on a given day.
+**2 epochs**, 1800 training questions, n=8 rollouts, **4 H100 GPUs** (1 sub-agent + 4 VERL), step-based
+checkpointing every 10 steps. SLURM budget **48 h**. From a 1-hour calibration run (`ft_23005301`) one
+training step took **~20 min** (1216 s; `timing_s/gen` ≈ 1091 s — generation dominates at ~90%). With
+~112 steps (56 steps/epoch × 2 epochs) the end-to-end estimate is **~40 h**, leaving ~8 h of headroom in
+the 48 h budget for bootstrap (~15 min), `val_before_train` (~5–10 min), 11 intermediate validations,
+and 11 checkpoint saves. If a run spills the budget, the LoRA mid-run resume path is verified — resubmit
+with `trainer.resume_mode=resume_path`, `trainer.resume_from_path=<…>/latest_checkpoint`, and
+`lora.resume_adapter_path=<…>/latest_checkpoint/actor/lora_adapter` (see `004_smoke_8b_load.job`).
 
 **Manual launch** (three terminals, after `conda activate cosmas-train` in all):
 ```bash
 # Terminal 1 - frozen sub-agent server (start first, GPU 0 only)
 VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
-    --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.08 --max-model-len 8192
+    --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.08 --max-model-len 16384
 export SUBAGENT_ENDPOINT=http://localhost:9998/v1
 
 # Terminal 2 - VERL server (after sub-agent is up)
@@ -339,7 +340,7 @@ defaults** - see the LoRA overrides column.
 | `actor_rollout_ref.rollout.max_num_seqs` | `128` | - | Decode parallelism cap |
 | `actor_rollout_ref.rollout.free_cache_engine` | `false` | **`true`** | LoRA requires KV flush between rollout and training (adapter swap invalidates cached prefixes) |
 | `actor_rollout_ref.actor.use_dynamic_bsz` | - | **`true`** | Pack sequences up to `ppo_max_token_len_per_gpu` |
-| `trainer.total_epochs` | `5` | - | |
+| `trainer.total_epochs` | `2` | - | Reduced from 5 to fit 48 h walltime at observed ~20 min/step |
 | `trainer.save_freq` | `10` | - | Step-based (~6 saves/epoch) |
 | `trainer.test_freq` | `10` | - | Step-based (~6 evals/epoch) |
 | `trainer.val_before_train` | `true` | - | Baseline measurement at step 0 |
@@ -363,7 +364,7 @@ defaults** - see the LoRA overrides column.
 | `N_GPUS` | 4 | 2 |
 | `data.train_max_samples` | 1800 | 8 |
 | `actor_rollout_ref.rollout.n` | 8 | 2 |
-| `trainer.total_epochs` | 5 | 1 |
+| `trainer.total_epochs` | 2 | 1 |
 | `TOOL_STEPS` | 5 | 2 |
 | `data.max_prompt_length` | 16384 | 4096 |
 | `trainer.save_freq / test_freq` | 10 | 1 |
@@ -740,7 +741,7 @@ msc-thesis/
 │   └── test_ft_smoke.py         Pre-flight checks (no GPU/VERL needed)
 │
 ├── experiments/configs/fine_tuning/
-│   ├── config.yaml              Full training config (5 epochs, 4×H100)
+│   ├── config.yaml              Full training config (2 epochs, 4×H100)
 │   ├── config_smoke.yaml        4B smoke (2 GPUs, 1 epoch, 8 samples)
 │   └── config_smoke8b.yaml      8B smoke (3 GPUs, 1 epoch, 8 samples) ← production code path
 │

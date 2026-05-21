@@ -77,7 +77,7 @@ def _build_tool_registry(
             "SUBAGENT_ENDPOINT must be set to the URL of a frozen sub-agent vLLM "
             "server (e.g. http://localhost:9998/v1).  Start it separately with:\n"
             "  vllm serve <SUBAGENT_MODEL> --port 9998 --tensor-parallel-size 1 \\\n"
-            "    --gpu-memory-utilization 0.15 --max-model-len 8192"
+            "    --gpu-memory-utilization 0.08 --max-model-len 16384"
         )
     api_key = os.environ.get("SERPER_API_KEY") or os.environ.get("TAVILY_API_KEY")
     if not api_key:

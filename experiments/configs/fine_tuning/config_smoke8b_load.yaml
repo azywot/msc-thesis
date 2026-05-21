@@ -24,9 +24,9 @@
 #     under experiments/results/fine_tuning/qwen3-8b-grpo-smoke/<NEW_DATE>-<NEW_JOBID>/
 #   - The old checkpoint at 20-05-2026_15-19-22970183/ is NOT modified.
 #
-# If this passes, mid-run resume is safe — you can cut 005_train.job to --time=24:00:00 and
-# resubmit the same config (with resume_mode=auto + same default_local_dir, OR explicit
-# resume_path) to continue from the latest_checkpoint if the 5 epochs spill past 24h.
+# If this passes, mid-run resume is safe — you can resubmit the same config with
+# resume_mode=resume_path + the previous run's latest_checkpoint to continue training if
+# the configured epochs spill past walltime.
 
 env:
   BASE_MODEL: 'Qwen/Qwen3-8B'
