@@ -226,8 +226,8 @@ class ProgressSaverCallback:
             "candidates": [
                 {
                     "idx": i,
-                    "system_prompt": getattr(c, "system_prompt", None),
-                    "planning_suffix": getattr(c, "planning_suffix", None),
+                    "system_prompt": c.get("system_prompt"),
+                    "planning_suffix": c.get("planning_suffix"),
                 }
                 for i, c in enumerate(candidates)
             ],
@@ -262,8 +262,8 @@ class ProgressSaverCallback:
                 # and --mode diff can read this checkpoint directly without
                 # completing the full optimize() run.
                 payload = {
-                    "system_prompt": getattr(best_candidate, "system_prompt", None),
-                    "planning_suffix": getattr(best_candidate, "planning_suffix", None),
+                    "system_prompt": best_candidate.get("system_prompt"),
+                    "planning_suffix": best_candidate.get("planning_suffix"),
                     # metadata (ignored by evaluate/diff, useful for debugging)
                     "best_val": best_val,
                     "best_iteration": iteration,

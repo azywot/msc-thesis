@@ -49,7 +49,8 @@ mkdir -p "$STATE_DIR"
 
 # ---------- tmux session (so watchers survive logout) -------------------------
 tmux_available() {
-    [[ -z "${SLURM_WATCH_NO_TMUX:-}" ]] && command -v tmux >/dev/null 2>&1
+    # Temporarily disabled by default. Set SLURM_WATCH_NO_TMUX=0 to re-enable.
+    [[ "${SLURM_WATCH_NO_TMUX:-1}" == "0" ]] && command -v tmux >/dev/null 2>&1
 }
 
 ensure_tmux_session() {

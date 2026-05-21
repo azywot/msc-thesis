@@ -210,16 +210,16 @@ python scripts/launch_verl.py --config experiments/configs/fine_tuning/config.ya
 VERL_PID=$!
 start_crash_monitor "$VERL_LOG" "VERL"
 
-echo "Waiting 120s for Ray + vLLM to be ready..."
-sleep 120
+echo "Waiting up to 3 min for Ray + worker bootstrap; N_GPUS=4 + FSDP + 4 colocated vLLM instances (tp=1) can take 20-30 min before AgentFlow answers /task."
+sleep 180
 if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
     echo "FAIL — VERL server exited during startup. See out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_verl.log"
     wait "$VERL_PID"
 fi
 
 AGENTFLOW_PORT="${AGENTFLOW_PORT:-9999}"
-echo "Polling http://localhost:${AGENTFLOW_PORT}/task for AgentFlow readiness (up to 15 min)..."
-_deadline=$((SECONDS + 900))
+echo "Polling http://localhost:${AGENTFLOW_PORT}/task for AgentFlow readiness (up to 45 min)..."
+_deadline=$((SECONDS + 2700))
 while (( SECONDS < _deadline )); do
     if curl -fsS --max-time 5 "http://127.0.0.1:${AGENTFLOW_PORT}/task" >/dev/null 2>&1; then
         echo "AgentFlow server is responding on port ${AGENTFLOW_PORT}."
@@ -233,7 +233,7 @@ while (( SECONDS < _deadline )); do
     sleep 10
 done
 if (( SECONDS >= _deadline )); then
-    echo "FAIL — AgentFlow on :${AGENTFLOW_PORT} not ready after 15 min (VERL may be wedged). Check *_verl.log and Ray logs under /scratch-local/${USER}.${SLURM_JOB_ID:-local}/ray/"
+    echo "FAIL — AgentFlow on :${AGENTFLOW_PORT} not ready after 45 min (VERL may be wedged). Check *_verl.log and Ray logs under /scratch-local/${USER}.${SLURM_JOB_ID:-local}/ray/"
     exit 1
 fi
 
