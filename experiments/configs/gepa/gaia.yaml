@@ -1,12 +1,13 @@
-name: "GEPA_gaia_qwen3_8b"
+name: "GEPA_gaia_qwen3_8b_1.7b_no_think"
 description: >
   GEPA two-component prompt optimisation for gaia.yaml (GAIA / HLE / MuSiQue prompts).
+  8B orchestrator + 1.7B sub-agents, no thinking — matches the LoRA fine-tuning setup.
   Uses Search-R1 (75%, 85/15 HotpotQA/NQ) + DeepMath (25%, no difficulty filter) as
   clean, non-overlapping optimization data.
   See docs/superpowers/plans/2026-05-18-gepa-data-plan.md.
 
 benchmark: "gaia"
-thinking_mode: "ORCHESTRATOR_ONLY"
+thinking_mode: "NO"
 seed: 1
 max_turns: 15
 cache_dir: "./cache"
@@ -25,6 +26,15 @@ model:
   path_or_id: "Qwen/Qwen3-8B"
   family: "qwen3"
   role: "orchestrator"
+  gpu_memory_utilization: 0.80
+
+# Sub-agent vLLM (Qwen3-1.7B) — started by the job script on GPU 0, port 9998.
+sub_agent:
+  name: "Qwen3-1.7B"
+  path_or_id: "Qwen/Qwen3-1.7B"
+  family: "qwen3"
+  host: "localhost"
+  port: 9998
 
 # Reflector runs on a separate vLLM instance.
 # Start before --mode optimize:
@@ -58,13 +68,13 @@ gepa:
 wandb:
   enabled: true
   project: "gepa"
-  name: "gepa_gaia_qwen3_8b"
-  tags: ["gaia", "gepa", "qwen3-8b", "search-r1", "deepmath"]
+  name: "gepa_gaia_qwen3_8b_1.7b_no_think"
+  tags: ["gaia", "gepa", "qwen3-8b", "qwen3-1.7b", "no-think", "search-r1", "deepmath"]
 
 slurm:
   partition: "gpu_h100"
-  num_gpus: 4
+  num_gpus: 3
   ntasks: 1
   cpus_per_task: 16
-  time: "12:00:00"
+  time: "24:00:00"
   conda_env: "agent_engine"
