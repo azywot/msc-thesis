@@ -405,7 +405,7 @@ def main() -> None:
 
     all_rows: dict[str, dict[str, dict]] = {}
     for ds in DATASETS:
-        csv_path = ROOT / f"data/results/wandb/all_results_{ds}.csv"
+        csv_path = ROOT / f"data/results/wandb/main_results/all_results_{ds}.csv"
         all_rows[ds] = read_csv(csv_path)
 
     # Tools ablation — single combined table across all datasets
