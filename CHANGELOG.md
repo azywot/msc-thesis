@@ -22,9 +22,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`jobs/gepa/006_run_gepa_gaia.job`, `jobs/gepa/007_run_gepa_math.job` — sub-agent vLLM sidecar**
   - Start `vllm serve Qwen/Qwen3-1.7B` on GPU 0 (port 9998, `util=0.10`) alongside the reflector before launching the Python script
   - Both servers start in parallel (shared 90 s startup wait), then health-checked sequentially (sub-agent 5 min, reflector 10 min)
-  - `VLLM_USE_V1=0` on the sub-agent serve (same fix as fine-tuning `005_train.job`) — vLLM 0.12.0 V1's `torch.compile` at `util=0.10` leaves zero KV budget
+  - Sub-agent `gpu_memory_utilization: 0.20` + `--enforce-eager` — vLLM 0.12.0's V1 engine profiling overhead is ~9 GB (model 3.4 GB + internal buffers + activation profiling); at `util=0.10` (9.4 GB budget) only 0.38 GB remained for KV cache (need 0.88 GB); `util=0.20` (18.8 GB budget) leaves ~9.8 GB for KV with 11x headroom. `enforce_eager` prevents CUDA graph capture from consuming additional memory. Note: `VLLM_USE_V1=0` (used in fine-tuning's `005_train.job`) is a no-op on vLLM 0.12 since V0 was removed
   - Cleanup trap kills both sub-agent and reflector on EXIT; extracted `_kill_gracefully()` helper with 30 s SIGTERM→SIGKILL escalation
-  - GPU 0 memory budget: sub-agent ~10 GB + orchestrator ~62 GB + 3 GB activations = ~75 GB / 94 GB H100 NVL (~19 GB headroom)
+  - GPU 0 memory budget: sub-agent ~19 GB + orchestrator ~56 GB = ~75 GB / 94 GB H100 NVL (~19 GB headroom)
 - **`src/gepa_integration/adapter.py` docstring** — updated to note thinking mode is now config-driven (was "fixed at ORCHESTRATOR_ONLY")
 
 ### Changed

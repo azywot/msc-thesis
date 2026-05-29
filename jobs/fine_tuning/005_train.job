@@ -16,7 +16,7 @@
 #SBATCH --gpus=4
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --time=48:00:00
+#SBATCH --time=72:00:00
 #SBATCH --output=out/fine_tuning/orchestrator_ft/ft_%A.log
 #SBATCH --error=out/fine_tuning/orchestrator_ft/ft_%A.err
 
@@ -202,6 +202,11 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3
 # ── 2. VERL server ───────────────────────────────────────────────────────────
 # Unbuffered Python so *_verl.log updates live under SLURM file redirection (also applies to train_orchestrator below).
 export PYTHONUNBUFFERED=1
+# NCCL watchdog default is 600 s (10 min). With dynamic_bsz on update_actor and 4-way FSDP
+# over variable-length multi-turn rollouts, residual per-rank work imbalance can spike past
+# 10 min and abort the run (seen on ft_23022789 — Rank 3 never enqueued the AllGather Rank 0
+# was waiting on). Bumping to 1 h is cheap and survives realistic imbalance bursts.
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600
 VERL_LOG="out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_verl.log"
 echo ""
 echo "Starting VERL server..."

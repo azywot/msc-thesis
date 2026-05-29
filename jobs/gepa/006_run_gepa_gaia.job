@@ -2,8 +2,8 @@
 #SBATCH --job-name=GEPAGaia
 #SBATCH --partition=gpu_h100
 # Three H100 NVL GPUs (~94 GB each).
-#   GPU 0:    sub-agent vLLM (Qwen3-1.7B, tp=1, util=0.10, ~9 GB)
-#             + orchestrator vLLM in-process (Qwen3-8B, tp=1, util=0.80, ~75 GB)
+#   GPU 0:    sub-agent vLLM (Qwen3-1.7B, tp=1, util=0.20, ~19 GB)
+#             + orchestrator vLLM in-process (Qwen3-8B, tp=1, util=0.70, ~46 GB)
 #   GPUs 1–2: reflector vLLM (Qwen3-32B, tp=2, ~64 GB weights + KV cache)
 #SBATCH --gpus=3
 #SBATCH --ntasks=1
@@ -104,13 +104,17 @@ trap cleanup EXIT
 echo ""
 echo "Starting Qwen3-1.7B sub-agent vLLM on GPU 0, port 9998..."
 SUBAGENT_LOG="out/gepa/gepa_gaia_${SLURM_JOB_ID:-local}_subagent.log"
-# V1 disabled: torch.compile at low util can leave no KV budget (same issue as fine-tuning).
-VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
+# util=0.20 (~18.8 GB budget). vLLM 0.12 V1 engine profiling overhead is ~9 GB
+# (model 3.4 GB + internal buffers + activation profiling), leaving ~9.8 GB for KV
+# cache (need 0.88 GB for one 8192-token sequence → 11x headroom).
+# --enforce-eager avoids additional CUDA graph memory on top of profiling.
+CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
     --port 9998 \
     --tensor-parallel-size 1 \
     --dtype bfloat16 \
-    --gpu-memory-utilization 0.10 \
-    --max-model-len 8192 \
+    --enforce-eager \
+    --gpu-memory-utilization 0.20 \
+    --max-model-len 16384 \
     > "$SUBAGENT_LOG" 2>&1 &
 SUBAGENT_PID=$!
 
