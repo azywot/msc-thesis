@@ -124,8 +124,9 @@ class ExperimentConfig(BaseModel):
     wandb_project: Optional[str] = None
     cache_dir: Path = Path("./cache")
     slurm: SlurmConfig = SlurmConfig()
+    gepa_prompt_path: Optional[Path] = None
 
-    @field_validator("output_dir", "cache_dir", mode="before")
+    @field_validator("output_dir", "cache_dir", "gepa_prompt_path", mode="before")
     @classmethod
     def _coerce_paths(cls, v):
         if isinstance(v, str):

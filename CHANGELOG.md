@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased] — feat/gepa-integration
 
+### Added
+- **GEPA inference pipeline** — run inference with GEPA-optimised prompts without any code changes
+  - `gepa_prompt_path` config field added to `ExperimentConfig` (`src/agent_engine/config/schema.py`); when set, `run_experiment.py` loads `system_prompt` and `planning_suffix` from the JSON file, bypassing `PromptBuilder` entirely
+  - `scripts/run_experiment.py` — checks `gepa_prompt_path`; if present, reads the two components and passes `planning_suffix` to `AgenticOrchestrator` (previously `planning_suffix` was never forwarded from the runner to the orchestrator, so GEPA-optimised suffixes had no effect)
+  - `experiments/configs/qwen3/gepa_inference/` — six new experiment configs, all pointing to `experiments/results/gepa/gaia/2026-05-26-21-06-40_23128167/best_candidate.json`:
+    - `gaia/qwen8B_sub1_7b_orchestrator.yaml` / `gaia/qwen8B_sub1_7b_none.yaml` — GAIA all_validation, thinking on/off
+    - `musique/qwen8B_sub1_7b_orchestrator.yaml` / `musique/qwen8B_sub1_7b_none.yaml` — MuSiQue validation_subset_200
+    - `hle/qwen8B_sub1_7b_orchestrator.yaml` / `hle/qwen8B_sub1_7b_none.yaml` — HLE test_subset_200
+    - All use Qwen3-8B orchestrator + Qwen3-1.7B subagents (`web_search`, `code_generator`, `text_inspector`), `direct_tool_call: false`, 2×H100, W&B project `benchmarks`
+    - MuSiQue and HLE use the same GAIA-optimised prompt (cross-dataset transfer evaluation)
+  - `jobs/generated/GEPA_eval_*.job` — six SLURM job scripts (2 GPUs, 24 h each); submit all with `for f in jobs/generated/GEPA_eval_*.job; do sbatch "$f"; done`
+  - Results land under `experiments/results/gepa_inference/<dataset>/<variant>/`
+
 ### Changed
 - **GEPA configs switched to 8B+1.7B no-thinking setup** (`experiments/configs/gepa/gaia.yaml`, `experiments/configs/gepa/math.yaml`) — matches the LoRA fine-tuning pipeline for a fair comparison. Key changes:
   - `thinking_mode: "ORCHESTRATOR_ONLY" → "NO"` — neither orchestrator nor sub-agents produce `<think>` traces; reflector works from action histories and feedback alone
