@@ -27,7 +27,7 @@ model:
   path_or_id: "Qwen/Qwen3-8B"
   family: "qwen3"
   role: "orchestrator"
-  gpu_memory_utilization: 0.80
+  gpu_memory_utilization: 0.70
 
 # Sub-agent vLLM (Qwen3-1.7B) — started by the job script on GPU 0, port 9998.
 sub_agent:

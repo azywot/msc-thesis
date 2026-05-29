@@ -141,6 +141,7 @@ def _build_sub_agent_provider(cfg: dict):
         family=ModelFamily(family_str),
         role="sub_agent",
         backend="openai",
+        max_tokens=sa_cfg.get("max_tokens", 1024),
     )
     provider = OpenAIProvider(
         sa_model_cfg,
