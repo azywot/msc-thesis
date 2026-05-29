@@ -58,8 +58,10 @@ def setup_model_provider(model_config, api_keys: Dict[str, str], model_cache: Op
     Returns:
         Model provider instance (new or cached)
     """
-    # Check cache for local models (API models are lightweight, no need to cache)
-    cache_key = model_config.path_or_id
+    # Check cache for local models (API models are lightweight, no need to cache).
+    # Include lora_adapter_path in the key so a LoRA instance and the base model
+    # don't collide when both appear in the same experiment.
+    cache_key = f"{model_config.path_or_id}|lora:{model_config.lora_adapter_path or ''}"
     if model_cache is not None and cache_key in model_cache:
         if model_config.family not in (ModelFamily.GPT4, ModelFamily.CLAUDE):
             cached_provider = model_cache[cache_key]
