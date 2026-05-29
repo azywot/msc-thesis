@@ -198,6 +198,12 @@ class ModelConfig(BaseModel):
 
     backend: str = "vllm"  # "vllm", "mlx", "openai", "anthropic"
 
+    # Path to a PEFT LoRA adapter directory (adapter_config.json + adapter_model.safetensors).
+    # When set, the vLLM provider loads the adapter at init and passes it on every generate() call.
+    lora_adapter_path: Optional[str] = None
+    # Must match the rank used during training (vLLM default is 16; our adapter uses 64).
+    max_lora_rank: int = 64
+
     # OLMo 3 HF cards specify T=0.6, top_p=0.95, max_tokens=32768 and do not
     # set top_k or repetition_penalty; -1 disables top_k in vLLM and 1.0 is
     # the no-op repetition_penalty.

@@ -72,7 +72,12 @@ def _load_examples(cfg: dict, question_ids: list) -> list:
     return [ex for ex in all_examples if ex.question_id in id_set]
 
 
-def _build_tool_registry(cfg: dict, model_provider=None, cache_manager=None) -> ToolRegistry:
+def _build_tool_registry(
+    cfg: dict,
+    model_provider=None,
+    cache_manager=None,
+    sub_agent_provider=None,
+) -> ToolRegistry:
     import os
     tools = ToolRegistry()
     tools_cfg = cfg.get("tools", {})
@@ -87,8 +92,8 @@ def _build_tool_registry(cfg: dict, model_provider=None, cache_manager=None) -> 
     direct = tools_cfg.get("direct_tool_call", True)
 
     # In direct mode the tool handles everything itself (model_provider=None).
-    # In sub-agent mode the tool delegates analysis to the shared model provider.
-    sub_agent = None if direct else model_provider
+    # In sub-agent mode: use dedicated sub_agent_provider if given, else the orchestrator.
+    sub_agent = None if direct else (sub_agent_provider or model_provider)
 
     if "web_search" in enabled:
         api_key_env = "SERPER_API_KEY" if provider == "serper" else "TAVILY_API_KEY"
@@ -115,6 +120,36 @@ def _build_tool_registry(cfg: dict, model_provider=None, cache_manager=None) -> 
         ))
 
     return tools
+
+
+def _build_sub_agent_provider(cfg: dict):
+    """Create an OpenAI-compatible provider for the sub-agent vLLM server, if configured."""
+    sa_cfg = cfg.get("sub_agent")
+    if not sa_cfg:
+        return None
+
+    from agent_engine.models.base import ModelConfig, ModelFamily
+    from agent_engine.models.api_provider import OpenAIProvider
+
+    host = sa_cfg.get("host", "localhost")
+    port = sa_cfg.get("port", 9998)
+    family_str = sa_cfg.get("family", "qwen3")
+
+    sa_model_cfg = ModelConfig(
+        name=sa_cfg["name"],
+        path_or_id=sa_cfg["path_or_id"],
+        family=ModelFamily(family_str),
+        role="sub_agent",
+        backend="openai",
+        max_tokens=sa_cfg.get("max_tokens", 1024),
+    )
+    provider = OpenAIProvider(
+        sa_model_cfg,
+        api_key="EMPTY",
+        base_url=f"http://{host}:{port}/v1",
+    )
+    print(f"Sub-agent provider: {sa_cfg['name']} at http://{host}:{port}/v1")
+    return provider
 
 
 # ─────────────────────────────────────────────── MODE: splits ──────────────
@@ -325,8 +360,11 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
         path_or_id=model_cfg_raw["path_or_id"],
         family=ModelFamily(family_str),
         role="orchestrator",
+        gpu_memory_utilization=model_cfg_raw.get("gpu_memory_utilization"),
     )
     model_provider = VLLMProvider(model_cfg)
+
+    sub_agent_provider = _build_sub_agent_provider(cfg)
 
     provider = cfg.get("tools", {}).get("web_tool_provider", "serper")
     cache_manager = CacheManager(
@@ -335,14 +373,20 @@ def run_optimize(cfg: dict, config_path: Path) -> None:
         dataset_name=cfg["benchmark"],
     )
     print(f"Search cache: ./cache/{provider}/{cfg['benchmark']}/")
-    tool_registry = _build_tool_registry(cfg, model_provider=model_provider, cache_manager=cache_manager)
+    tool_registry = _build_tool_registry(
+        cfg, model_provider=model_provider, cache_manager=cache_manager,
+        sub_agent_provider=sub_agent_provider,
+    )
+
+    thinking_mode = cfg.get("thinking_mode", "NO").upper()
+    use_orchestrator_thinking = thinking_mode in ("ORCHESTRATOR_ONLY", "ALL")
 
     from gepa_integration.adapter import AgentGEPAAdapter
     max_search_limit = cfg.get("tools", {}).get("max_search_limit", 10)
     adapter = AgentGEPAAdapter(
         model_provider=model_provider,
         tool_registry=tool_registry,
-        use_thinking=True,
+        use_thinking=use_orchestrator_thinking,
         max_turns=cfg.get("max_turns", 15),
         tool_limits={"web_search": max_search_limit},
     )
@@ -497,8 +541,11 @@ def run_evaluate(cfg: dict, config_path: Path) -> None:
         path_or_id=model_cfg_raw["path_or_id"],
         family=ModelFamily(family_str),
         role="orchestrator",
+        gpu_memory_utilization=model_cfg_raw.get("gpu_memory_utilization"),
     )
     model_provider = VLLMProvider(model_cfg)
+
+    sub_agent_provider = _build_sub_agent_provider(cfg)
 
     provider = cfg.get("tools", {}).get("web_tool_provider", "serper")
     cache_manager = CacheManager(
@@ -506,14 +553,20 @@ def run_evaluate(cfg: dict, config_path: Path) -> None:
         web_tool_provider=provider,
         dataset_name=cfg["benchmark"],
     )
-    tool_registry = _build_tool_registry(cfg, model_provider=model_provider, cache_manager=cache_manager)
+    tool_registry = _build_tool_registry(
+        cfg, model_provider=model_provider, cache_manager=cache_manager,
+        sub_agent_provider=sub_agent_provider,
+    )
+
+    thinking_mode = cfg.get("thinking_mode", "NO").upper()
+    use_orchestrator_thinking = thinking_mode in ("ORCHESTRATOR_ONLY", "ALL")
 
     orchestrator = AgenticOrchestrator(
         model_provider=model_provider,
         tool_registry=tool_registry,
         max_turns=cfg.get("max_turns", 15),
         tool_limits={"web_search": cfg.get("tools", {}).get("max_search_limit", 10)},
-        use_thinking=True,
+        use_thinking=use_orchestrator_thinking,
         planning_suffix=best["planning_suffix"],
     )
 

@@ -5,7 +5,7 @@ from fine_tuning.agentflow.instrumentation.vllm import instrument_vllm, ChatComp
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from vllm.entrypoints.openai.protocol import ChatCompletionRequest, ErrorResponse
-from verl.workers.rollout.vllm_rollout.vllm_async_server import AsyncvLLMServer
+from verl.workers.rollout.vllm_rollout.vllm_async_server import vLLMHttpServer
 
 
 def _unwrap_ray_remote(cls):
@@ -14,8 +14,12 @@ def _unwrap_ray_remote(cls):
     return cls
 
 
+# NOTE: verl 0.7.1 hardcodes server_class = ray.remote(vLLMHttpServer) in
+# vLLMReplica.__init__ and ignores the custom_async_server config field entirely.
+# PatchedvLLMServer is therefore dead code — it is never instantiated.  Kept for
+# forward-compatibility if a future verl version honours the config.
 @ray.remote(num_cpus=1)
-class PatchedvLLMServer(_unwrap_ray_remote(AsyncvLLMServer)):
+class PatchedvLLMServer(_unwrap_ray_remote(vLLMHttpServer)):
 
     def __init__(self, *args, **kwargs):
         instrument_vllm()

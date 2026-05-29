@@ -2,7 +2,8 @@
 #SBATCH --job-name=GEPAMath
 #SBATCH --partition=gpu_h100
 # Three H100 NVL GPUs (~94 GB each).
-#   GPU 0:    agent vLLM (Qwen3-8B, tp=1, ~16 GB weights + KV cache)
+#   GPU 0:    sub-agent vLLM (Qwen3-1.7B, tp=1, util=0.20, ~19 GB)
+#             + orchestrator vLLM in-process (Qwen3-8B, tp=1, util=0.70, ~46 GB)
 #   GPUs 1–2: reflector vLLM (Qwen3-32B, tp=2, ~64 GB weights + KV cache)
 #SBATCH --gpus=3
 #SBATCH --ntasks=1
@@ -12,13 +13,15 @@
 #SBATCH --error=out/gepa/gepa_math_%A.err
 
 # GEPA prompt optimisation — MATH benchmark only.
+# Setup: 8B orchestrator + 1.7B sub-agents, no thinking (matches LoRA fine-tuning).
 #
 # What this job does:
-#   1. Start Qwen3-32B reflector vLLM on GPUs 1–2 (port 8001).
-#   2. Run GEPA optimisation (~9h): evolves system_prompt + planning_suffix.
-#   3. Evaluate best candidate on held-out test.
-#   4. Print prompt diff (seed → best).
-#   5. Kill reflector and exit.
+#   1. Start Qwen3-1.7B sub-agent vLLM on GPU 0 (port 9998).
+#   2. Start Qwen3-32B reflector vLLM on GPUs 1–2 (port 8001).
+#   3. Run GEPA optimisation (~9h): evolves system_prompt + planning_suffix.
+#   4. Evaluate best candidate on held-out test.
+#   5. Print prompt diff (seed → best).
+#   6. Kill sub-agent + reflector and exit.
 #
 # Prerequisites:
 #   - Job 001 completed (agent_engine conda env exists)
@@ -72,30 +75,51 @@ mkdir -p out/gepa
 
 # ── Cleanup trap ─────────────────────────────────────────────────────────────
 
+SUBAGENT_PID=""
 REFLECTOR_PID=""
-cleanup() {
-    if [[ -n "${REFLECTOR_PID:-}" ]] && kill -0 "$REFLECTOR_PID" >/dev/null 2>&1; then
-        echo "Stopping reflector vLLM (pid=$REFLECTOR_PID)..."
-        kill -TERM "$REFLECTOR_PID" 2>/dev/null || true
-        # Wait up to 30 s for graceful shutdown, then SIGKILL.
-        # vLLM spawns Ray workers that may not exit on SIGTERM alone;
-        # without this, 'wait' blocks indefinitely and the job hangs.
+_kill_gracefully() {
+    local pid="$1" name="$2"
+    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+        echo "Stopping $name (pid=$pid)..."
+        kill -TERM "$pid" 2>/dev/null || true
         for _i in $(seq 1 30); do
             sleep 1
-            kill -0 "$REFLECTOR_PID" >/dev/null 2>&1 || break
+            kill -0 "$pid" >/dev/null 2>&1 || break
         done
-        if kill -0 "$REFLECTOR_PID" >/dev/null 2>&1; then
-            echo "Reflector still alive after 30 s — sending SIGKILL..."
-            kill -KILL "$REFLECTOR_PID" 2>/dev/null || true
+        if kill -0 "$pid" >/dev/null 2>&1; then
+            echo "$name still alive after 30 s — sending SIGKILL..."
+            kill -KILL "$pid" 2>/dev/null || true
         fi
-        wait "$REFLECTOR_PID" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
     fi
+}
+cleanup() {
+    _kill_gracefully "$REFLECTOR_PID" "reflector vLLM"
+    _kill_gracefully "$SUBAGENT_PID" "sub-agent vLLM"
 }
 trap cleanup EXIT
 
-# ── 1. Start reflector vLLM (Qwen3-32B on GPUs 1–2, port 8001) ──────────────
+# ── 1a. Start sub-agent vLLM (Qwen3-1.7B on GPU 0, port 9998) ──────────────
 
 echo ""
+echo "Starting Qwen3-1.7B sub-agent vLLM on GPU 0, port 9998..."
+SUBAGENT_LOG="out/gepa/gepa_math_${SLURM_JOB_ID:-local}_subagent.log"
+# util=0.20 (~18.8 GB budget). vLLM 0.12 V1 engine profiling overhead is ~9 GB
+# (model 3.4 GB + internal buffers + activation profiling), leaving ~9.8 GB for KV
+# cache (need 0.88 GB for one 8192-token sequence → 11x headroom).
+# --enforce-eager avoids additional CUDA graph memory on top of profiling.
+CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
+    --port 9998 \
+    --tensor-parallel-size 1 \
+    --dtype bfloat16 \
+    --enforce-eager \
+    --gpu-memory-utilization 0.20 \
+    --max-model-len 16384 \
+    > "$SUBAGENT_LOG" 2>&1 &
+SUBAGENT_PID=$!
+
+# ── 1b. Start reflector vLLM (Qwen3-32B on GPUs 1–2, port 8001) ────────────
+
 echo "Starting Qwen3-32B reflector vLLM on GPUs 1–2, port 8001..."
 REFLECTOR_LOG="out/gepa/gepa_math_${SLURM_JOB_ID:-local}_reflector.log"
 CUDA_VISIBLE_DEVICES=1,2 vllm serve Qwen/Qwen3-32B \
@@ -108,13 +132,37 @@ CUDA_VISIBLE_DEVICES=1,2 vllm serve Qwen/Qwen3-32B \
     > "$REFLECTOR_LOG" 2>&1 &
 REFLECTOR_PID=$!
 
-echo "Waiting 90s for reflector vLLM to start..."
+echo "Waiting 90s for vLLM servers to start..."
 sleep 90
+
+# Check sub-agent
+if ! kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+    echo "FAIL — sub-agent vLLM exited during startup. See $SUBAGENT_LOG"
+    exit 1
+fi
+echo "Polling http://localhost:9998/health for sub-agent readiness..."
+_deadline=$((SECONDS + 300))
+while (( SECONDS < _deadline )); do
+    if curl -fsS --max-time 5 "http://127.0.0.1:9998/health" >/dev/null 2>&1; then
+        echo "Sub-agent vLLM is ready."
+        break
+    fi
+    if ! kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+        echo "FAIL — sub-agent vLLM exited before becoming ready. See $SUBAGENT_LOG"
+        exit 1
+    fi
+    sleep 5
+done
+if (( SECONDS >= _deadline )); then
+    echo "FAIL — sub-agent not ready after 5 min. Check $SUBAGENT_LOG"
+    exit 1
+fi
+
+# Check reflector
 if ! kill -0 "$REFLECTOR_PID" >/dev/null 2>&1; then
     echo "FAIL — reflector vLLM exited during startup. See $REFLECTOR_LOG"
     exit 1
 fi
-
 echo "Polling http://localhost:8001/health for reflector readiness..."
 _deadline=$((SECONDS + 600))
 while (( SECONDS < _deadline )); do

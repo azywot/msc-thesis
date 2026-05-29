@@ -4,8 +4,9 @@ AgentGEPAAdapter connects GEPA's optimization loop to the msc-thesis
 orchestrator. It implements the GEPAAdapter protocol with two optimizable
 components: "system_prompt" and "planning_suffix".
 
-Thinking mode is fixed at ORCHESTRATOR_ONLY to match the main experimental
-condition and provide rich <think> traces for the reflector.
+Thinking mode is controlled by the config's thinking_mode field (passed as
+use_thinking to the adapter). When thinking is enabled, the reflector gets
+rich <think> traces; when disabled, traces are empty strings.
 """
 
 from __future__ import annotations

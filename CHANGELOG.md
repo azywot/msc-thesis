@@ -8,6 +8,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased] — feat/gepa-integration
 
+### Added
+- **GEPA inference pipeline** — run inference with GEPA-optimised prompts without any code changes
+  - `gepa_prompt_path` config field added to `ExperimentConfig` (`src/agent_engine/config/schema.py`); when set, `run_experiment.py` loads `system_prompt` and `planning_suffix` from the JSON file, bypassing `PromptBuilder` entirely
+  - `scripts/run_experiment.py` — checks `gepa_prompt_path`; if present, reads the two components and passes `planning_suffix` to `AgenticOrchestrator` (previously `planning_suffix` was never forwarded from the runner to the orchestrator, so GEPA-optimised suffixes had no effect)
+  - `experiments/configs/qwen3/gepa_inference/` — six new experiment configs, all pointing to `experiments/results/gepa/gaia/2026-05-26-21-06-40_23128167/best_candidate.json`:
+    - `gaia/qwen8B_sub1_7b_orchestrator.yaml` / `gaia/qwen8B_sub1_7b_none.yaml` — GAIA all_validation, thinking on/off
+    - `musique/qwen8B_sub1_7b_orchestrator.yaml` / `musique/qwen8B_sub1_7b_none.yaml` — MuSiQue validation_subset_200
+    - `hle/qwen8B_sub1_7b_orchestrator.yaml` / `hle/qwen8B_sub1_7b_none.yaml` — HLE test_subset_200
+    - All use Qwen3-8B orchestrator + Qwen3-1.7B subagents (`web_search`, `code_generator`, `text_inspector`), `direct_tool_call: false`, 2×H100, W&B project `benchmarks`
+    - MuSiQue and HLE use the same GAIA-optimised prompt (cross-dataset transfer evaluation)
+  - `jobs/generated/GEPA_eval_*.job` — six SLURM job scripts (2 GPUs, 24 h each); submit all with `for f in jobs/generated/GEPA_eval_*.job; do sbatch "$f"; done`
+  - Results land under `experiments/results/gepa_inference/<dataset>/<variant>/`
+
+### Changed
+- **GEPA configs switched to 8B+1.7B no-thinking setup** (`experiments/configs/gepa/gaia.yaml`, `experiments/configs/gepa/math.yaml`) — matches the LoRA fine-tuning pipeline for a fair comparison. Key changes:
+  - `thinking_mode: "ORCHESTRATOR_ONLY" → "NO"` — neither orchestrator nor sub-agents produce `<think>` traces; reflector works from action histories and feedback alone
+  - Orchestrator (Qwen3-8B) stays in-process via `VLLMProvider` on GPU 0 (`gpu_memory_utilization: 0.80`)
+  - Sub-agents now run on a separate Qwen3-1.7B vLLM serve (port 9998, `gpu_memory_utilization: 0.10`, `max_model_len: 8192`) sharing GPU 0 — connected via `OpenAIProvider`; previously sub-agents reused the 8B orchestrator model
+  - `slurm.num_gpus` corrected from 4 to 3 (matching actual job scripts); `slurm.time` corrected from 12h to 24h
+  - W&B names and tags updated to reflect the new setup (`qwen3-1.7b`, `no-think`)
+- **`scripts/run_gepa.py` — config-driven thinking mode and separate sub-agent model support**
+  - `_build_sub_agent_provider(cfg)` — new helper; reads the optional `sub_agent` config section and creates an `OpenAIProvider` pointing at the sub-agent vLLM serve endpoint; returns `None` when not configured (backward-compatible)
+  - `_build_tool_registry()` gains `sub_agent_provider` parameter; tools use the dedicated sub-agent provider when given, otherwise fall back to the orchestrator model (previous behavior)
+  - `run_optimize()` and `run_evaluate()` — `use_thinking` is now derived from `cfg["thinking_mode"]` (was hardcoded `True`); `gpu_memory_utilization` is forwarded from the YAML model section to `ModelConfig`
+- **`jobs/gepa/006_run_gepa_gaia.job`, `jobs/gepa/007_run_gepa_math.job` — sub-agent vLLM sidecar**
+  - Start `vllm serve Qwen/Qwen3-1.7B` on GPU 0 (port 9998, `util=0.10`) alongside the reflector before launching the Python script
+  - Both servers start in parallel (shared 90 s startup wait), then health-checked sequentially (sub-agent 5 min, reflector 10 min)
+  - Sub-agent `gpu_memory_utilization: 0.20` + `--enforce-eager` — vLLM 0.12.0's V1 engine profiling overhead is ~9 GB (model 3.4 GB + internal buffers + activation profiling); at `util=0.10` (9.4 GB budget) only 0.38 GB remained for KV cache (need 0.88 GB); `util=0.20` (18.8 GB budget) leaves ~9.8 GB for KV with 11x headroom. `enforce_eager` prevents CUDA graph capture from consuming additional memory. Note: `VLLM_USE_V1=0` (used in fine-tuning's `005_train.job`) is a no-op on vLLM 0.12 since V0 was removed
+  - Cleanup trap kills both sub-agent and reflector on EXIT; extracted `_kill_gracefully()` helper with 30 s SIGTERM→SIGKILL escalation
+  - GPU 0 memory budget: sub-agent ~19 GB + orchestrator ~56 GB = ~75 GB / 94 GB H100 NVL (~19 GB headroom)
+- **`src/gepa_integration/adapter.py` docstring** — updated to note thinking mode is now config-driven (was "fixed at ORCHESTRATOR_ONLY")
+
 ### Changed
 - **RL fine-tuning val split reshaped (200 → 50 rows, AIME signal added)** — switched from the original 200-row dev set (100 Search-R1 + 100 DeepMath) to a 50-row mixed val set: **20 Search-R1 + 10 DeepMath + 20 AIME** sampled deterministically (seed=42) from local `data/AIME/train.jsonl`. AIME is val-only — never mixed into the training pool — and gives an early-warning signal for AIME-flavoured regressions during GRPO. The held-out AIME eval set used for final reporting must remain disjoint from this sample (verified upstream, not here). VERL now reads a single `val_combined.parquet` (one `val/*` series in W&B) instead of multiple per-domain parquets; per-domain breakdowns are still written to disk for offline analysis. Files touched: `src/fine_tuning/data/prepare.py` (added `normalise_aime_local_row` / `_read_jsonl` / `_load_aime_local`; `--n-val-search` default 100→20, `--n-val-math` 100→10, new `--n-val-aime` (20) and `--aime-jsonl-path`; `build_val_files` now accepts AIME rows), `experiments/configs/train/config*.yaml` (collapsed `data.val_files` to `val_combined.parquet` only), `jobs/008_prepare_fine_tuning_data.job` / `jobs/009` / `jobs/010` / `jobs/012` (updated CLI flags and existence checks), `tests/unit/test_data_prepare.py` (added `TestNormaliseAimeLocal` + `TestLoadAimeLocal`).
 - **DeepMath difficulty floor 5 → 3** — relaxed the `--deepmath-min-difficulty` default from 5 to 3 (CLI default + docstring + job scripts). Medium-hard problems still produce a useful GRPO signal and the larger filtered pool buys more headroom for clean non-overlapping train/val/test splits.

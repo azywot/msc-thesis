@@ -2,9 +2,10 @@
 
 GEPA (Generative Prompt Adaptation) optimises the two text components of the
 orchestrator's prompt using execution traces as feedback. No weight updates are
-performed. A Qwen3-32B *reflector* reads full `<think>` blocks, action
-histories, and failure labels from agent rollouts, then proposes prompt rewrites
-that are evaluated and selected by the GEPA loop.
+performed. A Qwen3-32B *reflector* reads action histories and failure labels
+from agent rollouts, then proposes prompt rewrites that are evaluated and
+selected by the GEPA loop. Thinking mode is config-driven (`thinking_mode`
+field) — when enabled, the reflector also sees `<think>` traces.
 
 This module wires the `gepa` package into the CoSMAS inference stack.
 
@@ -149,25 +150,34 @@ Implements the `GEPAAdapter` protocol from `gepa.core.adapter`. GEPA calls
 ```python
 from gepa_integration.adapter import AgentGEPAAdapter
 from agent_engine.models.vllm_provider import VLLMProvider
+from agent_engine.models.api_provider import OpenAIProvider
 from agent_engine.core.tool import ToolRegistry
 
-# Build these exactly as you would for a normal inference run:
+# Orchestrator: in-process vLLM on GPU 0
 model_provider = VLLMProvider(model_cfg)         # Qwen3-8B
-tool_registry  = _build_tool_registry(cfg, model_provider=model_provider)
 
+# Sub-agent: separate vLLM serve on port 9998 (optional — omit for same-model sub-agents)
+sub_agent_provider = OpenAIProvider(sa_model_cfg, api_key="EMPTY",
+                                    base_url="http://localhost:9998/v1")
+
+tool_registry = _build_tool_registry(cfg, model_provider=model_provider,
+                                      sub_agent_provider=sub_agent_provider)
+
+# use_thinking is config-driven: True for ORCHESTRATOR_ONLY/ALL, False for NO
 adapter = AgentGEPAAdapter(
     model_provider=model_provider,
     tool_registry=tool_registry,
-    use_thinking=True,    # ORCHESTRATOR_ONLY — orchestrator thinks, sub-agents don't
+    use_thinking=False,   # thinking_mode: "NO" — matches LoRA fine-tuning setup
     max_turns=15,
     tool_limits={"web_search": 10},
 )
 ```
 
-The same `VLLMProvider` instance is used for both the orchestrator and the
-tool sub-agents. Sub-agents call `model_provider.generate(...)` with
-`use_thinking=False` (controlled by the tool's own `use_thinking` field,
-set from `thinking_mode` in the config).
+When `sub_agent` is configured in the YAML, `run_gepa.py` creates a separate
+`OpenAIProvider` pointing at the sub-agent vLLM serve endpoint. When omitted,
+the orchestrator model is reused for sub-agents (previous default behavior).
+Sub-agent thinking is controlled by `thinking_mode` — only `SUBAGENTS_ONLY`
+and `ALL` enable it.
 
 ### `evaluate(batch, candidate, capture_traces=False)`
 
@@ -236,11 +246,13 @@ dataset = adapter.make_reflective_dataset(
 - Number of turns taken
 - The enriched `Feedback` string — same `_diagnose()` output as the system-prompt records
 
-### Thinking tags and ORCHESTRATOR_ONLY mode
+### Thinking tags
 
-With `use_thinking=True` (ORCHESTRATOR_ONLY), the model emits one
-`<think>…</think>` block per turn. The pipeline is designed so the reflector
-always sees clean content:
+When `use_thinking=True` (e.g. `thinking_mode: "ORCHESTRATOR_ONLY"`), the
+model emits one `<think>…</think>` block per turn. When `use_thinking=False`
+(e.g. `thinking_mode: "NO"`), thinking fields in the reflective records are
+empty strings. The pipeline is designed so the reflector always sees clean
+content regardless of thinking mode:
 
 | Field | Raw source | What the reflector sees |
 |---|---|---|
@@ -327,8 +339,8 @@ to, for two reasons:
 | System prompt construction | `build_seed_candidate` → `PromptBuilder.build_system_prompt(...)` | `PromptBuilder.build_system_prompt(...)` with same args |
 | Planning suffix seed | `_DEFAULT_PLANNING_SUFFIX_TOOLS` constant | Same constant (when no custom suffix set) |
 | Tool mode | `direct_tool_call: false` (sub-agent) | Matches milestone-1 `qwen8B_subagent_tools_orchestrator` |
-| Sub-agent model | Same `VLLMProvider` as orchestrator (Qwen3-8B) | Sub-agent model role in config |
-| Thinking mode | `ORCHESTRATOR_ONLY` — orchestrator on, sub-agents off | Same |
+| Sub-agent model | Qwen3-1.7B via `OpenAIProvider` (port 9998) — configurable via `sub_agent` YAML section; falls back to orchestrator model when omitted | Sub-agent model role in config |
+| Thinking mode | Config-driven (`thinking_mode` field); currently `NO` for fine-tuning comparability | Same |
 | Scoring | `evaluate_answer(prediction, ground_truth, choices=choices, answer_aliases=aliases)` | Same function |
 | Answer aliases | `example.metadata.get("answer_aliases")` | Same (where available) |
 
@@ -440,7 +452,7 @@ states = orchestrator.run_batch(
 
 ```yaml
 benchmark: "gaia"           # dataset name — must match DatasetRegistry key
-thinking_mode: "ORCHESTRATOR_ONLY"
+thinking_mode: "NO"         # NO / ORCHESTRATOR_ONLY / SUBAGENTS_ONLY / ALL
 seed: 1
 max_turns: 15
 cache_dir: "./cache"
@@ -454,6 +466,15 @@ model:
   path_or_id: "Qwen/Qwen3-8B"
   family: "qwen3"
   role: "orchestrator"
+  gpu_memory_utilization: 0.80  # leave room for sub-agent on same GPU
+
+# Optional: separate sub-agent model (omit to reuse orchestrator model)
+sub_agent:
+  name: "Qwen3-1.7B"
+  path_or_id: "Qwen/Qwen3-1.7B"
+  family: "qwen3"
+  host: "localhost"
+  port: 9998
 
 reflector:                  # Qwen3-32B served via vllm serve on port 8001
   path_or_id: "Qwen/Qwen3-32B"
@@ -476,8 +497,8 @@ gepa:
 wandb:
   enabled: true
   project: "gepa"
-  name: "gepa_gaia_qwen3_8b"
-  tags: ["gaia", "gepa", "qwen3-8b", "search-r1", "deepmath"]
+  name: "gepa_gaia_qwen3_8b_1.7b_no_think"
+  tags: ["gaia", "gepa", "qwen3-8b", "qwen3-1.7b", "no-think", "search-r1", "deepmath"]
 ```
 
 ---

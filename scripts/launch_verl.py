@@ -81,10 +81,17 @@ def main():
         # tightest (also hosts the sub-agent at util=0.12 ≈ 11 GB): 66 GB vLLM + 11 GB
         # sub-agent + 4 GB FSDP shard + 8 GB activations ≈ 89 GB / 94 GB (5 GB headroom).
         python_args["actor_rollout_ref.rollout.gpu_memory_utilization"] = 0.70
-        # Dynamic batching packs sequences up to ppo_max_token_len_per_gpu — at 22528 ctx the
-        # default 16384 forces one-seq-per-pass and wastes throughput. 45056 = 2× (prompt+resp).
-        # rollout.log_prob_* and ref.log_prob_* inherit these via OmegaConf oc.select.
-        python_args["actor_rollout_ref.actor.use_dynamic_bsz"] = True
+        # use_dynamic_bsz MUST remain False: VERL's dp_actor.update_policy calls
+        # prepare_dynamic_batch without dp_group, so the cross-rank all_reduce that
+        # syncs num_micro_batches is skipped.  When ranks have different total token
+        # counts (e.g. one shard crosses the 45056 boundary and gets 2 micro-batches
+        # while another stays at 1), FSDP AllGather on ranks 0/1 meets AllReduce on
+        # ranks 2/3 at the same NCCL seqnum → 1-hour watchdog deadlock.  With
+        # use_dynamic_bsz=False, every rank always does ppo_mini_batch_size //
+        # ppo_micro_batch_size_per_gpu = 8 // 4 = 2 fixed micro-batches — safe.
+        # (Bug 8 in CHANGELOG_ft_debugging.md; root fix is upstream dp_actor.py
+        # passing dp_group=dist.group.WORLD to prepare_dynamic_batch.)
+        python_args["actor_rollout_ref.actor.use_dynamic_bsz"] = False
         python_args["actor_rollout_ref.actor.ppo_max_token_len_per_gpu"] = 45056
 
         # Resume from a previously saved adapter (multi-stage training or warm restart).
@@ -105,7 +112,7 @@ def main():
             f"lr={lora_lr} (overrides config), "
             f"load_format=safetensors, layered_summon=True, use_shm=True, "
             f"free_cache_engine=True, gpu_memory_utilization={python_args['actor_rollout_ref.rollout.gpu_memory_utilization']}, "
-            f"use_dynamic_bsz=True (ppo_max_token_len_per_gpu=45056)"
+            f"use_dynamic_bsz=False (ppo_max_token_len_per_gpu=45056 kept as reference)"
             + (f", resume_adapter_path={resume_path}" if resume_path else "")
             + (", merge=True (SGLang)" if lora_merge else "")
         )
@@ -167,6 +174,27 @@ def main():
         if smn_key not in python_args and f"+{smn_key}" not in python_args:
             python_args[f"+{smn_key}"] = base_model
             print(f"  served_model_name={base_model} (forwarded to vLLM HTTP server)")
+
+    # Disable prefix caching: VERL's build_cli_args_from_config silently drops bool
+    # False values, so enable_prefix_caching=False in the config is a NO-OP — vLLM V1
+    # defaults to True.  Prefix caching + free_cache_engine + LoRA causes "CUDA error:
+    # illegal memory access" — stale prefix-cache hash entries point to freed KV blocks
+    # after the cache engine is rebuilt between training phases.
+    # Workaround: inject "no_enable_prefix_caching=True" via engine_kwargs.  True bools
+    # DO pass through build_cli_args → --no_enable_prefix_caching.  vLLM's
+    # FlexibleArgumentParser normalises underscores to dashes →
+    # --no-enable-prefix-caching, which argparse (BooleanOptionalAction) honours.
+    # Six crashes: ft_23028433, ft_23031012, ft_23060623, ft_23071620, ft_23092138,
+    # ft_23117863 — all had enable_prefix_caching=True in the vLLM init banner despite
+    # the config setting False.
+    npc_key = "+actor_rollout_ref.rollout.engine_kwargs.vllm.no_enable_prefix_caching"
+    if npc_key not in python_args:
+        python_args[npc_key] = "True"
+        print("  no_enable_prefix_caching=True (disables prefix caching; workaround for build_cli_args bug)")
+
+    # enforce_eager is NOT needed — the real crash cause was the early-completion
+    # race condition in daemon.py (in-flight vLLM requests hit freed KV cache).
+    # Removing it restores torch.compile + CUDA graphs for faster inference.
 
     # Keys not in VERL's structured Hydra schema must be prefixed with + (append, not override).
     # ray_init.num_cpus: custom key passed to our AgentFlowTrainer's ray.init() call.

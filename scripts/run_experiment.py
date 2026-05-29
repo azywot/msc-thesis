@@ -58,8 +58,10 @@ def setup_model_provider(model_config, api_keys: Dict[str, str], model_cache: Op
     Returns:
         Model provider instance (new or cached)
     """
-    # Check cache for local models (API models are lightweight, no need to cache)
-    cache_key = model_config.path_or_id
+    # Check cache for local models (API models are lightweight, no need to cache).
+    # Include lora_adapter_path in the key so a LoRA instance and the base model
+    # don't collide when both appear in the same experiment.
+    cache_key = f"{model_config.path_or_id}|lora:{model_config.lora_adapter_path or ''}"
     if model_cache is not None and cache_key in model_cache:
         if model_config.family not in (ModelFamily.GPT4, ModelFamily.CLAUDE):
             cached_provider = model_cache[cache_key]
@@ -334,14 +336,27 @@ def run_experiment(args):
         # Capture the common system prompt once for this run (same for all questions).
         tool_schemas = tools.get_all_schemas()
         orch_family = config.get_model("orchestrator").family
-        system_prompt_for_config = prompt_builder.build_system_prompt(
-            dataset_name=config.dataset.name,
-            tool_schemas=tool_schemas,
-            max_search_limit=config.tools.max_search_limit,
-            direct_tool_call=config.tools.direct_tool_call,
-            baseline=getattr(config, "baseline", False),
-            tool_call_format=get_tool_call_format(config.get_model("orchestrator").family),
-        )
+        gepa_planning_suffix: Optional[str] = None
+        gepa_prompt_path = getattr(config, "gepa_prompt_path", None)
+        if gepa_prompt_path is not None:
+            gepa_prompt_path = Path(gepa_prompt_path)
+            logger.info(f"Loading GEPA prompt from {gepa_prompt_path}")
+            with open(gepa_prompt_path, "r", encoding="utf-8") as f:
+                gepa_data = json.load(f)
+            system_prompt_for_config = gepa_data["system_prompt"]
+            gepa_planning_suffix = gepa_data.get("planning_suffix")
+            logger.info("GEPA system_prompt loaded (%d chars)", len(system_prompt_for_config))
+            if gepa_planning_suffix:
+                logger.info("GEPA planning_suffix loaded (%d chars)", len(gepa_planning_suffix))
+        else:
+            system_prompt_for_config = prompt_builder.build_system_prompt(
+                dataset_name=config.dataset.name,
+                tool_schemas=tool_schemas,
+                max_search_limit=config.tools.max_search_limit,
+                direct_tool_call=config.tools.direct_tool_call,
+                baseline=getattr(config, "baseline", False),
+                tool_call_format=get_tool_call_format(config.get_model("orchestrator").family),
+            )
 
         orchestrator = AgenticOrchestrator(
             model_provider=orchestrator_model,
@@ -351,6 +366,7 @@ def run_experiment(args):
             use_thinking=config.use_orchestrator_thinking(),
             cache_manager=cache_manager,
             baseline=config.baseline,
+            planning_suffix=gepa_planning_suffix,
         )
 
         raw_batch = getattr(config, "batch_size", -1) or -1

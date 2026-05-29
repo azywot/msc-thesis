@@ -13,6 +13,9 @@ Run from the repo root:
     python scripts/generate_configs.py --suite olmo-think-agentflow
     python scripts/generate_configs.py --suite olmo-instruct-baseline
     python scripts/generate_configs.py --suite olmo-instruct-agentflow
+    python scripts/generate_configs.py --suite lora_inference
+        (LoRA-adapted Qwen3-8B orchestrator + Qwen3-1.7B subagents; no thinking / orch thinking)
+        Before running, set LORA_ADAPTER_PLACEHOLDER to the actual adapter path.
 
 Config output layout:
     experiments/configs/qwen3/<suite>/<dataset>/<variant>.yaml
@@ -131,6 +134,21 @@ MODELS = {
         "gpus": 2,
     },
 }
+
+# ── LoRA inference ─────────────────────────────────────────────────────────────
+# Replace <run-tag> with the value printed by 005_train.job ("Run tag: ...") once
+# training is complete.  VERL writes the best-tracked adapter to:
+#   /scratch-shared/azywot/fine_tuning/lora_adapters/<experiment>/<run-tag>/best_checkpoint/actor/lora_adapter
+LORA_ADAPTER_PLACEHOLDER = (
+    "/scratch-shared/azywot/fine_tuning/lora_adapters/"
+    "qwen3-8b-grpo-search-math/22-05-2026_00-01-23031012/global_step_20/actor/lora_adapter"
+)
+
+# (stem, orch_key, sub_key, thinking_mode)
+VARIANTS_LORA_INFERENCE = [
+    ("qwen8B_sub1_7b_none",         "8B", "1.7B", "NO"),
+    ("qwen8B_sub1_7b_orchestrator", "8B", "1.7B", "ORCHESTRATOR_ONLY"),
+]
 
 # ── all possible variants ──────────────────────────────────────────────────────
 # (filename_stem, model_key, direct_tool_call, enabled_tools_key, thinking_mode)
@@ -399,6 +417,21 @@ SUITES = {
         "wandb_project":   "benchmarks",
         "split_overrides": {},
     },
+    "lora_inference": {
+        "description_tag": "[LoRA inference]",
+        "name_prefix":     "LORA_eval",
+        "output_dir_root": "./experiments/results/lora_inference",
+        "config_subdir":   "qwen3/lora_inference",
+        "baseline":        False,
+        "variant_type":    "lora_inference",
+        "variants":        VARIANTS_LORA_INFERENCE,
+        "datasets":        ["gaia", "hle", "gpqa", "aime", "musique"],
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+        # Replace <run-tag> with the value from the training job log before running inference.
+        "lora_adapter_path": LORA_ADAPTER_PLACEHOLDER,
+    },
 }
 
 
@@ -459,6 +492,99 @@ def _model_block_with_subagent(orch_key: str, sub_key: str, tool_roles: list[str
             comment = sub.get("tp_comment", "TP must divide num attention heads.")
             lines.append(f"    tensor_parallel_size: {sub['tp']}  # {comment}")
     return "\n".join(lines)
+
+
+def _model_block_lora_orchestrator(
+    orch_key: str, sub_key: str, tool_roles: list[str], lora_adapter_path: str
+) -> str:
+    """Models block with a LoRA-annotated orchestrator and explicit per-role subagent entries."""
+    orch = MODELS[orch_key]
+    sub  = MODELS[sub_key]
+    lines = [
+        "models:",
+        "  orchestrator:",
+        f'    name: "{orch["name"]}-LoRA"',
+        f'    family: "{orch["family"]}"',
+        f'    path_or_id: "{orch["path_or_id"]}"',
+        '    role: "orchestrator"',
+        f'    lora_adapter_path: "{lora_adapter_path}"',
+    ]
+    if orch["tp"]:
+        comment = orch.get("tp_comment", "TP must divide num attention heads.")
+        lines.append(f"    tensor_parallel_size: {orch['tp']}  # {comment}")
+    for role in tool_roles:
+        lines += [
+            f"  {role}:",
+            f'    name: "{sub["name"]}"',
+            f'    family: "{sub["family"]}"',
+            f'    path_or_id: "{sub["path_or_id"]}"',
+            f'    role: "{role}"',
+        ]
+        if sub["tp"]:
+            comment = sub.get("tp_comment", "TP must divide num attention heads.")
+            lines.append(f"    tensor_parallel_size: {sub['tp']}  # {comment}")
+    return "\n".join(lines)
+
+
+def make_config_lora_inference(
+    suite: dict, dataset: str, stem: str,
+    orch_key: str, sub_key: str, thinking: str,
+) -> str:
+    ds = {**DATASETS[dataset], **suite["split_overrides"].get(dataset, {})}
+    orch = MODELS[orch_key]
+    sub  = MODELS[sub_key]
+    think_desc    = THINKING_LABELS[thinking]
+    lora_path     = suite["lora_adapter_path"]
+    tools         = ds["tools"]
+    return_code   = dataset == "bigcodebench" and bool(tools)
+    tools_block   = _tools_block(direct=False, enabled=tools, return_code=return_code)
+    models_block  = _model_block_lora_orchestrator(orch_key, sub_key, tools, lora_path)
+    exp_name      = f"{suite['name_prefix']}_{dataset}_{stem}"
+    output_dir    = f"{suite['output_dir_root']}/{dataset}/{stem}"
+    wandb_project = suite["wandb_project"]
+
+    comment_line = (
+        f"# {ds['display']} — LoRA-adapted {orch['name']} orchestrator "
+        f"+ {sub['name']} subagents, {think_desc}"
+    )
+    description = (
+        f"{suite['description_tag']} "
+        f"{ds['display']} {ds['split']} with LoRA-adapted {orch['name']} orchestrator "
+        f"({think_desc}) + {sub['name']} subagents (no thinking)."
+    )
+
+    return f"""{comment_line}
+# Update lora_adapter_path once training is complete (replace <run-tag> printed by 005_train.job).
+
+name: "{exp_name}"
+description: "{description}"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: {suite['num_gpus']}
+  ntasks: 1
+  cpus_per_task: 8
+  time: "24:00:00"
+  conda_env: "agent_engine"
+
+{models_block}
+
+{tools_block}
+
+dataset:
+  name: "{dataset}"
+  split: "{ds['split']}"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "{thinking}"
+output_dir: "{output_dir}"
+use_wandb: true
+wandb_project: "{wandb_project}"
+
+cache_dir: "./cache"
+"""
 
 
 def make_config(
@@ -649,6 +775,15 @@ def generate_suite(suite_name: str) -> None:
         if variant_type == "orch_capacity":
             for stem, orch_key, sub_key, thinking in suite["variants"]:
                 content = make_config_orch_capacity(
+                    suite, dataset, stem, orch_key, sub_key, thinking
+                )
+                path = dataset_dir / f"{stem}.yaml"
+                path.write_text(content)
+                print(f"  wrote {path.relative_to(CONFIGS_ROOT.parent)}")
+                created += 1
+        elif variant_type == "lora_inference":
+            for stem, orch_key, sub_key, thinking in suite["variants"]:
+                content = make_config_lora_inference(
                     suite, dataset, stem, orch_key, sub_key, thinking
                 )
                 path = dataset_dir / f"{stem}.yaml"

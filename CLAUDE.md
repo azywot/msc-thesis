@@ -89,6 +89,7 @@ python scripts/generate_configs.py
 - `thinking_mode` — `NO` / `ORCHESTRATOR_ONLY` / `SUBAGENTS_ONLY` / `ALL`
 - `batch_size` — questions per batch (`-1` = all; `1` = no batching)
 - `web_tool_provider` — `serper` (default, fetches full pages) or `tavily` (pre-cleaned content)
+- `gepa_prompt_path` — path to a GEPA `best_candidate.json`; when set, bypasses `PromptBuilder` and loads `system_prompt` + `planning_suffix` directly from the file (used for GEPA inference runs under `experiments/configs/qwen3/gepa_inference/`)
 
 ## Outputs (per run, under `output_dir/`)
 

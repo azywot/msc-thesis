@@ -74,7 +74,7 @@ msc-thesis/
 │   │   │   └── gaia/  gpqa/  hle/  aime/  musique/
 │   │   ├── baseline/              # Baseline suite (32B, no planning/structured memory)
 │   │   ├── 1_milestone_no_img_no_mindmap_AgentFlow/  # AgentFlow suite (8B + 32B)
-│   │   ├── qwen3/             # Qwen3 suite (baseline/, agentflow/, ablations)
+│   │   ├── qwen3/             # Qwen3 suite (baseline/, agentflow/, ablations, gepa_inference/)
 │   │   ├── deepseek/          # DeepSeek-R1-Distill-Qwen 7B/32B (baseline/, agentflow/)
 │   │   ├── olmo3/             # OLMo 3 think/instruct
 │   │   ├── gepa/              # GEPA prompt optimisation configs + pre-generated splits
@@ -134,6 +134,7 @@ msc-thesis/
 | Fine-tuning the orchestrator | `src/fine_tuning/README.md` |
 | Fine-tuning ↔ failure mode analysis | `docs/failure_modes_fine_tuning_alignment.md` |
 | GEPA prompt optimisation | `scripts/run_gepa.py` + `experiments/configs/gepa/` + `src/gepa_integration/` |
+| GEPA inference (using optimised prompts) | `experiments/configs/qwen3/gepa_inference/` + `jobs/generated/GEPA_eval_*.job` |
 | GEPA design spec | `docs/superpowers/specs/2026-05-15-gepa-integration-design.md` |
 
 ---
@@ -669,6 +670,36 @@ python scripts/run_gepa.py --mode diff      --config experiments/configs/gepa/ga
 | `gepa_state.bin` | Full GEPA optimisation state (pickled); written after each step. Auto-resumes if `run_dir` already contains it. |
 | `generated_best_outputs_valset/` | Per-task best rollout outputs on the validation set (written when `track_best_outputs=true`) |
 | `optimize.stderr` / `evaluate.stderr` | Per-step stderr logs (vLLM tqdm/INFO); replayed to stderr on failure |
+
+### Running inference with optimised prompts
+
+After GEPA optimisation completes, `best_candidate.json` holds two components: `system_prompt` and `planning_suffix`. These can be injected into a standard inference run via the `gepa_prompt_path` config key — no code changes required.
+
+```yaml
+# Add to any experiment YAML to use GEPA-optimised prompts:
+gepa_prompt_path: "experiments/results/gepa/gaia/2026-05-26-21-06-40_23128167/best_candidate.json"
+```
+
+When set, `run_experiment.py` loads the JSON and uses `system_prompt` verbatim (bypassing `PromptBuilder`) and passes `planning_suffix` to `AgenticOrchestrator`. The tool schemas embedded in the GEPA system prompt are used as-is.
+
+**Pre-built inference configs** (`experiments/configs/qwen3/gepa_inference/`) run the GAIA-optimised prompt on GAIA, MuSiQue, and HLE — both with and without orchestrator thinking — using an 8B orchestrator and 1.7B subagents:
+
+| Config | Dataset | Thinking | Job |
+|---|---|---|---|
+| `gaia/qwen8B_sub1_7b_orchestrator.yaml` | GAIA all_validation | ORCHESTRATOR_ONLY | `GEPA_eval_gaia_qwen8B_sub1_7b_orchestrator.job` |
+| `gaia/qwen8B_sub1_7b_none.yaml` | GAIA all_validation | NO | `GEPA_eval_gaia_qwen8B_sub1_7b_none.job` |
+| `musique/qwen8B_sub1_7b_orchestrator.yaml` | MuSiQue val_200 | ORCHESTRATOR_ONLY | `GEPA_eval_musique_qwen8B_sub1_7b_orchestrator.job` |
+| `musique/qwen8B_sub1_7b_none.yaml` | MuSiQue val_200 | NO | `GEPA_eval_musique_qwen8B_sub1_7b_none.job` |
+| `hle/qwen8B_sub1_7b_orchestrator.yaml` | HLE test_200 | ORCHESTRATOR_ONLY | `GEPA_eval_hle_qwen8B_sub1_7b_orchestrator.job` |
+| `hle/qwen8B_sub1_7b_none.yaml` | HLE test_200 | NO | `GEPA_eval_hle_qwen8B_sub1_7b_none.job` |
+
+Submit all six:
+
+```bash
+for f in jobs/generated/GEPA_eval_*.job; do sbatch "$f"; done
+```
+
+Results land under `experiments/results/gepa_inference/<dataset>/<variant>/` and are logged to the `benchmarks` W&B project.
 
 ### Design
 

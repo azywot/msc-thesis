@@ -546,12 +546,52 @@ class AgentModeDaemon:
             else:
                 await asyncio.sleep(5)  # Normal waiting
 
+        # Drain in-flight vLLM requests before returning.  After this method
+        # returns, VERL immediately calls sleep_replicas() which frees the KV
+        # cache.  Any still-running forward pass would then hit freed memory →
+        # "CUDA error: illegal memory access".
+        #
+        # Phase 1: Empty the task queue so workers don't pick up new work.
+        # Phase 2: Wait for all _processing_tasks to finish (workers POST to
+        #          /rollout when done, which removes them from _processing_tasks).
+        store = self.server._store
+        discarded = 0
+        while not store._task_queue.empty():
+            try:
+                store._task_queue.get_nowait()
+                discarded += 1
+            except asyncio.QueueEmpty:
+                break
+        processing = store.get_processing_tasks()
+        if processing or discarded:
+            n_processing = len(processing)
+            print(f"Draining: cleared {discarded} queued tasks, waiting for {n_processing} in-flight...")
+            # Each worker can take up to max_turns * generation_timeout (5 * 60s = 300s)
+            # plus network overhead. 10 min is generous.
+            drain_deadline = time.time() + 600
+            while time.time() < drain_deadline:
+                await self.server.retrieve_completed_rollouts()
+                # Also clear any tasks that got re-queued by the stale-task checker
+                while not store._task_queue.empty():
+                    try:
+                        store._task_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                processing = store.get_processing_tasks()
+                if not processing:
+                    print(f"  All in-flight tasks drained successfully")
+                    break
+                await asyncio.sleep(2)
+            still_active = len(store.get_processing_tasks())
+            if still_active:
+                print(f"  WARNING: {still_active} tasks still in-flight after drain — GPU memory release may cause errors")
+
         valid_rollouts = len([r for r in self._completed_rollouts.values()
                             if r.triplets and len(r.triplets) > 0])
         final_elapsed = time.time() - start_time
         final_rate = len(self._completed_rollouts) / original_task_count if original_task_count > 0 else 0
 
-        print(f"Finished after {final_elapsed/60:.1f} minutes. "
+        print(f"\nFinished after {final_elapsed/60:.1f} minutes. "
               f"Completion rate: {final_rate:.1%} ({len(self._completed_rollouts)}/{original_task_count}), "
               f"Valid rollouts: {valid_rollouts}")
 
