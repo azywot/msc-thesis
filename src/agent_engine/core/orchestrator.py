@@ -49,6 +49,25 @@ _TEXT_EXTS: frozenset = frozenset({
     ".jsonld", ".parquet", ".pdf", ".pdb", ".pptx", ".py",
 })
 
+_DEFAULT_PLANNING_SUFFIX_NO_TOOLS = (
+    "\n\nBefore answering, analyze this query to determine the approach needed.\n"
+    "Instructions:\n"
+    "1. Identify the main objectives in the query.\n"
+    "2. Break down the problem into sub-tasks.\n"
+    "3. Consider what knowledge or reasoning steps are required.\n"
+    "Be brief and precise. Do NOT provide the final answer yet."
+)
+
+_DEFAULT_PLANNING_SUFFIX_TOOLS = (
+    "\n\nBefore using any tools, analyze this query to determine the approach needed.\n"
+    "Instructions:\n"
+    "1. Identify the main objectives in the query.\n"
+    "2. List the necessary skills and tools.\n"
+    "3. For each tool, explain how it helps address the query.\n"
+    "4. Note any additional considerations.\n\n"
+    "Be brief and precise. Do NOT call any tools yet."
+)
+
 
 # ---------------------------------------------------------------------------
 # Typed job descriptors for batched tool execution
@@ -99,6 +118,7 @@ class AgenticOrchestrator:
         use_thinking: bool = False,
         cache_manager=None,
         baseline: bool = False,
+        planning_suffix: Optional[str] = None,
     ):
         """Initialize the orchestrator.
 
@@ -123,6 +143,7 @@ class AgenticOrchestrator:
         self.tool_limits = tool_limits or {"web_search": 10}
         self.use_thinking = use_thinking and model_provider.config.supports_thinking
         self.baseline = baseline
+        self.planning_suffix: Optional[str] = planning_suffix
         # Force tool-call prefix injection on action turns for families (DeepSeek)
         # that hallucinate tool use in their thinking blocks instead of emitting <tool_call>.
         # Disabled in baseline mode: the forced prefix injects a <sub_goal> tag which
@@ -214,7 +235,24 @@ class AgenticOrchestrator:
         if not state.finished:
             logger.warning(f"Max turns ({self.max_turns}) reached without finishing")
             state.metadata["max_turns_reached"] = True
-            state.answer = extract_answer(state.current_output)
+            # The last turn ended with a tool call, so current_output has no answer.
+            try:
+                nudge_msgs = (
+                    state.messages if self.baseline else self._build_memory_prompt(state, system_prompt)
+                ) + [{"role": "user", "content": "You have used all available tool calls. Based on the information gathered so far, provide your final answer now."}]
+                synth_prompt = self.model.apply_chat_template(
+                    nudge_msgs,
+                    use_thinking=self.use_thinking,
+                )
+                synth_result = self.model.generate([synth_prompt])[0]
+                state.current_output = synth_result.text
+                _accumulate_usage(state, synth_result.usage)
+                state.answer = extract_answer(synth_result.text)
+                state.output_messages.append({"role": "assistant", "content": synth_result.text})
+                logger.info(f"Synthesis turn answer: {state.answer}")
+            except Exception as e:
+                logger.exception("Synthesis generation error")
+                state.answer = extract_answer(state.current_output)
 
         return state
 
@@ -277,12 +315,34 @@ class AgenticOrchestrator:
                 break
             self._process_batch_turn(active)
 
-        for s in states:
-            if not s.finished:
-                logger.warning(f"Max turns ({self.max_turns}) reached for question {s.question_id}")
-                s.metadata["max_turns_reached"] = True
-                s.answer = extract_answer(s.current_output)
-                s.finished = True
+        unfinished = [s for s in states if not s.finished]
+        if unfinished:
+            system_prompt = unfinished[0].messages[0]["content"]
+            nudge_prompts = [
+                self.model.apply_chat_template(
+                    (s.messages if self.baseline else self._build_memory_prompt(s, system_prompt))
+                    + [{"role": "user", "content": "You have used all available tool calls. Based on the information gathered so far, provide your final answer now."}],
+                    use_thinking=self.use_thinking,
+                )
+                for s in unfinished
+            ]
+            try:
+                synth_results = self.model.generate(nudge_prompts)
+                for s, synth_result in zip(unfinished, synth_results):
+                    logger.warning(f"Max turns ({self.max_turns}) reached for question {s.question_id}")
+                    s.metadata["max_turns_reached"] = True
+                    s.current_output = synth_result.text
+                    _accumulate_usage(s, synth_result.usage)
+                    s.answer = extract_answer(synth_result.text)
+                    s.output_messages.append({"role": "assistant", "content": synth_result.text})
+                    s.finished = True
+                    logger.info(f"Q{s.question_id} synthesis answer: {s.answer}")
+            except Exception as e:
+                logger.exception("Batch synthesis generation error")
+                for s in unfinished:
+                    s.metadata["max_turns_reached"] = True
+                    s.answer = extract_answer(s.current_output)
+                    s.finished = True
 
         return states
 
@@ -595,14 +655,6 @@ class AgenticOrchestrator:
         if state.query_analysis:
             parts.append(f"\n**Query Analysis:**\n{state.query_analysis}")
 
-        # # NOTE: idea -> add previous sub goals earlier in the prompt, 
-        # # before the query analysis to give the model more context about the problem at hand.
-        # # Not used for now, but keeping the idea here for future reference.
-        # sub_goals = [a["sub_goal"] for a in state.action_history if a.get("sub_goal")]
-        # if sub_goals:
-        #     chain = "\n".join(f"  {i + 1}. {g}" for i, g in enumerate(sub_goals))
-        #     parts.append(f"\n**Plan so far (completed sub-goals):**\n{chain}")
-
         if state.action_history:
             parts.append(f"\n**Previous Steps:**\n{self._format_action_history(state.action_history)}")
 
@@ -674,33 +726,17 @@ class AgenticOrchestrator:
         or final answer, those are handled as edge cases.
 
         """
-        if len(self.tools) == 0:
-            # NOTE: double check if it should look like this, or if we should just omit the query analysis step entirely when no tools are available
-            planning_suffix = (
-                "\n\nBefore answering, analyze this query to determine the approach needed.\n"
-                "Instructions:\n"
-                "1. Identify the main objectives in the query.\n"
-                "2. Break down the problem into sub-tasks.\n"
-                "3. Consider what knowledge or reasoning steps are required.\n"
-                "Be brief and precise. Do NOT provide the final answer yet."
-            )
-        else:
-            planning_suffix = (
-                "\n\nBefore using any tools, analyze this query to determine the approach needed.\n"
-                "Instructions:\n"
-                "1. Identify the main objectives in the query.\n"
-                "2. List the necessary skills and tools.\n"
-                "3. For each tool, explain how it helps address the query.\n"
-                "4. Note any additional considerations.\n\n"
-                "Be brief and precise. Do NOT call any tools yet."
-            )
+        suffix = self.planning_suffix if self.planning_suffix is not None else (
+            _DEFAULT_PLANNING_SUFFIX_TOOLS if len(self.tools) > 0
+            else _DEFAULT_PLANNING_SUFFIX_NO_TOOLS
+        )
 
         prompts = []
         for s in states:
             planning_messages = list(s.messages)  # shallow copy
             planning_messages[-1] = {
                 "role": planning_messages[-1]["role"],
-                "content": planning_messages[-1]["content"] + planning_suffix,
+                "content": planning_messages[-1]["content"] + suffix,
             }
             prompts.append(
                 self.model.apply_chat_template(planning_messages, use_thinking=self.use_thinking)
@@ -732,17 +768,20 @@ class AgenticOrchestrator:
                             break
                 before_tool = text[:idx].strip() if idx > 0 else ""
                 analysis = strip_thinking_tags(before_tool) if before_tool else strip_thinking_tags(text)
+                s.raw_query_analysis = text
                 s.query_analysis = analysis
                 logger.info(
                     "Planning turn for Q%s produced tool call (discarded); analysis: %.100s...",
                     s.question_id, analysis,
                 )
             elif "\\boxed{" in text or "\\boxed " in text:
+                s.raw_query_analysis = text
                 s.query_analysis = strip_thinking_tags(text)
                 s.finished = True
                 s.answer = extract_answer(text)
                 logger.info("Planning turn for Q%s produced final answer: %s", s.question_id, s.answer)
             else:
+                s.raw_query_analysis = text
                 s.query_analysis = strip_thinking_tags(text)
                 logger.info("Planning turn for Q%s complete: %.100s...", s.question_id, s.query_analysis)
 

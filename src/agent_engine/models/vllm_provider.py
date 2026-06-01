@@ -6,6 +6,7 @@ import torch
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from vllm import LLM, SamplingParams
+from vllm.lora.request import LoRARequest
 
 from .base import (
     BaseModelProvider, GenerationResult, ModelConfig, ModelFamily, ToolCallFormat, get_tool_call_format,
@@ -74,11 +75,13 @@ class VLLMProvider(BaseModelProvider):
                 tensor_parallel_size=tensor_parallel_size,
                 max_model_len=config.max_model_len,
                 gpu_memory_utilization=config.gpu_memory_utilization if config.gpu_memory_utilization is not None else 0.95,
-                seed=config.seed,
+                seed=config.seed if config.seed is not None else 0,
                 download_dir=hf_hub_cache,
                 enforce_eager=True,
                 trust_remote_code=True,
                 enable_prefix_caching=False,
+                enable_lora=bool(config.lora_adapter_path),
+                max_lora_rank=config.max_lora_rank if config.lora_adapter_path else 16,
             )
         finally:
             if prev_cuda_visible is None:
@@ -88,6 +91,10 @@ class VLLMProvider(BaseModelProvider):
 
         self.tokenizer = self.llm.get_tokenizer()
         self._lock = get_llm_lock(config.path_or_id)
+        self.lora_request = (
+            LoRARequest("adapter", 1, config.lora_adapter_path)
+            if config.lora_adapter_path else None
+        )
 
     @staticmethod
     def _resolve_tensor_parallel_size(config) -> int:
@@ -166,6 +173,7 @@ class VLLMProvider(BaseModelProvider):
             outputs = self.llm.generate(
                 rendered_prompts,
                 sampling_params=sampling_params,
+                lora_request=self.lora_request,
             )
 
         return [
@@ -262,13 +270,14 @@ class VLLMProvider(BaseModelProvider):
                 top_p=self.config.top_p,
                 top_k=self.config.top_k,
                 repetition_penalty=self.config.repetition_penalty,
-                seed=self.config.seed,
+                seed=self.config.seed if self.config.seed is not None else 0,
                 **stop_kwargs,
             )
             sampling_params_list.append(params)
 
         with self._lock:  # shared instance may be used from multiple threads
-            outputs = self.llm.generate(valid_prompts, sampling_params=sampling_params_list)
+            outputs = self.llm.generate(valid_prompts, sampling_params=sampling_params_list,
+                                        lora_request=self.lora_request)
 
         return [
             self._make_result(output, decoded_messages[i])

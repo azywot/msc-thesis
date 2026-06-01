@@ -1,0 +1,297 @@
+#!/bin/bash
+#SBATCH --job-name=FTOrchestrator
+#SBATCH --partition=gpu_h100
+# Four H100 NVL GPUs (~94 GB each). Sub-agent starts on GPU 0 at util=0.08 (~7.5 GB), leaving
+# ~86 GB for VERL on GPU 0. VERL uses all 4 GPUs (CUDA_VISIBLE_DEVICES=0,1,2,3, N_GPUS=4).
+#
+# FULL FT (USE_LORA=false), vLLM util=0.45:
+#   per VERL GPU: actor 4 + opt 24 + grads 4 + ref 4 + vLLM 42.3 + misc 3 = 81.3 GB.
+#   GPU 0 + sub-agent ≈ 88.8 GB / 94 GB.
+#
+# LoRA (USE_LORA=true), vLLM util=0.70 (set by launch_verl.py LoRA branch):
+#   adapter-only optimizer saves ~24 GB/GPU vs full FT; ref worker IS spawned (ref_in_actor not
+#   in effect) — ref shard adds ~4 GB. KL computed correctly via disable_adapter().
+#   per VERL GPU: base 4 + adapter <1 + opt <1 + ref 4 + activations 8 + vLLM 65.8 + misc 3 ≈ 85 GB.
+#   GPU 0 + sub-agent at util=0.08 (~7.5 GB) ≈ 92.5 GB / 94 GB (1.5 GB headroom).
+#SBATCH --gpus=4
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=72:00:00
+#SBATCH --output=out/fine_tuning/orchestrator_ft/ft_%A.log
+#SBATCH --error=out/fine_tuning/orchestrator_ft/ft_%A.err
+
+# Full orchestrator fine-tuning run.
+#   2 epochs, 1800 training questions (900 Search-R1 + 900 DeepMath), n=8 rollouts.
+#   Step-based checkpointing every 5 steps (trainer.save_freq=5); rotation keeps latest + best.
+#   Checkpoints → /scratch-shared/$USER/fine_tuning/lora_adapters/<experiment>/<run-tag>/ (LoRA, USE_SCRATCH_CHECKPOINTS=true).
+#
+# Prerequisites:
+#   - 001_prepare_data.job completed (creates cosmas-train + data/training/)
+#   - 003_smoke_4b.job and/or 004_smoke_8b.job passed (pipeline checks before this 4-GPU run)
+#
+# Optional: SKIP_PIP_SETUP=1 in .env skips editable installs + reconcile when the env is warm.
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis — Orchestrator Fine-Tuning"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+if [[ -f ".env" ]]; then
+    echo "Loading environment variables from .env..."
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${SERPER_API_KEY:-}" && -z "${TAVILY_API_KEY:-}" ]]; then
+    echo "ERROR: SERPER_API_KEY or TAVILY_API_KEY must be set for rollout workers."
+    exit 1
+fi
+
+if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    echo "Warning: WANDB_API_KEY is not set; W&B logging may fail."
+fi
+
+# cosmas-train is created once by jobs/fine_tuning/001_prepare_data.job.
+if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
+    echo "ERROR: conda env 'cosmas-train' not found."
+    echo "Run jobs/fine_tuning/001_prepare_data.job first (creates env + training data)."
+    exit 1
+fi
+
+source activate cosmas-train
+export PYTHONNOUSERSITE=1
+
+case "${SKIP_PIP_SETUP:-}" in
+    1|true|TRUE|yes|YES)
+        echo "SKIP_PIP_SETUP is set — skipping pip install + reconcile (reuse current cosmas-train)."
+        ;;
+    *)
+        echo "Installing msc-thesis package..."
+        python -m pip install -e .
+        bash jobs/cosmas_train_pip_reconcile.sh
+        ;;
+esac
+python -c "import agent_engine, fine_tuning, verl, vllm; from fine_tuning.agentflow import LitAgent, Trainer, reward; print('Training imports OK')"
+
+# Print LoRA trainable param count (no weight load — meta-init from arch config).
+python scripts/count_lora_params.py --config experiments/configs/fine_tuning/config.yaml || true
+
+mkdir -p out/fine_tuning/orchestrator_ft
+
+for required_file in \
+    data/training/train/combined_train.parquet \
+    data/training/val/val_combined.parquet
+do
+    if [[ ! -f "$required_file" ]]; then
+        echo "ERROR: Missing required training data file: $required_file"
+        echo "Run jobs/fine_tuning/001_prepare_data.job first."
+        exit 1
+    fi
+done
+
+VERL_PID=""
+SUBAGENT_PID=""
+ORCHESTRATOR_PID=""
+CRASH_MONITOR_PID=""
+GPU_MONITOR_PID=""
+cleanup() {
+    [[ -n "${CRASH_MONITOR_PID:-}" ]] && kill "$CRASH_MONITOR_PID" 2>/dev/null || true
+    [[ -n "${GPU_MONITOR_PID:-}" ]] && kill "$GPU_MONITOR_PID" 2>/dev/null || true
+    if [[ -n "${ORCHESTRATOR_PID:-}" ]] && kill -0 "$ORCHESTRATOR_PID" >/dev/null 2>&1; then
+        echo "Stopping rollout workers (pid=$ORCHESTRATOR_PID)..."
+        kill "$ORCHESTRATOR_PID" || true
+        wait "$ORCHESTRATOR_PID" || true
+    fi
+    if [[ -n "${VERL_PID:-}" ]] && kill -0 "$VERL_PID" >/dev/null 2>&1; then
+        echo "Stopping VERL server (pid=$VERL_PID)..."
+        kill "$VERL_PID" || true
+        wait "$VERL_PID" || true
+    fi
+    # Ray spawns background OS processes (raylet, GCS, object store) that outlive the
+    # Python process that called ray.init() and keep the SLURM job alive indefinitely.
+    echo "Stopping Ray background processes..."
+    ray stop --force 2>/dev/null || true
+    if [[ -n "${SUBAGENT_PID:-}" ]] && kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+        echo "Stopping frozen sub-agent server (pid=$SUBAGENT_PID)..."
+        kill "$SUBAGENT_PID" || true
+        wait "$SUBAGENT_PID" || true
+    fi
+}
+trap cleanup EXIT
+
+# ── GPU monitor sidecar ──────────────────────────────────────────────────────
+# nvidia-smi samples GPU SM/memory utilisation every 30s into a CSV alongside
+# VERL's perf/* metrics. Started AFTER the EXIT trap so cleanup() will always
+# reap it. Killed via $GPU_MONITOR_PID in cleanup().
+GPU_LOG="out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_gpu.csv"
+echo "Starting GPU monitor → $GPU_LOG"
+nvidia-smi \
+    --query-gpu=timestamp,index,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw \
+    --format=csv -l 30 \
+    > "$GPU_LOG" 2>&1 &
+GPU_MONITOR_PID=$!
+
+# Watch a log file; send SIGTERM to this script on fatal CUDA/NCCL errors so
+# the EXIT trap fires and cleanup kills all background processes immediately.
+# In bash, $$ inside () expands to the parent script PID, not the subshell.
+start_crash_monitor() {
+    local logfile="$1" label="$2"
+    (
+        while [[ ! -f "$logfile" ]]; do sleep 2; done
+        tail -n 0 -F "$logfile" 2>/dev/null \
+        | grep --line-buffered -E \
+            "CUDA (Error|out of memory)|RuntimeError: CUDA|\
+NCCL (error|failure)|ncclSystemError|ncclInternalError|ncclCommAbort|\
+RayActorError|ActorDiedError|WorkerDied|The actor died unexpectedly|\
+Segmentation fault|Aborted \(core dumped\)|^Killed\$|\
+FATAL ERROR|Fatal Python error" \
+        | { IFS= read -r line
+            printf '\n=== FATAL CRASH [%s] ===\n%s\nKilling job...\n' "$label" "$line" >&2
+            kill -TERM $$ ; }
+    ) &
+    CRASH_MONITOR_PID=$!
+}
+
+# Shared run tag — checkpoints and rollout data go under the same directory.
+# Both launch_verl.py and train_orchestrator.py read VERL_RUN_TAG; if not set they compute independently.
+VERL_RUN_TAG="$(date +%d-%m-%Y_%H-%M)-${SLURM_JOB_ID:-local}"
+export VERL_RUN_TAG
+echo "Run tag: $VERL_RUN_TAG"
+
+# ── 1. Frozen sub-agent vLLM server (separate from VERL, never updated) ──────
+echo ""
+echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998, GPU 0, util=0.08)..."
+# Sub-agent is pinned to GPU 0 at util=0.08 (~7.5 GB total; ~4 GB KV after model weights).
+# GPU 0 budget: vLLM 65.8 (util=0.70) + sub-agent 7.5 + base shard 4 + ref shard 4 + activations 8 + misc 3 ≈ 92 GB / 94 GB.
+# V1 disabled: torch.compile at low util can leave no KV budget (smoke_*_subagent.log).
+# Watch ft_*_gpu.csv during the first 10 min; drop util to 0.06 if GPU 0 > 92 GB.
+VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
+    --port 9998 \
+    --tensor-parallel-size 1 \
+    --gpu-memory-utilization 0.08 \
+    --max-model-len 16384 \
+    > out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
+SUBAGENT_PID=$!
+export SUBAGENT_ENDPOINT="http://localhost:9998/v1"
+
+echo "Waiting 60s for sub-agent vLLM to be ready..."
+sleep 60
+if ! kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+    echo "FAIL — sub-agent server exited during startup. See out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_subagent.log"
+    wait "$SUBAGENT_PID"
+fi
+
+# All 4 H100 GPUs go to VERL. GPU 0 is shared with the sub-agent (util=0.08, see above).
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+
+# ── 2. VERL server ───────────────────────────────────────────────────────────
+# Unbuffered Python so *_verl.log updates live under SLURM file redirection (also applies to train_orchestrator below).
+export PYTHONUNBUFFERED=1
+# NCCL watchdog default is 600 s (10 min). Bumped to 1 h to match nccl_timeout=3600 in config.
+# use_dynamic_bsz is now False (Bug 8 fix) so micro-batch counts are deterministic, but keeping
+# a generous timeout costs nothing and protects against any future imbalance.
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600
+VERL_LOG="out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_verl.log"
+echo ""
+echo "Starting VERL server..."
+python scripts/launch_verl.py --config experiments/configs/fine_tuning/config.yaml \
+    > "$VERL_LOG" 2>&1 &
+VERL_PID=$!
+start_crash_monitor "$VERL_LOG" "VERL"
+
+echo "Waiting up to 3 min for Ray + worker bootstrap; N_GPUS=4 + FSDP + 4 colocated vLLM instances (tp=1) can take 20-30 min before AgentFlow answers /task."
+sleep 180
+if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
+    echo "FAIL — VERL server exited during startup. See out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_verl.log"
+    wait "$VERL_PID"
+fi
+
+AGENTFLOW_PORT="${AGENTFLOW_PORT:-9999}"
+echo "Polling http://localhost:${AGENTFLOW_PORT}/task for AgentFlow readiness (up to 45 min)..."
+_deadline=$((SECONDS + 2700))
+while (( SECONDS < _deadline )); do
+    if curl -fsS --max-time 5 "http://127.0.0.1:${AGENTFLOW_PORT}/task" >/dev/null 2>&1; then
+        echo "AgentFlow server is responding on port ${AGENTFLOW_PORT}."
+        break
+    fi
+    if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
+        echo "FAIL — VERL exited before AgentFlow came up. See out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_verl.log"
+        wait "$VERL_PID" || true
+        exit 1
+    fi
+    sleep 10
+done
+if (( SECONDS >= _deadline )); then
+    echo "FAIL — AgentFlow on :${AGENTFLOW_PORT} not ready after 45 min (VERL may be wedged). Check *_verl.log and Ray logs under /scratch-local/${USER}.${SLURM_JOB_ID:-local}/ray/"
+    exit 1
+fi
+
+# ── 3. Rollout workers ───────────────────────────────────────────────────────
+echo ""
+echo "Starting rollout workers..."
+python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config.yaml &
+ORCHESTRATOR_PID=$!
+# Wait for VERL (server) to finish training first.
+# The orchestrator is a client of VERL — waiting for it before VERL exits would deadlock.
+# After VERL exits the orchestrator loses its connection and is killed by the EXIT trap.
+wait $VERL_PID
+
+# ── 4. Verify checkpoint ─────────────────────────────────────────────────────
+echo ""
+EXPERIMENT_NAME="qwen3-8b-grpo-search-math-v2"
+# Checkpoints land in scratch-shared (USE_SCRATCH_CHECKPOINTS=true). Path depends on USE_LORA:
+#   LoRA (launch_verl.py drops 'model' from save_contents → adapter-only checkpoints):
+#     /scratch-shared/$USER/fine_tuning/lora_adapters/<exp>/<run-tag>/global_step_<N>/actor/
+#       ├── lora_adapter/{adapter_model.safetensors, adapter_config.json}  (~250-500 MB)
+#       ├── optim_world_size_*_rank_*.pt    (LoRA-only optimizer state, ~1 GB)
+#       └── extra_state_world_size_*.pt     (RNG / scheduler, ~tiny)
+#   Full FT: /scratch-shared/$USER/msc-thesis/fine_tuning/<exp>/<run-tag>/global_step_<N>/actor/
+#              └── model_world_size_*_rank_*.pt  (~47 GB FSDP shard)
+USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/experiments/configs/fine_tuning/config.yaml" | awk -F'"' '{print tolower($2)}')"
+if [[ "$USE_LORA_LOWER" == "true" ]]; then
+    CKPT_DIR="/scratch-shared/${USER}/fine_tuning/lora_adapters/${EXPERIMENT_NAME}"
+    CKPT_GLOB_NAME="adapter_model.safetensors"
+    CKPT_GLOB_MAXDEPTH=5
+    CKPT_GLOB_PATHFILTER="*/actor/lora_adapter/*"
+else
+    CKPT_DIR="/scratch-shared/${USER}/msc-thesis/fine_tuning/${EXPERIMENT_NAME}"
+    CKPT_GLOB_NAME="model_world_size_*_rank_*.pt"
+    CKPT_GLOB_MAXDEPTH=4
+    CKPT_GLOB_PATHFILTER="*/actor/*"
+fi
+echo "Checkpoints written under: $CKPT_DIR"
+find "$CKPT_DIR" -maxdepth "$CKPT_GLOB_MAXDEPTH" -name "$CKPT_GLOB_NAME" -path "$CKPT_GLOB_PATHFILTER" 2>/dev/null \
+    | head -10 || echo "No checkpoints found."
+
+
+echo ""
+echo "Training complete at: $(date)"
+echo ""
+if [[ "$USE_LORA_LOWER" == "true" ]]; then
+    echo "Next step — locate latest checkpoint and merge LoRA adapter into base weights:"
+    echo "  LATEST_CKPT=\$(find $CKPT_DIR -maxdepth 3 -name 'global_step_*' -type d | sort -V | tail -1)"
+    echo "  python scripts/merge_lora.py \\"
+    echo "    --checkpoint \"\$LATEST_CKPT\" \\"
+    echo "    --base-model Qwen/Qwen3-8B \\"
+    echo "    --output-dir /scratch-shared/$USER/fine_tuning/lora_adapters/${EXPERIMENT_NAME}/merged"
+    echo "  # merge_lora.py prefers \$LATEST_CKPT/actor/lora_adapter/ (hyperparams from adapter_config.json)."
+else
+    echo "Next step — locate latest checkpoint and evaluate (full FT — no merge needed):"
+    echo "  LATEST_CKPT=\$(find $CKPT_DIR -maxdepth 3 -name 'global_step_*' -type d | sort -V | tail -1)"
+    echo "  # Load actor/model_world_size_*_rank_*.pt directly with from_pretrained."
+fi

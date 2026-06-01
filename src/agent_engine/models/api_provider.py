@@ -11,7 +11,7 @@ from typing import Dict, List
 from openai import OpenAI
 from anthropic import Anthropic
 
-from .base import BaseModelProvider, GenerationResult, ModelConfig
+from .base import BaseModelProvider, GenerationResult, ModelConfig, _ENABLE_THINKING_KWARG_FAMILIES
 from ..utils.logging import get_logger, format_messages_as_chat
 
 logger = get_logger(__name__)
@@ -20,15 +20,20 @@ logger = get_logger(__name__)
 class OpenAIProvider(BaseModelProvider):
     """OpenAI API provider for GPT models."""
 
-    def __init__(self, config: ModelConfig, api_key: str = None):
+    def __init__(self, config: ModelConfig, api_key: str = None, base_url: str = None):
         """Initialize OpenAI provider.
 
         Args:
             config: ModelConfig with model ID and generation settings
             api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
+            base_url: Optional base URL for OpenAI-compatible APIs (e.g. vLLM server).
+                      When set, overrides the default openai.com endpoint.
         """
         super().__init__(config)
-        self.client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
+        self.client = OpenAI(
+            api_key=api_key or os.getenv("OPENAI_API_KEY", "EMPTY"),
+            base_url=base_url,
+        )
 
     def generate(self, prompts: List[str]) -> List[GenerationResult]:
         """Generate completions using OpenAI API with concurrent requests.
@@ -76,10 +81,12 @@ class OpenAIProvider(BaseModelProvider):
             List with single GenerationResult
         """
         raw_messages = None
+        use_thinking = False
         try:
             payload = json.loads(prompt)
             if isinstance(payload, dict) and "messages" in payload:
                 raw_messages = payload["messages"]
+                use_thinking = bool(payload.get("use_thinking", False))
             elif isinstance(payload, list):
                 raw_messages = payload
         except (json.JSONDecodeError, TypeError):
@@ -96,6 +103,10 @@ class OpenAIProvider(BaseModelProvider):
 
         logger.debug("OpenAI request:\n%s", format_messages_as_chat(messages))
 
+        extra_body = {}
+        if self.config.family in _ENABLE_THINKING_KWARG_FAMILIES:
+            extra_body["chat_template_kwargs"] = {"enable_thinking": use_thinking}
+
         response = self.client.chat.completions.create(
             model=self.config.path_or_id,
             messages=messages,
@@ -103,7 +114,14 @@ class OpenAIProvider(BaseModelProvider):
             top_p=self.config.top_p,
             max_tokens=self.config.max_tokens,
             seed=self.config.seed,
+            extra_body=extra_body or None,
         )
+
+        # Capture token IDs when the backend includes them (e.g. VERL vLLM proxy).
+        # openai-python exposes extra JSON fields via __getattr__ → model_extra.
+        prompt_token_ids = getattr(response, "prompt_token_ids", None)
+        raw_response_token_ids = getattr(response, "response_token_ids", None)
+        response_token_ids = raw_response_token_ids[0] if raw_response_token_ids else None
 
         result = GenerationResult(
             text=response.choices[0].message.content,
@@ -118,24 +136,27 @@ class OpenAIProvider(BaseModelProvider):
                 "role": self.config.role,
             },
             messages=raw_messages,
+            prompt_token_ids=list(prompt_token_ids) if prompt_token_ids is not None else None,
+            response_token_ids=list(response_token_ids) if response_token_ids is not None else None,
         )
         return [result]
 
     def apply_chat_template(
         self,
         messages: List[Dict[str, str]],
-        use_thinking: bool = False
+        use_thinking: bool = False,
+        force_tool_call: bool = False,
     ) -> str:
-        """Serialize the full conversation for the OpenAI API.
-
-        Args:
-            messages: List of message dicts
-            use_thinking: Ignored for OpenAI
+        """Serialize the full conversation for the OpenAI-compatible API.
 
         Returns:
-            JSON-encoded messages list (deserialized in _generate_single)
+            JSON-encoded payload with messages and use_thinking flag
+            (deserialized in _generate_single).
         """
-        return json.dumps(messages, ensure_ascii=False)
+        return json.dumps(
+            {"messages": messages, "use_thinking": use_thinking},
+            ensure_ascii=False,
+        )
 
     def cleanup(self):
         """Cleanup (no-op for API providers)."""
@@ -259,13 +280,15 @@ class AnthropicProvider(BaseModelProvider):
     def apply_chat_template(
         self,
         messages: List[Dict[str, str]],
-        use_thinking: bool = False
+        use_thinking: bool = False,
+        force_tool_call: bool = False,
     ) -> str:
         """Serialize the full conversation for the Anthropic API.
 
         Args:
             messages: List of message dicts
             use_thinking: Ignored for Anthropic
+            force_tool_call: Ignored for Anthropic
 
         Returns:
             JSON-encoded messages list (deserialized in _generate_single)

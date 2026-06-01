@@ -194,9 +194,15 @@ class ModelConfig(BaseModel):
     gpu_memory_utilization: Optional[float] = None
     gpu_ids: Optional[List[int]] = None
 
-    seed: int = 0
+    seed: Optional[int] = None
 
     backend: str = "vllm"  # "vllm", "mlx", "openai", "anthropic"
+
+    # Path to a PEFT LoRA adapter directory (adapter_config.json + adapter_model.safetensors).
+    # When set, the vLLM provider loads the adapter at init and passes it on every generate() call.
+    lora_adapter_path: Optional[str] = None
+    # Must match the rank used during training (vLLM default is 16; our adapter uses 64).
+    max_lora_rank: int = 64
 
     # OLMo 3 HF cards specify T=0.6, top_p=0.95, max_tokens=32768 and do not
     # set top_k or repetition_penalty; -1 disables top_k in vLLM and 1.0 is
@@ -243,12 +249,17 @@ class GenerationResult(BaseModel):
         metadata: Provider-specific extras (e.g. logprobs).
         messages: The input messages that produced this result (optional,
                   used for debugging API provider calls).
+        prompt_token_ids: Token IDs of the prompt (set when the backend returns them,
+                          e.g. the VERL vLLM proxy).  Used to build RL training triplets.
+        response_token_ids: Token IDs of the generated response (same as above).
     """
     text: str
     finish_reason: str
     usage: Dict[str, int] = {}
     metadata: Dict[str, Any] = {}
     messages: Optional[List[Dict[str, Any]]] = None
+    prompt_token_ids: Optional[List[int]] = None
+    response_token_ids: Optional[List[int]] = None
 
 
 class BaseModelProvider(ABC):
@@ -307,9 +318,7 @@ class BaseModelProvider(ABC):
         pass
 
     def __enter__(self):
-        """Mind map entry."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Mind map exit - cleanup resources."""
         self.cleanup()

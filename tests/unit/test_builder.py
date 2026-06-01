@@ -229,6 +229,11 @@ class TestTemplateRouting:
         prompt_math500 = builder.build_system_prompt("math500", [])
         assert prompt_aime == prompt_math500
 
+    def test_deepmath_uses_math_template(self, builder):
+        prompt_deepmath = builder.build_system_prompt("deepmath", [])
+        prompt_math500 = builder.build_system_prompt("math500", [])
+        assert prompt_deepmath == prompt_math500
+
     def test_case_insensitive(self, builder, search_schema):
         prompt_upper = builder.build_system_prompt("GAIA", search_schema)
         prompt_lower = builder.build_system_prompt("gaia", search_schema)

@@ -1,0 +1,99 @@
+#!/bin/bash
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
+#SBATCH --job-name=PrepareFTData
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=02:00:00
+#SBATCH --output=out/fine_tuning/prepare_data_%A.log
+
+# Download Search-R1 + DeepMath-103K and write VERL parquet files.
+# Splits (proportions held constant across train+test; val composition is custom):
+#   data/training/train/combined_train.parquet  (900 search + 900 math = 1800 train)
+#   data/training/val/val_*.parquet             (20 search + 10 math + 20 AIME = 50 val)
+#   data/training/test/test_*.parquet           (100 search + 100 math = 200 test)
+#
+# Search-R1 composition: 85% HotpotQA (multi-hop) + 15% NQ.
+# DeepMath: difficulty >= 3 only (cleaner GRPO signal, avoids trivial problems).
+# AIME val sample is drawn from local data/AIME/train.jsonl (val-only signal —
+# never mixed into the training pool).
+# Row order: test carved first, then val, then train — no cross-split contamination.
+#
+# Also writes a small smoke-test subset to data/training/smoke/ for 003_smoke_4b.job / 004_smoke_8b.job.
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis — Prepare Fine-Tuning Data"
+echo "=========================================="
+echo "Start time: $(date)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+source activate cosmas-train
+export PYTHONNOUSERSITE=1
+
+mkdir -p out/fine_tuning
+
+# ── 1. Full training data ────────────────────────────────────────────────────
+echo ""
+echo "Preparing curated training data (1800 train / 50 val / 200 test)..."
+python src/fine_tuning/data/prepare.py \
+    --n-search       900 \
+    --n-math         900 \
+    --n-val-search   20 \
+    --n-val-math     10 \
+    --n-val-aime     20 \
+    --aime-jsonl-path data/AIME/train.jsonl \
+    --n-test-search  100 \
+    --n-test-math    100 \
+    --search-source  both \
+    --hotpot-ratio   0.85 \
+    --deepmath-min-difficulty 3 \
+    --output-dir data/training \
+    --seed 42
+
+echo ""
+echo "Full data written:"
+ls -lh data/training/train/combined_train.parquet
+ls -lh data/training/val/val_search.parquet
+ls -lh data/training/val/val_deepmath.parquet
+ls -lh data/training/val/val_aime.parquet
+ls -lh data/training/val/val_combined.parquet
+ls -lh data/training/test/test_search.parquet
+ls -lh data/training/test/test_deepmath.parquet
+ls -lh data/training/test/test_combined.parquet
+
+# ── 2. Smoke-test subset ─────────────────────────────────────────────────────
+echo ""
+echo "Preparing smoke-test subset (50 search + 50 math)..."
+python src/fine_tuning/data/prepare.py \
+    --n-search    50 \
+    --n-math      50 \
+    --n-val-search 3 \
+    --n-val-math   3 \
+    --n-val-aime   3 \
+    --aime-jsonl-path data/AIME/train.jsonl \
+    --deepmath-min-difficulty 3 \
+    --output-dir data/training/smoke \
+    --seed 42
+
+echo ""
+echo "Smoke data written:"
+ls -lh data/training/smoke/train/combined_train.parquet
+ls -lh data/training/smoke/val/val_search.parquet
+ls -lh data/training/smoke/val/val_deepmath.parquet
+ls -lh data/training/smoke/val/val_aime.parquet
+ls -lh data/training/smoke/val/val_combined.parquet
+
+echo ""
+echo "Done at: $(date)"
