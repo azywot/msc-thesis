@@ -1,7 +1,7 @@
 # AIME — LoRA-adapted Qwen3-8B orchestrator + Qwen3-1.7B subagents, orchestrator thinking
 # Update lora_adapter_path once training is complete (replace <run-tag> printed by 005_train.job).
 
-name: "LORA_eval_aime_qwen8B_sub1_7b_orchestrator"
+name: "LORA_eval_aime_qwen8B_sub1_7b_orchestrator_v2"
 description: "[LoRA inference] AIME train with LoRA-adapted Qwen3-8B orchestrator (orchestrator thinking) + Qwen3-1.7B subagents (no thinking)."
 
 slurm:
@@ -18,7 +18,7 @@ models:
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-8B"
     role: "orchestrator"
-    lora_adapter_path: "/scratch-shared/azywot/fine_tuning/lora_adapters/qwen3-8b-grpo-search-math/22-05-2026_00-01-23031012/global_step_20/actor/lora_adapter"
+    lora_adapter_path: "/scratch-shared/azywot/fine_tuning/lora_adapters/qwen3-8b-grpo-search-math-v2/29-05-2026_11-36-23210365/global_step_40/actor/lora_adapter"
   web_search:
     name: "Qwen3-1.7B"
     family: "qwen3"
@@ -44,7 +44,7 @@ dataset:
 
 seed: 0
 thinking_mode: "ORCHESTRATOR_ONLY"
-output_dir: "./experiments/results/lora_inference/aime/qwen8B_sub1_7b_orchestrator"
+output_dir: "./experiments/results/lora_inference/aime/qwen8B_sub1_7b_orchestrator_v2"
 use_wandb: true
 wandb_project: "benchmarks"
 

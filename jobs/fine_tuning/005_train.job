@@ -22,7 +22,7 @@
 
 # Full orchestrator fine-tuning run.
 #   2 epochs, 1800 training questions (900 Search-R1 + 900 DeepMath), n=8 rollouts.
-#   Step-based checkpointing every 10 steps (trainer.save_freq=10); rotation keeps latest + best.
+#   Step-based checkpointing every 5 steps (trainer.save_freq=5); rotation keeps latest + best.
 #   Checkpoints → /scratch-shared/$USER/fine_tuning/lora_adapters/<experiment>/<run-tag>/ (LoRA, USE_SCRATCH_CHECKPOINTS=true).
 #
 # Prerequisites:
@@ -202,10 +202,9 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3
 # ── 2. VERL server ───────────────────────────────────────────────────────────
 # Unbuffered Python so *_verl.log updates live under SLURM file redirection (also applies to train_orchestrator below).
 export PYTHONUNBUFFERED=1
-# NCCL watchdog default is 600 s (10 min). With dynamic_bsz on update_actor and 4-way FSDP
-# over variable-length multi-turn rollouts, residual per-rank work imbalance can spike past
-# 10 min and abort the run (seen on ft_23022789 — Rank 3 never enqueued the AllGather Rank 0
-# was waiting on). Bumping to 1 h is cheap and survives realistic imbalance bursts.
+# NCCL watchdog default is 600 s (10 min). Bumped to 1 h to match nccl_timeout=3600 in config.
+# use_dynamic_bsz is now False (Bug 8 fix) so micro-batch counts are deterministic, but keeping
+# a generous timeout costs nothing and protects against any future imbalance.
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600
 VERL_LOG="out/fine_tuning/orchestrator_ft/ft_${SLURM_JOB_ID:-local}_verl.log"
 echo ""
@@ -254,7 +253,7 @@ wait $VERL_PID
 
 # ── 4. Verify checkpoint ─────────────────────────────────────────────────────
 echo ""
-EXPERIMENT_NAME="qwen3-8b-grpo-search-math"
+EXPERIMENT_NAME="qwen3-8b-grpo-search-math-v2"
 # Checkpoints land in scratch-shared (USE_SCRATCH_CHECKPOINTS=true). Path depends on USE_LORA:
 #   LoRA (launch_verl.py drops 'model' from save_contents → adapter-only checkpoints):
 #     /scratch-shared/$USER/fine_tuning/lora_adapters/<exp>/<run-tag>/global_step_<N>/actor/

@@ -39,7 +39,7 @@ env:
   SUBAGENT_ENDPOINT: 'http://localhost:9998/v1'
   N_GPUS: 4
   ROLLOUT_TP_SIZE: 1
-  EXPERIMENT_NAME: 'qwen3-8b-grpo-search-math'
+  EXPERIMENT_NAME: 'qwen3-8b-grpo-search-math-v2'
   PROJECT_NAME: 'msc-thesis-fine-tuning'
   BASE_DATA_DIR: 'data/training'
   ENABLE_TOOLS: ["web_search", "code_generator"]
@@ -89,12 +89,10 @@ python_args:
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 4
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu: 4
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu: 4
-  # Force fixed micro-batching for compute_log_prob even though actor.use_dynamic_bsz=True
-  # (set by launch_verl.py for LoRA). VERL's schema makes ref.log_prob_use_dynamic_bsz and
-  # rollout.log_prob_use_dynamic_bsz inherit from actor.use_dynamic_bsz via oc.select; under
-  # dynamic_bsz the per-rank micro-batch *count* varies with sequence-length distribution,
-  # causing FSDP collective desync (different number of all-gathers per rank → NCCL watchdog
-  # times out). Fixed micro-batching = ceil(seq_per_rank / 4) identical across DP ranks.
+  # actor.use_dynamic_bsz is forced False by launch_verl.py (Bug 8 fix: without dp_group
+  # VERL's prepare_dynamic_batch doesn't sync num_micro_batches across ranks, causing FSDP
+  # AllGather/AllReduce collective mismatch → NCCL 1-hour watchdog deadlock).
+  # These two lines keep log_prob paths on fixed micro-batching as extra defence.
   actor_rollout_ref.rollout.log_prob_use_dynamic_bsz: false
   actor_rollout_ref.ref.log_prob_use_dynamic_bsz: false
   # Bump VERL's NCCL collective timeout from 600 s (10 min) to 1 h. This is the timeout that
@@ -137,10 +135,8 @@ python_args:
   # custom_async_server config → PatchedvLLMServer is never instantiated → patch never runs.
   #
   # The ACTUAL fix is in scripts/launch_verl.py: it injects
-  # compilation_config={"cudagraph_mode":"PIECEWISE"} via engine_kwargs.vllm. This disables
-  # the FULL cudagraph decode path where the flash_attn.py:330 buffer reuse bug lives.
-  # The compilation_config is a JSON string (not a bool), so build_cli_args_from_config
-  # emits it correctly.
+  # no_enable_prefix_caching=True via engine_kwargs.vllm (Bug 5 workaround — True bools
+  # DO pass through build_cli_args_from_config, unlike False). See CHANGELOG_ft_debugging.md.
   actor_rollout_ref.rollout.enable_prefix_caching: false
   # Cap vLLM context to actual training sequence length (max_prompt + max_response = 18432).
   # Without this, vLLM defaults to Qwen3-8B's native 40960-token context, consuming far more
@@ -170,16 +166,16 @@ python_args:
   trainer.val_before_train: true
   trainer.critic_warmup: 0
   algorithm.use_kl_in_reward: false
-  # ── Mid-run resume from ft_23031012's step 20 (full optimizer + extra + LoRA adapter) ──
-  # ft_23031012 crashed at step 21 rollout with the vLLM prefix-cache CUDA bug. The build_cli
-  # bool-False fix in src/fine_tuning/agentflow/verl/async_server.py makes
-  # enable_prefix_caching=False actually reach vLLM going forward, so resuming is safe.
-  # global_step_20/actor/ has lora_adapter/, optim_world_size_*.pt, extra_state_world_size_*.pt.
-  # No model_world_size_*.pt is needed because launch_verl.py sets load_contents=['optimizer','extra']
-  # for LoRA — the adapter is restored via lora.resume_adapter_path below.
-  # Verified by 004_smoke_8b_load.job; see src/fine_tuning/README.md:218-226.
-  trainer.resume_mode: 'resume_path'
-  trainer.resume_from_path: '/scratch-shared/azywot/fine_tuning/lora_adapters/qwen3-8b-grpo-search-math/22-05-2026_00-01-23031012/global_step_20'
+  # ── Resume from ft_23153423 global_step_25 ──
+  # ft_23153423 completed steps 21-27 (rolled over from ft_23031012's step 20 checkpoint),
+  # then crashed at step 28 training with a NCCL collective mismatch (Bug 8, now fixed by
+  # use_dynamic_bsz=False in launch_verl.py). Last saved checkpoint: global_step_25
+  # (save_freq=5; steps 26-27 trained but step 28 crashed before next save).
+  # global_step_25/actor/ has lora_adapter/, optim_world_size_4_rank_{0-3}.pt,
+  # extra_state_world_size_4_rank_{0-3}.pt. No model_world_size_*.pt needed (LoRA: only
+  # optimizer+extra loaded; base weights come from HF cache, adapter from lora.resume_adapter_path).
+  # trainer.resume_mode: 'resume_path'
+  # trainer.resume_from_path: '/scratch-shared/azywot/fine_tuning/lora_adapters/qwen3-8b-grpo-search-math/28-05-2026_06-22-23153423/global_step_25'
 
 lora:                     # applied only when USE_LORA=true
   rank: 64
@@ -187,5 +183,5 @@ lora:                     # applied only when USE_LORA=true
   target_modules: "all-linear"
   # Warm-start the PEFT adapter BEFORE the optimizer state is loaded on top.
   # Must point at the same global_step_N/actor/lora_adapter as trainer.resume_from_path above.
-  resume_adapter_path: '/scratch-shared/azywot/fine_tuning/lora_adapters/qwen3-8b-grpo-search-math/22-05-2026_00-01-23031012/global_step_20/actor/lora_adapter'
+  # resume_adapter_path: '/scratch-shared/azywot/fine_tuning/lora_adapters/qwen3-8b-grpo-search-math/28-05-2026_06-22-23153423/global_step_25/actor/lora_adapter'
   # merge: false           # Set true only when using the SGLang rollout backend; vLLM uses false (default).
