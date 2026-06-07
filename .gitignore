@@ -75,10 +75,17 @@ scripts/tools/temp_files/
 # SLURM
 slurm-*.out
 *.job.out
+*.err
+*_gpu.csv
 
 
 # WANDB
 wandb/
+
+# Hydra
+outputs/
+multirun/
+.hydra/
 
 src/agent_engine/prompts/notes
 experiments/archive
