@@ -4,7 +4,6 @@ from .metrics import (
     exact_match,
     normalized_match,
     contains_match,
-    numeric_match,
     token_f1,
     evaluate_with_math_verify,
     evaluate_answer,
@@ -12,6 +11,7 @@ from .metrics import (
     evaluate_gpqa,
     evaluate_math,
     evaluate_qa,
+    evaluate_musique,
 )
 from .gaia_scorer import (
     question_scorer,
@@ -27,7 +27,6 @@ __all__ = [
     "exact_match",
     "normalized_match",
     "contains_match",
-    "numeric_match",
     "token_f1",
     "evaluate_with_math_verify",
     "evaluate_answer",
@@ -35,6 +34,7 @@ __all__ = [
     "evaluate_gpqa",
     "evaluate_math",
     "evaluate_qa",
+    "evaluate_musique",
     "question_scorer",
     "normalize_str",
     "normalize_number_str",

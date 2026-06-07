@@ -13,6 +13,7 @@ EM and F1 are computed the same way for every dataset (SQuAD-style).
 import re
 import string
 from collections import Counter
+from datetime import date, datetime
 from math_verify import parse, verify
 from typing import Any, Dict, List, Optional
 from .gaia_scorer import question_scorer
@@ -31,6 +32,10 @@ def normalize_answer(answer: str) -> str:
     answer = answer.lower()
     answer = answer.translate(str.maketrans("", "", string.punctuation))
     answer = re.sub(r"\b(a|an|the)\b", " ", answer)
+    # Canonicalize boolean synonyms as whole words so "true"/"yes" and "false"/"no"
+    # compare equal whether standalone or embedded ("the answer is true" == "the answer is yes").
+    answer = re.sub(r"\btrue\b", "yes", answer)
+    answer = re.sub(r"\bfalse\b", "no", answer)
     return " ".join(answer.split()).strip()
 
 
@@ -72,6 +77,18 @@ def strip_latex_wrappers(ans: str) -> str:
     return s
 
 
+def _try_parse_date(s: str) -> Optional[date]:
+    """Return a date if s parses unambiguously as one, else None."""
+    try:
+        from dateutil import parser as _dp
+        dt = _dp.parse(s, default=datetime(1, 1, 1), ignoretz=True)
+        if dt.year == 1:
+            return None
+        return dt.date()
+    except Exception:
+        return None
+
+
 def exact_match(prediction: str, ground_truth: str, case_sensitive: bool = False) -> bool:
     if not case_sensitive:
         prediction, ground_truth = prediction.lower(), ground_truth.lower()
@@ -83,14 +100,13 @@ def normalized_match(prediction: str, ground_truth: str) -> bool:
 
 
 def contains_match(prediction: str, ground_truth: str) -> bool:
-    return normalize_answer(ground_truth) in normalize_answer(prediction)
-
-
-def numeric_match(prediction: str, ground_truth: str, tolerance: float = 1e-6) -> bool:
-    try:
-        return abs(float(prediction.strip()) - float(ground_truth.strip())) <= tolerance
-    except (ValueError, TypeError):
-        return False
+    pred_norm = normalize_answer(prediction)
+    gt_norm = normalize_answer(ground_truth)
+    if gt_norm in pred_norm:
+        return True
+    gt_no_initials = " ".join(t for t in gt_norm.split() if len(t) > 1)
+    pred_no_initials = " ".join(t for t in pred_norm.split() if len(t) > 1)
+    return bool(gt_no_initials) and gt_no_initials in pred_no_initials
 
 
 def token_f1(prediction: str, ground_truth: str) -> float:
@@ -114,36 +130,45 @@ def token_f1(prediction: str, ground_truth: str) -> float:
 # Math-Verify based accuracy
 # ---------------------------------------------------------------------------
 
-MATH_TOKEN_PATTERN = re.compile(
-    r"""
-    ^
-    \s*
-    (                                    # valid math expression tokens
-        (?:[+\-*/^%]|\d+(?:\.\d+)?       # operator or number
-        |[a-zA-Z]+                       # variable/function name
-        |\(|\)
-        |\\frac|\\sqrt|\\sin|\\cos|\\tan # common LaTeX/math funcs
-        |pi|e
-        |\\[a-zA-Z]+                     # any LaTeX command
-        |\s+
-        )+
-    )
-    \s*$
-    """,
-    re.VERBOSE,
-)
+# Single character class — no alternation, no backtracking. Matches strings made
+# only of math-relevant chars (digits, operators, parens/braces, letters,
+# backslash for LaTeX, whitespace). Anything else (prose punctuation like
+# ; , ' " etc.) causes the match to fail in linear time.
+MATH_TOKEN_PATTERN = re.compile(r"^\s*[\s+\-*/^%\d.()\{\}a-zA-Z\\]+\s*$")
 
 
 def is_math_answer(s: str) -> bool:
-    # 1) Try number
+    """Return True if *s* should be scored with Math-Verify / symbolic rules.
+
+    Numeric strings and expressions with operators, digits, or LaTeX use the math
+    path. Multi-letter alphabetic-only strings (e.g. *Paris*, *yes*) are treated
+    as plain-text QA answers so they are not mis-routed to Math-Verify.
+
+    Single-letter tokens (e.g. *x*, *n*) keep the math path for short symbolic
+    gold answers.
+    """
+    s = s.strip()
+    if not s:
+        return False
     try:
-        float(s.strip())
+        float(s)
         return True
     except ValueError:
         pass
 
-    # 2) Check math token pattern
+    if len(s) >= 2 and re.fullmatch(r"[A-Za-z]+", s) is not None:
+        return False
+
     return bool(MATH_TOKEN_PATTERN.match(s))
+
+
+def _normalize_latex_for_parse(s: str) -> str:
+    """Normalize display-style LaTeX variants that math_verify cannot parse.
+
+    Replaces \\dfrac, \\tfrac, \\cfrac with \\frac (they are mathematically
+    equivalent and math_verify only recognises \\frac).
+    """
+    return re.sub(r"\\[dct]frac\b", r"\\frac", s)
 
 
 def evaluate_with_math_verify(prediction: str, ground_truth: str) -> bool:
@@ -153,8 +178,8 @@ def evaluate_with_math_verify(prediction: str, ground_truth: str) -> bool:
     either expression (e.g. purely textual answers).
     """
     try:
-        gold = parse(ground_truth)
-        answer = parse(prediction)
+        gold = parse(_normalize_latex_for_parse(ground_truth))
+        answer = parse(_normalize_latex_for_parse(prediction))
         if gold and answer:
             return bool(verify(gold, answer))
     except Exception:
@@ -166,19 +191,12 @@ def evaluate_with_math_verify(prediction: str, ground_truth: str) -> bool:
 # Unified evaluator (single entry point for all datasets)
 # ---------------------------------------------------------------------------
 
-def evaluate_answer(
+def _evaluate_answer_single(
     prediction: str,
     ground_truth: str,
     choices: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Evaluate a prediction against its ground truth.
-
-    Returns a dict with keys:
-        correct   bool  – primary correctness flag (= accuracy > 0)
-        accuracy  float – 1.0 / 0.0 (math_verify where applicable)
-        em        float – exact match after normalisation
-        f1        float – SQuAD-style token F1
-    """
+    """Core evaluation logic for a single (prediction, ground_truth) pair."""
     pred = (prediction or "").strip()
     gt = (ground_truth or "").strip()
 
@@ -205,10 +223,21 @@ def evaluate_answer(
         em_score = float(exact_match(pred, gt, case_sensitive=False))
         f1_score = token_f1(pred, gt)
     else:
+        # Date equivalence: "April 2, 2011" == "2011-04-02"
+        pred_date = _try_parse_date(pred)
+        gt_date = _try_parse_date(gt)
+        if pred_date is not None and gt_date is not None and pred_date == gt_date:
+            return {"correct": True, "accuracy": 1.0, "em": 1.0, "f1": 1.0}
+
         # Plain text → GAIA-style normalised comparison, see: https://github.com/aymeric-roucher/GAIA/blob/main/scripts/evaluation/gaia_scorer.py
         score = float(question_scorer(pred, gt))
         em_score = float(exact_match(pred, gt, case_sensitive=False))
         f1_score = token_f1(pred, gt)
+
+    if choices is None and contains_match(pred, gt):
+        score = max(score, 1.0)
+        em_score = max(em_score, 1.0)
+        f1_score = max(f1_score, token_f1(pred, gt))
 
     return {
         "correct": score > 0,
@@ -216,6 +245,38 @@ def evaluate_answer(
         "em": em_score,
         "f1": f1_score,
     }
+
+
+def evaluate_answer(
+    prediction: str,
+    ground_truth: str,
+    choices: Optional[List[str]] = None,
+    answer_aliases: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Evaluate prediction against ground_truth (and optional answer aliases).
+
+    Returns a dict with keys:
+        correct   bool  – primary correctness flag (= accuracy > 0)
+        accuracy  float – 1.0 / 0.0 (math_verify where applicable)
+        em        float – exact match after normalisation
+        f1        float – SQuAD-style token F1
+
+    When answer_aliases is provided, the returned score is the maximum across
+    the primary ground_truth and all aliases.  Iteration short-circuits on the
+    first perfect score (accuracy == 1.0).
+    """
+    result = _evaluate_answer_single(prediction, ground_truth, choices)
+    if not answer_aliases or result["accuracy"] >= 1.0:
+        return result
+    for alias in answer_aliases:
+        if alias == ground_truth:
+            continue
+        alias_result = _evaluate_answer_single(prediction, alias, choices)
+        if alias_result["accuracy"] > result["accuracy"]:
+            result = alias_result
+        if result["accuracy"] >= 1.0:
+            break
+    return result
 
 
 def _mc_correct(prediction: str, ground_truth: str, choices: List[str]) -> bool:

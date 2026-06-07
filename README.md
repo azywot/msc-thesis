@@ -17,7 +17,8 @@ CoSMAS is a configuration-driven multi-agent research framework for investigatin
 7. [Baseline vs. AgentFlow](#baseline-vs-agentflow)
 8. [Tools](#tools)
 9. [Datasets](#datasets)
-10. [Outputs](#outputs)
+10. [GEPA prompt optimisation](#gepa-prompt-optimisation-system-adaptation)
+11. [Outputs](#outputs)
 
 ---
 
@@ -25,22 +26,46 @@ CoSMAS is a configuration-driven multi-agent research framework for investigatin
 
 ```
 msc-thesis/
-├── src/agent_engine/          # Main Python package
-│   ├── config/                # YAML schema + loader
-│   ├── core/                  # Orchestrator + tool-calling loop
-│   ├── models/                # vLLM + MLX + API providers + locking/reuse
-│   ├── tools/                 # web_search, code_generator, mind_map, inspectors
-│   ├── datasets/              # loaders + evaluators + metrics
-│   ├── prompts/               # prompt templates + builders
-│   ├── external/              # Serper, Tavily + URL fetching utilities
-│   ├── caching/               # cache manager(s)
-│   └── utils/                 # parsing/logging helpers
+├── src/
+│   ├── agent_engine/          # Inference + evaluation package
+│   │   ├── config/            # YAML schema + loader
+│   │   ├── core/              # Orchestrator + tool-calling loop
+│   │   ├── models/            # vLLM + MLX + API providers + locking/reuse
+│   │   ├── tools/             # web_search, code_generator, mind_map, inspectors
+│   │   ├── datasets/          # loaders + evaluators + metrics
+│   │   ├── prompts/           # prompt templates + builders
+│   │   ├── external/          # Serper, Tavily + URL fetching utilities
+│   │   ├── caching/           # cache manager(s)
+│   │   └── utils/             # parsing/logging helpers
+│   │
+│   ├── fine_tuning/           # RL fine-tuning pipeline (orchestrator only)
+│   │   ├── README.md          # Master fine-tuning reference (pipeline, reward, data, GPU, LoRA, hparams)
+│   │   ├── reward.py          # OrchestratorReward — binary via metrics.py
+│   │   ├── rollout.py         # OrchestratorRollout(LitAgent) — VERL rollout worker
+│   │   └── data/
+│   │       └── prepare.py     # Download Search-R1 + DeepMath → VERL parquet files
+│   │
+│   └── gepa_integration/      # GEPA prompt optimisation (system adaptation chapter)
+│       ├── seed.py            # build_seed_candidate(), build_splits() (legacy split path)
+│       ├── adapter.py         # AgentGEPAAdapter — GEPAAdapter protocol implementation
+│       ├── reflection.py      # trim_prompt() — reflector context budget management
+│       └── data/
+│           ├── prepare.py     # Download Search-R1 + DeepMath → GEPA DatasetExamples
+│           └── loader.py      # load_gepa_examples() — JSON → DatasetExample
 │
 ├── scripts/
 │   ├── run_experiment.py      # Main runner (requires --config)
-│   ├── analyze_results.py     # Metrics + breakdowns (WIP)
+│   ├── analyze_results.py     # Metrics + breakdowns
 │   ├── download_datasets.py   # Fetch/prepare datasets
-│   └── export_prompts.py      # Dump prompt templates + tool schemas to JSON
+│   ├── export_prompts.py      # Dump prompt templates + tool schemas to JSON
+│   ├── run_gepa.py            # GEPA prompt optimisation CLI (splits/optimize/evaluate/diff)
+│   ├── launch_verl.py         # Start VERL training server
+│   ├── train_orchestrator.py  # Start rollout workers (connects to VERL)
+│   └── test_ft_smoke.py       # Pre-flight checks for training pipeline (no GPU needed)
+│
+├── train/
+│   ├── config.yaml            # Full training config (5 epochs, 4×A100)
+│   └── config_smoke.yaml      # Smoke-test config (1 epoch, 16 samples)
 │
 ├── experiments/
 │   ├── configs/               # Experiment YAMLs organised by suite
@@ -49,18 +74,50 @@ msc-thesis/
 │   │   │   └── gaia/  gpqa/  hle/  aime/  musique/
 │   │   ├── baseline/              # Baseline suite (32B, no planning/structured memory)
 │   │   ├── 1_milestone_no_img_no_mindmap_AgentFlow/  # AgentFlow suite (8B + 32B)
-│   │   ├── qwen3/             # Qwen3 suite (baseline/, agentflow/, ablations)
+│   │   ├── qwen3/             # Qwen3 suite (baseline/, agentflow/, ablations, gepa_inference/)
 │   │   ├── deepseek/          # DeepSeek-R1-Distill-Qwen 7B/32B (baseline/, agentflow/)
 │   │   ├── olmo3/             # OLMo 3 think/instruct
+│   │   ├── gepa/              # GEPA prompt optimisation configs + pre-generated splits
+│   │   │   ├── gaia.yaml          # Qwen3-8B agent, Qwen3-32B reflector, 750 rollouts
+│   │   │   ├── math.yaml          # Same setup; targets AIME/math failure modes
+│   │   │   └── splits/            # train/val/test question-ID splits (gaia_gepa_splits.json, math_gepa_splits.json)
 │   │   ├── local/             # MacBook/MLX configs (Qwen3-0.6B, 4B)
 │   │   └── template.yml       # Annotated template for new configs
 │   └── results/               # Default output root
 │
+├── docs/
+│   ├── failure_modes_fine_tuning_alignment.md         # Failure modes → FT design linkage
+│   └── superpowers/specs/
+│       ├── 2026-05-06-orchestrator-finetuning-design.md
+│       └── 2026-05-15-gepa-integration-design.md      # GEPA integration design spec
+│
 ├── jobs/                      # SLURM job scripts + HPC tooling
+│   ├── 008_prepare_fine_tuning_data.job   # Download + write training parquet files
+│   ├── 009_test_small_ft_example.job      # Smoke-test the training pipeline
+│   ├── 010_ft_orchestrator.job            # Full training run (24h, 4×H100)
+│   ├── gepa/                              # GEPA prompt optimisation job sequence
+│   │   ├── 000_prep_gepa_data.job         #   Generate train/val/test splits (no GPU)
+│   │   ├── 001_install_gepa_deps.job      #   Install gepa==0.0.22 into agent_engine env
+│   │   ├── 002_smoke_gepa.job             #   Import / splits / evaluator checks
+│   │   ├── 003_smoke_gepa_gpu.job         #   End-to-end GPU smoke (1 step, 2 dp, 3×H100)
+│   │   ├── 006_run_gepa_gaia.job         #   Full GAIA optimisation run (~24h, 3×H100)
+│   │   └── 007_run_gepa_math.job         #   Full MATH optimisation run (~24h, 3×H100)
+│   ├── environment_train.yml              # cosmas-train conda env (VERL + vLLM 0.9.2)
+│   └── environment.yml                    # agent_engine conda env (inference, vLLM 0.12.0)
+│
+├── data/training/             # Created by job 008
+│   ├── train/combined_train.parquet           (1800 rows, shuffled)
+│   ├── val/val_search.parquet                 (100 held-out Search-R1)
+│   │   val/val_deepmath.parquet               (100 held-out DeepMath, difficulty ≥ 5)
+│   │   val/val_combined.parquet               (200 merged — offline analysis)
+│   └── test/test_search.parquet               (100 held-out Search-R1)
+│        test/test_deepmath.parquet             (100 held-out DeepMath)
+│        test/test_combined.parquet             (200 merged — final reporting only)
+│
 ├── examples/                  # Small runnable single-tool examples
 ├── pyproject.toml
 ├── requirements.txt
-└── environment.yml            # Conda env for HPC
+└── environment.yml            # Conda env for inference/evaluation (agent_engine)
 ```
 
 **Common navigation:**
@@ -74,6 +131,11 @@ msc-thesis/
 | Dataset loaders + metrics | `src/agent_engine/datasets/` |
 | SLURM job scripts | `jobs/` |
 | Single-tool sanity checks | `examples/` |
+| Fine-tuning the orchestrator | `src/fine_tuning/README.md` |
+| Fine-tuning ↔ failure mode analysis | `docs/failure_modes_fine_tuning_alignment.md` |
+| GEPA prompt optimisation | `scripts/run_gepa.py` + `experiments/configs/gepa/` + `src/gepa_integration/` |
+| GEPA inference (using optimised prompts) | `experiments/configs/qwen3/gepa_inference/` + `jobs/generated/GEPA_eval_*.job` |
+| GEPA design spec | `docs/superpowers/specs/2026-05-15-gepa-integration-design.md` |
 
 ---
 
@@ -159,6 +221,15 @@ Log: `out/test/example_subagent_<job_id>.log`
 | `jobs/004_export_env.job` | Export conda env YAMLs | `out/export_env/export_env_<job_id>.log` |
 | `jobs/005_export_prompts.job` | Export prompt templates + tool schemas | `out/export_prompts/export_prompts_<job_id>.log` |
 | `jobs/006_create_configs.job` | Regenerate all experiment configs | `out/create_configs/create_configs_<job_id>.log` |
+| `jobs/008_prepare_fine_tuning_data.job` | Download + write training parquet files | `out/fine_tuning/prepare_data_<job_id>.log` |
+| `jobs/009_test_small_ft_example.job` | Pre-flight checks + 1-epoch smoke test | `out/fine_tuning/smoke_<job_id>.log` |
+| `jobs/010_ft_orchestrator.job` | Full orchestrator training run (24h) | `out/fine_tuning/ft_<job_id>.log` |
+| `jobs/gepa/000_prep_gepa_data.job` | Prepare GEPA optimisation data (Search-R1 + DeepMath) for GAIA and MATH presets | `out/gepa/prep_gepa_data_<job_id>.log` |
+| `jobs/gepa/001_install_gepa_deps.job` | Install `gepa==0.0.22` into conda env | `out/gepa/install_gepa_deps_<job_id>.log` |
+| `jobs/gepa/002_smoke_gepa.job` | CPU smoke test (imports, splits, evaluator) | `out/gepa/smoke_gepa_<job_id>.log` |
+| `jobs/gepa/003_smoke_gepa_gpu.job` | GPU smoke test (1 step, 2 dp, 3×H100) | `out/gepa/smoke_gepa_gpu_<job_id>.log` |
+| `jobs/gepa/006_run_gepa_gaia.job` | Full GEPA optimisation — GAIA only (~24h, 3×H100) | `out/gepa/gepa_gaia_<job_id>.log` |
+| `jobs/gepa/007_run_gepa_math.job` | Full GEPA optimisation — MATH only (~24h, 3×H100) | `out/gepa/gepa_math_<job_id>.log` |
 
 Optional overrides (via `sbatch --export=ALL,...`): `ENV_NAME`, `PROJECT_DIR`, `DATA_DIR`.
 
@@ -522,7 +593,7 @@ The `web_search` tool supports two providers via `web_tool_provider` config:
 | AIME | `aime` | `train` | Competition mathematics |
 | MuSiQue | `musique` | `validation_subset_200` | Multi-hop reasoning |
 
-**Additional datasets — loaders available, not yet in experiment configs:**
+<!-- **Additional datasets — loaders available, not yet in experiment configs:**
 
 | Name | Key |
 |---|---|
@@ -532,7 +603,7 @@ The `web_search` tool supports two providers via `web_tool_provider` config:
 | TriviaQA | `triviaqa` |
 | HotpotQA | `hotpotqa` |
 | Bamboogle | `bamboogle` |
-| 2WikiMultiHopQA | `2wiki` |
+| 2WikiMultiHopQA | `2wiki` | -->
 
 **Download datasets before running:**
 
@@ -541,6 +612,98 @@ python scripts/download_datasets.py --dataset gaia --split validation
 ```
 
 **Prompt templates:** GAIA, HLE, and MuSiQue share the `gaia.yaml` system prompt template; GPQA uses `gpqa.yaml`; AIME uses `math.yaml`. In baseline mode the corresponding `*_baseline.yaml` templates are loaded instead. The mapping lives in `src/agent_engine/prompts/builder.py` (`PromptBuilder.build_system_prompt`).
+
+---
+
+## GEPA prompt optimisation (system adaptation)
+
+GEPA evolves the orchestrator's system prompt and planning-turn suffix using execution traces from the agent. It uses no weight updates — only prompt rewrites proposed by a Qwen3-32B reflector reading full `<think>` traces, action histories, and failure labels.
+
+**Setup:** Qwen3-8B agent + sub-agents (same model, shared vLLM instance), `ORCHESTRATOR_ONLY` thinking, sub-agent mode (`direct_tool_call: false`) — identical to the milestone-1 AgentFlow configuration.
+
+**Two optimised components per benchmark:**
+- `system_prompt` — full system prompt (preamble + few-shot example + final instructions; tool schemas inside `<tools>…</tools>` are protected and never modified)
+- `planning_suffix` — the instruction block appended to the user query on Turn 0 (planning turn)
+
+**Training data** is sourced from open, non-overlapping datasets — keeping the held-out test sets fully clean:
+- **GAIA preset** — 75 % Search-R1 (85/15 HotpotQA/NQ) + 25 % DeepMath (no difficulty filter). 300 examples total: 150 D_feedback / 50 D_pareto / 100 test.
+- **MATH preset** — 75 % DeepMath (difficulty ≥ 5) + 25 % Search-R1. Same split sizes.
+
+Generated by `src/gepa_integration/data/prepare.py`. Multi-answer Search-R1 examples include `answer_aliases` so all valid answer strings score correctly.
+
+**Evaluation** is on 100 held-out test examples per benchmark that are never seen during optimisation.
+
+See `src/gepa_integration/README.md` for full module documentation including how to apply optimised prompts to inference runs.
+
+### Quick start
+
+```bash
+# 1. Download Search-R1 + DeepMath and build GEPA data files
+sbatch jobs/gepa/000_prep_gepa_data.job
+
+# 2. Install gepa package into the conda env
+sbatch jobs/gepa/001_install_gepa_deps.job
+
+# 3. CPU smoke test (imports, splits integrity, evaluator)
+sbatch jobs/gepa/002_smoke_gepa.job
+
+# 4. GPU smoke test — 1 GEPA step on 2 real examples (3×H100, ~1h)
+sbatch jobs/gepa/003_smoke_gepa_gpu.job
+
+# 5. Full optimisation runs — submit independently (each ~24h, 3×H100)
+sbatch jobs/gepa/006_run_gepa_gaia.job
+sbatch jobs/gepa/007_run_gepa_math.job
+
+# Or step-by-step locally (requires Qwen3-32B reflector already running on port 8001):
+python scripts/run_gepa.py --mode optimize  --config experiments/configs/gepa/gaia.yaml
+python scripts/run_gepa.py --mode evaluate  --config experiments/configs/gepa/gaia.yaml
+python scripts/run_gepa.py --mode diff      --config experiments/configs/gepa/gaia.yaml
+```
+
+### Outputs (per benchmark, under `experiments/results/gepa/<benchmark>/<TIMESTAMP>_<JOB_ID>/`)
+
+| File | Contents |
+|---|---|
+| `best_candidate.json` | Optimised `{"system_prompt": ..., "planning_suffix": ...}` |
+| `seed_candidate.json` | Seed candidate used at optimisation start (for diff) |
+| `gepa_results.json` | Held-out test evaluation in `raw_results.json` format |
+| `gepa_state.bin` | Full GEPA optimisation state (pickled); written after each step. Auto-resumes if `run_dir` already contains it. |
+| `generated_best_outputs_valset/` | Per-task best rollout outputs on the validation set (written when `track_best_outputs=true`) |
+| `optimize.stderr` / `evaluate.stderr` | Per-step stderr logs (vLLM tqdm/INFO); replayed to stderr on failure |
+
+### Running inference with optimised prompts
+
+After GEPA optimisation completes, `best_candidate.json` holds two components: `system_prompt` and `planning_suffix`. These can be injected into a standard inference run via the `gepa_prompt_path` config key — no code changes required.
+
+```yaml
+# Add to any experiment YAML to use GEPA-optimised prompts:
+gepa_prompt_path: "experiments/results/gepa/gaia/2026-05-26-21-06-40_23128167/best_candidate.json"
+```
+
+When set, `run_experiment.py` loads the JSON and uses `system_prompt` verbatim (bypassing `PromptBuilder`) and passes `planning_suffix` to `AgenticOrchestrator`. The tool schemas embedded in the GEPA system prompt are used as-is.
+
+**Pre-built inference configs** (`experiments/configs/qwen3/gepa_inference/`) run the GAIA-optimised prompt on GAIA, MuSiQue, and HLE — both with and without orchestrator thinking — using an 8B orchestrator and 1.7B subagents:
+
+| Config | Dataset | Thinking | Job |
+|---|---|---|---|
+| `gaia/qwen8B_sub1_7b_orchestrator.yaml` | GAIA all_validation | ORCHESTRATOR_ONLY | `GEPA_eval_gaia_qwen8B_sub1_7b_orchestrator.job` |
+| `gaia/qwen8B_sub1_7b_none.yaml` | GAIA all_validation | NO | `GEPA_eval_gaia_qwen8B_sub1_7b_none.job` |
+| `musique/qwen8B_sub1_7b_orchestrator.yaml` | MuSiQue val_200 | ORCHESTRATOR_ONLY | `GEPA_eval_musique_qwen8B_sub1_7b_orchestrator.job` |
+| `musique/qwen8B_sub1_7b_none.yaml` | MuSiQue val_200 | NO | `GEPA_eval_musique_qwen8B_sub1_7b_none.job` |
+| `hle/qwen8B_sub1_7b_orchestrator.yaml` | HLE test_200 | ORCHESTRATOR_ONLY | `GEPA_eval_hle_qwen8B_sub1_7b_orchestrator.job` |
+| `hle/qwen8B_sub1_7b_none.yaml` | HLE test_200 | NO | `GEPA_eval_hle_qwen8B_sub1_7b_none.job` |
+
+Submit all six:
+
+```bash
+for f in jobs/generated/GEPA_eval_*.job; do sbatch "$f"; done
+```
+
+Results land under `experiments/results/gepa_inference/<dataset>/<variant>/` and are logged to the `benchmarks` W&B project.
+
+### Design
+
+See `docs/superpowers/specs/2026-05-15-gepa-integration-design.md` for the full design spec covering: candidate schema, data strategy, failure-stratified splits, reflective dataset construction, GEPA hyperparameters, and the thesis narrative.
 
 ---
 

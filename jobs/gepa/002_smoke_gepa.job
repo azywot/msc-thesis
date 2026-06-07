@@ -1,0 +1,48 @@
+#!/bin/bash
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
+#SBATCH --job-name=SmokeGEPA
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=00:15:00
+#SBATCH --output=out/gepa/smoke_gepa_%A.log
+
+# GEPA pre-flight smoke test — no GPU required.
+# Run this after 001_install_gepa_deps.job and before 003_smoke_gepa_gpu.job.
+# Exits non-zero if any check fails; SLURM marks the job FAILED.
+
+set -euo pipefail
+
+mkdir -p out/gepa
+
+echo "=========================================="
+echo "MSC Thesis — GEPA smoke test"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+if [[ -f ".env" ]]; then
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+ENV_NAME="${ENV_NAME:-agent_engine}"
+echo "Activating environment: $ENV_NAME"
+source activate "$ENV_NAME"
+export PYTHONNOUSERSITE=1
+
+echo ""
+python scripts/smoke_gepa.py
+
+echo ""
+echo "Smoke test passed at: $(date)"

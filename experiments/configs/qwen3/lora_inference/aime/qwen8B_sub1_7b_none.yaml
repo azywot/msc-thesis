@@ -1,0 +1,51 @@
+# AIME — LoRA-adapted Qwen3-8B orchestrator + Qwen3-1.7B subagents, thinking disabled
+# Update lora_adapter_path once training is complete (replace <run-tag> printed by 005_train.job).
+
+name: "LORA_eval_aime_qwen8B_sub1_7b_none_v2"
+description: "[LoRA inference] AIME train with LoRA-adapted Qwen3-8B orchestrator (thinking disabled) + Qwen3-1.7B subagents (no thinking)."
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "24:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "Qwen3-8B-LoRA"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-8B"
+    role: "orchestrator"
+    lora_adapter_path: "/scratch-shared/azywot/fine_tuning/lora_adapters/qwen3-8b-grpo-search-math-v2/29-05-2026_11-36-23210365/global_step_40/actor/lora_adapter"
+  web_search:
+    name: "Qwen3-1.7B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-1.7B"
+    role: "web_search"
+  code_generator:
+    name: "Qwen3-1.7B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-1.7B"
+    role: "code_generator"
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+  direct_tool_call: false
+
+dataset:
+  name: "aime"
+  split: "train"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "NO"
+output_dir: "./experiments/results/lora_inference/aime/qwen8B_sub1_7b_none_v2"
+use_wandb: true
+wandb_project: "benchmarks"
+
+cache_dir: "./cache"

@@ -1,0 +1,150 @@
+#!/bin/bash
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
+#SBATCH --job-name=CreateCosmasTrainEnv
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=00:28:00
+#SBATCH --output=out/fine_tuning/create_env_%A.log
+
+# Create (from scratch) the cosmas-train conda env used by the orchestrator RL fine-tuning
+# pipeline. Pins live in jobs/environment_train.yml.
+#
+# Requires a GPU node: flash-attn's prebuilt wheel selection inspects the local torch
+# install + CUDA headers, and the post-install sanity check imports torch with CUDA.
+
+set -euo pipefail
+
+echo "=========================================="
+echo "cosmas-train environment (re)create"
+echo "=========================================="
+echo "Start time: $(date)"
+echo ""
+
+# ── modules ────────────────────────────────────────────────────────────────────
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+# Snellius gates Anaconda channels behind ToS acceptance per-user.
+echo "Accepting Conda Terms of Service..."
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+mkdir -p out/fine_tuning
+
+# ── GPFS / cross-device link workaround ────────────────────────────────────────
+# pip downloads wheels into $TMPDIR, then renames them into ~/.cache/pip.
+# Compute-node /tmp is on local disk; $HOME is on GPFS → EXDEV (errno 18).
+# Route pip's tempdir to a GPFS-local path so the rename becomes a same-FS move.
+mkdir -p "${HOME}/.tmp"
+export TMPDIR="${HOME}/.tmp"
+
+# ── environment control flag ───────────────────────────────────────────────────
+# REBUILD_ENV=1 → delete + recreate conda env
+# REBUILD_ENV=0 → reuse existing env if present
+REBUILD_ENV="${REBUILD_ENV:-0}"
+ENV_NAME="cosmas-train"
+
+# ── recreate / reuse conda env ────────────────────────────────────────────────
+ENV_EXISTS=0
+if conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
+    ENV_EXISTS=1
+fi
+
+if [ "$ENV_EXISTS" = "1" ]; then
+    if [ "$REBUILD_ENV" = "1" ]; then
+        echo "REBUILD_ENV=1 → removing existing conda env: $ENV_NAME"
+        conda env remove -n "$ENV_NAME" -y
+        ENV_EXISTS=0
+    else
+        echo "REBUILD_ENV=0 → reusing existing conda env: $ENV_NAME"
+    fi
+fi
+
+# Create env only if needed
+if [ "$ENV_EXISTS" = "0" ]; then
+    echo "Creating conda env from jobs/environment_train.yml..."
+    export PIP_NO_BUILD_ISOLATION=1
+    conda env create -f jobs/environment_train.yml
+else
+    echo "Env already exists, skipping creation"
+fi
+
+# Use `source activate` (not `conda activate`) — non-interactive shells in SLURM jobs
+# don't always have `conda` initialised.
+source activate "$ENV_NAME"
+
+# Force pip to install into the env (ignore ~/.local so compute nodes see packages).
+export PYTHONNOUSERSITE=1
+
+echo ""
+echo "Active env: $CONDA_PREFIX"
+echo "Python: $(which python) — $(python --version)"
+
+# ── flash-attn ─────────────────────────────────────────────────────────────────
+echo ""
+echo "Installing flash-attn (robust pinned setup)..."
+
+# Match torch 2.7.1 (vllm 0.10.1.1's hard-pin). PyTorch 2.5+ Linux x86_64 pip
+# wheels ship with the new CXX11 ABI (manylinux_2_28), so the matching
+# flash-attn wheel must be cxx11abiTRUE. The previous 2.7.4.post1 cu12torch2.6
+# cxx11abiFALSE wheel breaks with `undefined symbol _ZN3c105ErrorC2ENS_14SourceLocationESs`
+# (old-ABI std::string) once torch is bumped to 2.7.
+FA_WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.7cxx11abiTRUE-cp311-cp311-linux_x86_64.whl"
+
+pip install --force-reinstall --no-deps --no-build-isolation "$FA_WHEEL_URL"
+
+echo "flash-attn installed successfully"
+
+# ── flashinfer ─────────────────────────────────────────────────────────────────
+# Optional vLLM accelerator for top-k/top-p sampling. Without it vLLM falls back
+# to a slower PyTorch-native sampler (logs: "FlashInfer is not available").
+# 0.2.6.post1 is the version vllm 0.10.1.1 was tested against.
+echo ""
+echo "Installing flashinfer-python..."
+pip install --no-deps flashinfer-python==0.2.6.post1
+
+echo "flashinfer installed successfully"
+
+# ── msc-thesis package (editable) ──────────────────────────────────────────────
+echo ""
+echo "Installing msc-thesis package (editable, with [training] extras)..."
+pip install -e ".[training]"
+
+# ── pip pin reconciliation ─────────────────────────────────────────────────────
+# math-verify[antlr4_13_2] (core dep) and omegaconf (training extra) declare
+# conflicting antlr4-python3-runtime versions; pip picks one and lets the other break
+# at import time. Force the omegaconf-compatible version. See script header for detail.
+echo ""
+echo "Reconciling antlr4 pin..."
+bash jobs/cosmas_train_pip_reconcile.sh
+
+# ── sanity checks ──────────────────────────────────────────────────────────────
+echo ""
+echo "=========================================="
+echo "Sanity checks"
+echo "=========================================="
+python -c "import numpy; print(f'NumPy:        {numpy.__version__}  ({numpy.__file__})')"
+python -c "import torch; print(f'PyTorch:      {torch.__version__}  CUDA available={torch.cuda.is_available()}')"
+python -c "import transformers; print(f'Transformers: {transformers.__version__}')"
+python -c "import vllm; print(f'vLLM:         {vllm.__version__}')"
+python -c "import verl; print(f'verl:         {verl.__version__}')" || echo "Warning: verl import failed"
+python -c "import flash_attn; print(f'flash-attn:   {flash_attn.__version__}')" || echo "Warning: flash-attn import failed"
+python -c "import flashinfer; print(f'flashinfer:   {flashinfer.__version__}')" || echo "Warning: flashinfer import failed"
+python -c "import agent_engine; print('agent_engine: import OK')"
+python -c "import fine_tuning; print('fine_tuning:  import OK')" || echo "Warning: fine_tuning import failed"
+
+echo ""
+echo "Done at: $(date)"
+echo ""
+echo "To use this environment in a follow-up job or interactive shell:"
+echo "  module load 2025 Miniconda3/25.5.1-1 CUDA/12.8.0 cuDNN/9.10.1.4-CUDA-12.8.0"
+echo "  source activate $ENV_NAME"
+echo "  export PYTHONNOUSERSITE=1"

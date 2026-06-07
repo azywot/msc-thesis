@@ -1,0 +1,326 @@
+#!/bin/bash
+#SBATCH --job-name=Smoke8BLoad
+#SBATCH --partition=gpu_h100
+# Three H100 NVL GPUs (~94 GB each). Identical layout to 004_smoke_8b.job:
+#   GPU 0 (exclusive): frozen sub-agent Qwen3-1.7B at util=0.08 (~7.5 GB)
+#   GPUs 1–2: VERL N_GPUS=2 for Qwen3-8B with LoRA, resuming from a saved adapter+optimizer.
+# Purpose: verify that mid-run LoRA resume actually works end-to-end (see config_smoke8b_load.yaml).
+#SBATCH --gpus=3
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=00:45:00
+#SBATCH --output=out/fine_tuning/smoke_test_8b_load/smoke8bload_%A.log
+#SBATCH --error=out/fine_tuning/smoke_test_8b_load/smoke8bload_%A.err
+
+# Resume-from-checkpoint smoke test (Qwen3-8B, LoRA).
+#
+# Loads from:
+#   experiments/results/fine_tuning/qwen3-8b-grpo-smoke/20-05-2026_15-19-22970183/global_step_2
+# and runs 2 new training steps. Writes new checkpoints (global_step_3, global_step_4) to a
+# NEW run-tag dir under the same experiment so the source checkpoint is not touched.
+#
+# Run AFTER the original 004_smoke_8b.job has produced the source checkpoint.
+# If this passes, mid-run LoRA resume is safe → 005_train.job can be cut to --time=24:00:00
+# (resubmit pointing at the latest_checkpoint if the configured epochs spill).
+#
+# Optional: SKIP_PIP_SETUP=1 in .env skips editable installs + reconcile when
+# cosmas-train is already warm (PATH + import check still run).
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis — Fine-Tuning Resume Smoke Test (8B)"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+if [[ -f ".env" ]]; then
+    echo "Loading environment variables from .env..."
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${SERPER_API_KEY:-}" && -z "${TAVILY_API_KEY:-}" ]]; then
+    echo "ERROR: SERPER_API_KEY or TAVILY_API_KEY must be set for rollout workers."
+    exit 1
+fi
+
+if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    echo "Warning: WANDB_API_KEY is not set; W&B logging may fail."
+fi
+
+if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
+    echo "ERROR: conda env 'cosmas-train' not found."
+    echo "Run jobs/fine_tuning/001_prepare_data.job first (creates env + training data)."
+    exit 1
+fi
+
+source activate cosmas-train
+export PYTHONNOUSERSITE=1
+
+case "${SKIP_PIP_SETUP:-}" in
+    1|true|TRUE|yes|YES)
+        echo "SKIP_PIP_SETUP is set — skipping pip install + reconcile (reuse current cosmas-train)."
+        ;;
+    *)
+        echo "Installing msc-thesis package..."
+        python -m pip install -e .
+        bash jobs/cosmas_train_pip_reconcile.sh
+        ;;
+esac
+python -c "import agent_engine, fine_tuning, verl, vllm; from fine_tuning.agentflow import LitAgent, Trainer, reward; print('Training imports OK')"
+
+# Print LoRA trainable param count (no weight load — meta-init from arch config).
+python scripts/count_lora_params.py --config experiments/configs/fine_tuning/config_smoke8b_load.yaml || true
+
+mkdir -p out/fine_tuning/smoke_test_8b_load
+
+for required_file in \
+    data/training/smoke/train/combined_train.parquet \
+    data/training/smoke/val/val_combined.parquet
+do
+    if [[ ! -f "$required_file" ]]; then
+        echo "ERROR: Missing required smoke data file: $required_file"
+        echo "Run jobs/fine_tuning/001_prepare_data.job first."
+        exit 1
+    fi
+done
+
+# ── Pre-flight: source checkpoint must exist ─────────────────────────────────
+SOURCE_CKPT="$PROJECT_DIR/experiments/results/fine_tuning/qwen3-8b-grpo-smoke/20-05-2026_15-19-22970183/global_step_2"
+for required_ckpt_file in \
+    "$SOURCE_CKPT/actor/lora_adapter/adapter_model.safetensors" \
+    "$SOURCE_CKPT/actor/lora_adapter/adapter_config.json" \
+    "$SOURCE_CKPT/actor/optim_world_size_2_rank_0.pt" \
+    "$SOURCE_CKPT/actor/optim_world_size_2_rank_1.pt" \
+    "$SOURCE_CKPT/actor/extra_state_world_size_2_rank_0.pt" \
+    "$SOURCE_CKPT/actor/extra_state_world_size_2_rank_1.pt"
+do
+    if [[ ! -f "$required_ckpt_file" ]]; then
+        echo "ERROR: Missing required source checkpoint file: $required_ckpt_file"
+        echo "This smoke test resumes from a specific checkpoint that must exist."
+        exit 1
+    fi
+done
+echo "Source checkpoint OK: $SOURCE_CKPT"
+
+VERL_PID=""
+SUBAGENT_PID=""
+ORCHESTRATOR_PID=""
+CRASH_MONITOR_PID=""
+GPU_MONITOR_PID=""
+cleanup() {
+    [[ -n "${CRASH_MONITOR_PID:-}" ]] && kill "$CRASH_MONITOR_PID" 2>/dev/null || true
+    [[ -n "${GPU_MONITOR_PID:-}" ]] && kill "$GPU_MONITOR_PID" 2>/dev/null || true
+    if [[ -n "${ORCHESTRATOR_PID:-}" ]] && kill -0 "$ORCHESTRATOR_PID" >/dev/null 2>&1; then
+        echo "Stopping rollout workers (pid=$ORCHESTRATOR_PID)..."
+        kill "$ORCHESTRATOR_PID" || true
+        wait "$ORCHESTRATOR_PID" || true
+    fi
+    if [[ -n "${VERL_PID:-}" ]] && kill -0 "$VERL_PID" >/dev/null 2>&1; then
+        echo "Stopping VERL server (pid=$VERL_PID)..."
+        kill "$VERL_PID" || true
+        wait "$VERL_PID" || true
+    fi
+    echo "Stopping Ray background processes..."
+    ray stop --force 2>/dev/null || true
+    if [[ -n "${SUBAGENT_PID:-}" ]] && kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+        echo "Stopping frozen sub-agent server (pid=$SUBAGENT_PID)..."
+        kill "$SUBAGENT_PID" || true
+        wait "$SUBAGENT_PID" || true
+    fi
+}
+trap cleanup EXIT
+
+# ── GPU monitor sidecar ──────────────────────────────────────────────────────
+GPU_LOG="out/fine_tuning/smoke_test_8b_load/smoke8bload_${SLURM_JOB_ID:-local}_gpu.csv"
+echo "Starting GPU monitor → $GPU_LOG"
+nvidia-smi \
+    --query-gpu=timestamp,index,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw \
+    --format=csv -l 30 \
+    > "$GPU_LOG" 2>&1 &
+GPU_MONITOR_PID=$!
+
+start_crash_monitor() {
+    local logfile="$1" label="$2"
+    (
+        while [[ ! -f "$logfile" ]]; do sleep 2; done
+        tail -n 0 -F "$logfile" 2>/dev/null \
+        | grep --line-buffered -E \
+            "CUDA (Error|out of memory)|RuntimeError: CUDA|\
+NCCL (error|failure)|ncclSystemError|ncclInternalError|ncclCommAbort|\
+RayActorError|ActorDiedError|WorkerDied|The actor died unexpectedly|\
+Segmentation fault|Aborted \(core dumped\)|^Killed\$|\
+FATAL ERROR|Fatal Python error" \
+        | { IFS= read -r line
+            printf '\n=== FATAL CRASH [%s] ===\n%s\nKilling job...\n' "$label" "$line" >&2
+            kill -TERM $$ ; }
+    ) &
+    CRASH_MONITOR_PID=$!
+}
+
+# ── 1. Pre-flight checks (CPU, no VERL needed) ───────────────────────────────
+echo ""
+echo "Running pre-flight checks..."
+python scripts/test_ft_smoke.py \
+    --data-dir data/training/smoke \
+    --config   experiments/configs/fine_tuning/config_smoke8b_load.yaml
+
+echo ""
+echo "Pre-flight checks passed. Starting training..."
+
+VERL_RUN_TAG="$(date +%d-%m-%Y_%H-%M)-${SLURM_JOB_ID:-local}"
+export VERL_RUN_TAG
+echo "Run tag: $VERL_RUN_TAG"
+
+EXPERIMENT_NAME="qwen3-8b-grpo-smoke"
+USE_SCRATCH_LOWER="$(grep -E '^[[:space:]]*USE_SCRATCH_CHECKPOINTS:' "$PROJECT_DIR/experiments/configs/fine_tuning/config_smoke8b_load.yaml" | awk -F'"' '{print tolower($2)}')"
+USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/experiments/configs/fine_tuning/config_smoke8b_load.yaml" | awk -F'"' '{print tolower($2)}')"
+if [[ "$USE_SCRATCH_LOWER" != "true" ]]; then
+    CKPT_DIR="${PROJECT_DIR}/experiments/results/fine_tuning/${EXPERIMENT_NAME}"
+elif [[ "$USE_LORA_LOWER" == "true" ]]; then
+    CKPT_DIR="/scratch-shared/${USER}/fine_tuning/lora_adapters/${EXPERIMENT_NAME}"
+else
+    CKPT_DIR="/scratch-shared/${USER}/msc-thesis/fine_tuning/${EXPERIMENT_NAME}"
+fi
+NEW_RUN_DIR="${CKPT_DIR}/${VERL_RUN_TAG}"
+echo ""
+echo "Checkpoints will be written to: $NEW_RUN_DIR"
+
+# ── 2. Frozen sub-agent vLLM server (GPU 0, dedicated) ────────────────────────
+echo ""
+echo "Starting frozen sub-agent vLLM server (Qwen/Qwen3-1.7B on port 9998, physical GPU 0 only)..."
+VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
+    --port 9998 \
+    --tensor-parallel-size 1 \
+    --gpu-memory-utilization 0.08 \
+    --max-model-len 16384 \
+    > out/fine_tuning/smoke_test_8b_load/smoke8bload_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
+SUBAGENT_PID=$!
+export SUBAGENT_ENDPOINT="http://localhost:9998/v1"
+
+echo "Waiting 60s for sub-agent vLLM to be ready..."
+sleep 60
+if ! kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+    echo "FAIL — sub-agent server exited during startup. See out/fine_tuning/smoke_test_8b_load/smoke8bload_${SLURM_JOB_ID:-local}_subagent.log"
+    wait "$SUBAGENT_PID"
+fi
+
+export CUDA_VISIBLE_DEVICES=1,2
+
+# ── 3. VERL server ───────────────────────────────────────────────────────────
+export PYTHONUNBUFFERED=1
+VERL_LOG="out/fine_tuning/smoke_test_8b_load/smoke8bload_${SLURM_JOB_ID:-local}_verl.log"
+echo ""
+echo "Starting VERL server (config_smoke8b_load.yaml, N_GPUS=2, resume from global_step_2)..."
+python scripts/launch_verl.py --config experiments/configs/fine_tuning/config_smoke8b_load.yaml \
+    > "$VERL_LOG" 2>&1 &
+VERL_PID=$!
+start_crash_monitor "$VERL_LOG" "VERL"
+
+echo "Waiting up to 3 min for Ray + worker bootstrap; N_GPUS=2 + FSDP + colocated vLLM can take 20-30 min before AgentFlow answers /task."
+sleep 180
+if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
+    echo "FAIL — VERL server exited during startup. See out/fine_tuning/smoke_test_8b_load/smoke8bload_${SLURM_JOB_ID:-local}_verl.log"
+    wait "$VERL_PID"
+fi
+
+AGENTFLOW_PORT="${AGENTFLOW_PORT:-9999}"
+echo "Polling http://localhost:${AGENTFLOW_PORT}/task for AgentFlow readiness (up to 30 min)..."
+_deadline=$((SECONDS + 1800))
+while (( SECONDS < _deadline )); do
+    if curl -fsS --max-time 5 "http://127.0.0.1:${AGENTFLOW_PORT}/task" >/dev/null 2>&1; then
+        echo "AgentFlow server is responding on port ${AGENTFLOW_PORT}."
+        break
+    fi
+    if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
+        echo "FAIL — VERL exited before AgentFlow came up. See out/fine_tuning/smoke_test_8b_load/smoke8bload_${SLURM_JOB_ID:-local}_verl.log"
+        wait "$VERL_PID" || true
+        exit 1
+    fi
+    sleep 10
+done
+if (( SECONDS >= _deadline )); then
+    echo "FAIL — AgentFlow on :${AGENTFLOW_PORT} not ready after 30 min (VERL may be wedged). Check *_verl.log and Ray logs under /scratch-local/${USER}.${SLURM_JOB_ID:-local}/ray/"
+    exit 1
+fi
+
+# ── 4. Rollout workers ───────────────────────────────────────────────────────
+echo ""
+echo "Starting rollout workers..."
+python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config_smoke8b_load.yaml &
+ORCHESTRATOR_PID=$!
+wait $VERL_PID
+
+# ── 5. Verify resume actually loaded ─────────────────────────────────────────
+# Required signals in the verl log (printed by verl ray_trainer.py:952,956):
+#   "Load from checkpoint folder: .../global_step_2"
+#   "Setting global step to 2"
+# Absence of either means resume_mode=resume_path didn't fire and we trained from scratch.
+echo ""
+echo "Verifying resume signals in $VERL_LOG..."
+RESUME_OK=true
+if grep -q "Load from checkpoint folder.*global_step_2" "$VERL_LOG"; then
+    echo "  PASS — found 'Load from checkpoint folder ... global_step_2'"
+else
+    echo "  FAIL — did not find 'Load from checkpoint folder ... global_step_2' in verl log"
+    RESUME_OK=false
+fi
+if grep -q "Setting global step to 2" "$VERL_LOG"; then
+    echo "  PASS — found 'Setting global step to 2'"
+else
+    echo "  FAIL — did not find 'Setting global step to 2' in verl log"
+    RESUME_OK=false
+fi
+# Loaded optimizer (FSDPCheckpointManager.load_checkpoint:150 logs "Loaded optimizer from ...").
+if grep -q "Loaded optimizer from.*global_step_2" "$VERL_LOG"; then
+    echo "  PASS — optimizer state restored from global_step_2"
+else
+    echo "  FAIL — did not find 'Loaded optimizer from ... global_step_2' in verl log"
+    RESUME_OK=false
+fi
+
+# ── 6. Verify new checkpoints were written ───────────────────────────────────
+# Expect global_step_3 and global_step_4 in the NEW run-tag dir; source dir untouched.
+echo ""
+echo "Verifying new checkpoints under: $NEW_RUN_DIR"
+NEW_CKPTS_OK=true
+for expected_step in 3 4; do
+    if [[ -f "$NEW_RUN_DIR/global_step_${expected_step}/actor/lora_adapter/adapter_model.safetensors" ]]; then
+        echo "  PASS — global_step_${expected_step}/actor/lora_adapter/adapter_model.safetensors written"
+    else
+        echo "  FAIL — missing global_step_${expected_step}/actor/lora_adapter/adapter_model.safetensors"
+        NEW_CKPTS_OK=false
+    fi
+done
+
+# Source checkpoint must be intact.
+if [[ -f "$SOURCE_CKPT/actor/lora_adapter/adapter_model.safetensors" ]]; then
+    echo "  PASS — source checkpoint at $SOURCE_CKPT is intact"
+else
+    echo "  FAIL — source checkpoint at $SOURCE_CKPT was modified or deleted"
+    NEW_CKPTS_OK=false
+fi
+
+echo ""
+if $RESUME_OK && $NEW_CKPTS_OK; then
+    echo "PASS — LoRA mid-run resume works end-to-end. Safe to cut 005_train.job to --time=24:00:00."
+else
+    echo "FAIL — resume did not work as expected. Inspect $VERL_LOG and $NEW_RUN_DIR before changing 005_train.job."
+    exit 1
+fi
+
+echo ""
+echo "Resume smoke test complete at: $(date)"

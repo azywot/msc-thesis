@@ -77,6 +77,7 @@ slurm-*.out
 *.job.out
 *.err
 *_gpu.csv
+*.err
 
 
 # WANDB
@@ -91,6 +92,9 @@ src/agent_engine/prompts/notes
 experiments/archive
 out/configs_benchmarks_qwen4b
 out/configs_benchmarks_qwen8b
+outputs/*
 
 # Generated experiment configs (rebuilt by experiments/configs/generate_configs.py)
 experiments/configs/archive/*/
+out/fine_tuning/*/*.csv
+.slurm-watch/*
