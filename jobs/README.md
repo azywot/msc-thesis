@@ -24,7 +24,9 @@ For setup instructions, job file descriptions, and how to submit experiments see
 | `generated/` | Generated `.job` files (git-ignored) |
 | `env_exports/` | Exported conda environment YAMLs |
 
-### `fine_tuning/` — orchestrator RL fine-tuning pipeline (see [src/fine_tuning/README.md](../src/fine_tuning/README.md))
+### `fine_tuning/` — orchestrator training pipelines (see [src/fine_tuning/README.md](../src/fine_tuning/README.md))
+
+#### RL (GRPO)
 
 | File | Purpose |
 |------|---------|
@@ -34,7 +36,32 @@ For setup instructions, job file descriptions, and how to submit experiments see
 | `003_smoke_4b.job` | Smoke-test the fine-tuning pipeline with Qwen3-4B (2 GPUs) |
 | `004_smoke_8b.job` | Smoke-test the fine-tuning pipeline with Qwen3-8B (3 GPUs: GPU 0 = sub-agent, GPUs 1–2 = VERL N_GPUS=2) |
 | `004_smoke_8b_load.job` | Verifies LoRA mid-run resume end-to-end (loads a saved checkpoint, runs 2 new steps, asserts log signals + new checkpoints) |
-| `005_train.job` | Full orchestrator fine-tuning run — Qwen3-8B LoRA, 2 epochs, 4×H100 GPUs, 48h walltime |
+| `005_train.job` | Full orchestrator GRPO run — Qwen3-8B LoRA, 2 epochs, 4×H100 GPUs, 48h walltime |
+
+#### SFT (distillation)
+
+| File | Purpose |
+|------|---------|
+| `006_collect_sft_data.job` | Run Qwen3-32B teacher (ORCHESTRATOR_ONLY thinking, sub-agent mode) on the 1800 GRPO training questions and save correct trajectories as SFT training data (4×H100) |
+| `007_train_sft.job` | SFT distillation of Qwen3-8B orchestrator from the Qwen3-32B teacher trajectories — LoRA rank 64, ~90 steps, 2×H100 |
+
+### `grpo_inference/` — GRPO / SFT / base-model evaluation jobs
+
+Self-contained eval jobs (require only `sbatch`, no manual pre-steps) comparing three orchestrator
+checkpoints on the same AgentFlow setup (Qwen3-8B orchestrator + Qwen3-1.7B sub-agents,
+`thinking_mode: NO`, `direct_tool_call: false`):
+
+| File | Purpose |
+|------|---------|
+| `GRPO_eval_aime_qwen8B_sub1_7b_none.job` | AIME eval with the GRPO LoRA-adapted Qwen3-8B orchestrator |
+| `GRPO_eval_gaia_qwen8B_sub1_7b_none.job` | GAIA eval with the GRPO LoRA-adapted Qwen3-8B orchestrator |
+| `SFT_eval_aime_qwen8B_sub1_7b_none.job` | AIME eval with the SFT LoRA-adapted Qwen3-8B orchestrator (`global_step_90`); merges FSDP shards into a PEFT adapter on first run if needed |
+| `SFT_eval_gaia_qwen8B_sub1_7b_none.job` | GAIA eval with the SFT LoRA-adapted Qwen3-8B orchestrator; same one-time merge step |
+| `BASE_eval_aime_qwen8B_sub1_7b_none.job` | AIME eval with the unmodified (no-adapter) Qwen3-8B orchestrator — no-fine-tuning baseline |
+| `BASE_eval_gaia_qwen8B_sub1_7b_none.job` | GAIA eval with the unmodified (no-adapter) Qwen3-8B orchestrator — no-fine-tuning baseline |
+| `configs/aime/`, `configs/gaia/` | Per-job experiment YAMLs (`qwen8B_sub1_7b_none.yaml` = GRPO, `qwen8B_sft_sub1_7b_none.yaml` = SFT, `qwen8B_base_sub1_7b_none.yaml` = base) |
+
+Results land in `experiments/results/{grpo,sft,base}_inference/{aime,gaia}/qwen8B_sub1_7b_none/`.
 
 ### `gepa/` — GEPA-based prompt optimization runs
 
