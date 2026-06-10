@@ -1,0 +1,56 @@
+#!/bin/bash
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=2
+#SBATCH --job-name=GRPO_eval_aime_qwen8B_sub1_7b_none
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=24:00:00
+#SBATCH --output=out/experiments/GRPO/eval_aime_qwen8B_sub1_7b_none/GRPO_eval_aime_qwen8B_sub1_7b_none_%A.log
+
+# Load modules
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+
+# Print info
+echo "Job ID: $SLURM_JOB_ID"
+echo "Node: $SLURM_NODELIST"
+echo "GPUs: $SLURM_GPUS"
+echo "Start time: $(date)"
+
+# Set project directory
+PROJECT_DIR="/gpfs/work5/0/gusr0608/msc-thesis"
+cd "$PROJECT_DIR" || exit 1
+
+# Activate environment
+source activate agent_engine
+
+# Load API keys and env defaults first so config values can override them
+if [ -f ".env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+fi
+
+# Set reproducibility (must come AFTER .env so config seed wins over any PYTHONHASHSEED in .env)
+export PYTHONHASHSEED=0
+export PYTHONNOUSERSITE=1
+export TOKENIZERS_PARALLELISM=false
+
+# Ensure env has required packages (avoid using ~/.local on compute nodes)
+python -c "import numpy, torch" 2>/dev/null || { echo "ERROR: numpy/torch not in conda env. Re-run the setup job (001_setup.job) so dependencies are installed into the env."; exit 1; }
+
+# Run experiment
+echo "Running experiment: GRPO_eval_aime_qwen8B_sub1_7b_none"
+python scripts/run_experiment.py \
+  --config /gpfs/work5/0/gusr0608/msc-thesis/jobs/grpo_inference/configs/aime/qwen8B_sub1_7b_none.yaml \
+  --output-dir experiments/results/grpo_inference/aime/qwen8B_sub1_7b_none
+
+EXIT_CODE=$?
+
+echo "Exit code: $EXIT_CODE"
+echo "End time: $(date)"
+
+exit $EXIT_CODE

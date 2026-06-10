@@ -1,0 +1,80 @@
+# SFT data collection — Qwen3-32B orchestrator (thinking) + Qwen3-1.7B sub-agents
+#
+# Used by scripts/collect_sft_data.py to run the full AgentFlow pipeline on
+# data/training/train/combined_train.parquet and collect successful trajectories.
+#
+# GPU layout (4× H100 NVL ~94 GB each):
+#   Qwen3-32B:  tp=2  → GPUs 0+1  (~64 GB weights, 2× KV)
+#   Qwen3-1.7B: tp=1  → GPU 2     (~3.5 GB weights; shared by web_search + code_generator)
+#   GPU 3: spare headroom
+#
+# Sub-agent model matches the frozen sub-agent used in 005_train.job (Qwen3-1.7B)
+# so collected trajectories are in-distribution relative to RL training.
+
+name: "sft_collection_qwen32b_thinking"
+description: "SFT data collection: Qwen3-32B orchestrator (ORCHESTRATOR_ONLY thinking) on training parquet"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 4
+  ntasks: 1
+  cpus_per_task: 16
+  time: "24:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "Qwen3-32B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-32B"
+    role: "orchestrator"
+    tensor_parallel_size: 2
+    max_model_len: 32768
+    max_tokens: 16384       # generous budget for thinking + tool calls
+
+  web_search:
+    name: "Qwen3-1.7B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-1.7B"
+    role: "web_search"
+    max_model_len: 16384
+    max_tokens: 2048
+    temperature: 0.0        # greedy for sub-agents (deterministic tool analysis)
+
+  code_generator:
+    name: "Qwen3-1.7B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-1.7B"
+    role: "code_generator"
+    max_model_len: 16384
+    max_tokens: 2048
+    temperature: 0.0
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+  direct_tool_call: false     # sub-agent mode — matches RL training setup
+  web_tool_provider: "serper" # override with TAVILY_API_KEY if preferred
+
+max_turns: 7                  # more headroom than RL training (max_turns=5) to improve yield
+batch_size: 4                 # conservative: 32B + thinking can produce long sequences
+seed: 0
+thinking_mode: "ORCHESTRATOR_ONLY"
+
+# No dataset section — collect_sft_data.py loads from parquet directly.
+output_dir: "./experiments/results/sft_collection/qwen32b"
+use_wandb: false
+
+cache_dir: "./cache"
+
+# Appended to every system prompt to nudge the teacher toward tool use.
+# The 32B can solve problems in its head, but the 8B student cannot — so
+# tool-free trajectories are hard for the student to replicate in RL.
+# Remove or comment out to collect natural (unbiased) trajectories.
+system_prompt_suffix: |
+
+  IMPORTANT: You must use tools on every problem — do not answer from internal knowledge or reasoning alone, even if you are confident you know the answer.
+  - Use code_generator for ALL mathematical problems: compute, verify, or check your answer with code before responding.
+  - Use web_search for ALL factual questions: look up the information even if you believe you already know it.
+  Never skip tool use because you think you know the answer. An answer without tool use is not acceptable.
