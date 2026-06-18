@@ -61,10 +61,10 @@ FAILURE_MODES = [
 FM_LABELS = {
     "modality_tool_gap":          "Modality /\nTool Gap",
     "tool_loop_or_empty_final":   "Tool Loop /\nEmpty Final",
-    "direct_reasoning_no_action": "Direct\nReasoning",
+    "direct_reasoning_no_action": "Premature\nAnswering",
     "computational_subgoal_error":"Compute\nError",
     "retrieval_evidence_failure":  "Retrieval\nFailure",
-    "single_shot_tool_trust":     "Single-Shot\nTool Trust",
+    "single_shot_tool_trust":     "Insufficient\nVerification",
 }
 
 THINKING_MODES = ["none", "orchestrator", "subagents", "all"]

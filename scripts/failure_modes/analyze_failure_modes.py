@@ -74,10 +74,10 @@ FAILURE_MODES = [
 MODE_LABELS = {
     "modality_tool_gap":          "Modality / tool-coverage gap",
     "tool_loop_or_empty_final":   "Tool loop / empty final answer",
-    "direct_reasoning_no_action": "Direct reasoning, no action",
+    "direct_reasoning_no_action": "Premature direct answering",
     "computational_subgoal_error": "Computational sub-goal error",
     "retrieval_evidence_failure":  "Retrieval/evidence failure",
-    "single_shot_tool_trust":     "Single-shot tool trust",
+    "single_shot_tool_trust":     "Insufficient evidence verification",
 }
 
 # Tools that only exist for non-text modalities.  video_analysis was never
@@ -551,10 +551,10 @@ def _write_latex_thinking_x_benchmark(path: Path, by_bm_th: dict) -> None:
 _FM_DISPLAY = {
     "modality_tool_gap":           "Modality / tool-coverage gap",
     "tool_loop_or_empty_final":    "Tool loop / empty final answer",
-    "direct_reasoning_no_action":  "Direct reasoning, no action",
+    "direct_reasoning_no_action":  "Premature direct answering",
     "computational_subgoal_error": "Computational sub-goal error",
     "retrieval_evidence_failure":  "Retrieval / evidence failure",
-    "single_shot_tool_trust":      "Single-shot tool trust",
+    "single_shot_tool_trust":      "Insufficient evidence verification",
 }
 
 
