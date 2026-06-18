@@ -85,11 +85,7 @@ msc-thesis/
 │   │   └── template.yml       # Annotated template for new configs
 │   └── results/               # Default output root
 │
-├── docs/
-│   ├── failure_modes_fine_tuning_alignment.md         # Failure modes → FT design linkage
-│   └── superpowers/specs/
-│       ├── 2026-05-06-orchestrator-finetuning-design.md
-│       └── 2026-05-15-gepa-integration-design.md      # GEPA integration design spec
+├── docs/                      # Design notes & walkthroughs (model integration, fine-tuning, failure modes)
 │
 ├── jobs/                      # SLURM job scripts + HPC tooling
 │   ├── 008_prepare_fine_tuning_data.job   # Download + write training parquet files
