@@ -40,18 +40,18 @@ msc-thesis/
 │   │
 │   ├── fine_tuning/           # RL fine-tuning pipeline (orchestrator only)
 │   │   ├── README.md          # Master fine-tuning reference (pipeline, reward, data, GPU, LoRA, hparams)
-│   │   ├── reward.py          # OrchestratorReward — binary via metrics.py
-│   │   ├── rollout.py         # OrchestratorRollout(LitAgent) — VERL rollout worker
+│   │   ├── reward.py          # OrchestratorReward - binary via metrics.py
+│   │   ├── rollout.py         # OrchestratorRollout(LitAgent) - VERL rollout worker
 │   │   └── data/
 │   │       └── prepare.py     # Download Search-R1 + DeepMath → VERL parquet files
 │   │
 │   └── gepa_integration/      # GEPA prompt optimisation (system adaptation chapter)
 │       ├── seed.py            # build_seed_candidate(), build_splits() (legacy split path)
-│       ├── adapter.py         # AgentGEPAAdapter — GEPAAdapter protocol implementation
-│       ├── reflection.py      # trim_prompt() — reflector context budget management
+│       ├── adapter.py         # AgentGEPAAdapter - GEPAAdapter protocol implementation
+│       ├── reflection.py      # trim_prompt() - reflector context budget management
 │       └── data/
 │           ├── prepare.py     # Download Search-R1 + DeepMath → GEPA DatasetExamples
-│           └── loader.py      # load_gepa_examples() — JSON → DatasetExample
+│           └── loader.py      # load_gepa_examples() - JSON → DatasetExample
 │
 ├── scripts/
 │   ├── run_experiment.py      # Main runner (requires --config)
@@ -85,11 +85,7 @@ msc-thesis/
 │   │   └── template.yml       # Annotated template for new configs
 │   └── results/               # Default output root
 │
-├── docs/
-│   ├── failure_modes_fine_tuning_alignment.md         # Failure modes → FT design linkage
-│   └── superpowers/specs/
-│       ├── 2026-05-06-orchestrator-finetuning-design.md
-│       └── 2026-05-15-gepa-integration-design.md      # GEPA integration design spec
+├── docs/                      # Design notes & walkthroughs (model integration, fine-tuning, failure modes)
 │
 ├── jobs/                      # SLURM job scripts + HPC tooling
 │   ├── 008_prepare_fine_tuning_data.job   # Download + write training parquet files
@@ -109,10 +105,10 @@ msc-thesis/
 │   ├── train/combined_train.parquet           (1800 rows, shuffled)
 │   ├── val/val_search.parquet                 (100 held-out Search-R1)
 │   │   val/val_deepmath.parquet               (100 held-out DeepMath, difficulty ≥ 5)
-│   │   val/val_combined.parquet               (200 merged — offline analysis)
+│   │   val/val_combined.parquet               (200 merged - offline analysis)
 │   └── test/test_search.parquet               (100 held-out Search-R1)
 │        test/test_deepmath.parquet             (100 held-out DeepMath)
-│        test/test_combined.parquet             (200 merged — final reporting only)
+│        test/test_combined.parquet             (200 merged - final reporting only)
 │
 ├── examples/                  # Small runnable single-tool examples
 ├── pyproject.toml
@@ -228,8 +224,8 @@ Log: `out/test/example_subagent_<job_id>.log`
 | `jobs/gepa/001_install_gepa_deps.job` | Install `gepa==0.0.22` into conda env | `out/gepa/install_gepa_deps_<job_id>.log` |
 | `jobs/gepa/002_smoke_gepa.job` | CPU smoke test (imports, splits, evaluator) | `out/gepa/smoke_gepa_<job_id>.log` |
 | `jobs/gepa/003_smoke_gepa_gpu.job` | GPU smoke test (1 step, 2 dp, 3×H100) | `out/gepa/smoke_gepa_gpu_<job_id>.log` |
-| `jobs/gepa/006_run_gepa_gaia.job` | Full GEPA optimisation — GAIA only (~24h, 3×H100) | `out/gepa/gepa_gaia_<job_id>.log` |
-| `jobs/gepa/007_run_gepa_math.job` | Full GEPA optimisation — MATH only (~24h, 3×H100) | `out/gepa/gepa_math_<job_id>.log` |
+| `jobs/gepa/006_run_gepa_gaia.job` | Full GEPA optimisation - GAIA only (~24h, 3×H100) | `out/gepa/gepa_gaia_<job_id>.log` |
+| `jobs/gepa/007_run_gepa_math.job` | Full GEPA optimisation - MATH only (~24h, 3×H100) | `out/gepa/gepa_math_<job_id>.log` |
 
 Optional overrides (via `sbatch --export=ALL,...`): `ENV_NAME`, `PROJECT_DIR`, `DATA_DIR`.
 
@@ -237,7 +233,7 @@ Optional overrides (via `sbatch --export=ALL,...`): `ENV_NAME`, `PROJECT_DIR`, `
 
 ## Running experiments
 
-### Locally (Apple Silicon — MLX)
+### Locally (Apple Silicon - MLX)
 
 Run small quantised models on a MacBook using the MLX backend. No GPU/CUDA required.
 
@@ -284,11 +280,11 @@ Pre-built local configs are in `experiments/configs/local/`. Key differences fro
 | `batch_size` | `1`–`5` (RAM-limited) | `-1` (all at once) |
 | SLURM fields | ignored | used by job scripts |
 
-> **Batching:** set `batch_size: N` (e.g. `3`) to process N questions in parallel on Apple Silicon's integrated GPU. Higher values use more RAM — start small and increase as needed.
+> **Batching:** set `batch_size: N` (e.g. `3`) to process N questions in parallel on Apple Silicon's integrated GPU. Higher values use more RAM - start small and increase as needed.
 
 ---
 
-### Locally (GPU — vLLM)
+### Locally (GPU - vLLM)
 
 ```bash
 # Set required key (Serper or Tavily, depending on config)
@@ -307,7 +303,7 @@ python scripts/run_experiment.py --config experiments/configs/datasets/gaia/base
 ### On SLURM
 
 ```bash
-# Single config — generates a job file and submits it
+# Single config - generates a job file and submits it
 ./jobs/submit_job.sh experiment experiments/configs/datasets/gaia/baseline.yaml
 
 # Or manually:
@@ -317,7 +313,7 @@ sbatch jobs/generated/gaia_qwen3_baseline.job
 
 ### Batch runs with `run_all_in_folder.sh`
 
-Run all YAML configs found recursively under any folder — submits each as a separate SLURM job by default, or runs them sequentially with `--local`.
+Run all YAML configs found recursively under any folder - submits each as a separate SLURM job by default, or runs them sequentially with `--local`.
 
 ```bash
 # Run example
@@ -338,7 +334,7 @@ The script walks the folder recursively, so it works at any depth and picks up a
 
 ### Available experiment configs
 
-Configs are organised into **suites** — self-contained families of experiments sharing the same naming scheme, output root, and model/dataset selection.
+Configs are organised into **suites** - self-contained families of experiments sharing the same naming scheme, output root, and model/dataset selection.
 
 ```
 experiments/configs/
@@ -420,9 +416,9 @@ export HF_HOME="/path/to/hf_cache"   # must contain Qwen/Qwen3-4B
 ```
 
 Each script writes its output to `experiments/results/examples/<tool_name>/`:
-- `result.json` — question, answer, turns used, tool call counts
-- `trace.json` — full message + tool call history for debugging
-- `example.log` — human-readable execution log
+- `result.json` - question, answer, turns used, tool call counts
+- `trace.json` - full message + tool call history for debugging
+- `example.log` - human-readable execution log
 
 | Script | Tool tested |
 |---|---|
@@ -440,7 +436,7 @@ Experiments are defined in YAML. A minimal example:
 
 ```yaml
 name: "gaia_qwen3_baseline"
-description: "GAIA validation — direct tool mode"
+description: "GAIA validation - direct tool mode"
 
 models:
   orchestrator:
@@ -465,8 +461,8 @@ cache_dir: "./cache"
 ```
 
 See `experiments/configs/template.yml` for a fully annotated version. Schema and defaults live in:
-- `src/agent_engine/config/schema.py` — experiment / tools / dataset fields
-- `src/agent_engine/models/base.py` — model generation defaults
+- `src/agent_engine/config/schema.py` - experiment / tools / dataset fields
+- `src/agent_engine/models/base.py` - model generation defaults
 
 ### Key options
 
@@ -477,17 +473,17 @@ See `experiments/configs/template.yml` for a fully annotated version. Schema and
 | `batch_size` (config) | integer | Questions per batch (-1 = all; 1 = no batching) |
 | `baseline` | `true` / `false` | When `true`, skips the planning turn and uses a growing conversation instead of structured AgentFlow memory. Used for the vanilla LLM-with-tools comparison. Defaults to `false`. |
 
-If multiple roles share the same `path_or_id`, the runner reuses the loaded vLLM instance and serialises access with per-model locks — no duplicate GPU memory.
+If multiple roles share the same `path_or_id`, the runner reuses the loaded vLLM instance and serialises access with per-model locks - no duplicate GPU memory.
 
 ### Supported model families
 
-Set `models.orchestrator.family` to one of the values below (same applies to sub-agent models). Sampling defaults, thinking behaviour, and tool-call format are derived from the family — see `src/agent_engine/models/base.py`.
+Set `models.orchestrator.family` to one of the values below (same applies to sub-agent models). Sampling defaults, thinking behaviour, and tool-call format are derived from the family - see `src/agent_engine/models/base.py`.
 
 | `family` | Examples | Thinking | Tool-call format | Notes |
 |---|---|---|---|---|
 | `qwen3` | `Qwen/Qwen3-{0.6B,4B,8B,14B,32B}` | toggleable (`enable_thinking` kwarg) | `<tool_call>JSON</tool_call>` | Default reference family |
 | `qwq` | `Qwen/QwQ-32B` | always | `<tool_call>JSON</tool_call>` | |
-| `deepseek` | `deepseek-ai/DeepSeek-R1-Distill-Qwen-{7B,32B}` | always (forced `<think>` prefix) | `{"tool_call": {...}}` (JSON_SINGLE) | No system-role in chat template — system prompt is merged into the first user turn. Stop token is `<tool_response>` to prevent hallucinated tool results. Force-tool-call prefix is applied in AgentFlow mode only. |
+| `deepseek` | `deepseek-ai/DeepSeek-R1-Distill-Qwen-{7B,32B}` | always (forced `<think>` prefix) | `{"tool_call": {...}}` (JSON_SINGLE) | No system-role in chat template - system prompt is merged into the first user turn. Stop token is `<tool_response>` to prevent hallucinated tool results. Force-tool-call prefix is applied in AgentFlow mode only. |
 | `olmo-think` / `olmo-instruct` | `allenai/Olmo-3-{7B,32B}-{Instruct,Think}` | think: always | `<function_calls>\ntool(arg=val)\n</function_calls>` (pythonic, newline-delimited for parallel calls; accepts both `True/False/None` and `true/false/null`) | Sampling defaults lock to the HF card: `T=0.6, top_p=0.95, max_tokens=32768, top_k=-1, repetition_penalty=1.0`. Two Think-template quirks handled in `vllm_provider._render_messages`: `role: tool` is rewritten to `role: environment` (template has no `tool` branch and would silently drop it), and `functions=""` is injected on the system message to suppress the hard-coded `"You do not currently have access to any functions."` suffix (our system prompt already documents every tool). Instruct aliases `tool`→`environment` natively. |
 | `qwen2.5`, `llama3`, `mistral` | generic HF models | off | `<tool_call>JSON</tool_call>` | |
 | `gpt4`, `claude` | OpenAI / Anthropic API | n/a | n/a | Served via API, no local GPU |
@@ -504,9 +500,9 @@ The framework supports two execution modes that are compared in the experiments.
 
 The full system, inspired by the original [AgentFlow](https://github.com/lupantech/AgentFlow) architecture.
 
-**Turn 0 — Planning:** Before any tool use, the model receives the question and is asked to analyse it: identify objectives, list relevant tools, and sketch an approach. The output is stored as `query_analysis`.
+**Turn 0 - Planning:** Before any tool use, the model receives the question and is asked to analyse it: identify objectives, list relevant tools, and sketch an approach. The output is stored as `query_analysis`.
 
-**Turns 1–N — Structured memory loop:** Each subsequent turn reconstructs a fresh `[system, user]` prompt from structured state rather than appending to a growing conversation:
+**Turns 1–N - Structured memory loop:** Each subsequent turn reconstructs a fresh `[system, user]` prompt from structured state rather than appending to a growing conversation:
 
 ```
 <original question>
@@ -531,11 +527,11 @@ The model is instructed to emit a `<sub_goal>` tag before every `<tool_call>`, m
 
 ### Baseline (`baseline: true`)
 
-A vanilla LLM-with-tools agent — the same model and tools, but without structured memory or planning.
+A vanilla LLM-with-tools agent - the same model and tools, but without structured memory or planning.
 
 **No planning turn:** `query_analysis` is never generated.
 
-**Growing conversation:** The raw `state.messages` list grows each turn exactly as in a standard chat API interaction — assistant message appended, then tool response appended. The model sees the full message history, not a reconstructed structured prompt.
+**Growing conversation:** The raw `state.messages` list grows each turn exactly as in a standard chat API interaction - assistant message appended, then tool response appended. The model sees the full message history, not a reconstructed structured prompt.
 
 **No sub-goal bookkeeping:** `action_history` is not populated; the "Plan so far" and "Previous Steps" sections never appear.
 
@@ -554,7 +550,7 @@ A vanilla LLM-with-tools agent — the same model and tools, but without structu
 | Few-shot reasoning scaffolding | tool call + result only | reasoning + sub_goal + tool call + result |
 | Extra LLM call per question | 0 | 1 (planning turn) |
 
-Both conditions use the same model weights, tools, answer format (`\boxed{}`), and `max_turns` budget. The only variables are the structural components listed above — they are the system being evaluated, not confounders.
+Both conditions use the same model weights, tools, answer format (`\boxed{}`), and `max_turns` budget. The only variables are the structural components listed above - they are the system being evaluated, not confounders.
 
 ---
 
@@ -593,7 +589,7 @@ The `web_search` tool supports two providers via `web_tool_provider` config:
 | AIME | `aime` | `train` | Competition mathematics |
 | MuSiQue | `musique` | `validation_subset_200` | Multi-hop reasoning |
 
-<!-- **Additional datasets — loaders available, not yet in experiment configs:**
+<!-- **Additional datasets - loaders available, not yet in experiment configs:**
 
 | Name | Key |
 |---|---|
@@ -617,17 +613,17 @@ python scripts/download_datasets.py --dataset gaia --split validation
 
 ## GEPA prompt optimisation (system adaptation)
 
-GEPA evolves the orchestrator's system prompt and planning-turn suffix using execution traces from the agent. It uses no weight updates — only prompt rewrites proposed by a Qwen3-32B reflector reading full `<think>` traces, action histories, and failure labels.
+GEPA evolves the orchestrator's system prompt and planning-turn suffix using execution traces from the agent. It uses no weight updates - only prompt rewrites proposed by a Qwen3-32B reflector reading full `<think>` traces, action histories, and failure labels.
 
-**Setup:** Qwen3-8B agent + sub-agents (same model, shared vLLM instance), `ORCHESTRATOR_ONLY` thinking, sub-agent mode (`direct_tool_call: false`) — identical to the milestone-1 AgentFlow configuration.
+**Setup:** Qwen3-8B agent + sub-agents (same model, shared vLLM instance), `ORCHESTRATOR_ONLY` thinking, sub-agent mode (`direct_tool_call: false`) - identical to the milestone-1 AgentFlow configuration.
 
 **Two optimised components per benchmark:**
-- `system_prompt` — full system prompt (preamble + few-shot example + final instructions; tool schemas inside `<tools>…</tools>` are protected and never modified)
-- `planning_suffix` — the instruction block appended to the user query on Turn 0 (planning turn)
+- `system_prompt` - full system prompt (preamble + few-shot example + final instructions; tool schemas inside `<tools>…</tools>` are protected and never modified)
+- `planning_suffix` - the instruction block appended to the user query on Turn 0 (planning turn)
 
-**Training data** is sourced from open, non-overlapping datasets — keeping the held-out test sets fully clean:
-- **GAIA preset** — 75 % Search-R1 (85/15 HotpotQA/NQ) + 25 % DeepMath (no difficulty filter). 300 examples total: 150 D_feedback / 50 D_pareto / 100 test.
-- **MATH preset** — 75 % DeepMath (difficulty ≥ 5) + 25 % Search-R1. Same split sizes.
+**Training data** is sourced from open, non-overlapping datasets - keeping the held-out test sets fully clean:
+- **GAIA preset** - 75 % Search-R1 (85/15 HotpotQA/NQ) + 25 % DeepMath (no difficulty filter). 300 examples total: 150 D_feedback / 50 D_pareto / 100 test.
+- **MATH preset** - 75 % DeepMath (difficulty ≥ 5) + 25 % Search-R1. Same split sizes.
 
 Generated by `src/gepa_integration/data/prepare.py`. Multi-answer Search-R1 examples include `answer_aliases` so all valid answer strings score correctly.
 
@@ -647,10 +643,10 @@ sbatch jobs/gepa/001_install_gepa_deps.job
 # 3. CPU smoke test (imports, splits integrity, evaluator)
 sbatch jobs/gepa/002_smoke_gepa.job
 
-# 4. GPU smoke test — 1 GEPA step on 2 real examples (3×H100, ~1h)
+# 4. GPU smoke test - 1 GEPA step on 2 real examples (3×H100, ~1h)
 sbatch jobs/gepa/003_smoke_gepa_gpu.job
 
-# 5. Full optimisation runs — submit independently (each ~24h, 3×H100)
+# 5. Full optimisation runs - submit independently (each ~24h, 3×H100)
 sbatch jobs/gepa/006_run_gepa_gaia.job
 sbatch jobs/gepa/007_run_gepa_math.job
 
@@ -673,7 +669,7 @@ python scripts/run_gepa.py --mode diff      --config experiments/configs/gepa/ga
 
 ### Running inference with optimised prompts
 
-After GEPA optimisation completes, `best_candidate.json` holds two components: `system_prompt` and `planning_suffix`. These can be injected into a standard inference run via the `gepa_prompt_path` config key — no code changes required.
+After GEPA optimisation completes, `best_candidate.json` holds two components: `system_prompt` and `planning_suffix`. These can be injected into a standard inference run via the `gepa_prompt_path` config key - no code changes required.
 
 ```yaml
 # Add to any experiment YAML to use GEPA-optimised prompts:
@@ -682,7 +678,7 @@ gepa_prompt_path: "experiments/results/gepa/gaia/2026-05-26-21-06-40_23128167/be
 
 When set, `run_experiment.py` loads the JSON and uses `system_prompt` verbatim (bypassing `PromptBuilder`) and passes `planning_suffix` to `AgenticOrchestrator`. The tool schemas embedded in the GEPA system prompt are used as-is.
 
-**Pre-built inference configs** (`experiments/configs/qwen3/gepa_inference/`) run the GAIA-optimised prompt on GAIA, MuSiQue, and HLE — both with and without orchestrator thinking — using an 8B orchestrator and 1.7B subagents:
+**Pre-built inference configs** (`experiments/configs/qwen3/gepa_inference/`) run the GAIA-optimised prompt on GAIA, MuSiQue, and HLE - both with and without orchestrator thinking - using an 8B orchestrator and 1.7B subagents:
 
 | Config | Dataset | Thinking | Job |
 |---|---|---|---|
