@@ -19,6 +19,8 @@ CoSMAS is a configuration-driven multi-agent research framework for investigatin
 9. [Datasets](#datasets)
 10. [GEPA prompt optimisation](#gepa-prompt-optimisation-system-adaptation)
 11. [Outputs](#outputs)
+12. [Failure-mode & rollout analysis](#failure-mode--rollout-analysis-scriptsfailure_modes)
+    - [All-wrong / all-correct (all-good) group analysis](#all-wrong--all-correct-all-good-group-analysis)
 
 ---
 
@@ -58,10 +60,28 @@ msc-thesis/
 │   ├── analyze_results.py     # Metrics + breakdowns
 │   ├── download_datasets.py   # Fetch/prepare datasets
 │   ├── export_prompts.py      # Dump prompt templates + tool schemas to JSON
+│   ├── generate_configs.py    # Programmatic experiment-config generator (all suites)
 │   ├── run_gepa.py            # GEPA prompt optimisation CLI (splits/optimize/evaluate/diff)
+│   ├── smoke_gepa.py          # Fast GEPA smoke test (no cluster needed)
 │   ├── launch_verl.py         # Start VERL training server
 │   ├── train_orchestrator.py  # Start rollout workers (connects to VERL)
-│   └── test_ft_smoke.py       # Pre-flight checks for training pipeline (no GPU needed)
+│   ├── test_ft_smoke.py       # Pre-flight checks for training pipeline (no GPU needed)
+│   ├── merge_lora.py          # Merge a trained LoRA adapter into base weights
+│   ├── count_lora_params.py   # Report trainable-parameter counts for a LoRA config
+│   ├── plots/                 # Figure generation
+│   │   ├── main.py            #   Run all figure generators
+│   │   ├── efficiency_plots.py            # Token / latency / tool-call figures
+│   │   ├── orchestrator_capabilities_figure.py
+│   │   ├── generate_results_table.py      # Main results table
+│   │   └── failure_mode_radar.py          # Failure-mode radar (run main.py first)
+│   ├── tables/                # LaTeX table generation
+│   │   ├── main.py            #   Run all table generators
+│   │   ├── generate_ablation_tables.py    # Tool + structured-memory ablations
+│   │   └── ds_table.py                    # DeepSeek GAIA results table
+│   └── failure_modes/         # Failure-mode classifier + analyses
+│       ├── analyze_failure_modes.py   # Frozen classifier (classify_failure) + breakdowns
+│       ├── eval_runs/         #   Analyses over eval raw_results.json
+│       └── fine_tuning/       #   Analyses of the RL/LoRA runs and training rollouts
 │
 ├── train/
 │   ├── config.yaml            # Full training config (5 epochs, 4×A100)
@@ -127,6 +147,8 @@ msc-thesis/
 | Dataset loaders + metrics | `src/agent_engine/datasets/` |
 | SLURM job scripts | `jobs/` |
 | Single-tool sanity checks | `examples/` |
+| Failure-mode & rollout analysis | `scripts/failure_modes/` |
+| All-wrong / all-correct (all-good) rollout groups | [`scripts/failure_modes/fine_tuning/all_wrong.py`](#all-wrong--all-correct-all-good-group-analysis) |
 | Fine-tuning the orchestrator | `src/fine_tuning/README.md` |
 | Fine-tuning ↔ failure mode analysis | `docs/failure_modes_fine_tuning_alignment.md` |
 | GEPA prompt optimisation | `scripts/run_gepa.py` + `experiments/configs/gepa/` + `src/gepa_integration/` |
@@ -554,6 +576,8 @@ Both conditions use the same model weights, tools, answer format (`\boxed{}`), a
 
 ---
 
+## Tools
+
 Enabled via `tools.enabled_tools` in the config:
 
 | Tool | Description |
@@ -725,6 +749,127 @@ python scripts/analyze_results.py experiments/results/<run_dir>/raw_results.json
 ```
 
 To log to W&B: set `use_wandb: true` + `wandb_project: <name>` in the YAML and provide `WANDB_API_KEY`.
+
+---
+
+## Failure-mode & rollout analysis (`scripts/failure_modes/`)
+
+The analyses behind the thesis failure chapters. Every script prints a console
+report and writes a JSON file to `data/results/failure_modes/`; none of them
+mutate experiment results.
+
+```
+scripts/failure_modes/
+├── analyze_failure_modes.py   # Frozen classifier + failure-mode breakdowns
+├── eval_runs/                 # Analyses over eval runs (raw_results.json)
+│   ├── baseline_counterfactual.py   # MAS-vs-baseline overlap; no-action counterfactual
+│   └── retrieval_locus_split.py     # Retrieval failures: orchestrator vs sub-agent locus
+└── fine_tuning/               # Analyses of the RL/LoRA runs
+    ├── base_vs_lora.py        # Accuracy/tool-use/turn deltas + right↔wrong transitions
+    ├── case_studies.py        # Representative base-vs-LoRA trajectory excerpts
+    ├── runs.py                # Shared: canonical (latest) run-directory resolution
+    ├── rollout_groups.py      # Shared: rollout schema + group reconstruction
+    └── all_wrong.py           # All-wrong / all-correct group analysis
+```
+
+`analyze_failure_modes.py` stays at the top level because it is the shared
+dependency: `classify_failure()` is imported by the other analyses, by
+`tests/unit/test_analyze_failure_modes.py`, and by `src/gepa_integration/seed.py`
+for failure-stratified splits. Treat it as frozen — every per-mode count in the
+thesis is on its automatic-proxy basis, so changing the cascade invalidates
+published numbers.
+
+```bash
+# Failure-mode breakdowns (per benchmark, thinking mode, global)
+python scripts/failure_modes/analyze_failure_modes.py
+
+# Eval-run analyses
+python scripts/failure_modes/eval_runs/baseline_counterfactual.py
+python scripts/failure_modes/eval_runs/retrieval_locus_split.py
+
+# Fine-tuning analyses
+python scripts/failure_modes/fine_tuning/base_vs_lora.py
+python scripts/failure_modes/fine_tuning/case_studies.py
+```
+
+### All-wrong / all-correct (all-good) group analysis
+
+`fine_tuning/all_wrong.py` is the script for the all-wrong and all-correct
+(= "all-good") rollout samples. During Flow-GRPO training each question is
+sampled `G` times into a *group*; the binary reward makes a group informative
+only when its rollouts disagree. If every rollout in a group gets the same reward
+— **all-wrong** (none correct) or **all-correct/all-good** (every one correct) —
+the group-relative advantage is zero and the group contributes no gradient. Those
+two categories are the dead weight; the **mixed** share is what actually trains
+the policy.
+
+The script covers two *different* senses of "all-wrong", selectable with
+`--section`:
+
+| Section | Question |
+|---|---|
+| `composition` | Of the complete groups, what share are all-wrong / all-correct / mixed? Only mixed groups have non-zero group-relative advantage, so the rest are dead weight. |
+| `axpo` | Among groups that attempt a tool, how often is the *tool-using subgroup* all-wrong (AXPO, Kang et al.)? A group can be mixed overall yet have every tool-using rollout fail. Reported alongside the no-tool subgroup rate, which exposes the domain asymmetry. |
+
+```bash
+python scripts/failure_modes/fine_tuning/all_wrong.py                        # both sections
+python scripts/failure_modes/fine_tuning/all_wrong.py --section composition --latex
+python scripts/failure_modes/fine_tuning/all_wrong.py --rollout-dir <run_root_or_train_dir>
+python scripts/failure_modes/fine_tuning/all_wrong.py --group-size 8         # override inference
+```
+
+Output — a console report plus `data/results/failure_modes/all_wrong.json`:
+
+```
+Source: experiments/results/fine_tuning/qwen3-8b-grpo-search-math-v2/...
+Group size n=8 (gcd; gcd=8, most common count=8, over N question dirs / M rollouts)
+Complete groups only; partial trailing blocks dropped.
+
+== Whole-group reward composition (dead-group breakdown) ==
+domain              rollouts  groups  all-wrong  all-correct    mixed
+DeepMath                 ...     ...      20.0%        23.1%    56.9%
+HotpotQA                 ...     ...      37.8%        18.7%    43.5%
+Natural Questions        ...     ...      44.8%        23.3%    31.9%
+Overall                  ...     ...      29.3%        21.3%    49.4%
+
+Dead weight (all-wrong + all-correct) overall:  50.6% of 2106 groups; mixed (learning signal):  49.4%
+
+== All-wrong tool-using subgroup (AXPO-aligned) ==
+domain              tool-use rate  tool-subgrp all-wrong no-tool-subgrp all-wrong
+...
+```
+
+The JSON holds one entry per domain plus `ALL`, each carrying the raw counters
+(`all_wrong`, `all_correct`, `mixed`, `n_groups`, `groups_with_tool_subgroup`,
+`tool_subgroup_all_wrong`, `notool_subgroup_all_wrong`, …) **and** the derived
+percentages (`all_wrong_pct`, `all_correct_pct`, `mixed_pct`, `dead_pct`,
+`tool_use_rate_pct`, `tool_subgroup_all_wrong_pct`, …), so figures and tables can
+be rebuilt without re-deriving rates by hand. `group_size_evidence` records how
+the group size was determined.
+
+`--rollout-dir` accepts either a training-run root (the timestamped
+`rollout_data/train` sub-directory is resolved automatically) or that directory
+directly; it defaults to the `qwen3-8b-grpo-search-math-v2` run. Rollout data
+lives on the cluster, not in the repo.
+
+**Group size is not fixed at 8.** It is the training hyperparameter
+`actor_rollout_ref.rollout.n` — 8 in `config.yaml`, but 2 in the smoke configs,
+and free to change in any future run. `--group-size` therefore defaults to `auto`:
+each `idx_*` directory holds `s × G` rollouts for `s` optimizer-step visits, so
+the GCD of the per-question counts recovers `G`, falling back to the most common
+count when a truncated directory collapses the GCD. Every run prints the chosen
+value, the competing estimates, and a warning naming how many directories are not
+an exact multiple of it — pass `--group-size` explicitly if that report looks
+wrong. Inference cannot identify `G` when *no* question was visited a number of
+times coprime with the others (e.g. every question visited exactly twice yields
+`2G`), which is the case the override exists for.
+
+Reconstruction — sorting each directory by rollout index and chunking into
+consecutive blocks of `G`, dropping trailing partial blocks — is defined once in
+`rollout_groups.py`; a correct run over the thesis rollouts infers `G=8` and
+reproduces the reported 2,106 complete groups. Note that the index encodes write
+order, not the optimizer step (see the `rollout_groups.py` docstring), so group
+boundaries are only as reliable as that ordering.
 
 ---
 

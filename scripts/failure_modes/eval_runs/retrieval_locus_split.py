@@ -2,7 +2,7 @@
 
 NEW analysis script (does NOT modify analyze_failure_modes.py). It re-uses the
 frozen automatic classifier so the 227 ``retrieval_evidence_failure`` records it
-inspects are exactly the ones counted in Table 6.1 / breakdown_global.csv.
+inspects are exactly the ones counted in breakdown_global.csv.
 
 Every retrieval_evidence_failure record has >=2 web_search calls (that is the
 detection rule). The split asks *why* the multi-search run still failed:
@@ -31,7 +31,7 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from analyze_failure_modes import (  # noqa: E402
     BENCHMARKS,
     classify_failure,
@@ -133,7 +133,7 @@ def analyze(root: Path, out_dir: Path) -> dict:
 
 
 def main():
-    root = Path(__file__).resolve().parent.parent.parent
+    root = Path(__file__).resolve().parents[3]
     out_dir = root / "data" / "results" / "failure_modes"
     analyze(root, out_dir)
 
