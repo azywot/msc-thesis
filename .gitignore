@@ -91,3 +91,4 @@ outputs/*
 experiments/configs/archive/*/
 out/fine_tuning/*/*.csv
 .slurm-watch/*
+archive/*
