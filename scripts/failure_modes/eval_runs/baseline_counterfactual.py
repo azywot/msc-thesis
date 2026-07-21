@@ -3,7 +3,7 @@
 This is a NEW analysis script (it does NOT modify analyze_failure_modes.py).
 It re-uses the *exact* automatic classifier and MAS run inventory from
 ``analyze_failure_modes`` so that every per-mode count here is on the same
-automatic-proxy basis as Table 6.1 in the thesis (breakdown_global.csv).
+automatic-proxy basis as the reported breakdown (breakdown_global.csv).
 
 It joins each MAS failed question-run to the four selected single-agent
 direct-tools baseline runs for the same benchmark (Qwen3-8B/32B x none/orch),
@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 # Re-use the frozen classifier + MAS inventory (single source of truth).
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from analyze_failure_modes import (  # noqa: E402
     BENCHMARKS,
     FAILURE_MODES,
@@ -180,7 +180,7 @@ def analyze(root: Path, out_dir: Path) -> dict:
 
     result = {
         "basis": "automatic proxy (analyze_failure_modes.classify_failure); "
-                 "same basis as Table 6.1 / breakdown_global.csv",
+                 "same basis as breakdown_global.csv",
         "per_mode": modes_out,
         "mas_only_successes": {
             "runs": mas_only_success_runs,
@@ -229,7 +229,7 @@ def analyze(root: Path, out_dir: Path) -> dict:
 
 
 def main():
-    root = Path(__file__).resolve().parent.parent.parent
+    root = Path(__file__).resolve().parents[3]
     out_dir = root / "data" / "results" / "failure_modes"
     analyze(root, out_dir)
 

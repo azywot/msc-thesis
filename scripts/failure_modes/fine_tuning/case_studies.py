@@ -5,18 +5,16 @@ both-wrong-different, both-identical. Prints compact trajectory excerpts.
 """
 import json, sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from analyze_failure_modes import classify_failure  # noqa
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-
-def latest(folder):
-    folder = ROOT / folder
-    cands = [d for d in folder.iterdir() if d.is_dir() and (d/"raw_results.json").exists()]
-    return sorted(cands, key=lambda d: d.name)[-1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from runs import ROOT, latest_run  # noqa
 
 def load(folder):
-    rd = latest(folder)
+    rd = latest_run(folder)
+    if rd is None:
+        raise SystemExit(f"No run with raw_results.json under {folder}")
     recs = json.load(open(rd/"raw_results.json"))
     return {r["question_id"]: r for r in recs}
 

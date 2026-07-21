@@ -30,6 +30,11 @@ scripts/
   export_prompts.py
   plots/              # Plotting scripts (efficiency_plots, orchestrator_capabilities, etc.)
   tables/             # Table generation scripts
+  failure_modes/      # Failure-mode classifier + analyses
+    analyze_failure_modes.py   # Frozen classifier; classify_failure() imported by
+                               #   the analyses, tests/, and src/gepa_integration/seed.py
+    eval_runs/        # Analyses over eval raw_results.json
+    fine_tuning/      # Analyses of the RL/LoRA runs and GRPO training rollouts
 
 experiments/
   configs/            # YAML experiment configs organised by model family

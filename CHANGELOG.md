@@ -22,6 +22,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Results land under `experiments/results/gepa_inference/<dataset>/<variant>/`
 
 ### Changed
+- **`scripts/failure_modes/` reorganised into sub-packages** — the directory had grown into a flat dump of six unrelated analyses
+  - `eval_runs/` — analyses over eval `raw_results.json`: `baseline_counterfactual.py`, `retrieval_locus_split.py` (moved, unchanged)
+  - `fine_tuning/` — analyses of the RL/LoRA runs: `base_vs_lora.py` (was `ft_base_vs_lora_analysis.py`), `case_studies.py` (was `ft_case_studies.py`), `all_wrong.py` (was `axpo_all_wrong_analysis.py`)
+  - `analyze_failure_modes.py` deliberately stays at the top level: `classify_failure()` is imported by the analyses, `tests/unit/test_analyze_failure_modes.py`, and `src/gepa_integration/seed.py`
+  - `sys.path` hops and repo-root computations in every moved file repointed one level deeper (`parents[1]` / `parents[3]`)
+- **All-wrong / all-correct analysis split into a data layer + analyses** (`scripts/failure_modes/fine_tuning/`)
+  - `rollout_groups.py` — new shared data layer: rollout schema, GRPO group reconstruction, domain labels/ordering. Group reconstruction has one definition instead of being inlined in the analysis
+  - `all_wrong.py` — `--section {all,composition,axpo}` separates whole-group reward composition from the AXPO tool-using-subgroup metric (two different definitions of "all-wrong"); adds `--latex`, `--rollout-dir`, richer JSON (counters **and** derived percentages), and clean errors instead of tracebacks
+  - **Group size is no longer hardcoded to 8** — it is `actor_rollout_ref.rollout.n` (8 in `config.yaml`, 2 in the smoke configs). `--group-size` defaults to `auto`, inferring G as the GCD of per-question rollout counts, falling back to the most common count; the chosen value, competing estimates, and any non-multiple directories are printed so a bad inference is visible. Counting verified identical to the previous implementation at G=8
+  - `--rollout-dir` accepts a training-run root (timestamped `rollout_data/train` resolved automatically) or that directory directly; output renamed `axpo_all_wrong.json` → `all_wrong.json`
+- **`runs.py` — shared canonical-run resolution** (`scripts/failure_modes/fine_tuning/`) — `base_vs_lora.py` and `case_studies.py` each had their own copy of "newest run dir containing `raw_results.json`", diverging on root-prefixing and missing-folder handling; consolidated and verified to match both originals
 - **GEPA configs switched to 8B+1.7B no-thinking setup** (`experiments/configs/gepa/gaia.yaml`, `experiments/configs/gepa/math.yaml`) — matches the LoRA fine-tuning pipeline for a fair comparison. Key changes:
   - `thinking_mode: "ORCHESTRATOR_ONLY" → "NO"` — neither orchestrator nor sub-agents produce `<think>` traces; reflector works from action histories and feedback alone
   - Orchestrator (Qwen3-8B) stays in-process via `VLLMProvider` on GPU 0 (`gpu_memory_utilization: 0.80`)
@@ -100,6 +111,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`tests/gepa_integration/`** — 32 unit tests covering `ExecutionState.raw_query_analysis`, orchestrator `planning_suffix` param + constants, `build_seed_candidate`, `build_splits` (size, no-overlap, failure ratio, JSON output), `_extract_thinking`, and all `AgentGEPAAdapter` methods
 
 ### Fixed
+- **Invalid escape sequences** (`SyntaxWarning`, deprecated and slated to become a `SyntaxError`) — `scripts/failure_modes/analyze_failure_modes.py` (`\ ` in `_TM_DISPLAY`) and `scripts/plots/efficiency_plots.py` (`\_` in `_LATENCY_FOOTNOTE`). Fixed with a raw string and escaped backslashes respectively; rendered string values verified byte-identical, so LaTeX output is unchanged. `scripts/` now compiles warning-free
+- `scripts/failure_modes/fine_tuning/base_vs_lora.py` — docstring claimed the canonical run required both `metrics.json` and `raw_results.json`; the code only ever checked `raw_results.json`. Docstring corrected to match the code (behaviour deliberately left as-is, since tightening the check would change which runs are selected)
 - `scripts/run_gepa.py` — `_build_tool_registry` used non-existent `direct_mode=` constructor argument on all three tools; replaced with the correct `model_provider=` pattern (direct mode = `model_provider=None`, sub-agent mode = pass the shared `VLLMProvider`)
 - `scripts/run_gepa.py` — all configs changed to `direct_tool_call: false`; `_build_tool_registry` now accepts `model_provider` and wires it into tools when in sub-agent mode, with `use_thinking` derived from `thinking_mode`; model provider is created before the tool registry in both `run_optimize` and `run_evaluate` so it can be passed in
 - `scripts/run_gepa.py` — `build_seed_candidate` now reads `max_search_limit` from the YAML config instead of silently using the default
