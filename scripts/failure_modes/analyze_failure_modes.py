@@ -512,7 +512,7 @@ _BM_DISPLAY = {
 }
 _TM_DISPLAY = {
     "none": "No thinking", "all": "All thinking",
-    "orchestrator": "Orch.\ thinking", "subagents": "Sub.\ thinking",
+    "orchestrator": r"Orch.\ thinking", "subagents": r"Sub.\ thinking",
 }
 
 

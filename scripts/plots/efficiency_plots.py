@@ -400,8 +400,8 @@ def plot_token_breakdown(data: dict[str, list[dict]]) -> None:
 # ─────────────────────────── Figure 2: Latency breakdown ────────────────────
 
 _LATENCY_FOOTNOTE = (
-    "Each bar = (end\_time \u2212 start\_time) / n\_samples, where start/end are taken from "
-    "metrics.json and n\_samples is the number of evaluation questions in that benchmark run. "
+    "Each bar = (end\\_time \u2212 start\\_time) / n\\_samples, where start/end are taken from "
+    "metrics.json and n\\_samples is the number of evaluation questions in that benchmark run. "
     "All questions are processed in a single batched pass on the cluster (parallel execution), "
     "so this figure reflects \u2018throughput latency\u2019 \u2014 average cluster wall-time consumed per "
     "question \u2014 rather than the sequential latency of a single isolated query. "

@@ -2,7 +2,7 @@
 
 NEW analysis script. Re-uses the frozen automatic classifier ``classify_failure``
 from ``analyze_failure_modes`` so per-mode counts are on the same automatic-proxy
-basis as Table 6.1 / breakdown_global.csv in the thesis.
+basis as the reported failure-mode breakdown (breakdown_global.csv).
 
 For each (dataset, thinking-regime, model) it loads the canonical eval run and
 computes, per question:
@@ -15,9 +15,9 @@ It then reports:
   * base->v1 / base->v2 transition matrices (right<->wrong), flip rate,
     prediction agreement, and action-sequence agreement (policy similarity).
 
-Canonical run per (dataset, variant) = latest timestamped sub-dir that has both
-metrics.json and raw_results.json (this drops the superseded broken v1 re-runs;
-verified to match the CSV / report numbers).
+Canonical run per (dataset, variant) = latest timestamped sub-dir containing
+raw_results.json (see runs.latest_run). This drops the superseded broken v1
+re-runs; verified to match the CSV / report numbers.
 
 Output: prints a report and writes data/results/failure_modes/ft_base_vs_lora.json
 """
@@ -26,10 +26,11 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from analyze_failure_modes import classify_failure, FAILURE_MODES, MODE_LABELS  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from runs import ROOT, latest_run  # noqa: E402
 DATASETS = ["aime", "gpqa", "gaia", "hle", "musique"]
 # regime -> (baseline variant suffix, lora variant suffix)
 REGIMES = {
@@ -37,16 +38,6 @@ REGIMES = {
     "on":  ("orchestrator", "orchestrator"),  # ORCHESTRATOR_ONLY (deployment)
 }
 MODELS = ["base", "v1", "v2"]
-
-
-def latest_run(folder: Path):
-    """Latest timestamped run dir under folder that has raw_results.json."""
-    if not folder.is_dir():
-        return None
-    cands = [d for d in folder.iterdir() if d.is_dir() and (d / "raw_results.json").exists()]
-    if not cands:
-        return None
-    return sorted(cands, key=lambda d: d.name)[-1]
 
 
 def run_dir(ds: str, regime: str, model: str):
