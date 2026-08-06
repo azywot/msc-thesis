@@ -217,7 +217,6 @@ def _classify_turns(messages: list) -> tuple:
 def _fold_trajectory(
     messages: list,
     planning_suffix: str,
-    include_planning: bool = True,
     drop_planning_answers: bool = False,
 ) -> list:
     """Expand one stored trajectory into one ``[system, user, assistant]`` row per decision.
@@ -247,7 +246,7 @@ def _fold_trajectory(
             {"role": "assistant", "content": target},
         ]
 
-    if plan is not None and include_planning:
+    if plan is not None:
         rows.append(_row(question + planning_suffix, plan))
 
     query_analysis = _plan_query_analysis(plan) if plan is not None else ""

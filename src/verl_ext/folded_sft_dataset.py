@@ -32,6 +32,22 @@ from torch.utils.data import Dataset
 logger = logging.getLogger(__name__)
 
 
+def _strict_bool(value, name: str) -> bool:
+    """Coerce a config flag to a bool, defaulting to False for anything ambiguous.
+
+    verl's ``sft_trainer_engine.yaml`` ships ``enable_thinking_default: none``, which YAML
+    parses as the *string* ``"none"``, and the trainer passes its whole ``data`` config into
+    ``data.custom_cls``. Trusting such a value truthily is what silently re-opened the
+    4-token prompt gap, so only an unambiguous boolean counts as True here.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    logger.warning("%s=%r is not a boolean; using False.", name, value)
+    return False
+
+
 class FoldedSFTDataset(Dataset):
     """One supervised decision per row; prompt identical to the orchestrator's.
 
@@ -61,26 +77,11 @@ class FoldedSFTDataset(Dataset):
         self.truncation = config.get("truncation", "error")
         self.pad_mode = config.get("pad_mode", "right")
 
-        # `enable_thinking` decides whether Qwen3's generation prompt ends with the empty
-        # `<think>\n\n</think>\n\n` block, which is exactly the 4-token gap this class exists
-        # to close — so it must never be inferred from a loosely typed value. verl's own
-        # sft_trainer_engine.yaml ships `enable_thinking_default: none`, which YAML parses as
-        # the *string* "none", not None. A plain `config.get(..., False)` therefore returned a
-        # truthy string in real training runs, the template took its thinking branch, and the
-        # prompt silently lost the think block again while the pre-flight gate (which builds
-        # its own config without this key) kept passing. Only a real boolean enables thinking.
-        raw_thinking = config.get("enable_thinking_default", False)
-        if isinstance(raw_thinking, bool):
-            self.enable_thinking = raw_thinking
-        elif isinstance(raw_thinking, str) and raw_thinking.strip().lower() in ("true", "false"):
-            self.enable_thinking = raw_thinking.strip().lower() == "true"
-        else:
-            self.enable_thinking = False
-            logger.warning(
-                "enable_thinking_default=%r is not a boolean; using enable_thinking=False "
-                "(no-thinking, matching the folded data and thinking_mode: NO at inference).",
-                raw_thinking,
-            )
+        # Decides whether Qwen3's generation prompt ends with the empty
+        # `<think>\n\n</think>\n\n` block — the 4-token gap this class exists to close.
+        self.enable_thinking = _strict_bool(
+            config.get("enable_thinking_default", False), "enable_thinking_default"
+        )
         logger.info("FoldedSFTDataset: enable_thinking=%s, pad_mode=%s, truncation=%s",
                     self.enable_thinking, self.pad_mode, self.truncation)
         if self.truncation not in ("error", "left", "right"):

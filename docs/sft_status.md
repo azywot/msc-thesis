@@ -2,27 +2,30 @@
 
 **Last updated:** 2026-08-06
 **Branch:** `feat/sft-folded-format`
-**Read this first.** It supersedes the status sections of the older docs listed at the end.
+
+The single source of truth for the orchestrator SFT work: the diagnosis, the fix, the data,
+the run mechanics, and what is left. 
 
 ---
 
-## 1. Where things stand, in five lines
+## 1. Status and next action
 
-The SFT adapter underperformed the base model because it was trained on a conversation
-format the orchestrator never sees at inference. That diagnosis is **verified by executing
-both code paths**, not inferred. The fix is **implemented, tested, and applied to the real
-data**: folded parquets are built and every pre-flight gate passes on all 3357 rows. Both
-research decisions are **resolved** (§8).
+The SFT adapter underperformed the base model because it was trained on a conversation format
+the orchestrator never sees at inference. That diagnosis is **verified by executing both code
+paths**, not inferred. The fix is implemented, tested, and applied to the real data: folded
+parquets are built and every pre-flight gate passes on all 3357 rows. Both research decisions
+are resolved (§6).
 
-**A first training run went 50 steps and was deliberately cancelled** (§14). It proved the
-pipeline works end to end and that val loss falls (0.6025 → 0.4947), but it was writing
-33 GB per checkpoint, to the wrong directory, and keeping all of them. The job now writes to
-the GRPO adapter layout and ends by keeping only two ~365 MB adapters (best-val-loss and
-last).
+A first training run went 50 steps and was **deliberately cancelled** (§12). It proved the
+pipeline works end to end and that val loss falls (0.6025 → 0.4947), but it wrote 33 GB per
+checkpoint, to the wrong directory, and kept all of them. All three are now fixed (§7).
 
-**NEXT ACTION: submit** — see §12. The post-cancel edits have now been verified (syntax, 487
-tests, both pre-flight gates), the two job-script defects found in that pass are fixed, and the
-SFT eval configs exist. Nothing has been submitted to SLURM.
+A **pre-launch audit found one critical bug** (§9): the training run would have silently
+reintroduced the very prompt gap this work exists to close. It is fixed, with regression tests,
+and re-verified on the real data.
+
+**NEXT ACTION: submit.** See §10. Nothing has been submitted to SLURM. Test suite: **496
+passed**.
 
 ---
 
@@ -30,7 +33,7 @@ SFT eval configs exist. Nothing has been submitted to SLURM.
 
 ### What was wrong
 
-SFT rows were stored as the native multi-turn transcript that the teacher produced:
+SFT rows were stored as the native multi-turn transcript the teacher produced:
 
 ```
 [system, user, assistant(plan), assistant(tool_call), tool(result), ..., assistant(answer)]
@@ -46,8 +49,8 @@ two-message prompt from scratch via `_build_memory_prompt`
 [system, user(question + **Query Analysis:** + **Previous Steps:**)]
 ```
 
-Prior steps are compressed into `Action Step N: Tool / Sub-goal / Command / Result` prose,
-and the tool result becomes `- Result:` text inside the user turn rather than its own turn.
+Prior steps are compressed into `Action Step N: Tool / Sub-goal / Command / Result` prose, and
+the tool result becomes `- Result:` text inside the user turn rather than its own turn.
 
 So the adapter minimised cross-entropy honestly, on a distribution it is never evaluated on.
 Loss went down; task performance went down. **Val loss could not have caught this**, because
@@ -62,12 +65,12 @@ Both sides were produced by running the production code:
   `input_ids` and the `loss_mask == 1` positions.
 - **Inference side:** the orchestrator's own `_build_memory_prompt`, `_commit_tool_result`,
   `_format_action_history`, `_extract_sub_goal` and the real `parse_tool_call`, driven on a
-  real `ExecutionState`, rendered through the Qwen3 branch of
-  `VLLMProvider._render_messages` (`vllm_provider.py:338-343`).
+  real `ExecutionState`, rendered through the Qwen3 branch of `VLLMProvider._render_messages`
+  (`vllm_provider.py:338-343`).
 
-The only function that could not be *invoked* is `_run_planning_turn` (it needs a live
-model); its two prompt-shaping lines were mirrored with the suffix constant imported from
-the module. The Qwen3 render branch was asserted programmatically, not assumed.
+The only function that could not be *invoked* is `_run_planning_turn` (it needs a live model);
+its two prompt-shaping lines were mirrored with the suffix constant imported from the module.
+The Qwen3 render branch was asserted programmatically, not assumed.
 
 **Result over 60 randomly sampled trajectories (seed 0), 194 decision points:**
 
@@ -84,20 +87,22 @@ The divergence is total, and it starts at the earliest possible content position
 
 ### A second, independent defect found in the same audit
 
-`MultiTurnSFTDataset` tokenises each turn in isolation, so a target always begins right
-after `<|im_start|>assistant\n`. Qwen3's template rendering a whole conversation — and the
+`MultiTurnSFTDataset` tokenises each turn in isolation, so a target always begins right after
+`<|im_start|>assistant\n`. Qwen3's template rendering a whole conversation — and the
 orchestrator at inference with thinking off — first emits `<think>\n\n</think>\n\n`. The
 adapter was trained to start generating 4 tokens earlier than it is ever sampled from, on
 **every** target.
 
-VERL's own sanity check fails on **60/60** sampled rows, delta **exactly 4 tokens** every
-time. `007_train_sft.job:141` silenced it with `data.ignore_input_ids_mismatch=True`.
-Folding alone does **not** fix this — measured on a real folded row:
+VERL's own sanity check fails on **60/60** sampled rows, delta **exactly 4 tokens** every time.
+`007_train_sft.job:141` silenced it with `data.ignore_input_ids_mismatch=True`. Folding alone
+does **not** fix this — measured on a real folded row:
 
 | Path | Prompt tokens | Identical to inference? |
 |---|---|---|
 | Folded row through `MultiTurnSFTDataset` | 1374 | **No** — missing exactly `<think>\n\n</think>\n\n` |
 | Folded row through `FoldedSFTDataset` (new) | 1378 | **Yes, token-for-token** |
+
+This gap came back a second time through a different route; see §9.
 
 ---
 
@@ -113,80 +118,59 @@ Everything below was checked before accepting the format hypothesis.
 | **Chat-template / special-token mismatch** | **RULED IN** | The 4-token think-block gap above. Real, on every target. |
 | **EOS handling** | **Ruled out** | Every supervised span ends with `<\|im_end\|>`, 968/968 and 108/108. |
 | **Truncation at max_seq_len** | **Ruled out** | `max_length=16384`; measured max 7255 (train) / 9821 (val). 0 rows truncated. |
-| **Overfitting** | **Not excluded, but orthogonal** | ~90 optimizer steps on a rank-64 LoRA. Needs the training log to settle — and val loss was computed in the same wrong format, so it could not have flagged the format gap either way. |
-| **Eval harness change** | **Not checkable** | No SFT eval config or result exists in this checkout. |
+| **Overfitting** | **Not excluded, but orthogonal** | ~90 optimizer steps on a rank-64 LoRA. Val loss was computed in the same wrong format, so it could not have flagged the format gap either way. |
+| **Eval harness change** | **Not checkable** | No SFT eval config or result existed in this checkout at diagnosis time. |
 | **LR / schedule** | **Unlikely primary** | `lr=2e-5`, `warmup=20` of ~90 steps (~22%). Aggressive but cannot explain a context the model never sees. |
 | **Sampling config differing** | **Ruled out as differential** | Qwen3 uses framework defaults, `temperature=0.0` greedy (`models/base.py:185-188`); base and adapter share the identical `VLLMProvider` path. |
 
-**One thing I could not verify:** the symptom itself. There is no SFT training log, no SFT
-eval config, and no SFT eval result anywhere in this checkout, and
-`/projects/0/gusr0608/msc-thesis` is `Permission denied`. A session note from 2026-06-17
-records **GAIA 16/165 base → 17 GRPO → 14 SFT** and **AIME 12/60 → 8 → 6**; consistent with
-the diagnosis, but treat as provisional until the source-of-record run is readable.
+**One thing that could not be verified: the symptom itself.** There is no SFT training log, no
+SFT eval result anywhere in this checkout, and `/projects/0/gusr0608/msc-thesis` is
+`Permission denied`. A session note from 2026-06-17 records **GAIA 16/165 base → 17 GRPO → 14
+SFT** and **AIME 12/60 → 8 → 6**; consistent with the diagnosis, but treat as provisional
+until the source-of-record run is readable.
 
 ---
 
-## 4. Three things the older docs got wrong
-
-1. **The fold implementation did not exist.** `docs/sft_status.md` §4 (old) and the design
-   doc both said it was "implemented, tested, and run successfully". It was not: no
-   `--format folded`, no `_fold_trajectory`, no `tests/unit/test_build_sft_folded*.py`, and
-   nothing in any commit (`git log --all -S"_fold_trajectory"` was empty). It was lost with
-   an ephemeral worktree. Its *numbers* all reproduced exactly, so the docs were a reliable
-   spec — but the code had to be rewritten from scratch.
-2. **"Blocked: training partition access" was wrong.** `gpu_h100` is fully available:
-   `sbatch --test-only --partition=gpu_h100 --gpus=2` schedules immediately (it offered
-   `gcn118`), account is `gusei18108`, and budget `EINF-18108/L2` has **~536,000 SBU** left.
-   What is inaccessible is only the *directory* `/projects/0/gusr0608/msc-thesis`, which
-   `007_train_sft.job` hardcoded as `PROJECT_DIR`. The data is in the home checkout and
-   `data/training/sft` is writable.
-3. **The assistant-side gap was listed as an open decision.** It is now closed (§5).
-
-Two smaller gaps in the same class: `scripts/select_best_sft_checkpoint.py` is called by
-`007_train_sft.job:180` but has never existed in any commit; and there is **no SFT eval
-config at all** — every `experiments/configs/qwen3/lora_inference/*` points its
-`lora_adapter_path` at the **GRPO** adapter.
-
----
-
-## 5. What was built, and why each piece exists
+## 4. What was built
 
 | File | Status | Why |
 |---|---|---|
 | `scripts/build_sft_parquet.py` | modified | Adds `--format {native,folded}` (default `native`, so existing behaviour is untouched), `--from-parquet`, `--planning-suffix`, `--drop-planning-answers`. New functions: `_memory_user_content`, `_plan_query_analysis`, `_classify_turns`, `_fold_trajectory`, `_fold_records`, `_refold_parquet`, `_default_planning_suffix`. |
-| `src/verl_ext/folded_sft_dataset.py` | new | `FoldedSFTDataset` for VERL's `data.custom_cls` hook. Renders the prompt with `add_generation_prompt=True`, which is byte-for-byte the inference string *including* the think block, and supervises only `target + eos`. Closes the 4-token gap and makes `ignore_input_ids_mismatch` unnecessary. Rejects non-single-turn rows loudly. |
-| `scripts/check_sft_folded_format.py` | new | Pre-flight gate, run before training. Asserts prompt identity, span purity, no thinking, no tool output, tool calls retained, no degenerate rows, no truncation. |
+| `src/verl_ext/folded_sft_dataset.py` | new | `FoldedSFTDataset` for VERL's `data.custom_cls` hook. Renders the prompt with `add_generation_prompt=True`, byte-for-byte the inference string *including* the think block, and supervises only `target + eos`. Closes the 4-token gap and makes `ignore_input_ids_mismatch` unnecessary. Rejects non-single-turn rows loudly. |
+| `scripts/check_sft_folded_format.py` | new | Pre-flight gate, run before training and by the job itself. Asserts prompt identity, span purity, no thinking, no tool output, tool calls retained, no degenerate rows, no truncation. |
+| `scripts/finalize_sft_run.py` | new | Selects best-val-loss and last, extracts both as PEFT adapters (DTensor-correct), deletes the shards. |
+| `scripts/sft_checkpoint_janitor.py` | new | Collapses checkpoints to adapters *during* training (§7.2). |
 | `jobs/fine_tuning/008_train_sft_folded.job` | new | The training job. 007 is left untouched so the native run stays reproducible for comparison. |
-| `jobs/fine_tuning/008_test_sft_folded.job` | new | CPU-only verification suite: tests, gate, gate trip-wire, gate under the training env, and one decoded example. See §14. |
-| `tests/unit/test_sft_folded_format.py` | new | 23 tests. |
-| `docs/sft_folded_relaunch_plan.md` | new | The full plan, with deeper evidence tables than this doc. |
+| `jobs/fine_tuning/008_test_sft_folded.job` | new | CPU-only verification suite: tests, gate, gate trip-wire, gate under the training env, one decoded example. |
+| `experiments/configs/qwen3/sft_inference/` | new | Five eval configs (§8). |
+| `tests/unit/test_sft_folded_format.py` | new | 32 tests. |
 
 ### Key design decisions
 
-**The fold is offline, not in a collator.** It needs `parse_tool_call`, `_extract_sub_goal`
-and `_format_action_history` from `agent_engine`. The training env (`cosmas-train`) is not
-the inference env (`agent_engine`); importing the orchestrator inside a VERL dataloader
-would couple every training run to the agent stack. Offline also makes the folded parquet a
+**The fold is offline, not in a collator.** It needs `parse_tool_call`, `_extract_sub_goal` and
+`_format_action_history` from `agent_engine`. The training env (`cosmas-train`) is not the
+inference env (`agent_engine`); importing the orchestrator inside a VERL dataloader would
+couple every training run to the agent stack. Offline also makes the folded parquet a
 reviewable artifact, which matters when the fold is the thing under suspicion.
 
 **Refold the shipped parquet, don't rebuild from JSONL.** Rebuilding needs
 `--reference-parquet data/training/train/combined_train.parquet` for the math:search ratio.
 That path is unreadable, and without it the build yields 1224/136 trajectories at 1.53:1
-instead of the shipped 968/108 at 1:1, plus a null `extra_info`. Refolding preserves the
-exact trajectory set and inherits every control already applied (strip-thinking,
-strip-suffix, one-per-question, balance, split). `collected_20260605_214650.jsonl` remains
-the untouched source of truth.
+instead of the shipped 968/108 at 1:1, plus a null `extra_info`. Refolding preserves the exact
+trajectory set and inherits every control already applied (strip-thinking, strip-suffix,
+one-per-question, balance, split). `collected_20260605_214650.jsonl` remains the untouched
+source of truth.
 
-**The fold imports the orchestrator's helpers rather than reimplementing them**, so the
-folded prompt cannot drift from the real one. A test locks this
+**The fold imports the orchestrator's helpers rather than reimplementing them**, so the folded
+prompt cannot drift from the real one. A test locks this
 (`test_folded_user_turn_matches_the_orchestrators_own_formatter`).
 
 **Turn classification is by position, never by content.** `_build_sft_messages` always emits
-`[system, user] + [plan] + output_messages`, so `messages[2]` is the plan whenever one
-exists. Content sniffing ("the leading assistant turn with no `<tool_call>` is the plan")
-silently drops the plan on the 109 trajectories whose planning turn emitted a tool call.
+`[system, user] + [plan] + output_messages`, so `messages[2]` is the plan whenever one exists.
+Content sniffing ("the leading assistant turn with no `<tool_call>` is the plan") silently
+drops the plan on the 109 trajectories whose planning turn emitted a tool call.
 
-### The masking spec (requirements 1–3 from the brief)
+### The masking spec
 
 Each folded row is exactly `[system, user, assistant]`, one row per orchestrator decision.
 
@@ -198,40 +182,15 @@ Each folded row is exactly `[system, user, assistant]`, one row per orchestrator
 | assistant target text | **Yes** | orchestrator-authored; for action rows this includes `<sub_goal>` and `<tool_call>`, because issuing the call is the decision being learned |
 | trailing `<\|im_end\|>` | **Yes** | teaches the stop token |
 
-**No tools execute.** Training is static cross-entropy: no sub-agent vLLM server, no
-AgentFlow server, no rollout workers, no `SERPER_API_KEY`/`TAVILY_API_KEY`. Nothing in this
-change alters that; `FoldedSFTDataset` only tokenises.
+**No tools execute.** Training is static cross-entropy: no sub-agent vLLM server, no AgentFlow
+server, no rollout workers, no `SERPER_API_KEY`/`TAVILY_API_KEY`. `FoldedSFTDataset` only
+tokenises.
 
-**No thinking in targets.** Already stripped at build time; re-asserted by tests and by the
-pre-flight gate.
-
----
-
-## 6. How it was built (TDD trail)
-
-Every implementation stage was watched failing first:
-
-| Cycle | RED (observed failure) | GREEN |
-|---|---|---|
-| 1 | `AttributeError: _fold_trajectory` | walker + `_memory_user_content` + `_plan_query_analysis` |
-| 2 | `ModuleNotFoundError: No module named 'verl_ext'` | `FoldedSFTDataset` |
-| 3 | `unrecognized arguments: --from-parquet --drop-planning-answers` | CLI wiring + `_refold_parquet` |
-| 4 | `assert 1 == 4` (`--format folded` parsed but inert on the JSONL path) | fold inside the split loop |
-
-Two later tests (`no_padding` mode, native-row rejection) went green immediately — the class
-already handled both paths generically, so they are regression guards rather than RED-driven.
-Noting that rather than claiming a clean cycle.
-
-Also fixed a latent logging bug the fold exposed: the JSONL mirror logged the trajectory
-count while writing the row count.
-
-**Test suite: 487 passed.** One pre-existing collection error,
-`tests/unit/test_fine_tuning_rollout.py` (`No module named 'agentops'`), unrelated to this
-work and present before it.
+**No thinking in targets.** Stripped at build time; re-asserted by tests and the pre-flight gate.
 
 ---
 
-## 7. Verification on the real data
+## 5. The folded data
 
 Built with:
 
@@ -261,7 +220,8 @@ assistant-turn count, not a multiplier applied to anything:
 | trajectories (train) | 175 | 48 | 383 | 280 | 57 | 15 | 4 | 2 | 4 |
 | trajectories (val) | 14 | 4 | 43 | 33 | 10 | 1 | 2 | 0 | 1 |
 
-The 175 one-turn trajectories are the turn-0 answers of decision 1 below. A typical 3-turn
+The distribution sums to exactly 2995, which also proves the fold drops no assistant turn. The
+175 one-turn trajectories are the turn-0 answers of decision 1 in §6. A typical 3-turn
 trajectory is plan → one tool call → answer.
 
 **The supervision is byte-for-byte identical.** Measured over every row:
@@ -271,38 +231,35 @@ trajectory is plan → one tool call → answer.
 | supervised tokens, train | 589,805 | **589,805** | 1.000 |
 | supervised tokens, val | 66,556 | **66,556** | 1.000 |
 
-The same assistant text is the target in both; it is only distributed one-per-row instead
-of many-per-row.
+The same assistant text is the target in both; it is only distributed one-per-row instead of
+many-per-row.
 
 **The token growth (1.59M → 4.06M) is prompt, not target:**
 
 ```
-3,472,545 prompt  +  589,805 supervised  =  4,062,350   ← the table above
+3,472,545 prompt  +  589,805 supervised  =  4,062,350
 ```
 
-The system prompt and question are re-rendered in every row because that is literally what
-the orchestrator does at inference: `_build_memory_prompt` (`orchestrator.py:641-664`)
-rebuilds `[system, user]` from scratch at every decision. The native format amortised that
-prefix across one long sequence; the deployed system never does. The extra ~2.5M tokens are
-the real conditioning cost of the format the model is evaluated in, not bloat added by the
-fold.
+The system prompt and question are re-rendered in every row because that is literally what the
+orchestrator does at inference: `_build_memory_prompt` rebuilds `[system, user]` from scratch
+at every decision. The native format amortised that prefix across one long sequence; the
+deployed system never does. The extra ~2.5M tokens are the real conditioning cost of the
+format the model is evaluated in, not bloat added by the fold.
 
-Two consequences follow, and both are already handled:
+Two consequences, both already handled:
 
-1. **Steps per epoch tripled**: 2995 / 32 ≈ 94 steps vs 968 / 32 ≈ 30. This is the reason
-   job 008 sets `total_epochs=2` (~187 steps) where 007 used 3 (~90): the run is matched on
-   optimizer steps, not on epochs.
+1. **Steps per epoch tripled**: 2995 / 32 ≈ 94 steps vs 968 / 32 ≈ 30. This is why job 008 sets
+   `total_epochs=2` (~187 steps) where 007 used 3 (~90): the run is matched on optimizer steps,
+   not on epochs.
 2. **Long trajectories now contribute more rows.** A 9-turn trajectory yields 9 rows where a
    turn-0 answer yields 1. Search trajectories run longer than math ones, so the 484/484
-   trajectory balance becomes 1172/1823 at row level. That is the mechanism behind decision
-   2 below, not a separate problem.
+   trajectory balance becomes 1172/1823 at row level. That is the mechanism behind decision 2
+   in §6, not a separate problem.
 
-**Gates, run on every row in both `agent_engine` and `cosmas-train` (different transformers
-versions, identical results):**
+### Pre-flight gate results
 
-**Caveat on this table:** as originally run, the gate built its own config and so did not
-exercise the configuration training actually used. §17 documents the bug that hid behind that
-and the fix; the numbers below have since been re-verified under verl's real config.
+Run on every row, in both `agent_engine` and `cosmas-train` (different transformers versions,
+identical results), and re-verified under verl's real config after the §9 fix:
 
 | Gate | Train | Val |
 |---|---|---|
@@ -318,10 +275,10 @@ and the fix; the numbers below have since been re-verified under verl's real con
 | Columns identical to native | yes | yes |
 | No question straddles train/val | yes | |
 
-The gate is a real trip-wire, not a rubber stamp: it exits **1** on the native parquet and
-**0** on the folded one, both confirmed.
+The gate is a real trip-wire, not a rubber stamp: it exits **1** on the native parquet and **0**
+on the folded one, both confirmed.
 
-Files now on disk (gitignored via `.gitignore:48 data/*`):
+Files on disk (gitignored via `.gitignore:48 data/*`):
 
 ```
 data/training/sft/sft_folded_train.parquet   2.8 MB   2995 rows
@@ -331,513 +288,121 @@ data/training/sft/sft_folded_{train,val}.jsonl        (human-readable mirrors)
 
 ---
 
-## 8. Decisions — both RESOLVED
+## 6. Research decisions — both resolved
 
 **1. Turn-0 answers (175 train rows, 18.1%): KEPT.** These teach answering at turn 0, which is
 the *Premature direct answering* failure mode in the Ch 6 taxonomy. `--drop-planning-answers`
-is implemented and tested but **not used**; the parquets in the running job keep them. Rationale
-for keeping: format is then the only variable that changed against the 007 run, so the
-comparison stays clean. If *Premature direct answering* shows up in the eval, dropping them is
-a one-flag rebuild and a follow-up run.
+is implemented and tested but **not used**. Rationale: format is then the only variable that
+changed against the 007 run, so the comparison stays clean. If *Premature direct answering*
+shows up in the eval, dropping them is a one-flag rebuild and a follow-up run.
 
 **2. Loss-level composition shift: ACCEPTED, to be stated in Ch 7.** Trajectories stay 484 math
 / 484 search (1:1), but rows become **1172 math / 1823 search (1:1.56)**, because search
-trajectories take more steps and therefore expand into more rows (the mechanism is spelled out
-at the end of §7). This is inherent to one-row-per-decision, not a defect — but "differs in
-format only" is true at the *trajectory* level and **false at the loss level**, so it is a
-confound that must be disclosed rather than left implicit. Rationale for accepting: subsampling
+trajectories take more steps and expand into more rows. This is inherent to one-row-per-decision,
+not a defect — but "differs in format only" is true at the *trajectory* level and **false at the
+loss level**, so it is a confound that must be disclosed rather than left implicit. Subsampling
 search rows back to 1:1 would discard ~651 real supervision rows to preserve a ratio that was
 itself only a heuristic mirror of `combined_train`.
 
-**Ch 7 needs one sentence to this effect:** the folded and native runs use the same
-trajectories and the same balanced 1:1 math/search sampling, but because the folded format
-supervises one row per orchestrator decision and search trajectories take more steps, the
-loss-level ratio is 1:1.56 rather than 1:1.
+**Ch 7 needs one sentence to this effect:** the folded and native runs use the same trajectories
+and the same balanced 1:1 math/search sampling, but because the folded format supervises one row
+per orchestrator decision and search trajectories take more steps, the loss-level ratio is
+1:1.56 rather than 1:1.
 
 ---
 
-## 9. What is NOT done
+## 7. Training-run mechanics
 
-- **No completed training run.** Job 25268454 reached step 50 of ~187 and was cancelled on
-  purpose (§14). Nothing is running now. Relaunch per §12.
-- ~~**The post-cancel edits are unverified.**~~ **Done (§15):** `bash -n` passes on all four
-  job scripts, `pytest` gives 487 passed, and both pre-flight gates pass on the real splits
-  (2995 / 362 rows, numbers identical to §7). Two defects found in that pass are fixed.
-- ~~**No SFT eval config exists.**~~ **Done (§15):** `experiments/configs/qwen3/sft_inference/`,
-  five configs, `thinking_mode: NO`. The `<run-tag>` in `lora_adapter_path` is a placeholder
-  until a training run produces one.
-- ~~**No checkpoint-selection script.**~~ **Done:** `scripts/finalize_sft_run.py` selects
-  best-val-loss and last, extracts both as PEFT adapters, and deletes the FSDP shards.
-  Verified on a real checkpoint. `select_best_sft_checkpoint.py` (referenced by 007) never
-  existed and is not needed. **`scripts/merge_lora.py` must not be used on SFT
-  checkpoints** — see §11 for why.
-- **No in-training generation eval.** Deliberately: a format mismatch is visible at step 0,
-  so the pre-flight gate in §5 catches this class of bug at a fraction of the cost. An
-  in-training callback would catch *degradation over training*, a different failure. Worth
-  adding only if you want that too.
-- **`stash@{0}` on `main` is still uncommitted** — the `history_mode` work (3 files,
-  +66/-4), which evaluates the *existing* adapter in native format with no retraining. It is
-  a viable fallback and one `git stash drop` from being lost, exactly like the fold code was.
-  **Recommend committing it to a branch.**
+### 7.1 What verl actually writes
 
----
-
-## 10. Commands to pick up tomorrow
-
-```bash
-cd /gpfs/home3/xchen1/azywot/msc-thesis
-
-# (a) tests — expect 487 passed
-conda activate agent_engine
-python -m pytest tests/ -q --ignore=tests/unit/test_fine_tuning_rollout.py
-
-# (b) re-verify the built data (fast, no GPU)
-python scripts/check_sft_folded_format.py \
-    --folded data/training/sft/sft_folded_train.parquet \
-    --native data/training/sft/sft_train.parquet
-
-# (c) OPTIONAL: rebuild dropping the 175 turn-0 answers (decision 1)
-python scripts/build_sft_parquet.py \
-    --from-parquet data/training/sft/sft_train.parquet \
-    --output-dir data/training/sft --output-name sft_folded_train.parquet \
-    --drop-planning-answers
-
-# (d) verify everything first — CPU only, no GPU SBUs burned
-sbatch jobs/fine_tuning/008_test_sft_folded.job
-
-# (e) train — ~187 steps, 2x H100, ~40 min wall clock, schedules immediately
-sbatch jobs/fine_tuning/008_train_sft_folded.job
-
-# (f) after training: NOTHING. Job 008 now ends by extracting the best-val-loss and last
-#     adapters and deleting the 33 GB shards. Point an eval config at:
-#       /scratch-shared/$USER/fine_tuning/lora_adapters/qwen3-8b-sft-folded-v1/<run-tag>/best_adapter
-#     Do NOT run scripts/merge_lora.py on an SFT checkpoint — see §11.
-#     To redo the selection by hand (e.g. after a crash):
-python scripts/finalize_sft_run.py \
-    --ckpt-dir /scratch-shared/$USER/fine_tuning/lora_adapters/qwen3-8b-sft-folded-v1/<run-tag> \
-    --log out/fine_tuning/sft_train/sft_folded_<jobid>_verl.log --dry-run
-```
-
-Job 008 runs the pre-flight gate itself and refuses to start training if it fails, so (b) is
-belt-and-braces. `finalize_sft_run.py --dry-run` reports which checkpoint it would keep and
-why, without writing or deleting anything.
-
----
-
-## 11. Checkpoint and adapter mechanics (discovered 2026-08-06)
-
-Four facts about how `verl.trainer.sft_trainer` checkpoints, all established by inspecting a
-real checkpoint from job 25268454. Each one invalidates something that was previously assumed.
+Four facts about `verl.trainer.sft_trainer`, all established by inspecting a real checkpoint
+from job 25268454. Each invalidates something previously assumed.
 
 **1. The SFT trainer never writes a `lora_adapter/` directory.** The RL path does
 (`fsdp_workers.py`, which the GRPO run depends on), but the SFT path only ever *reads*
-`lora_adapter_path` (`verl/trainer/sft_trainer.py:101`). A grep of the SFT and engine
-checkpoint code finds no write site. So an SFT checkpoint contains no PEFT adapter, and the
-`huggingface/` subdirectory holds only tokenizer and config files, no weights.
+`lora_adapter_path` (`verl/trainer/sft_trainer.py:101`). So an SFT checkpoint contains no PEFT
+adapter, and `huggingface/` holds only tokenizer and config files, no weights.
 
-**2. It writes the full FSDP state dict instead: 33 GB per checkpoint.**
+**2. It writes the full FSDP state dict instead: ~33 GB per checkpoint.**
 
 | file | size | needed? |
 |---|---|---|
-| `model_world_size_2_rank_{0,1}.pt` | 16 GB each | yes, but 99% of it is unchanged base weights |
-| `optim_world_size_2_rank_{0,1}.pt` | 667 MB each | no (nothing resumes) |
+| `model_world_size_2_rank_{0,1}.pt` | 16 GB each | yes, but 99% is unchanged base weights |
+| `optim_world_size_2_rank_{0,1}.pt` | 667 MB each | no (nothing resumes; dropped via `save_contents`) |
 | `extra_state_*`, `data_*`, `*.json` | ~15 KB | trivial |
 
-Only ~365 MB of that is trained LoRA weight. At `save_freq=25` over 187 steps that is ~8
-checkpoints, ~264 GB, to store ~700 MB of useful output.
+Only ~350 MB of that is trained LoRA weight.
 
-**3. The shards are sharded DTensors, not replicas.** This is the trap. `rank_0` holds
-`(32, 4096)` of a `(64, 4096)` `lora_A` — placement `Shard(dim=0)`. Reconstruction must
-concatenate **every** rank along each tensor's own shard dimension.
+**3. The shards are sharded DTensors, not replicas.** `rank_0` holds `(32, 4096)` of a
+`(64, 4096)` `lora_A` — placement `Shard(dim=0)`. Reconstruction must concatenate **every** rank
+along each tensor's own shard dimension.
 
 > **`scripts/merge_lora.py` cannot be used on these checkpoints.** It reads
 > `model_world_size_*_rank_0.pt` alone, documenting it as "the rank-0 consolidated shard
 > regardless of training world size". That is false here. It also expects an `actor/`
-> subdirectory, which the SFT trainer does not create. Both the merge command printed by
-> `007_train_sft.job` and the one 008 printed before today would have failed or silently
-> produced a half-weight adapter.
+> subdirectory, which the SFT trainer does not create.
 
 **4. `lora_train_meta.json` records the true hyperparameters** (`{"r": 64, "lora_alpha": 64,
-"task_type": "CAUSAL_LM"}`). `finalize_sft_run.py` prefers these over its CLI arguments,
-because a mismatched alpha silently rescales every adapter weight and nothing downstream
-would flag it.
-
-`scripts/finalize_sft_run.py` handles all four. Verified on the real `global_step_25`:
-504 LoRA tensors over 7 target modules (`q,k,v,o,gate,up,down_proj`), written as a 365 MB
-PEFT adapter. It also derives `target_modules` from the checkpoint keys rather than saving
-the literal string `"all-linear"`, so load-time re-resolution cannot change which modules
-the adapter claims to cover.
-
-### Unrelated but important: the GRPO adapter is gone
-
-`/scratch-shared/azywot/fine_tuning/lora_adapters/qwen3-8b-grpo-search-math-v2/` **is
-empty** (and so is `…-search-math/`). Every `experiments/configs/qwen3/lora_inference/*`
-config points `lora_adapter_path` at
-`…/qwen3-8b-grpo-search-math-v2/29-05-2026_11-36-23210365/global_step_40/actor/lora_adapter`,
-which no longer exists. The directory mtimes are 2026-08-03, consistent with scratch
-retention having purged the contents.
-
-Consequences to think about:
-
-- Any GRPO number already in the thesis stands (it came from a completed eval), but **the
-  GRPO evaluation cannot currently be re-run or extended**.
-- **Scratch is not durable storage.** The SFT adapters will be purged the same way. Once
-  `best_adapter/` exists, copy it somewhere that persists. Home has room: 200 GiB quota,
-  ~65% used, and an adapter is 365 MB.
-- Worth checking whether a merged GRPO model survives anywhere else before assuming it is
-  unrecoverable.
-
----
-
-## 12. Resume here
-
-Steps 1 and 2 are **done** (§15): syntax, 487 tests, both gates, and the CLI check all pass on
-the current tree. Nothing has been submitted. Resume at step 3.
-
-```bash
-cd /gpfs/home3/xchen1/azywot/msc-thesis
-
-# 3. Full verification suite (CPU partition, no GPU cost)
-sbatch jobs/fine_tuning/008_test_sft_folded.job
-
-# 4. Launch training (~40 min wall clock at the observed rate)
-sbatch jobs/fine_tuning/008_train_sft_folded.job
-
-# 5. (done) The cancelled run's 33 GB of leftovers were deleted on 2026-08-06.
-
-# 6. After training: paste the run tag the job prints into the five eval configs
-#    (or set SFT_ADAPTER_PLACEHOLDER in scripts/generate_configs.py and regenerate), then
-python scripts/generate_configs.py --suite sft_inference
-./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/sft_inference
-```
-
-For reference, the checks already run in step 1/2 (re-run them after any change to
-`build_sft_parquet.py` or `folded_sft_dataset.py`):
-
-```bash
-bash -n jobs/fine_tuning/008_train_sft_folded.job   # and 008_test, 006, 007
-conda activate agent_engine
-python -m pytest tests/ -q --ignore=tests/unit/test_fine_tuning_rollout.py
-python scripts/build_sft_parquet.py --help
-python scripts/check_sft_folded_format.py \
-    --folded data/training/sft/sft_folded_train.parquet \
-    --native data/training/sft/sft_train.parquet --max-length 16384
-```
-
-Then the still-open work from §9: **committing `stash@{0}`**.
-
----
-
-## 13. Related documents (history, not current state)
-
-- `docs/sft_folded_relaunch_plan.md` — the full plan: deeper evidence tables, the rendered
-  side-by-side contexts, and the ordered change list.
-- `docs/sft_format_mismatch.md` — the original 2026-06-17 diagnosis. Sound; §7's access
-  claims and §1's "tool-role result" phrasing are stale (Qwen3 renders `role: tool` as
-  `<|im_start|>user\n<tool_response>…`).
-- `docs/superpowers/specs/2026-07-21-sft-folded-format-design.md` — the design. Its data
-  numbers all reproduce exactly; its "implemented and tested" status claims do not (§4).
-- `jobs/fine_tuning/007_train_sft.job` — the original native run, left untouched for
-  comparison.
-
----
-
-## 14. Run log
-
-**2026-08-06 — decisions 1 and 2 resolved (keep turn-0 answers, accept the composition
-shift). No rebuild needed: the parquets already on disk encode exactly that.**
-
-**`jobs/fine_tuning/008_test_sft_folded.job` added.** A CPU-partition (`genoa`) verification
-suite, so checking costs no GPU SBUs. Five independently fatal stages: (1) full unit-test
-suite; (2) the pre-flight gate on the real folded splits; (3) a **trip-wire** — the gate must
-*reject* the native parquets, because a gate that passes everything proves nothing; (4) the
-same gate under `cosmas-train`, since `FoldedSFTDataset` is authored and tested in
-`agent_engine` but imported by VERL in `cosmas-train` with a different transformers version,
-and a chat-template difference between the two would otherwise surface only at training time;
-(5) one decoded row printed with the supervised span marked, so the token-level claim can be
-checked by reading it. Run it before any training relaunch and after any change to
-`build_sft_parquet.py` or `folded_sft_dataset.py`.
-
-**Two failed submissions (25268308, 25268330) before the run that stuck.** Cause: job 008
-resolved `PROJECT_DIR` from `${BASH_SOURCE[0]}`, which works under `bash jobs/...` but not
-under `sbatch` — SLURM copies the batch script to `/var/spool/slurm` on the compute node, so
-the script "location" is the spool copy. The job `cd`'d into `/var/spool/slurm`, found no
-`.env` (hence a spurious `WANDB_API_KEY is not set` warning), and died at
-`mkdir: cannot create directory 'out': Permission denied` after ~10 s.
-
-Fixed in both 008 jobs by trying candidates in order and accepting only one that *validates*
-as the repo (`scripts/build_sft_parquet.py` present), rather than trusting any single
-mechanism: `$PROJECT_DIR` → `$SLURM_SUBMIT_DIR` → script dir → `$HOME/azywot/msc-thesis`,
-with a clear error and a `sbatch --export=ALL,PROJECT_DIR=...` hint if all four fail. Verified
-against four cases, including a `/var/spool/slurm` submit-dir that must be rejected.
-Worth knowing: **007 has the same class of fragility** (a hardcoded `/projects/0/gusr0608`),
-so copy the resolution block if that job is ever reused.
-
-**Job 25268454: ran 8m43s, then CANCELLED on purpose.** `PROJECT_DIR` resolved correctly and
-the in-job pre-flight gate passed on both splits. Note the checkpoint path is
-`/scratch-shared/azywot/`, not `/scratch-shared/xchen1/` — `$USER` on the compute node is
-`azywot`.
-
-What it proved before being stopped:
-
-| step | val/loss |
-|---|---|
-| 25 | 0.602511 |
-| 50 | 0.494696 |
-
-So the folded pipeline trains, and it trains fast: 50 steps in ~8 minutes, meaning the full
-~187-step run is roughly **40 minutes**, not the multi-hour job the 8 h wall-clock limit
-suggests.
-
-**Why it was cancelled** (three reasons, all about output rather than training):
-
-1. Checkpoints were **33 GB each**. At `save_freq=25` that is ~264 GB for a run whose useful
-   output is ~700 MB.
-2. They went to `…/fine_tuning/sft/…`, not the GRPO layout
-   `…/fine_tuning/lora_adapters/<experiment>/<run-tag>/`.
-3. **All** of them were kept, rather than best and last.
-
-Cancelling cost ~9 minutes of 2×H100 and avoided writing ~230 GB that would have had to be
-deleted anyway. The cancel landed mid-save, leaving an **empty** `global_step_50/` — which is
-why `finalize_sft_run.py` now skips checkpoint dirs with no model shards instead of treating
-one as "last".
-
-**Changes made after the cancel** (all since verified — see §15):
-
-| File | Change |
-|---|---|
-| `008_train_sft_folded.job` | checkpoints → `lora_adapters/<exp>/<run-tag>/`, matching GRPO; `checkpoint.save_contents=['model','extra']` (drops the 1.3 GB optimizer state); `trainer.resume_mode=disable`; runs `finalize_sft_run.py` at the end; corrected next-step instructions (the old ones named `merge_lora.py`, which cannot work here) |
-| `scripts/finalize_sft_run.py` | **new** — best/last selection, DTensor-correct adapter extraction, shard deletion |
-| `scripts/build_sft_parquet.py` | dropped the `/projects/0/gusr0608/...` defaults for `jsonl_files` and `--output-dir`; `--output-dir` now defaults to the in-repo `data/training/sft` |
-| `006_collect_sft_data.job`, `007_train_sft.job` | `PROJECT_DIR` no longer hardcodes `/projects/0/gusr0608/msc-thesis`; falls back to `$SLURM_SUBMIT_DIR` then `$HOME/azywot/msc-thesis` |
-
-**`/projects/0/gusr0608` is no longer referenced by any code path** in the SFT pipeline. It
-still appears in `jobs/grpo_inference/*.job` (10 files hardcode
-`/gpfs/work5/0/gusr0608/msc-thesis`) — those are historical eval jobs that already ran, so
-they were left alone rather than rewritten blind. Worth cleaning up if those evals are ever
-re-run.
-
-**Leftovers on scratch from the cancelled run: DELETED 2026-08-06.**
-`/scratch-shared/azywot/fine_tuning/sft/` held one 33 GB `global_step_25/`, an empty
-`global_step_50/`, and a 349 MB `best_adapter/` extracted from step 25 while testing
-`finalize_sft_run.py`. All of it is gone, including that adapter: it came from an incomplete
-run (25 of ~187 steps, val loss 0.6025) and a full run supersedes it in ~40 minutes.
-`/scratch-shared/azywot/fine_tuning/` now holds only the two empty GRPO `lora_adapters/`
-directories. The relaunched job writes to `lora_adapters/<exp>/<run-tag>/`, not `sft/`, so
-nothing pointed at the deleted path.
-
----
-
-## 15. Verification pass and eval configs (2026-08-06, after the cancel)
-
-### The post-cancel edits are now verified
-
-| Check | Result |
-|---|---|
-| `bash -n` on `008_train`, `008_test`, `006`, `007` | all pass |
-| `pytest tests/ --ignore=tests/unit/test_fine_tuning_rollout.py` | **487 passed**, 53 s |
-| Pre-flight gate, train split | pass — 2995 rows, 1343 tool-call targets, 4,062,350 tokens |
-| Pre-flight gate, val split | pass — 362 rows, 176 tool-call targets, 500,014 tokens |
-| `build_sft_parquet.py --help` | resolves; `--output-dir` defaults to `data/training/sft` |
-
-Every gate number reproduces §7 exactly, so the parquets on disk are the ones §7 describes.
-
-### Two defects found in that pass, both fixed
-
-**1. The error handling in `008_train_sft_folded.job` was unreachable.** Under `set -euo
-pipefail` a bare failing command aborts the script at once, so `SFT_EXIT=$?` and
-`FINALIZE_EXIT=$?` on the following lines never ran and both diagnostic branches were dead
-code. The practical cost: if `finalize_sft_run.py` failed, the job would die silently and the
-message telling you the 33 GB shards were kept and how to re-run extraction would never print.
-Fixed with `|| SFT_EXIT=$?` (and the same for finalize), which puts the command in a condition
-context and suspends `set -e`. Verified by simulating a non-zero exit: the branch runs and the
-code propagates.
-
-**2. `--time=30:00:00` for a ~40 minute run.** Costs queue priority for nothing. Now
-`02:00:00`, roughly 3x headroom over the observed rate.
-
-### Adapters are now archived off scratch automatically
-
-`008_train_sft_folded.job` ends by copying `best_adapter/`, `last_adapter/` and
-`selection.json` from scratch to `data/adapters/<experiment>/<run-tag>/` inside the checkout
-(`data/*` is gitignored; ~365 MB against a 200 GiB home quota). This is the direct lesson of
-§11: the GRPO adapters were purged from `/scratch-shared` while ten configs still pointed at
-them, which is why those evaluations can no longer be re-run. If extraction fails, the job says
-so loudly instead of leaving the only copy on scratch.
-
-### SFT eval configs exist
-
-`experiments/configs/qwen3/sft_inference/{gaia,hle,gpqa,aime,musique}/qwen8B_sub1_7b_none.yaml`,
-generated by a new `sft_inference` suite in `scripts/generate_configs.py`
-(`python scripts/generate_configs.py --suite sft_inference`).
-
-- **`_none` only.** Thinking is stripped from the SFT data at build time and the folded prompt
-  renders an empty `<think>\n\n</think>`, so an `ORCHESTRATOR_ONLY` eval would sample the
-  adapter off the distribution it was trained on: the exact mismatch this whole exercise fixes.
-  This also keeps the run inside the Ch 7 rule that everything is compared no-thinking.
-- The orchestrator is named **`Qwen3-8B-SFT`**, so the `model_name` column of the W&B export
-  separates it from the GRPO rows (`Qwen3-8B-LoRA`) in `orchestrator_ft_results.csv`.
-- `lora_adapter_path` points at the **archive** path with a `<run-tag>` placeholder, matching
-  the existing `lora_inference` convention. It must be filled in after training.
-- All five load through the real `load_experiment_config`; `max_lora_rank` defaults to 64 in
-  `models/base.py:205`, which matches the trained rank, so no config override is needed.
-
-`generate_configs.py` gained three optional suite keys (`adapter_label`, `adapter_desc`,
-`train_job`) so the SFT suite reuses the LoRA builder rather than duplicating it. Defaults
-preserve the LoRA output unchanged.
-
-**Caution, learned the hard way here:** the committed `lora_inference` configs were
-**hand-edited after generation** (a `_v2` name suffix and the `…-v2/…/global_step_40` adapter
-path). Regenerating that suite silently overwrites those edits — it happened during this pass
-and was reverted with `git checkout`. `generate_configs.py` is not the source of truth for
-`lora_inference`. The same will be true of `sft_inference` once a real run tag is pasted in, so
-prefer editing `SFT_ADAPTER_PLACEHOLDER` and regenerating over hand-editing five files.
-
-### Scratch cleaned
-
-`/scratch-shared/azywot/fine_tuning/sft/` deleted, reclaiming 33 GB (details in §14).
-
-### Still not done
-
-Nothing has been submitted to SLURM. `stash@{0}` on `main` is still uncommitted.
-
----
-
-## 17. Full audit before launch (2026-08-06): one critical bug found
-
-A line-by-line audit of the whole chain (fold, dataset, gate, job, checkpoint handling) before
-the first real run. **It found a defect that would have reintroduced the original bug.**
-
-### CRITICAL, fixed: the training run would have lost the empty think block
-
-`FoldedSFTDataset` read `config.get("enable_thinking_default", False)`. That default only
-applies when the key is *absent*, and it is not: verl's `sft_trainer_engine.yaml:29` ships
-`enable_thinking_default: none`, which YAML parses as the **string** `"none"`, and
-`sft_trainer.py:471-473` passes the entire `data` config into `data.custom_cls`. So the real
-training run rendered prompts with `enable_thinking="none"` — truthy — and Qwen3's template
-took its thinking branch:
-
-| | prompt tokens | ends with |
-|---|---|---|
-| Inference (`thinking_mode: NO`) | 19 | `<\|im_start\|>assistant\n<think>\n\n</think>\n\n` |
-| Training, as configured | **15** | `<\|im_start\|>assistant\n` |
-
-Measured on real rows: the training prompt was **4 tokens short on every row**, which is
-precisely the gap §2 describes and this whole format change exists to close.
-
-**Why nothing caught it.** `check_sft_folded_format.py` built its own small config dict that
-did not contain the key, so it got `False` and the correct 19-token prompt. The gate passed
-while training was wrong: it was validating a code path training never took. The §7 claim
-"prompt token-identical 2995/2995" was true of the gate's configuration only.
-
-Fixed in three independent places:
-
-1. `FoldedSFTDataset` now accepts only an unambiguous boolean (or `"true"`/`"false"`); any
-   other value falls back to no-thinking **and logs a warning**. It also logs the resolved
-   `enable_thinking` / `pad_mode` / `truncation` at construction.
-2. `check_sft_folded_format.py` now loads **verl's real config defaults** and builds the
-   dataset from them, so the gate exercises the configuration training uses. It reproduces
-   them hard-coded when verl is not importable, so it is never weaker than training.
-3. `008_train_sft_folded.job` passes `data.enable_thinking_default=false` explicitly.
-
-Nine regression tests were added, parametrised over `"none"`, `None`, `"None"`, `""`, `0`
-(must stay no-thinking) and over real booleans (must be honoured). Suite: **496 passed**.
-
-Re-verified with the job's exact config on both real splits: 2995 and 362 rows, prompt
-identical to inference, target ends in `<|im_end|>`, 0 rows over `max_length`.
-
-### Also changed
-
-- **`data.truncation=right` -> `error`.** The gate proves 0 of 3357 rows exceed `max_length`
-  (observed max 9832), so this can only fire on a regression, and `right` would silently drop
-  the tail of a target along with its `<|im_end|>`, training the model never to stop.
-- **The janitor runs with `CUDA_VISIBLE_DEVICES=""`**, so a background process that only ever
-  loads tensors to CPU cannot initialise a CUDA context on the GPUs training is using.
-
-### Checked and found correct
-
-- `_memory_user_content` reproduces `_build_memory_prompt` (`orchestrator.py:641-664`) exactly,
-  including the `"\n".join` structure.
-- `_plan_query_analysis` matches `_run_planning_turn` (`orchestrator.py:758-772`) branch for
-  branch, including the "tool call at position 0 keeps the whole text" edge case.
-- The action-history entry matches `_commit_tool_result` (`orchestrator.py:681-686`) field for
-  field: `tool_name` from the re-parsed call, `sub_goal` via the orchestrator's own extractor,
-  `command` as `json.dumps(tool_call)`, `result` as the stored tool content.
-- `_build_sft_messages` stores `state.messages[:2]`, so the folded row's `messages[1]` is the
-  same string `_build_memory_prompt` reads at inference.
-- Per-row system prompts are self-consistent with the data source (deepmath -> math prompt,
-  hotpotqa/nq -> search prompt; 1172 / 1823 rows).
-- Every assistant turn becomes exactly one row: the §7 turn-count distribution sums to 2995,
-  matching the row count, so the fold drops nothing.
-- Qwen3's `eos_token_id` is `<|im_end|>` (151645), so supervising `target + eos` teaches the
-  right stop token. `pad_token` is `<|endoftext|>` and differs, as it should.
-
-### Open observations, not fixed (low impact)
-
-- **`orchestrator.py:320,364` uses `states[0].messages[0]` as the system prompt for a whole
-  batch.** With two distinct system prompts in the collection set, a mixed batch means some
-  teacher trajectories were generated under the other one. The fold uses each trajectory's own
-  system prompt, which is correct for the student; this is a provenance caveat about the
-  teacher data, and a pre-existing orchestrator quirk, not a fold bug.
-- **`_strip_thinking` and `strip_thinking_tags` differ** on the orphaned-`</think>` case (OLMo
-  style). Irrelevant for the Qwen3 teacher and empirically 0 rows contain think tags, but the
-  two would diverge if the teacher family ever changed.
-- `_fold_trajectory(include_planning=...)` is never passed `False`.
-- `latest_checkpointed_iteration.txt` survives finalize and names a deleted step. Harmless
-  with `resume_mode=disable`.
-
----
-
-## 16. Checkpoints are collapsed to adapters during training (2026-08-06)
-
-### The problem with converting only at the end
-
-`verl` writes the full FSDP state dict at every save (~32 GB after dropping the optimizer
-state), and `sft_trainer.py:431` saves on the last step as well as every `save_freq`. Over
-~187 steps at `save_freq=25` that is 8 checkpoints, so end-of-run conversion peaks at
-**~256 GB** and a cancelled job leaves every byte behind. That is exactly what job 25268454
-did.
-
-Scratch quota is 8 TiB at 0.19% used, so this was never a space *failure*, but it is
-avoidable risk: the shards only exist to be thrown away.
-
-### `scripts/sft_checkpoint_janitor.py` (new)
-
-Runs in the background for the duration of training, launched and stopped by
-`008_train_sft_folded.job`. Each pass converts every complete, unconverted checkpoint into
-`step_adapters/step_<N>/` and deletes its shards. Peak becomes one or two checkpoints
-(~32-64 GB) plus a few GB of adapters, and a cancelled job leaves almost nothing.
-
-**Knowing a checkpoint is finished is not guesswork.**
-`verl/utils/checkpoint/fsdp_checkpoint_manager.py` ends `save_checkpoint` with a
-`torch.distributed.barrier()` after every rank has written and closed its shard;
-`CheckpointHandler.save_checkpoint` then has rank 0 write
+"task_type": "CAUSAL_LM"}`). `finalize_sft_run.py` prefers these over its CLI arguments, because
+a mismatched alpha silently rescales every adapter weight and nothing downstream would flag it.
+
+The adapter size is independently predictable from the model config: 7 target modules x 2
+(A,B) x 36 layers = **504 tensors**, 174,587,904 params, **333 MiB** in bf16 — matching the 504
+tensors and 334 MiB actually produced. A full model would be ~16 GB.
+
+### 7.2 Checkpoints are collapsed to adapters during training
+
+Converting only at the end peaks at ~8 x 32 GB = **~256 GB**, and a cancelled job leaves all of
+it behind (this is what job 25268454 did). `scripts/sft_checkpoint_janitor.py` runs in the
+background for the duration of training and collapses each checkpoint into
+`step_adapters/step_<N>/` as soon as it is complete, deleting the shards. Peak becomes one or
+two checkpoints (~32-64 GB) plus a few GB of adapters.
+
+**Knowing a checkpoint is finished is not guesswork.** `fsdp_checkpoint_manager.py` ends
+`save_checkpoint` with a `torch.distributed.barrier()` after every rank has written and closed
+its shard; `CheckpointHandler.save_checkpoint` then has rank 0 write
 `latest_checkpointed_iteration.txt` as write-temp-plus-`os.rename`, which is atomic. So the
 tracker naming step N implies `global_step_N` is complete on all ranks. The janitor only ever
 touches steps at or below the tracker value.
 
-Four properties that make deletion safe:
+Four properties make deletion safe:
 
 1. **Nothing reads these back.** `trainer.resume_mode=disable`.
 2. **Shards are deleted only after the adapter exists** on disk.
 3. **Extraction is atomic.** It writes to `.tmp_step_<N>/` and renames into `step_<N>/`. A
-   janitor killed mid-write would otherwise leave a truncated `adapter_model.safetensors`
-   that the next pass reads as finished, and the shards would be deleted against it. The
-   staging name does not match the `step_*` glob, so nothing downstream can pick it up.
+   janitor killed mid-write would otherwise leave a truncated `adapter_model.safetensors` that
+   the next pass reads as finished, and the shards would be deleted against it. The staging name
+   does not match the `step_*` glob, so nothing downstream can pick it up.
 4. **Failure is local.** One bad checkpoint is logged and skipped with its shards intact;
-   `finalize_sft_run.py` retries it at the end. If the janitor dies entirely, the run
-   degrades to the old end-of-run behaviour.
+   `finalize_sft_run.py` retries it at the end. If the janitor dies entirely, the run degrades
+   to end-of-run conversion.
 
 The job stops the janitor with a stop file and `wait`s for its final sweep **before**
 `finalize_sft_run.py` runs, so the two never touch the same checkpoint. A `trap` on
-`EXIT INT TERM` stops it on `scancel` or a crash too, so it cannot outlive the job.
+`EXIT INT TERM` stops it on `scancel` or a crash. It runs with `CUDA_VISIBLE_DEVICES=""` so a
+CPU-only process cannot take a CUDA context from the training GPUs.
 
-### `finalize_sft_run.py` now handles both forms
+### 7.3 Selection, extraction, archiving
 
-Candidates are the union of `step_adapters/step_<N>/` (already collapsed) and any remaining
-`global_step_<N>/` (shards); if a step somehow has both, the adapter wins. Best (lowest
-val/loss) and last are selected across that union, a pre-extracted adapter is copied rather
-than re-extracted, and everything else, including the whole `step_adapters/` tree, is deleted.
+`finalize_sft_run.py` takes the union of `step_adapters/step_<N>/` (already collapsed) and any
+remaining `global_step_<N>/` (shards); if a step has both, the adapter wins. Best (lowest
+val/loss) and last are selected across that union, a pre-extracted adapter is copied rather than
+re-extracted, and everything else — including the whole `step_adapters/` tree — is deleted. It
+derives `target_modules` from the checkpoint keys rather than saving the literal string
+`"all-linear"`, so load-time re-resolution cannot change which modules the adapter claims to
+cover. A created-but-unwritten step dir (left by a cancelled save) is never selected as "last".
+
+The job then **archives the adapters off scratch** into
+`data/adapters/<experiment>/<run-tag>/` inside the checkout (`data/*` is gitignored; ~350 MB
+against a 200 GiB home quota at ~65% used).
+
+> **Scratch is not durable storage.**
+> `/scratch-shared/azywot/fine_tuning/lora_adapters/qwen3-8b-grpo-search-math{,-v2}/` are
+> **empty** — purged around 2026-08-03 — while all ten
+> `experiments/configs/qwen3/lora_inference/*` configs still point at
+> `…/global_step_40/actor/lora_adapter`. Any GRPO number already in the thesis stands (it came
+> from a completed eval), but **the GRPO evaluation cannot currently be re-run or extended**
+> unless a merged copy survives elsewhere. This is why SFT adapters are archived automatically.
 
 ### Verified
 
@@ -853,6 +418,246 @@ fifth the tracker never reached, with the janitor live alongside:
 | Finalize over the mixed state | best = step 50 (reused adapter), last = step 125 (extracted from shards) |
 | Survivors | `best_adapter/`, `last_adapter/`, `selection.json` only |
 
-Reconstruction itself was separately verified bit-exact against synthetic 2-rank sharded
-DTensors, including an uneven split and a non-zero shard dim, with the shape guard confirmed
-to reject a missing rank. Full suite still 487 passed.
+Reconstruction was separately verified bit-exact against synthetic 2-rank sharded DTensors,
+including an uneven split (63 rows over 2 ranks) and a non-zero shard dim, with the shape guard
+confirmed to reject a missing rank.
+
+---
+
+## 8. Evaluation
+
+`experiments/configs/qwen3/sft_inference/{gaia,hle,gpqa,aime,musique}/qwen8B_sub1_7b_none.yaml`,
+generated by the `sft_inference` suite in `scripts/generate_configs.py`.
+
+- **`_none` only.** Thinking is stripped from the SFT data at build time and the folded prompt
+  renders an empty `<think>\n\n</think>`, so an `ORCHESTRATOR_ONLY` eval would sample the adapter
+  off the distribution it was trained on. This also keeps the run inside the Ch 7 rule that
+  everything is compared no-thinking.
+- The orchestrator is named **`Qwen3-8B-SFT`**, so the `model_name` column of the W&B export
+  separates it from the GRPO rows (`Qwen3-8B-LoRA`) in `orchestrator_ft_results.csv`.
+- `lora_adapter_path` points at the **archive** path with a `<run-tag>` placeholder, which must
+  be filled in after training. The run tag is `$(date +%d-%m-%Y_%H-%M)-$SLURM_JOB_ID` and is
+  printed by the job.
+- `max_lora_rank` defaults to 64 in `models/base.py:205`, matching the trained rank, so no
+  config override is needed.
+- Nothing else needs changing: `run_all_in_folder.sh` → `launch_experiment.sh` →
+  `generate_job.py` builds the SLURM script generically from each config's `slurm:` block.
+
+**Caution.** The committed `lora_inference` configs were **hand-edited after generation** (a
+`_v2` name suffix and the `…-v2/…/global_step_40` adapter path); regenerating that suite
+silently overwrites those edits. `generate_configs.py` is not the source of truth for
+`lora_inference`. Prefer editing `SFT_ADAPTER_PLACEHOLDER` and regenerating over hand-editing
+five files.
+
+---
+
+## 9. Pre-launch audit: one critical bug
+
+A line-by-line audit of the whole chain before the first real run.
+
+### CRITICAL, fixed: the training run would have lost the empty think block
+
+`FoldedSFTDataset` read `config.get("enable_thinking_default", False)`. That default only
+applies when the key is *absent*, and it is not: verl's `sft_trainer_engine.yaml:29` ships
+`enable_thinking_default: none`, which YAML parses as the **string** `"none"`, and
+`sft_trainer.py:471-473` passes the entire `data` config into `data.custom_cls`. So the real
+training run rendered prompts with `enable_thinking="none"` — truthy — and Qwen3's template took
+its thinking branch:
+
+| | prompt tokens | ends with |
+|---|---|---|
+| Inference (`thinking_mode: NO`) | 19 | `<\|im_start\|>assistant\n<think>\n\n</think>\n\n` |
+| Training, as configured | **15** | `<\|im_start\|>assistant\n` |
+
+Measured on real rows: the training prompt was **4 tokens short on every row** — precisely the
+gap §2 describes and this whole format change exists to close.
+
+**Why nothing caught it.** `check_sft_folded_format.py` built its own small config dict that did
+not contain the key, so it got `False` and the correct prompt. The gate passed while training
+was wrong: it was validating a code path training never took.
+
+Fixed in three independent places:
+
+1. `FoldedSFTDataset` accepts only an unambiguous boolean (or `"true"`/`"false"`) via
+   `_strict_bool`; anything else falls back to no-thinking **and logs a warning**. It also logs
+   the resolved `enable_thinking` / `pad_mode` / `truncation` at construction.
+2. `check_sft_folded_format.py` loads **verl's real config defaults** and builds the dataset from
+   them, so the gate exercises the configuration training uses. It reproduces them hard-coded
+   when verl is not importable, so it is never weaker than training.
+3. `008_train_sft_folded.job` passes `data.enable_thinking_default=false` explicitly.
+
+Regression tests parametrise over `"none"`, `None`, `"None"`, `""`, `0` (must stay no-thinking)
+and over real booleans (must be honoured). Re-verified with the job's exact config on both real
+splits: 2995 and 362 rows, prompt identical to inference, target ends in `<|im_end|>`, 0 rows
+over `max_length`.
+
+### Also changed by the audit
+
+- **`data.truncation=right` → `error`.** The gate proves 0 of 3357 rows exceed `max_length`
+  (observed max 9832), so this can only fire on a regression, and `right` would silently drop the
+  tail of a target along with its `<|im_end|>`, training the model never to stop.
+- **The janitor runs with `CUDA_VISIBLE_DEVICES=""`.**
+
+### Checked and found correct
+
+- `_memory_user_content` reproduces `_build_memory_prompt` (`orchestrator.py:641-664`) exactly,
+  including the `"\n".join` structure.
+- `_plan_query_analysis` matches `_run_planning_turn` (`orchestrator.py:758-772`) branch for
+  branch, including the "tool call at position 0 keeps the whole text" edge case.
+- The action-history entry matches `_commit_tool_result` (`orchestrator.py:681-686`) field for
+  field: `tool_name` from the re-parsed call, `sub_goal` via the orchestrator's own extractor,
+  `command` as `json.dumps(tool_call)`, `result` as the stored tool content.
+- `_build_sft_messages` stores `state.messages[:2]`, so the folded row's `messages[1]` is the
+  same string `_build_memory_prompt` reads at inference.
+- Per-row system prompts are self-consistent with the data source (deepmath → math prompt,
+  hotpotqa/nq → search prompt; 1172 / 1823 rows).
+- Every assistant turn becomes exactly one row (§5).
+- Qwen3's `eos_token_id` is `<|im_end|>` (151645), so supervising `target + eos` teaches the
+  right stop token. `pad_token` is `<|endoftext|>` and differs, as it should.
+
+### Open observations, not fixed (low impact)
+
+- **`orchestrator.py:320,364` uses `states[0].messages[0]` as the system prompt for a whole
+  batch.** With two distinct system prompts in the collection set, a mixed batch means some
+  teacher trajectories were generated under the other one. The fold uses each trajectory's own
+  system prompt, which is correct for the student; this is a provenance caveat about the teacher
+  data and a pre-existing orchestrator quirk, not a fold bug.
+- **`_strip_thinking` and `strip_thinking_tags` differ** on the orphaned-`</think>` case (OLMo
+  style). Irrelevant for the Qwen3 teacher and empirically 0 rows contain think tags, but the two
+  would diverge if the teacher family ever changed.
+- `latest_checkpointed_iteration.txt` survives finalize and names a deleted step. Harmless with
+  `resume_mode=disable`.
+
+---
+
+## 10. How to run it
+
+```bash
+cd /gpfs/home3/xchen1/azywot/msc-thesis
+
+# 1. Full verification suite (CPU partition, no GPU cost)
+sbatch jobs/fine_tuning/008_test_sft_folded.job
+
+# 2. Train — ~187 steps, 2x H100, ~40 min wall clock, schedules immediately
+sbatch jobs/fine_tuning/008_train_sft_folded.job
+
+# 3. After training: paste the run tag the job prints into SFT_ADAPTER_PLACEHOLDER
+#    in scripts/generate_configs.py, then regenerate and evaluate
+python scripts/generate_configs.py --suite sft_inference
+./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/sft_inference
+```
+
+Job 008 runs the pre-flight gate itself and refuses to start training if it fails. It also
+extracts the adapters and archives them, so there is no manual post-training step.
+
+Local checks, worth re-running after any change to `build_sft_parquet.py` or
+`folded_sft_dataset.py`:
+
+```bash
+bash -n jobs/fine_tuning/008_train_sft_folded.job   # and 008_test, 006, 007
+conda activate agent_engine
+python -m pytest tests/ -q --ignore=tests/unit/test_fine_tuning_rollout.py   # expect 496
+python scripts/check_sft_folded_format.py \
+    --folded data/training/sft/sft_folded_train.parquet \
+    --native data/training/sft/sft_train.parquet --max-length 16384
+```
+
+To redo checkpoint selection by hand (e.g. after a crash), `--dry-run` reports what it would
+keep without writing or deleting:
+
+```bash
+python scripts/finalize_sft_run.py \
+    --ckpt-dir /scratch-shared/$USER/fine_tuning/lora_adapters/qwen3-8b-sft-folded-v1/<run-tag> \
+    --log out/fine_tuning/sft_train/sft_folded_<jobid>_verl.log --dry-run
+```
+
+Optional: rebuild dropping the 175 turn-0 answers (decision 1 in §6):
+
+```bash
+python scripts/build_sft_parquet.py \
+    --from-parquet data/training/sft/sft_train.parquet \
+    --output-dir data/training/sft --output-name sft_folded_train.parquet \
+    --drop-planning-answers
+```
+
+**Cluster facts:** `gpu_h100` is fully available (`sbatch --test-only --partition=gpu_h100
+--gpus=2` schedules immediately), account `gusei18108`, budget `EINF-18108/L2` had ~536,000 SBU
+left. Scratch quota is 8 TiB at ~0.2% used. `$USER` on the compute node is `azywot`, not
+`xchen1`, so checkpoints land under `/scratch-shared/azywot/`.
+
+---
+
+## 11. What is not done
+
+- **No completed training run.** Nothing is running. Launch per §10.
+- **No SFT eval result**, and therefore no number for the thesis yet.
+- **No in-training generation eval.** Deliberate: a format mismatch is visible at step 0, so the
+  pre-flight gate catches this class of bug at a fraction of the cost. An in-training callback
+  would catch *degradation over training*, a different failure. Worth adding only if you want
+  that too.
+- **`stash@{0}` on `main` is still uncommitted** — the `history_mode` work (3 files, +66/-4),
+  which evaluates the *existing* adapter in native format with no retraining. It is a viable
+  fallback and one `git stash drop` from being lost, exactly like the fold code was.
+  **Recommend committing it to a branch.**
+- `/projects/0/gusr0608` is no longer referenced by any SFT code path, but still appears in
+  `jobs/grpo_inference/*.job` (10 files hardcode `/gpfs/work5/0/gusr0608/msc-thesis`). Those are
+  historical eval jobs that already ran; worth cleaning up only if those evals are re-run.
+
+---
+
+## 12. History
+
+**The fold implementation was lost once already.** An earlier version existed in an ephemeral
+worktree and vanished: no `--format folded`, no `_fold_trajectory`, no tests, and nothing in any
+commit (`git log --all -S"_fold_trajectory"` was empty), despite the docs of the time claiming
+it was "implemented, tested, and run successfully". Its *numbers* all reproduced exactly, so
+those docs were a reliable spec, but the code was rewritten from scratch. `select_best_sft_
+checkpoint.py`, referenced by `007_train_sft.job:180`, likewise never existed in any commit.
+This is the reason for the standing recommendation to commit `stash@{0}`.
+
+**Job 25268454 — ran 8m43s, then cancelled on purpose.** The in-job pre-flight gate passed on
+both splits. What it proved before being stopped:
+
+| step | val/loss |
+|---|---|
+| 25 | 0.602511 |
+| 50 | 0.494696 |
+
+So the folded pipeline trains, and trains fast: 50 steps in ~8 minutes, meaning the full
+~187-step run is roughly **40 minutes**, not the multi-hour job the old 8 h wall-clock limit
+suggested. It was cancelled for three reasons, all about output rather than training:
+checkpoints were 33 GB each and all were kept, and they went to `…/fine_tuning/sft/…` rather
+than the GRPO layout. Cancelling cost ~9 minutes of 2xH100 and avoided writing ~230 GB that
+would have had to be deleted anyway. The cancel landed mid-save, leaving an empty
+`global_step_50/` — which is why `finalize_sft_run.py` skips checkpoint dirs with no model
+shards instead of treating one as "last". Its 33 GB of leftovers were deleted on 2026-08-06.
+
+**Two failed submissions (25268308, 25268330) before that.** Job 008 resolved `PROJECT_DIR` from
+`${BASH_SOURCE[0]}`, which works under `bash jobs/...` but not under `sbatch` — SLURM copies the
+batch script to `/var/spool/slurm` on the compute node. Fixed in both 008 jobs by trying
+candidates in order and accepting only one that *validates* as the repo (`scripts/build_sft_
+parquet.py` present): `$PROJECT_DIR` → `$SLURM_SUBMIT_DIR` → script dir →
+`$HOME/azywot/msc-thesis`. **007 has the same class of fragility** (a hardcoded
+`/projects/0/gusr0608`), so copy the resolution block if that job is ever reused.
+
+**Post-cancel fixes**, all since verified: checkpoints moved to the GRPO layout;
+`checkpoint.save_contents=['model','extra']`; `trainer.resume_mode=disable`;
+`finalize_sft_run.py` written; `build_sft_parquet.py` defaults moved in-repo; `PROJECT_DIR`
+de-hardcoded in 006 and 007. Then: two unreachable error branches in 008 fixed (under
+`set -euo pipefail` a bare failing command aborts before `$?` is read), `--time` 30h → 2h,
+adapter archiving added, the eval-config suite added, the janitor added, and the §9 audit.
+
+**Test suite: 496 passed.** One pre-existing collection error,
+`tests/unit/test_fine_tuning_rollout.py` (`No module named 'agentops'`), unrelated to this work
+and present before it.
+
+---
+
+## Related documents
+
+- `docs/grpo_sft_walkthrough.md` — how to run the fine-tuning pipeline end to end (conda env, HF
+  access, API keys, smoke tests, training, LoRA inference, merging). Covers GRPO as well.
+- `docs/fine_tuning_v2/verl_documentation_lora.md` — vendored verl reference on LoRA config.
+- `docs/failure_modes_fine_tuning_alignment.md` — links the Ch 6 failure modes to fine-tuning
+  design.
+- MALGAI workshop paper: https://openreview.net/forum?id=RLHUTcvsA9

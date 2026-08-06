@@ -40,7 +40,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Same extraction code the end-of-run script uses, and the same layout constant, so the two
 # cannot disagree about where per-step adapters live.
-from finalize_sft_run import STEP_ADAPTERS_DIRNAME, _step_num, extract_adapter  # noqa: E402
+from finalize_sft_run import (  # noqa: E402
+    STEP_ADAPTERS_DIRNAME,
+    _step_num,
+    dir_size,
+    extract_adapter,
+)
 
 logging.basicConfig(level=logging.INFO,
                     format="[%(asctime)s] JANITOR %(levelname)s %(message)s",
@@ -110,7 +115,7 @@ def sweep(ckpt_dir: Path, lora_rank: int, lora_alpha: int) -> int:
             logger.error("No adapter written for global_step_%d; not deleting its shards.", step)
             continue
 
-        freed = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+        freed = dir_size(d)
         shutil.rmtree(d)
         collapsed += 1
         logger.info("Collapsed global_step_%d -> %s (freed %.1f GB)", step, out, freed / 1e9)

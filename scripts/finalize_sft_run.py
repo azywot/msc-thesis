@@ -57,6 +57,11 @@ def _step_num(path: Path):
         return None
 
 
+def dir_size(path: Path) -> int:
+    """Total bytes of files under `path`, for reporting what a deletion reclaimed."""
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
 def parse_val_losses(log_path: Path) -> dict:
     """Map {step: val_loss} from a verl SFT console log. Later lines win (resumed runs)."""
     losses = {}
@@ -291,10 +296,10 @@ def main() -> int:
 
     freed = 0
     for _, d in with_shards + incomplete:
-        freed += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+        freed += dir_size(d)
         shutil.rmtree(d)
     if step_adapters_dir.is_dir():
-        freed += sum(f.stat().st_size for f in step_adapters_dir.rglob("*") if f.is_file())
+        freed += dir_size(step_adapters_dir)
         shutil.rmtree(step_adapters_dir)
     logger.info("Deleted %d checkpoint dir(s) and %d per-step adapter(s), freed %.1f GB.",
                 len(with_shards) + len(incomplete), len(pre_extracted), freed / 1e9)
