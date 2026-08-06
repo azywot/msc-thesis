@@ -1,0 +1,217 @@
+#!/bin/bash
+#SBATCH --job-name=SFTFoldedTests
+# CPU partition on purpose: nothing here needs a GPU (no model is loaded, only the
+# tokenizer), so running it on gpu_h100 would burn GPU SBUs to do string comparisons.
+#SBATCH --partition=genoa
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=01:00:00
+#SBATCH --output=out/fine_tuning/tests/sft_folded_tests_%A.log
+#SBATCH --error=out/fine_tuning/tests/sft_folded_tests_%A.err
+
+# Verification suite for the folded-SFT pipeline. Run this before 008_train_sft_folded.job,
+# and after any change to build_sft_parquet.py or verl_ext/folded_sft_dataset.py.
+#
+# Why this job exists
+# -------------------
+# The first SFT run (007) trained honestly on the wrong distribution and nobody could tell
+# until benchmark numbers came back weeks later, because val loss shared the same defect.
+# Everything below is cheap and runs in minutes; the failure it guards against costs a GPU
+# run plus the time to re-diagnose it.
+#
+# Five stages, each independently fatal:
+#   1. Full unit-test suite            — logic, in the env the tests were written in.
+#   2. Gate on the real folded data    — every row renders exactly as inference does.
+#   3. Trip-wire                       — the gate must REJECT the native parquets. A gate
+#                                        that passes everything proves nothing.
+#   4. Same gate under cosmas-train    — the class is authored/tested in agent_engine but
+#                                        imported by VERL in cosmas-train, which has a
+#                                        different transformers version. A tokenizer or
+#                                        chat-template difference between the two envs
+#                                        would otherwise surface only at training time.
+#   5. Decoded example                 — one row printed with the supervised span marked,
+#                                        so a human can confirm what is actually trained on.
+#
+# No GPU, no network, no tools, no model weights: only the Qwen3-8B tokenizer (cached).
+
+set -uo pipefail   # NOT -e: stages must all run so the summary is complete.
+
+echo "=========================================="
+echo "MSc Thesis — Folded SFT verification suite"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+
+# Locate the checkout. Under sbatch, SLURM copies this script to /var/spool/slurm on the
+# compute node, so BASH_SOURCE points at the spool copy, not the repo. Try each candidate
+# and accept only one that actually looks like the repo.
+_is_repo() { [[ -n "${1:-}" && -f "$1/scripts/build_sft_parquet.py" ]]; }
+_JOB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+for _cand in "${PROJECT_DIR:-}" \
+             "${SLURM_SUBMIT_DIR:-}" \
+             "$(cd "${_JOB_DIR}/../.." 2>/dev/null && pwd)" \
+             "$HOME/azywot/msc-thesis"; do
+    if _is_repo "$_cand"; then PROJECT_DIR="$_cand"; break; fi
+done
+if ! _is_repo "${PROJECT_DIR:-}"; then
+    echo "ERROR: could not locate the msc-thesis checkout."
+    echo "  Tried: \$PROJECT_DIR, \$SLURM_SUBMIT_DIR (${SLURM_SUBMIT_DIR:-unset}),"
+    echo "         script dir (${_JOB_DIR:-unset}), \$HOME/azywot/msc-thesis"
+    echo "  Fix: sbatch --export=ALL,PROJECT_DIR=/path/to/msc-thesis $0"
+    exit 1
+fi
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+export PYTHONUNBUFFERED=1
+export PYTHONNOUSERSITE=1
+
+mkdir -p out/fine_tuning/tests
+
+FOLDED_TRAIN=data/training/sft/sft_folded_train.parquet
+FOLDED_VAL=data/training/sft/sft_folded_val.parquet
+NATIVE_TRAIN=data/training/sft/sft_train.parquet
+NATIVE_VAL=data/training/sft/sft_val.parquet
+MAX_LENGTH=16384   # must match data.max_length in 008_train_sft_folded.job
+
+FAILURES=()
+note_fail() { FAILURES+=("$1"); echo "  ✗ FAIL: $1"; }
+note_pass() { echo "  ✓ PASS: $1"; }
+
+for f in "$FOLDED_TRAIN" "$FOLDED_VAL" "$NATIVE_TRAIN" "$NATIVE_VAL"; do
+    if [[ ! -f "$f" ]]; then
+        echo "ERROR: missing $f"
+        echo "Build the folded splits with:"
+        echo "  python scripts/build_sft_parquet.py --from-parquet $NATIVE_TRAIN \\"
+        echo "      --output-dir data/training/sft --output-name sft_folded_train.parquet"
+        exit 1
+    fi
+done
+
+# ── Stage 1: full unit-test suite ────────────────────────────────────────────────
+# test_fine_tuning_rollout.py is excluded: it fails at COLLECTION with
+# "No module named 'agentops'", a pre-existing dependency gap unrelated to this work.
+# Excluding it keeps a real failure visible instead of drowned in a known error.
+echo ""
+echo "── Stage 1/5: unit tests (env: agent_engine) ────────────────────────────────"
+source activate agent_engine
+python -m pytest -q --ignore=tests/unit/test_fine_tuning_rollout.py
+if [[ $? -eq 0 ]]; then note_pass "full unit-test suite"; else note_fail "full unit-test suite"; fi
+
+echo ""
+echo "── Stage 1b/5: folded-format tests, verbose ─────────────────────────────────"
+python -m pytest tests/unit/test_sft_folded_format.py -v --no-header -q
+if [[ $? -eq 0 ]]; then note_pass "folded-format tests"; else note_fail "folded-format tests"; fi
+
+# ── Stage 2: the gate, on the real data ──────────────────────────────────────────
+echo ""
+echo "── Stage 2/5: pre-flight gate on the real folded splits ─────────────────────"
+python scripts/check_sft_folded_format.py \
+    --folded "$FOLDED_TRAIN" --native "$NATIVE_TRAIN" --max-length "$MAX_LENGTH"
+if [[ $? -eq 0 ]]; then note_pass "gate on folded TRAIN"; else note_fail "gate on folded TRAIN"; fi
+
+python scripts/check_sft_folded_format.py \
+    --folded "$FOLDED_VAL" --native "$NATIVE_VAL" --max-length "$MAX_LENGTH"
+if [[ $? -eq 0 ]]; then note_pass "gate on folded VAL"; else note_fail "gate on folded VAL"; fi
+
+# ── Stage 3: trip-wire ───────────────────────────────────────────────────────────
+# Feed the gate the native parquet it is supposed to reject. If this passes, the gate is
+# broken and stage 2 was meaningless.
+echo ""
+echo "── Stage 3/5: trip-wire — the gate must REJECT native format ────────────────"
+if python scripts/check_sft_folded_format.py \
+       --folded "$NATIVE_TRAIN" --max-length "$MAX_LENGTH" > /dev/null 2>&1; then
+    note_fail "trip-wire — gate ACCEPTED the native parquet; it is not discriminating"
+else
+    note_pass "trip-wire — gate rejected the native parquet (exit non-zero, as required)"
+fi
+
+# ── Stage 4: same gate in the training environment ───────────────────────────────
+# VERL imports FoldedSFTDataset from cosmas-train, not agent_engine. Different
+# transformers version => potentially different chat-template rendering. Verify there.
+echo ""
+echo "── Stage 4/5: gate under cosmas-train (the env VERL actually uses) ──────────"
+conda deactivate 2>/dev/null || true
+source activate cosmas-train
+python -c "
+import sys, transformers, torch
+sys.path.insert(0, 'src')
+from verl_ext.folded_sft_dataset import FoldedSFTDataset
+print(f'  transformers {transformers.__version__} | torch {torch.__version__}')
+print('  FoldedSFTDataset imported OK')
+"
+if [[ $? -ne 0 ]]; then
+    note_fail "FoldedSFTDataset does not import under cosmas-train"
+else
+    note_pass "FoldedSFTDataset imports under cosmas-train"
+    python scripts/check_sft_folded_format.py \
+        --folded "$FOLDED_VAL" --native "$NATIVE_VAL" --max-length "$MAX_LENGTH"
+    if [[ $? -eq 0 ]]; then
+        note_pass "gate on folded VAL under cosmas-train"
+    else
+        note_fail "gate on folded VAL under cosmas-train (env-dependent rendering!)"
+    fi
+fi
+
+# ── Stage 5: eyeball one decoded example ─────────────────────────────────────────
+# A green gate is a claim about tokens. This prints what is actually supervised so the
+# claim can be checked by reading it.
+echo ""
+echo "── Stage 5/5: decoded example, supervised span marked ───────────────────────"
+python - "$FOLDED_TRAIN" "$MAX_LENGTH" <<'PY'
+import sys
+sys.path.insert(0, "src")
+import pandas as pd
+from transformers import AutoTokenizer
+from verl_ext.folded_sft_dataset import FoldedSFTDataset
+
+path, max_length = sys.argv[1], int(sys.argv[2])
+tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
+df = pd.read_parquet(path)
+ds = FoldedSFTDataset(
+    parquet_files=[path], tokenizer=tok,
+    config={"messages_key": "messages", "max_length": max_length,
+            "truncation": "right", "pad_mode": "no_padding"},
+)
+
+# Show an action row (has a tool call) — the case where masking matters most, because
+# the simulated tool RESULT sits in the prompt and must carry no loss.
+idx = next((k for k in range(len(df))
+            if "<tool_call>" in df.iloc[k]["messages"][2]["content"]
+            and "Previous Steps" in df.iloc[k]["messages"][1]["content"]), 0)
+
+item = ds[idx]
+ids, mask = item["input_ids"].tolist(), item["loss_mask"].tolist()
+prompt = tok.decode([t for t, m in zip(ids, mask) if m == 0])
+target = tok.decode([t for t, m in zip(ids, mask) if m == 1])
+
+print(f"\nRow {idx} of {len(df)}  |  question: {df.iloc[idx]['question'][:70]!r}")
+print(f"Tokens: {len(ids)} total = {mask.count(0)} masked + {mask.count(1)} supervised\n")
+print("─── NOT supervised (loss_mask=0) — last 900 chars of the prompt ───")
+print(prompt[-900:])
+print("\n─── SUPERVISED (loss_mask=1) — this is the entire training signal ───")
+print(target)
+print("─" * 78)
+print("Confirm by eye: the simulated '- Result:' text is above the line (masked), and")
+print("only orchestrator-authored text is below it.")
+PY
+if [[ $? -eq 0 ]]; then note_pass "decoded example rendered"; else note_fail "decoded example"; fi
+
+# ── Summary ──────────────────────────────────────────────────────────────────────
+echo ""
+echo "=========================================="
+if [[ ${#FAILURES[@]} -eq 0 ]]; then
+    echo "ALL STAGES PASSED — safe to submit 008_train_sft_folded.job"
+    echo "Finished at: $(date)"
+    echo "=========================================="
+    exit 0
+fi
+echo "${#FAILURES[@]} STAGE(S) FAILED — do NOT launch training:"
+for f in "${FAILURES[@]}"; do echo "  - $f"; done
+echo "Finished at: $(date)"
+echo "=========================================="
+exit 1

@@ -122,6 +122,238 @@ def _strip_thinking(messages: list) -> list:
     return cleaned
 
 
+# ---------------------------------------------------------------------------
+# Memory-folded rows (--format folded)
+# ---------------------------------------------------------------------------
+#
+# At inference the orchestrator never sees the stored multi-turn conversation: every
+# non-baseline turn is rebuilt as a fresh [system, user] memory prompt by
+# AgenticOrchestrator._build_memory_prompt (orchestrator.py:641-664). Training on the
+# native transcript therefore optimises a context the adapter never encounters at
+# evaluation. Folding expands one trajectory into one row per orchestrator decision,
+# each row reproducing exactly the prompt inference would have built at that step.
+#
+# The orchestrator's own helpers are imported rather than reimplemented, so the folded
+# prompt cannot drift from the real one. Imports are lazy so the default `native` path
+# keeps working without agent_engine on the path.
+
+
+def _memory_user_content(question: str, query_analysis: str, action_history: list) -> str:
+    """Reproduce the user turn of ``_build_memory_prompt`` (orchestrator.py:650-663)."""
+    from agent_engine.core.orchestrator import AgenticOrchestrator
+
+    parts = [question]
+    if query_analysis:
+        parts.append(f"\n**Query Analysis:**\n{query_analysis}")
+    if action_history:
+        parts.append(
+            f"\n**Previous Steps:**\n{AgenticOrchestrator._format_action_history(action_history)}"
+        )
+    return "\n".join(parts)
+
+
+def _plan_query_analysis(plan_text: str) -> str:
+    """The text inference folds under ``**Query Analysis:**`` for a planning turn.
+
+    Mirrors _run_planning_turn (orchestrator.py:757-786). When the plan emitted a tool
+    call, ``raw_query_analysis`` holds the full generation but ``state.query_analysis`` —
+    the value actually folded — is only the text before the call, so the fold must apply
+    the same truncation or a <tool_call> block leaks into the analysis. Thinking is
+    already stripped at build time, so strip_thinking_tags is the identity here.
+    """
+    from agent_engine.utils.parsing import parse_tool_call
+
+    if not parse_tool_call(plan_text):
+        return plan_text
+
+    idx = plan_text.find("<tool_call>")
+    if idx == -1:
+        for marker in ('{"tool_call"', '{"name"'):
+            j = plan_text.find(marker)
+            if j != -1:
+                idx = j
+                break
+    before_tool = plan_text[:idx].strip() if idx > 0 else ""
+    return before_tool if before_tool else plan_text
+
+
+def _classify_turns(messages: list) -> tuple:
+    """Split a stored trajectory into (plan, actions, answer) by **position**.
+
+    _build_sft_messages (collect_sft_data.py:70-91) always emits
+    ``[system, user] + [plan] + output_messages``, so messages[2] is the planning turn
+    whenever one exists. Classifying by content instead would misread the 109 trajectories
+    whose plan emitted a tool call. The messages[3] guard covers a planning turn that
+    errored, leaving messages[2:] as pure output_messages.
+
+    Returns (plan_text | None, [(action_content, tool_name, tool_result)], answer | None).
+    """
+    plan = None
+    rest_start = 2
+    if (
+        len(messages) > 2
+        and messages[2]["role"] == "assistant"
+        and not (len(messages) > 3 and messages[3]["role"] == "tool")
+    ):
+        plan = messages[2]["content"]
+        rest_start = 3
+
+    actions, answer = [], None
+    i = rest_start
+    while i < len(messages):
+        m = messages[i]
+        nxt = messages[i + 1] if i + 1 < len(messages) else None
+        if m["role"] == "assistant" and nxt is not None and nxt["role"] == "tool":
+            actions.append((m["content"], nxt.get("tool_name", "unknown"), nxt["content"]))
+            i += 2
+        elif m["role"] == "assistant":
+            answer = m["content"]
+            i += 1
+        else:
+            i += 1
+    return plan, actions, answer
+
+
+def _fold_trajectory(
+    messages: list,
+    planning_suffix: str,
+    include_planning: bool = True,
+    drop_planning_answers: bool = False,
+) -> list:
+    """Expand one stored trajectory into one ``[system, user, assistant]`` row per decision.
+
+    Row k's user turn is exactly what ``_build_memory_prompt`` would have produced before
+    the model generated that row's target, so training context == inference context.
+    """
+    from agent_engine.core.orchestrator import AgenticOrchestrator
+    from agent_engine.utils.parsing import parse_tool_call
+
+    system_prompt = messages[0]["content"]
+    question = messages[1]["content"]
+    plan, actions, answer = _classify_turns(messages)
+
+    # A planning turn that produced the final answer: finished=True at turn 0
+    # (orchestrator.py:777-783), so there is no action and no separate answer turn.
+    planning_answered = plan is not None and not actions and answer is None
+    if planning_answered and drop_planning_answers:
+        return []
+
+    rows = []
+
+    def _row(user_content: str, target: str) -> list:
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": target},
+        ]
+
+    if plan is not None and include_planning:
+        rows.append(_row(question + planning_suffix, plan))
+
+    query_analysis = _plan_query_analysis(plan) if plan is not None else ""
+
+    action_history: list = []
+    for content, tool_name, result in actions:
+        rows.append(_row(_memory_user_content(question, query_analysis, action_history), content))
+        # Mirrors _commit_tool_result (orchestrator.py:680-686).
+        tool_call = parse_tool_call(content) or {"name": tool_name, "arguments": {}}
+        action_history.append({
+            "tool_name": tool_call["name"],
+            "sub_goal": AgenticOrchestrator._extract_sub_goal(content),
+            "command": json.dumps(tool_call),
+            "result": result,
+        })
+
+    if answer is not None:
+        rows.append(_row(_memory_user_content(question, query_analysis, action_history), answer))
+
+    return rows
+
+
+def _default_planning_suffix() -> str:
+    """The suffix `_run_planning_turn` appends when tools are registered.
+
+    Neither the collection config nor the SFT eval config sets a custom planning_suffix
+    or gepa_prompt_path, so the tools variant is what inference used.
+    """
+    from agent_engine.core.orchestrator import _DEFAULT_PLANNING_SUFFIX_TOOLS
+
+    return _DEFAULT_PLANNING_SUFFIX_TOOLS
+
+
+def _fold_records(records: list, planning_suffix: str, drop_planning_answers: bool) -> list:
+    """Fold output-shaped records (data_source/question/result/extra_info/messages).
+
+    Each folded row inherits its parent trajectory's metadata verbatim, so a folded row
+    still traces back to the exact source question.
+    """
+    folded = []
+    n_dropped = 0
+    for rec in records:
+        rows = _fold_trajectory(
+            list(rec["messages"]),
+            planning_suffix=planning_suffix,
+            drop_planning_answers=drop_planning_answers,
+        )
+        if not rows:
+            n_dropped += 1
+            continue
+        for row in rows:
+            folded.append({**{k: v for k, v in rec.items() if k != "messages"}, "messages": row})
+    if n_dropped:
+        logger.info("Dropped %d turn-0-answer trajectories (--drop-planning-answers).", n_dropped)
+    return folded
+
+
+def _refold_parquet(args) -> None:
+    """Refold an already-built native parquet (and its sibling val split) in place.
+
+    Rebuilding from collected_*.jsonl would need --reference-parquet for the math:search
+    ratio, which is not readable; refolding the shipped parquet inherits every control
+    already applied and keeps the trajectory set identical to the native run it is being
+    compared against. No re-selection, re-balancing or re-splitting happens here.
+    """
+    src = Path(args.from_parquet)
+    if not src.exists():
+        raise SystemExit(f"--from-parquet not found: {src}")
+
+    planning_suffix = args.planning_suffix if args.planning_suffix is not None else _default_planning_suffix()
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = Path(args.output_name).stem
+    base_name = stem[: -len("_train")] if stem.endswith("_train") else stem
+
+    # train split, plus the sibling val split when one exists next to the input
+    inputs = {"train": src}
+    if src.stem.endswith("_train"):
+        sibling = src.with_name(src.stem[: -len("_train")] + "_val" + src.suffix)
+        if sibling.exists():
+            inputs["val"] = sibling
+        else:
+            logger.warning("No sibling val split found next to %s — folding train only.", src)
+
+    for split_name, path in inputs.items():
+        df = pd.read_parquet(path)
+        records = df.to_dict("records")
+        folded = _fold_records(records, planning_suffix, args.drop_planning_answers)
+
+        out_df = pd.DataFrame(folded)
+        out_path = output_dir / f"{base_name}_{split_name}.parquet"
+        out_df.to_parquet(out_path, index=False)
+        logger.info(
+            "Folded %s: %d trajectories → %d rows (%.2fx)  →  %s",
+            path.name, len(records), len(folded),
+            len(folded) / len(records) if records else 0.0, out_path,
+        )
+
+        jsonl_path = out_path.with_suffix(".jsonl")
+        with open(jsonl_path, "w", encoding="utf-8") as f:
+            for rec in folded:
+                f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+        logger.info("Saved %d rows → %s  (for verification — open in editor)", len(folded), jsonl_path)
+
+
 def _load_system_prompt_suffix(config_path: Path) -> Optional[str]:
     """Read the optional `system_prompt_suffix` field from the collection config YAML.
 
@@ -271,7 +503,45 @@ def main():
             "the student never uses at inference time."
         ),
     )
+    parser.add_argument(
+        "--format", choices=("native", "folded"), default="native",
+        help=(
+            "Row format. 'native' (default) writes one row per trajectory as the stored "
+            "multi-turn conversation. 'folded' writes one row per orchestrator decision, "
+            "each a [system, user, assistant] row whose user turn reproduces exactly what "
+            "AgenticOrchestrator._build_memory_prompt feeds at inference — the format the "
+            "adapter is actually sampled from."
+        ),
+    )
+    parser.add_argument(
+        "--from-parquet", default=None,
+        help=(
+            "Refold an already-built native parquet instead of rebuilding from JSONL. "
+            "Folds the sibling *_val.parquet too and carries data_source / question / "
+            "result / extra_info through verbatim. No re-selection, re-balancing or "
+            "re-splitting, because the input is already the final dataset."
+        ),
+    )
+    parser.add_argument(
+        "--planning-suffix", default=None,
+        help=(
+            "Planning-turn suffix to reproduce in folded planning rows "
+            "(default: the orchestrator's _DEFAULT_PLANNING_SUFFIX_TOOLS)."
+        ),
+    )
+    parser.add_argument(
+        "--drop-planning-answers", action="store_true",
+        help=(
+            "Drop trajectories whose planning turn produced the final answer (18.1%% of "
+            "the training set). They teach answering at turn 0, the 'Premature direct "
+            "answering' failure mode. Default keeps them, matching the native build."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.from_parquet:
+        _refold_parquet(args)
+        return
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -422,8 +692,23 @@ def main():
 
     stem = Path(args.output_name).stem  # e.g. "sft_train" → base name for both splits
     base_name = stem[:-len("_train")] if stem.endswith("_train") else stem
+    # Folding runs after the train/val split, so all rows from one trajectory stay in the
+    # same split (no question-level leakage) and the fold inherits every control above.
+    planning_suffix = (
+        args.planning_suffix if args.planning_suffix is not None else _default_planning_suffix()
+    ) if args.format == "folded" else None
+
     for split_name, records in splits.items():
         out_records = [_to_output_record(r) for r in records]
+
+        if args.format == "folded":
+            n_traj = len(out_records)
+            out_records = _fold_records(out_records, planning_suffix, args.drop_planning_answers)
+            logger.info(
+                "Folded %s split: %d trajectories → %d rows (%.2fx)",
+                split_name, n_traj, len(out_records),
+                len(out_records) / n_traj if n_traj else 0.0,
+            )
 
         df = pd.DataFrame(out_records)
         out_path = output_dir / f"{base_name}_{split_name}.parquet"
@@ -436,7 +721,7 @@ def main():
         with open(jsonl_path, "w", encoding="utf-8") as f:
             for rec in out_records:
                 f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
-        logger.info("Saved %d rows → %s  (for verification — open in editor)", len(records), jsonl_path)
+        logger.info("Saved %d rows → %s  (for verification — open in editor)", len(out_records), jsonl_path)
 
     # Statistics below report on the full `selected` set (pre-split) by source.
 
