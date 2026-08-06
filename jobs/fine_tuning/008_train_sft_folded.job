@@ -6,7 +6,9 @@
 #SBATCH --gpus=2
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --time=30:00:00
+# Job 25268454 ran 50 of ~187 steps in 8m43s, so the full run is ~40 min. Requesting 30h for
+# that only costs queue priority; 2h leaves ~3x headroom over the observed rate.
+#SBATCH --time=02:00:00
 #SBATCH --output=out/fine_tuning/sft_train/sft_folded_%A.log
 #SBATCH --error=out/fine_tuning/sft_train/sft_folded_%A.err
 
@@ -171,6 +173,10 @@ export TRITON_CACHE_DIR="/scratch-shared/${USER}/triton_cache"
 export WANDB_CACHE_DIR="/scratch-shared/${USER}/wandb_cache"
 mkdir -p "$TRITON_CACHE_DIR" "$WANDB_CACHE_DIR"
 
+# `|| SFT_EXIT=$?` is load-bearing: under `set -e` a bare failing command aborts the script
+# immediately, so `SFT_EXIT=$?` on the next line would never run and the diagnostic below would
+# be unreachable. The `|| ...` puts the command in a condition context, which suspends `set -e`.
+SFT_EXIT=0
 torchrun --nproc_per_node=2 -m verl.trainer.sft_trainer \
     data.train_files="$TRAIN_FILE" \
     data.val_files="$VAL_FILE" \
@@ -198,8 +204,7 @@ torchrun --nproc_per_node=2 -m verl.trainer.sft_trainer \
     trainer.resume_mode=disable \
     trainer.logger="['console','wandb']" \
     "trainer.default_local_dir=${DEFAULT_LOCAL_DIR}" \
-    > "$SFT_LOG" 2>&1
-SFT_EXIT=$?
+    > "$SFT_LOG" 2>&1 || SFT_EXIT=$?
 
 echo ""
 if [[ $SFT_EXIT -ne 0 ]]; then
@@ -220,15 +225,39 @@ find "$DEFAULT_LOCAL_DIR" -maxdepth 1 -name "global_step_*" -type d | sort -V
 # for the best-val-loss and final checkpoints, then deletes every shard.
 echo ""
 echo "Selecting best/last checkpoints and extracting adapters..."
+FINALIZE_EXIT=0
 python scripts/finalize_sft_run.py \
     --ckpt-dir "$DEFAULT_LOCAL_DIR" \
     --log "$SFT_LOG" \
-    --lora-rank 64 --lora-alpha 64
-FINALIZE_EXIT=$?
+    --lora-rank 64 --lora-alpha 64 || FINALIZE_EXIT=$?
 if [[ $FINALIZE_EXIT -ne 0 ]]; then
     echo "WARNING — adapter extraction failed (exit $FINALIZE_EXIT)."
     echo "The FSDP checkpoints were NOT deleted; rerun manually:"
     echo "  python scripts/finalize_sft_run.py --ckpt-dir $DEFAULT_LOCAL_DIR --log $SFT_LOG"
+fi
+
+# ── Archive the adapters off scratch ─────────────────────────────────────────────
+# /scratch-shared is not durable. The GRPO adapters
+# (lora_adapters/qwen3-8b-grpo-search-math{,-v2}/) were purged from it while every
+# experiments/configs/qwen3/lora_inference/* config still pointed at them, which is why those
+# evaluations can no longer be re-run. An adapter is ~365 MB against a 200 GiB home quota, so
+# copy it while it exists rather than relying on remembering to. data/* is gitignored.
+ARCHIVE_DIR="${PROJECT_DIR}/data/adapters/${EXPERIMENT_NAME}/${RUN_TAG}"
+if [[ $FINALIZE_EXIT -eq 0 && -d "$DEFAULT_LOCAL_DIR/best_adapter" ]]; then
+    echo ""
+    echo "Archiving adapters to durable storage: $ARCHIVE_DIR"
+    mkdir -p "$ARCHIVE_DIR"
+    for _adapter in best_adapter last_adapter; do
+        if [[ -d "$DEFAULT_LOCAL_DIR/$_adapter" ]]; then
+            cp -r "$DEFAULT_LOCAL_DIR/$_adapter" "$ARCHIVE_DIR/"
+            echo "  copied $_adapter"
+        fi
+    done
+    [[ -f "$DEFAULT_LOCAL_DIR/selection.json" ]] && cp "$DEFAULT_LOCAL_DIR/selection.json" "$ARCHIVE_DIR/"
+    du -sh "$ARCHIVE_DIR"
+else
+    echo ""
+    echo "WARNING — no best_adapter to archive; the scratch copy is the only one and scratch is purged."
 fi
 
 echo ""
@@ -241,7 +270,12 @@ ls -la "$DEFAULT_LOCAL_DIR" 2>/dev/null
 
 echo ""
 echo "Next step — evaluate. The adapters are PEFT-format, same as the GRPO ones, so point"
-echo "an SFT inference config at one directly (no merge step needed):"
-echo "    lora_adapter_path: \"$DEFAULT_LOCAL_DIR/best_adapter\""
-echo "Evaluate through the NORMAL folded inference path (thinking_mode: NO), then compare"
-echo "against base and GRPO. Selection details are in $DEFAULT_LOCAL_DIR/selection.json."
+echo "an SFT inference config at one directly (no merge step needed). The eval configs are"
+echo "already generated at experiments/configs/qwen3/sft_inference/<dataset>/; replace the"
+echo "<run-tag> placeholder in each with this run's, i.e. set:"
+echo "    lora_adapter_path: \"$ARCHIVE_DIR/best_adapter\""
+echo "or regenerate them after updating SFT_ADAPTER_PLACEHOLDER in scripts/generate_configs.py:"
+echo "    python scripts/generate_configs.py --suite sft_inference"
+echo "Then: ./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/sft_inference"
+echo "Use the ARCHIVE path, not the scratch one: scratch is purged (see the GRPO adapters)."
+echo "Selection details are in $DEFAULT_LOCAL_DIR/selection.json."

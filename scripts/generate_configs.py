@@ -16,6 +16,9 @@ Run from the repo root:
     python scripts/generate_configs.py --suite lora_inference
         (LoRA-adapted Qwen3-8B orchestrator + Qwen3-1.7B subagents; no thinking / orch thinking)
         Before running, set LORA_ADAPTER_PLACEHOLDER to the actual adapter path.
+    python scripts/generate_configs.py --suite sft_inference
+        (SFT-adapted Qwen3-8B orchestrator + Qwen3-1.7B subagents; NO thinking only)
+        Before running, set SFT_ADAPTER_PLACEHOLDER to the actual adapter path.
 
 Config output layout:
     experiments/configs/qwen3/<suite>/<dataset>/<variant>.yaml
@@ -144,10 +147,25 @@ LORA_ADAPTER_PLACEHOLDER = (
     "qwen3-8b-grpo-search-math/22-05-2026_00-01-23031012/global_step_20/actor/lora_adapter"
 )
 
+# SFT adapters are archived off scratch by 008_train_sft_folded.job, because scratch is not
+# durable: the GRPO adapter directories were purged from /scratch-shared while the configs above
+# still pointed at them. Replace <run-tag> with the value the training job prints.
+SFT_ADAPTER_PLACEHOLDER = (
+    "/gpfs/home3/xchen1/azywot/msc-thesis/data/adapters/"
+    "qwen3-8b-sft-folded-v1/<run-tag>/best_adapter"
+)
+
 # (stem, orch_key, sub_key, thinking_mode)
 VARIANTS_LORA_INFERENCE = [
     ("qwen8B_sub1_7b_none",         "8B", "1.7B", "NO"),
     ("qwen8B_sub1_7b_orchestrator", "8B", "1.7B", "ORCHESTRATOR_ONLY"),
+]
+
+# NO thinking only. The SFT data has thinking stripped at build time and the folded prompt
+# renders an empty <think>\n\n</think> block, so an ORCHESTRATOR_ONLY eval would sample the
+# adapter off the distribution it was trained on — the exact mismatch the folded format fixes.
+VARIANTS_SFT_INFERENCE = [
+    ("qwen8B_sub1_7b_none", "8B", "1.7B", "NO"),
 ]
 
 # ── all possible variants ──────────────────────────────────────────────────────
@@ -432,6 +450,24 @@ SUITES = {
         # Replace <run-tag> with the value from the training job log before running inference.
         "lora_adapter_path": LORA_ADAPTER_PLACEHOLDER,
     },
+    "sft_inference": {
+        "description_tag": "[SFT inference]",
+        "name_prefix":     "SFT_eval",
+        "output_dir_root": "./experiments/results/sft_inference",
+        "config_subdir":   "qwen3/sft_inference",
+        "baseline":        False,
+        "variant_type":    "lora_inference",  # same YAML shape: adapter on the orchestrator
+        "variants":        VARIANTS_SFT_INFERENCE,
+        "datasets":        ["gaia", "hle", "gpqa", "aime", "musique"],
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+        "adapter_label":   "SFT",
+        "adapter_desc":    "SFT-adapted",
+        "train_job":       "008_train_sft_folded.job",
+        # Replace <run-tag> with the value from the training job log before running inference.
+        "lora_adapter_path": SFT_ADAPTER_PLACEHOLDER,
+    },
 }
 
 
@@ -495,15 +531,21 @@ def _model_block_with_subagent(orch_key: str, sub_key: str, tool_roles: list[str
 
 
 def _model_block_lora_orchestrator(
-    orch_key: str, sub_key: str, tool_roles: list[str], lora_adapter_path: str
+    orch_key: str, sub_key: str, tool_roles: list[str], lora_adapter_path: str,
+    adapter_label: str = "LoRA",
 ) -> str:
-    """Models block with a LoRA-annotated orchestrator and explicit per-role subagent entries."""
+    """Models block with an adapter-annotated orchestrator and explicit per-role subagent entries.
+
+    `adapter_label` becomes the model-name suffix (Qwen3-8B-LoRA / Qwen3-8B-SFT). It is what
+    lands in the `model_name` column of the W&B export, so the two adaptation runs stay
+    distinguishable in orchestrator_ft_results.csv.
+    """
     orch = MODELS[orch_key]
     sub  = MODELS[sub_key]
     lines = [
         "models:",
         "  orchestrator:",
-        f'    name: "{orch["name"]}-LoRA"',
+        f'    name: "{orch["name"]}-{adapter_label}"',
         f'    family: "{orch["family"]}"',
         f'    path_or_id: "{orch["path_or_id"]}"',
         '    role: "orchestrator"',
@@ -535,26 +577,31 @@ def make_config_lora_inference(
     sub  = MODELS[sub_key]
     think_desc    = THINKING_LABELS[thinking]
     lora_path     = suite["lora_adapter_path"]
+    adapter_label = suite.get("adapter_label", "LoRA")
+    adapter_desc  = suite.get("adapter_desc", "LoRA-adapted")
+    train_job     = suite.get("train_job", "005_train.job")
     tools         = ds["tools"]
     return_code   = dataset == "bigcodebench" and bool(tools)
     tools_block   = _tools_block(direct=False, enabled=tools, return_code=return_code)
-    models_block  = _model_block_lora_orchestrator(orch_key, sub_key, tools, lora_path)
+    models_block  = _model_block_lora_orchestrator(
+        orch_key, sub_key, tools, lora_path, adapter_label
+    )
     exp_name      = f"{suite['name_prefix']}_{dataset}_{stem}"
     output_dir    = f"{suite['output_dir_root']}/{dataset}/{stem}"
     wandb_project = suite["wandb_project"]
 
     comment_line = (
-        f"# {ds['display']} — LoRA-adapted {orch['name']} orchestrator "
+        f"# {ds['display']} — {adapter_desc} {orch['name']} orchestrator "
         f"+ {sub['name']} subagents, {think_desc}"
     )
     description = (
         f"{suite['description_tag']} "
-        f"{ds['display']} {ds['split']} with LoRA-adapted {orch['name']} orchestrator "
+        f"{ds['display']} {ds['split']} with {adapter_desc} {orch['name']} orchestrator "
         f"({think_desc}) + {sub['name']} subagents (no thinking)."
     )
 
     return f"""{comment_line}
-# Update lora_adapter_path once training is complete (replace <run-tag> printed by 005_train.job).
+# Update lora_adapter_path once training is complete (replace <run-tag> printed by {train_job}).
 
 name: "{exp_name}"
 description: "{description}"

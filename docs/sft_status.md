@@ -20,8 +20,9 @@ pipeline works end to end and that val loss falls (0.6025 → 0.4947), but it wa
 the GRPO adapter layout and ends by keeping only two ~365 MB adapters (best-val-loss and
 last).
 
-**NEXT ACTION: re-verify, then resubmit** — see §12. The job edits after the cancel have
-**not** been syntax-checked or test-run yet.
+**NEXT ACTION: submit** — see §12. The post-cancel edits have now been verified (syntax, 487
+tests, both pre-flight gates), the two job-script defects found in that pass are fixed, and the
+SFT eval configs exist. Nothing has been submitted to SLURM.
 
 ---
 
@@ -355,11 +356,12 @@ loss-level ratio is 1:1.56 rather than 1:1.
 
 - **No completed training run.** Job 25268454 reached step 50 of ~187 and was cancelled on
   purpose (§14). Nothing is running now. Relaunch per §12.
-- **The post-cancel edits are unverified.** `bash -n` on the four job scripts and a full
-  `pytest` run were interrupted before they executed. Do them first (§12).
-- **No SFT eval config exists.** All `lora_inference` configs point at the GRPO adapter —
-  which is **itself now missing from scratch** (§11). One must be added (`thinking_mode: NO`,
-  normal folded inference path) before there is a number for the thesis.
+- ~~**The post-cancel edits are unverified.**~~ **Done (§15):** `bash -n` passes on all four
+  job scripts, `pytest` gives 487 passed, and both pre-flight gates pass on the real splits
+  (2995 / 362 rows, numbers identical to §7). Two defects found in that pass are fixed.
+- ~~**No SFT eval config exists.**~~ **Done (§15):** `experiments/configs/qwen3/sft_inference/`,
+  five configs, `thinking_mode: NO`. The `<run-tag>` in `lora_adapter_path` is a placeholder
+  until a training run produces one.
 - ~~**No checkpoint-selection script.**~~ **Done:** `scripts/finalize_sft_run.py` selects
   best-val-loss and last, extracts both as PEFT adapters, and deletes the FSDP shards.
   Verified on a real checkpoint. `select_best_sft_checkpoint.py` (referenced by 007) never
@@ -485,35 +487,40 @@ Consequences to think about:
 
 ## 12. Resume here
 
-Everything below the line was edited **after** the training job was cancelled and has not
-been re-verified. Do this first, in order.
+Steps 1 and 2 are **done** (§15): syntax, 487 tests, both gates, and the CLI check all pass on
+the current tree. Nothing has been submitted. Resume at step 3.
 
 ```bash
 cd /gpfs/home3/xchen1/azywot/msc-thesis
 
-# 1. Syntax + tests (this is the step that was interrupted)
-bash -n jobs/fine_tuning/008_train_sft_folded.job
-bash -n jobs/fine_tuning/008_test_sft_folded.job
-bash -n jobs/fine_tuning/006_collect_sft_data.job
-bash -n jobs/fine_tuning/007_train_sft.job
-conda activate agent_engine
-python -m pytest tests/ -q --ignore=tests/unit/test_fine_tuning_rollout.py
-
-# 2. build_sft_parquet.py defaults changed (no more gusr0608) — confirm the CLI still
-#    resolves the same files it used to
-python scripts/build_sft_parquet.py --help
-
 # 3. Full verification suite (CPU partition, no GPU cost)
 sbatch jobs/fine_tuning/008_test_sft_folded.job
 
-# 4. Relaunch training (~40 min wall clock at the observed rate)
+# 4. Launch training (~40 min wall clock at the observed rate)
 sbatch jobs/fine_tuning/008_train_sft_folded.job
 
-# 5. Clean up the cancelled run's leftovers (33 GB at the OLD path)
-rm -rf /scratch-shared/azywot/fine_tuning/sft/
+# 5. (done) The cancelled run's 33 GB of leftovers were deleted on 2026-08-06.
+
+# 6. After training: paste the run tag the job prints into the five eval configs
+#    (or set SFT_ADAPTER_PLACEHOLDER in scripts/generate_configs.py and regenerate), then
+python scripts/generate_configs.py --suite sft_inference
+./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/sft_inference
 ```
 
-Then the still-open work from §9: **the SFT eval config**, and **committing `stash@{0}`**.
+For reference, the checks already run in step 1/2 (re-run them after any change to
+`build_sft_parquet.py` or `folded_sft_dataset.py`):
+
+```bash
+bash -n jobs/fine_tuning/008_train_sft_folded.job   # and 008_test, 006, 007
+conda activate agent_engine
+python -m pytest tests/ -q --ignore=tests/unit/test_fine_tuning_rollout.py
+python scripts/build_sft_parquet.py --help
+python scripts/check_sft_folded_format.py \
+    --folded data/training/sft/sft_folded_train.parquet \
+    --native data/training/sft/sft_train.parquet --max-length 16384
+```
+
+Then the still-open work from §9: **committing `stash@{0}`**.
 
 ---
 
@@ -591,7 +598,7 @@ deleted anyway. The cancel landed mid-save, leaving an **empty** `global_step_50
 why `finalize_sft_run.py` now skips checkpoint dirs with no model shards instead of treating
 one as "last".
 
-**Changes made after the cancel** (all unverified — see §12):
+**Changes made after the cancel** (all since verified — see §15):
 
 | File | Change |
 |---|---|
@@ -606,7 +613,86 @@ still appears in `jobs/grpo_inference/*.job` (10 files hardcode
 they were left alone rather than rewritten blind. Worth cleaning up if those evals are ever
 re-run.
 
-**Leftovers on scratch from the cancelled run** (safe to delete, see §12 step 5):
-`/scratch-shared/azywot/fine_tuning/sft/qwen3-8b-sft-folded-v1/` — one 33 GB
-`global_step_25/`, an empty `global_step_50/`, and the 365 MB `best_adapter/` produced while
-testing the extraction script.
+**Leftovers on scratch from the cancelled run: DELETED 2026-08-06.**
+`/scratch-shared/azywot/fine_tuning/sft/` held one 33 GB `global_step_25/`, an empty
+`global_step_50/`, and a 349 MB `best_adapter/` extracted from step 25 while testing
+`finalize_sft_run.py`. All of it is gone, including that adapter: it came from an incomplete
+run (25 of ~187 steps, val loss 0.6025) and a full run supersedes it in ~40 minutes.
+`/scratch-shared/azywot/fine_tuning/` now holds only the two empty GRPO `lora_adapters/`
+directories. The relaunched job writes to `lora_adapters/<exp>/<run-tag>/`, not `sft/`, so
+nothing pointed at the deleted path.
+
+---
+
+## 15. Verification pass and eval configs (2026-08-06, after the cancel)
+
+### The post-cancel edits are now verified
+
+| Check | Result |
+|---|---|
+| `bash -n` on `008_train`, `008_test`, `006`, `007` | all pass |
+| `pytest tests/ --ignore=tests/unit/test_fine_tuning_rollout.py` | **487 passed**, 53 s |
+| Pre-flight gate, train split | pass — 2995 rows, 1343 tool-call targets, 4,062,350 tokens |
+| Pre-flight gate, val split | pass — 362 rows, 176 tool-call targets, 500,014 tokens |
+| `build_sft_parquet.py --help` | resolves; `--output-dir` defaults to `data/training/sft` |
+
+Every gate number reproduces §7 exactly, so the parquets on disk are the ones §7 describes.
+
+### Two defects found in that pass, both fixed
+
+**1. The error handling in `008_train_sft_folded.job` was unreachable.** Under `set -euo
+pipefail` a bare failing command aborts the script at once, so `SFT_EXIT=$?` and
+`FINALIZE_EXIT=$?` on the following lines never ran and both diagnostic branches were dead
+code. The practical cost: if `finalize_sft_run.py` failed, the job would die silently and the
+message telling you the 33 GB shards were kept and how to re-run extraction would never print.
+Fixed with `|| SFT_EXIT=$?` (and the same for finalize), which puts the command in a condition
+context and suspends `set -e`. Verified by simulating a non-zero exit: the branch runs and the
+code propagates.
+
+**2. `--time=30:00:00` for a ~40 minute run.** Costs queue priority for nothing. Now
+`02:00:00`, roughly 3x headroom over the observed rate.
+
+### Adapters are now archived off scratch automatically
+
+`008_train_sft_folded.job` ends by copying `best_adapter/`, `last_adapter/` and
+`selection.json` from scratch to `data/adapters/<experiment>/<run-tag>/` inside the checkout
+(`data/*` is gitignored; ~365 MB against a 200 GiB home quota). This is the direct lesson of
+§11: the GRPO adapters were purged from `/scratch-shared` while ten configs still pointed at
+them, which is why those evaluations can no longer be re-run. If extraction fails, the job says
+so loudly instead of leaving the only copy on scratch.
+
+### SFT eval configs exist
+
+`experiments/configs/qwen3/sft_inference/{gaia,hle,gpqa,aime,musique}/qwen8B_sub1_7b_none.yaml`,
+generated by a new `sft_inference` suite in `scripts/generate_configs.py`
+(`python scripts/generate_configs.py --suite sft_inference`).
+
+- **`_none` only.** Thinking is stripped from the SFT data at build time and the folded prompt
+  renders an empty `<think>\n\n</think>`, so an `ORCHESTRATOR_ONLY` eval would sample the
+  adapter off the distribution it was trained on: the exact mismatch this whole exercise fixes.
+  This also keeps the run inside the Ch 7 rule that everything is compared no-thinking.
+- The orchestrator is named **`Qwen3-8B-SFT`**, so the `model_name` column of the W&B export
+  separates it from the GRPO rows (`Qwen3-8B-LoRA`) in `orchestrator_ft_results.csv`.
+- `lora_adapter_path` points at the **archive** path with a `<run-tag>` placeholder, matching
+  the existing `lora_inference` convention. It must be filled in after training.
+- All five load through the real `load_experiment_config`; `max_lora_rank` defaults to 64 in
+  `models/base.py:205`, which matches the trained rank, so no config override is needed.
+
+`generate_configs.py` gained three optional suite keys (`adapter_label`, `adapter_desc`,
+`train_job`) so the SFT suite reuses the LoRA builder rather than duplicating it. Defaults
+preserve the LoRA output unchanged.
+
+**Caution, learned the hard way here:** the committed `lora_inference` configs were
+**hand-edited after generation** (a `_v2` name suffix and the `…-v2/…/global_step_40` adapter
+path). Regenerating that suite silently overwrites those edits — it happened during this pass
+and was reverted with `git checkout`. `generate_configs.py` is not the source of truth for
+`lora_inference`. The same will be true of `sft_inference` once a real run tag is pasted in, so
+prefer editing `SFT_ADAPTER_PLACEHOLDER` and regenerating over hand-editing five files.
+
+### Scratch cleaned
+
+`/scratch-shared/azywot/fine_tuning/sft/` deleted, reclaiming 33 GB (details in §14).
+
+### Still not done
+
+Nothing has been submitted to SLURM. `stash@{0}` on `main` is still uncommitted.
