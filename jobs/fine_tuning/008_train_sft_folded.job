@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=16
 # Job 25268454 ran 50 of ~187 steps in 8m43s, so the full run is ~40 min. Requesting 30h for
 # that only costs queue priority; 2h leaves ~3x headroom over the observed rate.
-#SBATCH --time=02:00:00
+#SBATCH --time=08:00:00
 #SBATCH --output=out/fine_tuning/sft_train/sft_folded_%A.log
 #SBATCH --error=out/fine_tuning/sft_train/sft_folded_%A.err
 
