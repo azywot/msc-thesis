@@ -99,7 +99,11 @@ done
 echo ""
 echo "── Stage 1/5: unit tests (env: agent_engine) ────────────────────────────────"
 source activate agent_engine
-python -m pytest -q --ignore=tests/unit/test_fine_tuning_rollout.py
+# Explicit `tests/` path: a bare `pytest` from the repo root also walks data/training/,
+# where four directories carry the read bit but not the execute bit, so probing them for a
+# conftest.py raises PermissionError and collection aborts. pyproject.toml now sets
+# `testpaths = ["tests"]` as well, so both routes are safe.
+python -m pytest tests/ -q --ignore=tests/unit/test_fine_tuning_rollout.py
 if [[ $? -eq 0 ]]; then note_pass "full unit-test suite"; else note_fail "full unit-test suite"; fi
 
 echo ""

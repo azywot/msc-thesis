@@ -647,6 +647,28 @@ de-hardcoded in 006 and 007. Then: two unreachable error branches in 008 fixed (
 `set -euo pipefail` a bare failing command aborts before `$?` is read), `--time` 30h → 2h,
 adapter archiving added, the eval-config suite added, the janitor added, and the §9 audit.
 
+**Job 25299486 (verification suite) — stage 1 failed on a collection error, not a test.** The
+job ran a bare `python -m pytest -q --ignore=...` with no path, so pytest collected the whole
+repo. `data/training/{smoke,test,train,val}` carry the read bit but **not the execute bit**
+(`drw-r-----`), so probing them for a `conftest.py` raises `PermissionError` and collection
+aborts before any test runs. Every other stage passed, including all 32 folded-format tests,
+both gates, the trip-wire, and the gate under `cosmas-train`.
+
+Every local verification had used an explicit `tests/` path and so never walked `data/` —
+the same shape of gap as the §9 bug: the checking command differed from the one that runs.
+Fixed at both levels: `pyproject.toml` now sets `testpaths = ["tests"]` so *any* invocation is
+scoped, and the job passes `tests/` explicitly. Verified by reproducing the four
+`PermissionError`s with `--override-ini="testpaths=."` and then getting **496 passed** from the
+job's exact bare command.
+
+> **Worth acting on separately:** those four directories are unreadable *only* because they
+> lack the execute bit, which is almost certainly accidental. That is why
+> `data/training/train/combined_train.parquet` reads as inaccessible — the rationale recorded
+> in §4 for refolding the shipped parquet rather than rebuilding from JSONL. A
+> `chmod u+x data/training/{smoke,test,train,val}` would likely restore access and make the
+> reference parquet usable again. Not applied here, since it changes data-directory
+> permissions outside the scope of this work.
+
 **Test suite: 496 passed.** One pre-existing collection error,
 `tests/unit/test_fine_tuning_rollout.py` (`No module named 'agentops'`), unrelated to this work
 and present before it.

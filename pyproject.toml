@@ -100,3 +100,11 @@ python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+# Scope collection to tests/. Without this, a bare `pytest` from the repo root walks the
+# whole tree, including data/training/{smoke,test,train,val}, whose directories carry the
+# read bit but not the execute bit — so pytest's probe for a conftest.py inside them raises
+# PermissionError and collection aborts before a single test runs. Passing an explicit
+# `tests/` path hides the problem; setting it here fixes every invocation.
+testpaths = ["tests"]
