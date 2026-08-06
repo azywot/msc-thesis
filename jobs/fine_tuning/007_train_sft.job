@@ -69,7 +69,9 @@ module load Miniconda3/25.5.1-1
 module load CUDA/12.8.0
 module load cuDNN/9.10.1.4-CUDA-12.8.0
 
-PROJECT_DIR="${PROJECT_DIR:-/projects/0/gusr0608/msc-thesis}"
+# Under sbatch, SLURM copies this script to /var/spool/slurm, so the script's own location
+# cannot be used. SLURM_SUBMIT_DIR is the dir sbatch was invoked from.
+PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$HOME/azywot/msc-thesis}}"
 cd "$PROJECT_DIR" || exit 1
 echo "Project directory: $PROJECT_DIR"
 export CACHE_DIR=/scratch-shared/$USER/cache

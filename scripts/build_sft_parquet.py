@@ -441,14 +441,14 @@ def _select_one_per_question(correct_records: list) -> list:
 def main():
     parser = argparse.ArgumentParser(description="Build sft_train.parquet from collected JSONL files.")
     parser.add_argument(
-        "jsonl_files", default=["/projects/0/gusr0608/msc-thesis/data/training/sft/collected_20260605_214650.jsonl"], nargs="*",
+        "jsonl_files", nargs="*",
         help=(
             "Path(s) to collected_*.jsonl file(s). If omitted, all "
             "collected_*.jsonl files in --output-dir are used."
         ),
     )
     parser.add_argument(
-        "--output-dir", default="/projects/0/gusr0608/msc-thesis/data/training/sft",
+        "--output-dir", default="data/training/sft",
         help="Directory to read collected_*.jsonl from (when jsonl_files is omitted) "
              "and to write the output parquet to (default: data/training/sft).",
     )

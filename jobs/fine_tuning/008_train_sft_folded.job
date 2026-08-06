@@ -37,7 +37,14 @@
 #   trainer.total_epochs 3 -> 2   -> 2995 rows / batch 32 ~= 94 steps/epoch, so 2 epochs
 #                                    ~= 187 steps vs 007's ~90. Keeps the run comparable
 #                                    in optimizer steps rather than in epochs.
-#   trainer.save_freq/test_freq   -> 25, giving ~7 checkpoints over the run.
+#   trainer.save_freq/test_freq   -> 25, giving ~7 checkpoints over the run, of which only
+#                                    the best-val-loss and the last survive: the job ends by
+#                                    extracting both as ~365 MB PEFT adapters and deleting
+#                                    every 33 GB FSDP checkpoint (finalize_sft_run.py).
+#   checkpoint.save_contents      -> drop 'optimizer' (~1.3 GB/checkpoint). Nothing resumes
+#                                    from these; trainer.resume_mode=disable makes that
+#                                    explicit rather than leaving a half-resumable state.
+#   checkpoint layout             -> lora_adapters/<experiment>/<run-tag>/, matching GRPO.
 # Held fixed for comparability: model, LoRA rank/alpha/targets, lr, batch sizes,
 # max_length, the trajectory set, and the train/val membership (the fold runs after the
 # split, so no question moves between splits).
@@ -142,7 +149,12 @@ python scripts/check_sft_folded_format.py \
 echo "Pre-flight passed."
 
 EXPERIMENT_NAME="qwen3-8b-sft-folded-v1"
-DEFAULT_LOCAL_DIR="/scratch-shared/${USER}/fine_tuning/sft/${EXPERIMENT_NAME}"
+# Same layout as the GRPO LoRA runs (launch_verl.py:158-163):
+#   /scratch-shared/$USER/fine_tuning/lora_adapters/<experiment>/<run-tag>/
+# so SFT and GRPO adapters sit side by side and a run never clobbers its predecessor.
+RUN_TAG="$(date +%d-%m-%Y_%H-%M)-${SLURM_JOB_ID:-local}"
+DEFAULT_LOCAL_DIR="/scratch-shared/${USER}/fine_tuning/lora_adapters/${EXPERIMENT_NAME}/${RUN_TAG}"
+echo "Run tag: $RUN_TAG"
 
 echo ""
 echo "Starting SFT training (folded format)..."
@@ -182,6 +194,8 @@ torchrun --nproc_per_node=2 -m verl.trainer.sft_trainer \
     trainer.save_freq=25 \
     trainer.test_freq=25 \
     trainer.n_gpus_per_node=2 \
+    "checkpoint.save_contents=['model','extra']" \
+    trainer.resume_mode=disable \
     trainer.logger="['console','wandb']" \
     "trainer.default_local_dir=${DEFAULT_LOCAL_DIR}" \
     > "$SFT_LOG" 2>&1
@@ -198,17 +212,36 @@ echo ""
 echo "Checkpoints written under: $DEFAULT_LOCAL_DIR"
 find "$DEFAULT_LOCAL_DIR" -maxdepth 1 -name "global_step_*" -type d | sort -V
 
+# ── Keep only the best and last adapters ─────────────────────────────────────────
+# verl's SFT trainer writes the full FSDP state dict (~33 GB/checkpoint for Qwen3-8B) and,
+# unlike the RL path, never writes a lora_adapter/ dir. finalize_sft_run.py reconstructs the
+# LoRA weights from ALL rank shards (they are sharded DTensors — rank 0 alone holds half of
+# each tensor, so scripts/merge_lora.py cannot be used here), writes ~365 MB PEFT adapters
+# for the best-val-loss and final checkpoints, then deletes every shard.
 echo ""
-echo "Validation loss by step (pick the lowest that was actually saved):"
-grep -oE "val/loss[^,]*" "$SFT_LOG" | tail -20 || echo "  (no val/loss lines found in $SFT_LOG)"
+echo "Selecting best/last checkpoints and extracting adapters..."
+python scripts/finalize_sft_run.py \
+    --ckpt-dir "$DEFAULT_LOCAL_DIR" \
+    --log "$SFT_LOG" \
+    --lora-rank 64 --lora-alpha 64
+FINALIZE_EXIT=$?
+if [[ $FINALIZE_EXIT -ne 0 ]]; then
+    echo "WARNING — adapter extraction failed (exit $FINALIZE_EXIT)."
+    echo "The FSDP checkpoints were NOT deleted; rerun manually:"
+    echo "  python scripts/finalize_sft_run.py --ckpt-dir $DEFAULT_LOCAL_DIR --log $SFT_LOG"
+fi
 
 echo ""
-echo "Next steps:"
-echo "  1. Merge the chosen checkpoint into a PEFT adapter:"
-echo "       python scripts/merge_lora.py \\"
-echo "           --checkpoint $DEFAULT_LOCAL_DIR/global_step_<N> \\"
-echo "           --base-model Qwen/Qwen3-8B \\"
-echo "           --output-dir $DEFAULT_LOCAL_DIR/global_step_<N>/merged"
-echo "  2. Point an SFT inference config's lora_adapter_path at that directory and"
-echo "     evaluate through the NORMAL folded inference path (thinking_mode: NO), then"
-echo "     compare against base and GRPO."
+echo "Validation loss by step:"
+grep -oE "step:[0-9]+ - val/loss:[0-9.]+" "$SFT_LOG" || echo "  (none found in $SFT_LOG)"
+
+echo ""
+echo "Kept under $DEFAULT_LOCAL_DIR:"
+ls -la "$DEFAULT_LOCAL_DIR" 2>/dev/null
+
+echo ""
+echo "Next step — evaluate. The adapters are PEFT-format, same as the GRPO ones, so point"
+echo "an SFT inference config at one directly (no merge step needed):"
+echo "    lora_adapter_path: \"$DEFAULT_LOCAL_DIR/best_adapter\""
+echo "Evaluate through the NORMAL folded inference path (thinking_mode: NO), then compare"
+echo "against base and GRPO. Selection details are in $DEFAULT_LOCAL_DIR/selection.json."
