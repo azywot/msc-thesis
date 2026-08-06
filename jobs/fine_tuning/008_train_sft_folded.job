@@ -174,6 +174,18 @@ echo "Val data:   $VAL_FILE"
 echo "Checkpoints will be written to: $DEFAULT_LOCAL_DIR"
 echo ""
 
+# Two data flags below are deliberate and load-bearing:
+#   data.enable_thinking_default=false — verl's sft_trainer_engine.yaml ships
+#     `enable_thinking_default: none`, which YAML parses as the STRING "none" and the trainer
+#     passes straight through to data.custom_cls. Anything truthy makes Qwen3's template take
+#     its thinking branch, so the generation prompt loses <think>\n\n</think>\n\n and the
+#     4-token gap this whole format change exists to close silently comes back. Passing an
+#     explicit boolean here states the intent at the call site; FoldedSFTDataset also refuses
+#     to infer thinking from a non-boolean, and the pre-flight gate now runs with verl's real
+#     config so a regression fails there first.
+#   data.truncation=error — the gate proves 0 of 3357 rows exceed max_length (observed max
+#     9832), so this can only fire on a regression. `right` would silently drop the tail of a
+#     target together with its <|im_end|>, training the model never to stop.
 SFT_LOG="out/fine_tuning/sft_train/sft_folded_${SLURM_JOB_ID:-local}_verl.log"
 # SLURM/ROCm conflict: ROCR_VISIBLE_DEVICES leaks into the environment on H100 nodes.
 unset ROCR_VISIBLE_DEVICES
@@ -194,7 +206,9 @@ JANITOR_STOP="${DEFAULT_LOCAL_DIR}.training_done"
 JANITOR_LOG="out/fine_tuning/sft_train/sft_folded_${SLURM_JOB_ID:-local}_janitor.log"
 rm -f "$JANITOR_STOP"
 mkdir -p "$DEFAULT_LOCAL_DIR"
-python scripts/sft_checkpoint_janitor.py \
+# CUDA_VISIBLE_DEVICES="" so this background process can never initialise a CUDA context and
+# take memory from the two GPUs training is using. It only ever loads tensors to CPU.
+CUDA_VISIBLE_DEVICES="" python scripts/sft_checkpoint_janitor.py \
     --ckpt-dir "$DEFAULT_LOCAL_DIR" \
     --stop-file "$JANITOR_STOP" \
     --poll-seconds 60 \
@@ -221,9 +235,10 @@ torchrun --nproc_per_node=2 -m verl.trainer.sft_trainer \
     data.messages_key=messages \
     data.max_length=16384 \
     data.max_token_len_per_gpu=16384 \
-    data.truncation=right \
+    data.truncation=error \
     data.custom_cls.path="${PROJECT_DIR}/src/verl_ext/folded_sft_dataset.py" \
     data.custom_cls.name=FoldedSFTDataset \
+    data.enable_thinking_default=false \
     data.train_batch_size=32 \
     data.micro_batch_size_per_gpu=2 \
     model.path=Qwen/Qwen3-8B \

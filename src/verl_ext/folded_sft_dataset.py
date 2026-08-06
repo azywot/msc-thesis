@@ -60,7 +60,29 @@ class FoldedSFTDataset(Dataset):
         self.max_length = config.get("max_length", 1024)
         self.truncation = config.get("truncation", "error")
         self.pad_mode = config.get("pad_mode", "right")
-        self.enable_thinking = config.get("enable_thinking_default", False)
+
+        # `enable_thinking` decides whether Qwen3's generation prompt ends with the empty
+        # `<think>\n\n</think>\n\n` block, which is exactly the 4-token gap this class exists
+        # to close — so it must never be inferred from a loosely typed value. verl's own
+        # sft_trainer_engine.yaml ships `enable_thinking_default: none`, which YAML parses as
+        # the *string* "none", not None. A plain `config.get(..., False)` therefore returned a
+        # truthy string in real training runs, the template took its thinking branch, and the
+        # prompt silently lost the think block again while the pre-flight gate (which builds
+        # its own config without this key) kept passing. Only a real boolean enables thinking.
+        raw_thinking = config.get("enable_thinking_default", False)
+        if isinstance(raw_thinking, bool):
+            self.enable_thinking = raw_thinking
+        elif isinstance(raw_thinking, str) and raw_thinking.strip().lower() in ("true", "false"):
+            self.enable_thinking = raw_thinking.strip().lower() == "true"
+        else:
+            self.enable_thinking = False
+            logger.warning(
+                "enable_thinking_default=%r is not a boolean; using enable_thinking=False "
+                "(no-thinking, matching the folded data and thinking_mode: NO at inference).",
+                raw_thinking,
+            )
+        logger.info("FoldedSFTDataset: enable_thinking=%s, pad_mode=%s, truncation=%s",
+                    self.enable_thinking, self.pad_mode, self.truncation)
         if self.truncation not in ("error", "left", "right"):
             raise ValueError(f"Unknown truncation method {self.truncation}")
         if self.pad_mode not in ("right", "no_padding"):

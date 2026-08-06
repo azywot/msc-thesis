@@ -132,6 +132,48 @@ def test_training_prompt_is_token_identical_to_the_inference_prompt(tmp_path):
         assert prompt_ids == expected, f"row {k} prompt diverges from the inference prompt"
 
 
+@pytest.mark.parametrize("thinking_default", ["none", None, "None", "", 0])
+def test_prompt_identity_survives_verls_loosely_typed_thinking_default(tmp_path, thinking_default):
+    """A non-boolean ``enable_thinking_default`` must not silently re-open the 4-token gap.
+
+    verl's ``sft_trainer_engine.yaml`` ships ``enable_thinking_default: none``, which YAML
+    parses as the *string* ``"none"``, and the trainer passes that whole config through to
+    ``data.custom_cls``. A plain ``config.get(key, False)`` therefore returned a truthy string,
+    Qwen3's template took its thinking branch, and the generation prompt lost
+    ``<think>\\n\\n</think>\\n\\n`` — reintroducing exactly the defect this class exists to fix,
+    in the real training run, while a gate built from a hand-written config kept passing.
+    """
+    tok = _tokenizer()
+    rows = build_sft_parquet._fold_trajectory(
+        _two_tool_trajectory(), planning_suffix=_DEFAULT_PLANNING_SUFFIX_TOOLS
+    )
+    ds = _dataset(_folded_parquet(tmp_path, rows), tok,
+                  enable_thinking_default=thinking_default, pad_mode="no_padding")
+
+    assert ds.enable_thinking is False
+    for k, row in enumerate(rows):
+        item = ds[k]
+        loss_mask = item["loss_mask"].tolist()
+        prompt_ids = item["input_ids"][: loss_mask.index(1)].tolist()
+        expected = tok.apply_chat_template(
+            row[:2], tokenize=True, add_generation_prompt=True, enable_thinking=False
+        )
+        assert prompt_ids == expected, f"row {k} lost the empty think block"
+
+
+@pytest.mark.parametrize("value,expected", [(True, True), (False, False),
+                                            ("true", True), ("False", False)])
+def test_explicit_boolean_thinking_default_is_honoured(tmp_path, value, expected):
+    """The knob still works when it is given an unambiguous value."""
+    tok = _tokenizer()
+    rows = build_sft_parquet._fold_trajectory(
+        _two_tool_trajectory(), planning_suffix=_DEFAULT_PLANNING_SUFFIX_TOOLS
+    )
+    ds = _dataset(_folded_parquet(tmp_path, rows), tok,
+                  enable_thinking_default=value, pad_mode="no_padding")
+    assert ds.enable_thinking is expected
+
+
 def test_prompt_identity_holds_in_no_padding_mode(tmp_path):
     """`pad_mode: no_padding` is VERL's SFT default, so it is the mode that actually runs.
 

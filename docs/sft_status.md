@@ -300,6 +300,10 @@ Two consequences follow, and both are already handled:
 **Gates, run on every row in both `agent_engine` and `cosmas-train` (different transformers
 versions, identical results):**
 
+**Caveat on this table:** as originally run, the gate built its own config and so did not
+exercise the configuration training actually used. §17 documents the bug that hid behind that
+and the fix; the numbers below have since been re-verified under verl's real config.
+
 | Gate | Train | Val |
 |---|---|---|
 | Prompt token-identical to the inference prompt | **2995 / 2995** | **362 / 362** |
@@ -696,6 +700,91 @@ prefer editing `SFT_ADAPTER_PLACEHOLDER` and regenerating over hand-editing five
 ### Still not done
 
 Nothing has been submitted to SLURM. `stash@{0}` on `main` is still uncommitted.
+
+---
+
+## 17. Full audit before launch (2026-08-06): one critical bug found
+
+A line-by-line audit of the whole chain (fold, dataset, gate, job, checkpoint handling) before
+the first real run. **It found a defect that would have reintroduced the original bug.**
+
+### CRITICAL, fixed: the training run would have lost the empty think block
+
+`FoldedSFTDataset` read `config.get("enable_thinking_default", False)`. That default only
+applies when the key is *absent*, and it is not: verl's `sft_trainer_engine.yaml:29` ships
+`enable_thinking_default: none`, which YAML parses as the **string** `"none"`, and
+`sft_trainer.py:471-473` passes the entire `data` config into `data.custom_cls`. So the real
+training run rendered prompts with `enable_thinking="none"` — truthy — and Qwen3's template
+took its thinking branch:
+
+| | prompt tokens | ends with |
+|---|---|---|
+| Inference (`thinking_mode: NO`) | 19 | `<\|im_start\|>assistant\n<think>\n\n</think>\n\n` |
+| Training, as configured | **15** | `<\|im_start\|>assistant\n` |
+
+Measured on real rows: the training prompt was **4 tokens short on every row**, which is
+precisely the gap §2 describes and this whole format change exists to close.
+
+**Why nothing caught it.** `check_sft_folded_format.py` built its own small config dict that
+did not contain the key, so it got `False` and the correct 19-token prompt. The gate passed
+while training was wrong: it was validating a code path training never took. The §7 claim
+"prompt token-identical 2995/2995" was true of the gate's configuration only.
+
+Fixed in three independent places:
+
+1. `FoldedSFTDataset` now accepts only an unambiguous boolean (or `"true"`/`"false"`); any
+   other value falls back to no-thinking **and logs a warning**. It also logs the resolved
+   `enable_thinking` / `pad_mode` / `truncation` at construction.
+2. `check_sft_folded_format.py` now loads **verl's real config defaults** and builds the
+   dataset from them, so the gate exercises the configuration training uses. It reproduces
+   them hard-coded when verl is not importable, so it is never weaker than training.
+3. `008_train_sft_folded.job` passes `data.enable_thinking_default=false` explicitly.
+
+Nine regression tests were added, parametrised over `"none"`, `None`, `"None"`, `""`, `0`
+(must stay no-thinking) and over real booleans (must be honoured). Suite: **496 passed**.
+
+Re-verified with the job's exact config on both real splits: 2995 and 362 rows, prompt
+identical to inference, target ends in `<|im_end|>`, 0 rows over `max_length`.
+
+### Also changed
+
+- **`data.truncation=right` -> `error`.** The gate proves 0 of 3357 rows exceed `max_length`
+  (observed max 9832), so this can only fire on a regression, and `right` would silently drop
+  the tail of a target along with its `<|im_end|>`, training the model never to stop.
+- **The janitor runs with `CUDA_VISIBLE_DEVICES=""`**, so a background process that only ever
+  loads tensors to CPU cannot initialise a CUDA context on the GPUs training is using.
+
+### Checked and found correct
+
+- `_memory_user_content` reproduces `_build_memory_prompt` (`orchestrator.py:641-664`) exactly,
+  including the `"\n".join` structure.
+- `_plan_query_analysis` matches `_run_planning_turn` (`orchestrator.py:758-772`) branch for
+  branch, including the "tool call at position 0 keeps the whole text" edge case.
+- The action-history entry matches `_commit_tool_result` (`orchestrator.py:681-686`) field for
+  field: `tool_name` from the re-parsed call, `sub_goal` via the orchestrator's own extractor,
+  `command` as `json.dumps(tool_call)`, `result` as the stored tool content.
+- `_build_sft_messages` stores `state.messages[:2]`, so the folded row's `messages[1]` is the
+  same string `_build_memory_prompt` reads at inference.
+- Per-row system prompts are self-consistent with the data source (deepmath -> math prompt,
+  hotpotqa/nq -> search prompt; 1172 / 1823 rows).
+- Every assistant turn becomes exactly one row: the §7 turn-count distribution sums to 2995,
+  matching the row count, so the fold drops nothing.
+- Qwen3's `eos_token_id` is `<|im_end|>` (151645), so supervising `target + eos` teaches the
+  right stop token. `pad_token` is `<|endoftext|>` and differs, as it should.
+
+### Open observations, not fixed (low impact)
+
+- **`orchestrator.py:320,364` uses `states[0].messages[0]` as the system prompt for a whole
+  batch.** With two distinct system prompts in the collection set, a mixed batch means some
+  teacher trajectories were generated under the other one. The fold uses each trajectory's own
+  system prompt, which is correct for the student; this is a provenance caveat about the
+  teacher data, and a pre-existing orchestrator quirk, not a fold bug.
+- **`_strip_thinking` and `strip_thinking_tags` differ** on the orphaned-`</think>` case (OLMo
+  style). Irrelevant for the Qwen3 teacher and empirically 0 rows contain think tags, but the
+  two would diverge if the teacher family ever changed.
+- `_fold_trajectory(include_planning=...)` is never passed `False`.
+- `latest_checkpointed_iteration.txt` survives finalize and names a deleted step. Harmless
+  with `resume_mode=disable`.
 
 ---
 

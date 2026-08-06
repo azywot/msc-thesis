@@ -60,11 +60,29 @@ def main() -> int:
 
     tok = AutoTokenizer.from_pretrained(args.model)
     folded = pd.read_parquet(args.folded)
-    ds = FoldedSFTDataset(
-        parquet_files=[args.folded], tokenizer=tok,
-        config={"messages_key": "messages", "max_length": args.max_length,
-                "truncation": "right", "pad_mode": "no_padding"},
-    )
+
+    # Build the dataset from the config TRAINING will use, not a friendlier one. A gate that
+    # constructs its own minimal config tests a code path training never takes: verl passes
+    # the whole `data` config, which ships keys we would otherwise never see — including
+    # `enable_thinking_default: none` (the string "none"), which silently suppressed the
+    # empty think block in the prompt while this gate kept passing. If verl is importable we
+    # use its real defaults; otherwise we hard-code the same keys so the gate is no weaker.
+    cfg = {"enable_thinking_key": "enable_thinking", "enable_thinking_default": "none",
+           "pad_mode": "no_padding", "truncation": "error", "max_length": 1024}
+    try:
+        from omegaconf import OmegaConf
+        import verl  # noqa: F401
+        verl_defaults = Path(verl.__file__).parent / "trainer" / "config" / "sft_trainer_engine.yaml"
+        if verl_defaults.is_file():
+            loaded = OmegaConf.load(verl_defaults)
+            cfg = OmegaConf.to_container(loaded.get("data", loaded), resolve=False)
+            logger.info("Using verl's real data-config defaults from %s", verl_defaults)
+    except Exception as e:  # noqa: BLE001 — the hard-coded mirror above is the fallback
+        logger.info("verl not importable (%s); using the hard-coded mirror of its defaults.", e)
+
+    cfg.update({"messages_key": "messages", "max_length": args.max_length,
+                "truncation": "right", "pad_mode": "no_padding"})
+    ds = FoldedSFTDataset(parquet_files=[args.folded], tokenizer=tok, config=cfg)
 
     tool_results: dict = {}
     native = None
