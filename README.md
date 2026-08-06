@@ -18,8 +18,9 @@ CoSMAS is a configuration-driven multi-agent research framework for investigatin
 8. [Tools](#tools)
 9. [Datasets](#datasets)
 10. [GEPA prompt optimisation](#gepa-prompt-optimisation-system-adaptation)
-11. [Outputs](#outputs)
-12. [Failure-mode & rollout analysis](#failure-mode--rollout-analysis-scriptsfailure_modes)
+11. [Orchestrator SFT](#orchestrator-sft-weight-adaptation)
+12. [Outputs](#outputs)
+13. [Failure-mode & rollout analysis](#failure-mode--rollout-analysis-scriptsfailure_modes)
     - [All-wrong / all-correct (all-good) group analysis](#all-wrong--all-correct-all-good-group-analysis)
 
 ---
@@ -47,13 +48,16 @@ msc-thesis/
 │   │   └── data/
 │   │       └── prepare.py     # Download Search-R1 + DeepMath → VERL parquet files
 │   │
-│   └── gepa_integration/      # GEPA prompt optimisation (system adaptation chapter)
-│       ├── seed.py            # build_seed_candidate(), build_splits() (legacy split path)
-│       ├── adapter.py         # AgentGEPAAdapter - GEPAAdapter protocol implementation
-│       ├── reflection.py      # trim_prompt() - reflector context budget management
-│       └── data/
-│           ├── prepare.py     # Download Search-R1 + DeepMath → GEPA DatasetExamples
-│           └── loader.py      # load_gepa_examples() - JSON → DatasetExample
+│   ├── gepa_integration/      # GEPA prompt optimisation (system adaptation chapter)
+│   │   ├── seed.py            # build_seed_candidate(), build_splits() (legacy split path)
+│   │   ├── adapter.py         # AgentGEPAAdapter - GEPAAdapter protocol implementation
+│   │   ├── reflection.py      # trim_prompt() - reflector context budget management
+│   │   └── data/
+│   │       ├── prepare.py     # Download Search-R1 + DeepMath → GEPA DatasetExamples
+│   │       └── loader.py      # load_gepa_examples() - JSON → DatasetExample
+│   │
+│   └── verl_ext/              # VERL extensions (orchestrator SFT)
+│       └── folded_sft_dataset.py  # FoldedSFTDataset - prompt identical to inference
 │
 ├── scripts/
 │   ├── run_experiment.py      # Main runner (requires --config)
@@ -724,6 +728,78 @@ Results land under `experiments/results/gepa_inference/<dataset>/<variant>/` and
 ### Design
 
 See `docs/superpowers/specs/2026-05-15-gepa-integration-design.md` for the full design spec covering: candidate schema, data strategy, failure-stratified splits, reflective dataset construction, GEPA hyperparameters, and the thesis narrative.
+
+---
+
+## Orchestrator SFT (weight adaptation)
+
+Supervised fine-tuning of the Qwen3-8B orchestrator with a rank-64 LoRA, on trajectories collected from a stronger teacher. Unlike GEPA, this updates weights; unlike the GRPO run, it needs no rollouts - training is static cross-entropy, so **no tools execute, no sub-agent server runs, and no `SERPER_API_KEY`/`TAVILY_API_KEY` is needed** (only `WANDB_API_KEY`, for logging).
+
+**Full status, evidence and handover: [`docs/sft_status.md`](docs/sft_status.md).** Read it before changing anything here.
+
+### The format rule (the thing to get right)
+
+The orchestrator never sees a growing conversation at inference. Every non-baseline turn rebuilds a fresh two-message prompt via `AgenticOrchestrator._build_memory_prompt`, with prior steps compressed into `Action Step N: Tool / Sub-goal / Command / Result` prose inside the user turn.
+
+Training on the stored multi-turn transcript therefore optimises a distribution the model is never evaluated on - loss falls while task performance drops, and val loss cannot detect it because the val split shares the defect. So SFT rows are **memory-folded**: one row per orchestrator decision, each reproducing exactly the prompt inference would have built at that step.
+
+| | Trajectories | Rows | Supervised tokens |
+|---|---|---|---|
+| Train | 968 | 2995 | 589,805 |
+| Val | 108 | 362 | 66,556 |
+
+A folded row is one decision, a native row was a whole trajectory, so the row count is just the assistant-turn count. The supervision is byte-for-byte identical to the native format; only the conditioning changes.
+
+Two components enforce this:
+
+- `scripts/build_sft_parquet.py --format folded` builds the rows, importing the orchestrator's own `_format_action_history` / `_extract_sub_goal` helpers so the folded prompt cannot drift from the real one.
+- `src/verl_ext/folded_sft_dataset.py` (`FoldedSFTDataset`, wired in via VERL's `data.custom_cls`) renders the prompt with `add_generation_prompt=True` so it matches inference token-for-token *including* Qwen3's empty `<think>\n\n</think>` block, and supervises only `target + <|im_end|>`.
+
+`scripts/check_sft_folded_format.py` is a pre-flight gate asserting prompt identity, span purity, no thinking, no tool output in the loss, and no truncation, on every row. The training job runs it and refuses to start if it fails.
+
+### Quick start
+
+```bash
+# 1. Collect teacher trajectories (only needed once; produces collected_*.jsonl)
+sbatch jobs/fine_tuning/006_collect_sft_data.job
+
+# 2. Build the memory-folded parquets from the shipped native ones
+python scripts/build_sft_parquet.py \
+    --from-parquet data/training/sft/sft_train.parquet \
+    --output-dir data/training/sft --output-name sft_folded_train.parquet
+
+# 3. Verify everything on the CPU partition (tests, gate, gate trip-wire) - no GPU cost
+sbatch jobs/fine_tuning/008_test_sft_folded.job
+
+# 4. Train (~187 steps, 2xH100, ~40 min)
+sbatch jobs/fine_tuning/008_train_sft_folded.job
+
+# 5. Evaluate: paste the run tag the job prints into SFT_ADAPTER_PLACEHOLDER
+#    in scripts/generate_configs.py, then regenerate and run
+python scripts/generate_configs.py --suite sft_inference
+./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/sft_inference
+```
+
+There is no manual post-training step: the job selects the best-val-loss and last checkpoints, extracts them as PEFT adapters, deletes the shards, and archives the adapters into `data/adapters/<experiment>/<run-tag>/`.
+
+### Checkpoint handling
+
+`verl.trainer.sft_trainer` never writes a `lora_adapter/` directory (only the RL path does). It writes the full FSDP state dict: ~32 GB per checkpoint, of which ~350 MB is trained weight, and the shards are **sharded DTensors**, so rank 0 alone holds half of each tensor.
+
+- `scripts/sft_checkpoint_janitor.py` runs alongside training and collapses each checkpoint to its adapter as soon as verl's atomic tracker file marks it complete, keeping the peak at ~32-64 GB instead of ~256 GB.
+- `scripts/finalize_sft_run.py` selects best/last across whatever form each step is in and cleans up.
+- **`scripts/merge_lora.py` must not be used on SFT checkpoints** - it reads rank 0 only and would silently produce a half-weight adapter.
+
+### Job files
+
+| File | Purpose | Log |
+|------|---------|-----|
+| `jobs/fine_tuning/006_collect_sft_data.job` | Collect teacher trajectories | `out/fine_tuning/sft_collect/collect_<job_id>.log` |
+| `jobs/fine_tuning/007_train_sft.job` | Original native-format run (kept for comparison; superseded) | `out/fine_tuning/sft_train/sft_<job_id>.log` |
+| `jobs/fine_tuning/008_test_sft_folded.job` | CPU verification suite (tests + gate + trip-wire) | `out/fine_tuning/tests/sft_folded_tests_<job_id>.log` |
+| `jobs/fine_tuning/008_train_sft_folded.job` | Folded-format training run | `out/fine_tuning/sft_train/sft_folded_<job_id>.log` |
+
+Eval configs live in `experiments/configs/qwen3/sft_inference/` (five benchmarks, `thinking_mode: NO`, orchestrator named `Qwen3-8B-SFT` so W&B keeps it distinct from the GRPO rows).
 
 ---
 
