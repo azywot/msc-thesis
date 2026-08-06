@@ -696,3 +696,74 @@ prefer editing `SFT_ADAPTER_PLACEHOLDER` and regenerating over hand-editing five
 ### Still not done
 
 Nothing has been submitted to SLURM. `stash@{0}` on `main` is still uncommitted.
+
+---
+
+## 16. Checkpoints are collapsed to adapters during training (2026-08-06)
+
+### The problem with converting only at the end
+
+`verl` writes the full FSDP state dict at every save (~32 GB after dropping the optimizer
+state), and `sft_trainer.py:431` saves on the last step as well as every `save_freq`. Over
+~187 steps at `save_freq=25` that is 8 checkpoints, so end-of-run conversion peaks at
+**~256 GB** and a cancelled job leaves every byte behind. That is exactly what job 25268454
+did.
+
+Scratch quota is 8 TiB at 0.19% used, so this was never a space *failure*, but it is
+avoidable risk: the shards only exist to be thrown away.
+
+### `scripts/sft_checkpoint_janitor.py` (new)
+
+Runs in the background for the duration of training, launched and stopped by
+`008_train_sft_folded.job`. Each pass converts every complete, unconverted checkpoint into
+`step_adapters/step_<N>/` and deletes its shards. Peak becomes one or two checkpoints
+(~32-64 GB) plus a few GB of adapters, and a cancelled job leaves almost nothing.
+
+**Knowing a checkpoint is finished is not guesswork.**
+`verl/utils/checkpoint/fsdp_checkpoint_manager.py` ends `save_checkpoint` with a
+`torch.distributed.barrier()` after every rank has written and closed its shard;
+`CheckpointHandler.save_checkpoint` then has rank 0 write
+`latest_checkpointed_iteration.txt` as write-temp-plus-`os.rename`, which is atomic. So the
+tracker naming step N implies `global_step_N` is complete on all ranks. The janitor only ever
+touches steps at or below the tracker value.
+
+Four properties that make deletion safe:
+
+1. **Nothing reads these back.** `trainer.resume_mode=disable`.
+2. **Shards are deleted only after the adapter exists** on disk.
+3. **Extraction is atomic.** It writes to `.tmp_step_<N>/` and renames into `step_<N>/`. A
+   janitor killed mid-write would otherwise leave a truncated `adapter_model.safetensors`
+   that the next pass reads as finished, and the shards would be deleted against it. The
+   staging name does not match the `step_*` glob, so nothing downstream can pick it up.
+4. **Failure is local.** One bad checkpoint is logged and skipped with its shards intact;
+   `finalize_sft_run.py` retries it at the end. If the janitor dies entirely, the run
+   degrades to the old end-of-run behaviour.
+
+The job stops the janitor with a stop file and `wait`s for its final sweep **before**
+`finalize_sft_run.py` runs, so the two never touch the same checkpoint. A `trap` on
+`EXIT INT TERM` stops it on `scancel` or a crash too, so it cannot outlive the job.
+
+### `finalize_sft_run.py` now handles both forms
+
+Candidates are the union of `step_adapters/step_<N>/` (already collapsed) and any remaining
+`global_step_<N>/` (shards); if a step somehow has both, the adapter wins. Best (lowest
+val/loss) and last are selected across that union, a pre-extracted adapter is copied rather
+than re-extracted, and everything else, including the whole `step_adapters/` tree, is deleted.
+
+### Verified
+
+A simulated run wrote four checkpoints with the tracker updated exactly as verl does, plus a
+fifth the tracker never reached, with the janitor live alongside:
+
+| Property | Result |
+|---|---|
+| Checkpoints collapsed during the run | 4 of 4, each deleted right after conversion |
+| Checkpoint above the tracker value | left untouched, as required |
+| Janitor-made adapter vs direct extraction | **bit-identical** |
+| Staging dir visible to discovery | no |
+| Finalize over the mixed state | best = step 50 (reused adapter), last = step 125 (extracted from shards) |
+| Survivors | `best_adapter/`, `last_adapter/`, `selection.json` only |
+
+Reconstruction itself was separately verified bit-exact against synthetic 2-rank sharded
+DTensors, including an uneven split and a non-zero shard dim, with the shape guard confirmed
+to reject a missing rank. Full suite still 487 passed.

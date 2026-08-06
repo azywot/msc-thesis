@@ -45,6 +45,16 @@ _VAL_LOSS_RE = re.compile(r"step:(\d+)\s*-\s*val/loss:([0-9.eE+-]+)")
 _LORA_KEY_RE = re.compile(r"\.lora_[AB]\.")
 # base_model.model.model.layers.0.self_attn.q_proj.lora_A.default.weight -> q_proj
 _TARGET_MODULE_RE = re.compile(r"\.([A-Za-z0-9_]+)\.lora_[AB]\.")
+# Where sft_checkpoint_janitor.py puts adapters it extracts while training is still running.
+STEP_ADAPTERS_DIRNAME = "step_adapters"
+
+
+def _step_num(path: Path):
+    """Step number from `global_step_25` or `step_25`, or None if the name has no integer."""
+    try:
+        return int(path.name.rsplit("_", 1)[1])
+    except (IndexError, ValueError):
+        return None
 
 
 def parse_val_losses(log_path: Path) -> dict:
@@ -180,20 +190,33 @@ def main() -> int:
         logger.error("No such checkpoint dir: %s", ckpt_dir)
         return 1
 
-    found = sorted((int(d.name.rsplit("_", 1)[1]), d)
-                   for d in ckpt_dir.glob("global_step_*") if d.is_dir())
-    if not found:
-        logger.error("No global_step_* dirs under %s", ckpt_dir)
-        return 1
+    # Candidates come from two places, because sft_checkpoint_janitor.py collapses
+    # checkpoints into adapters *during* the run: steps it already converted live in
+    # step_adapters/step_N, and anything it did not reach is still an FSDP shard dir.
+    pre_extracted = {}
+    step_adapters_dir = ckpt_dir / STEP_ADAPTERS_DIRNAME
+    if step_adapters_dir.is_dir():
+        for d in step_adapters_dir.glob("step_*"):
+            s = _step_num(d)
+            if s is not None and (d / "adapter_model.safetensors").is_file():
+                pre_extracted[s] = d
 
+    found = sorted((s, d) for d in ckpt_dir.glob("global_step_*") if d.is_dir()
+                   for s in [_step_num(d)] if s is not None)
     # A cancelled or crashed run leaves a created-but-unwritten step dir behind. Such a dir
     # must not be selected as "last", or the run's real final adapter is silently skipped.
-    steps = [(s, d) for s, d in found if any(d.glob("model_world_size_*_rank_*.pt"))]
-    incomplete = [(s, d) for s, d in found if (s, d) not in steps]
+    with_shards = [(s, d) for s, d in found if any(d.glob("model_world_size_*_rank_*.pt"))]
+    incomplete = [(s, d) for s, d in found if (s, d) not in with_shards]
     for s, _ in incomplete:
         logger.warning("Ignoring incomplete checkpoint: global_step_%d (no model shards)", s)
-    if not steps:
-        logger.error("No COMPLETE checkpoints under %s (%d incomplete).", ckpt_dir, len(found))
+
+    # step -> (kind, path). An already-extracted adapter wins over leftover shards for the
+    # same step: it is the cheaper source and was produced by this same code.
+    candidates = {s: ("shards", d) for s, d in with_shards}
+    candidates.update({s: ("adapter", d) for s, d in pre_extracted.items()})
+    if not candidates:
+        logger.error("Nothing to finalize under %s (%d incomplete checkpoint dir(s)).",
+                     ckpt_dir, len(incomplete))
         return 1
 
     losses = parse_val_losses(log_path) if log_path.is_file() else {}
@@ -201,19 +224,21 @@ def main() -> int:
         logger.warning("No 'step:N - val/loss:X' lines in %s — cannot pick a best "
                        "checkpoint; keeping the last one only.", log_path)
 
-    last_step, last_dir = steps[-1]
-    scored = [(losses[s], s, d) for s, d in steps if s in losses]
-    best_loss, best_step, best_dir = min(scored) if scored else (None, last_step, last_dir)
+    ordered = sorted(candidates)
+    last_step = ordered[-1]
+    scored = [(losses[s], s) for s in ordered if s in losses]
+    best_loss, best_step = min(scored) if scored else (None, last_step)
 
     logger.info("=" * 70)
-    logger.info("Checkpoints found: %s", ", ".join(str(s) for s, _ in steps))
-    for s, _ in steps:
+    logger.info("Steps available: %s (%d already collapsed to adapters during training)",
+                ", ".join(str(s) for s in ordered), len(pre_extracted))
+    for s in ordered:
         mark = ""
         if s == best_step:
             mark += "  <-- best"
         if s == last_step:
             mark += "  <-- last"
-        logger.info("  step %-5d val/loss %s%s", s,
+        logger.info("  step %-5d [%-7s] val/loss %s%s", s, candidates[s][0],
                     f"{losses[s]:.6f}" if s in losses else "(not evaluated)", mark)
     logger.info("Keeping: best=step %s%s, last=step %s",
                 best_step, f" (val/loss {best_loss:.6f})" if best_loss is not None else "",
@@ -224,23 +249,34 @@ def main() -> int:
         logger.info("--dry-run: nothing written or deleted.")
         return 0
 
+    def _materialise(step: int, out_dir: Path) -> dict:
+        """Put step's adapter at out_dir, extracting from shards only if needed."""
+        kind, src = candidates[step]
+        if kind == "adapter":
+            logger.info("Reusing adapter already extracted during training: %s", src)
+            if out_dir.exists():
+                shutil.rmtree(out_dir)
+            shutil.copytree(src, out_dir)
+            size_mb = sum(f.stat().st_size for f in out_dir.iterdir() if f.is_file()) / 1e6
+            return {"source_checkpoint": str(src), "extracted_during_training": True,
+                    "size_mb": round(size_mb, 1)}
+        return extract_adapter(src, out_dir, args.lora_rank, args.lora_alpha)
+
     summary = {"best_step": best_step, "best_val_loss": best_loss, "last_step": last_step,
                "val_losses": {str(k): v for k, v in sorted(losses.items())}, "adapters": {}}
 
-    summary["adapters"]["best"] = extract_adapter(
-        best_dir, ckpt_dir / "best_adapter", args.lora_rank, args.lora_alpha)
+    summary["adapters"]["best"] = _materialise(best_step, ckpt_dir / "best_adapter")
     if last_step == best_step:
         logger.info("Last checkpoint IS the best; writing one adapter only.")
         summary["adapters"]["last"] = "same as best"
     else:
-        summary["adapters"]["last"] = extract_adapter(
-            last_dir, ckpt_dir / "last_adapter", args.lora_rank, args.lora_alpha)
+        summary["adapters"]["last"] = _materialise(last_step, ckpt_dir / "last_adapter")
 
     (ckpt_dir / "selection.json").write_text(json.dumps(summary, indent=2))
     logger.info("Wrote %s", ckpt_dir / "selection.json")
 
     if args.keep_shards:
-        logger.info("--keep-shards: leaving %d checkpoint dir(s) in place.", len(steps))
+        logger.info("--keep-shards: leaving %d checkpoint dir(s) in place.", len(with_shards))
         return 0
 
     # Only ever delete after both adapters exist on disk — a failed extraction must not
@@ -254,11 +290,14 @@ def main() -> int:
             return 1
 
     freed = 0
-    for _, d in steps + incomplete:
+    for _, d in with_shards + incomplete:
         freed += sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
         shutil.rmtree(d)
-    logger.info("Deleted %d checkpoint dir(s), freed %.1f GB.",
-                len(steps) + len(incomplete), freed / 1e9)
+    if step_adapters_dir.is_dir():
+        freed += sum(f.stat().st_size for f in step_adapters_dir.rglob("*") if f.is_file())
+        shutil.rmtree(step_adapters_dir)
+    logger.info("Deleted %d checkpoint dir(s) and %d per-step adapter(s), freed %.1f GB.",
+                len(with_shards) + len(incomplete), len(pre_extracted), freed / 1e9)
     logger.info("Kept: %s", ", ".join(
         str(p) for p in sorted(ckpt_dir.iterdir()) if p.is_dir() or p.suffix == ".json"))
     return 0

@@ -47,6 +47,15 @@
 #                                    from these; trainer.resume_mode=disable makes that
 #                                    explicit rather than leaving a half-resumable state.
 #   checkpoint layout             -> lora_adapters/<experiment>/<run-tag>/, matching GRPO.
+#   checkpoint janitor            -> NEW. verl writes the full ~32 GB FSDP state dict at every
+#                                    save, so converting only at the end peaks at ~8 x 32 GB
+#                                    = ~256 GB and a cancelled job leaves all of it (this is
+#                                    what job 25268454 did). sft_checkpoint_janitor.py runs
+#                                    alongside training and collapses each checkpoint to its
+#                                    ~350 MB adapter as soon as verl's atomic tracker file
+#                                    marks it complete, so the peak is ~32-64 GB plus a few GB
+#                                    of adapters. finalize_sft_run.py then selects best/last
+#                                    from whatever form each step is in.
 # Held fixed for comparability: model, LoRA rank/alpha/targets, lr, batch sizes,
 # max_length, the trajectory set, and the train/val membership (the fold runs after the
 # split, so no question moves between splits).
@@ -173,6 +182,35 @@ export TRITON_CACHE_DIR="/scratch-shared/${USER}/triton_cache"
 export WANDB_CACHE_DIR="/scratch-shared/${USER}/wandb_cache"
 mkdir -p "$TRITON_CACHE_DIR" "$WANDB_CACHE_DIR"
 
+# ── Collapse checkpoints to adapters *while* training runs ───────────────────────
+# verl writes the full ~32 GB FSDP state dict at every save. Converting only at the end means
+# a peak of ~8 x 32 GB = ~256 GB, and a cancelled job leaves all of it behind — which is what
+# happened to job 25268454. The janitor converts each checkpoint as soon as verl's atomic
+# tracker file says it is complete, so the peak is one or two checkpoints plus a few GB of
+# adapters. It never touches a checkpoint above the tracker value, and deletes shards only
+# after the adapter exists. Safe to delete because trainer.resume_mode=disable: nothing here
+# is ever read back. If the janitor dies, finalize_sft_run.py still cleans up at the end.
+JANITOR_STOP="${DEFAULT_LOCAL_DIR}.training_done"
+JANITOR_LOG="out/fine_tuning/sft_train/sft_folded_${SLURM_JOB_ID:-local}_janitor.log"
+rm -f "$JANITOR_STOP"
+mkdir -p "$DEFAULT_LOCAL_DIR"
+python scripts/sft_checkpoint_janitor.py \
+    --ckpt-dir "$DEFAULT_LOCAL_DIR" \
+    --stop-file "$JANITOR_STOP" \
+    --poll-seconds 60 \
+    --lora-rank 64 --lora-alpha 64 \
+    > "$JANITOR_LOG" 2>&1 &
+JANITOR_PID=$!
+echo "Checkpoint janitor running (pid $JANITOR_PID), log: $JANITOR_LOG"
+
+# Stop the janitor however this job ends, including scancel or a crash, so it cannot outlive
+# the job and keep deleting under a later run.
+cleanup_janitor() {
+    touch "$JANITOR_STOP" 2>/dev/null || true
+    kill "$JANITOR_PID" 2>/dev/null || true
+}
+trap cleanup_janitor EXIT INT TERM
+
 # `|| SFT_EXIT=$?` is load-bearing: under `set -e` a bare failing command aborts the script
 # immediately, so `SFT_EXIT=$?` on the next line would never run and the diagnostic below would
 # be unreachable. The `|| ...` puts the command in a condition context, which suspends `set -e`.
@@ -206,6 +244,19 @@ torchrun --nproc_per_node=2 -m verl.trainer.sft_trainer \
     "trainer.default_local_dir=${DEFAULT_LOCAL_DIR}" \
     > "$SFT_LOG" 2>&1 || SFT_EXIT=$?
 
+# Stop the janitor and let it finish its final sweep BEFORE finalize runs, so the two never
+# work on the same checkpoint at once. It wakes within --poll-seconds of the stop file
+# appearing, sweeps once more (catching a checkpoint written during its last sleep), and exits.
+echo ""
+echo "Stopping the checkpoint janitor and waiting for its final sweep..."
+touch "$JANITOR_STOP"
+wait "$JANITOR_PID" 2>/dev/null || true
+trap - EXIT INT TERM
+rm -f "$JANITOR_STOP"
+echo "Janitor finished. Summary:"
+grep -cE "Collapsed global_step" "$JANITOR_LOG" 2>/dev/null | sed 's/^/  checkpoints collapsed during training: /' || true
+grep -E "ERROR" "$JANITOR_LOG" 2>/dev/null | tail -5 || true
+
 echo ""
 if [[ $SFT_EXIT -ne 0 ]]; then
     echo "FAIL — SFT trainer exited with code $SFT_EXIT. See $SFT_LOG"
@@ -214,8 +265,9 @@ fi
 
 echo "Training complete at: $(date)"
 echo ""
-echo "Checkpoints written under: $DEFAULT_LOCAL_DIR"
+echo "Under $DEFAULT_LOCAL_DIR:"
 find "$DEFAULT_LOCAL_DIR" -maxdepth 1 -name "global_step_*" -type d | sort -V
+find "$DEFAULT_LOCAL_DIR/step_adapters" -maxdepth 1 -name "step_*" -type d 2>/dev/null | sort -V
 
 # ── Keep only the best and last adapters ─────────────────────────────────────────
 # verl's SFT trainer writes the full FSDP state dict (~33 GB/checkpoint for Qwen3-8B) and,
