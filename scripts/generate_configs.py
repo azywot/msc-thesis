@@ -152,7 +152,7 @@ LORA_ADAPTER_PLACEHOLDER = (
 # still pointed at them. Replace <run-tag> with the value the training job prints.
 SFT_ADAPTER_PLACEHOLDER = (
     "/gpfs/home3/xchen1/azywot/msc-thesis/data/adapters/"
-    "qwen3-8b-sft-folded-v1/<run-tag>/best_adapter"
+    "qwen3-8b-sft-folded-v1/06-08-2026_21-47-25300018/best_adapter"
 )
 
 # (stem, orch_key, sub_key, thinking_mode)
