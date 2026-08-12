@@ -1,6 +1,6 @@
 # Orchestrator SFT: status and handover
 
-**Last updated:** 2026-08-06
+**Last updated:** 2026-08-12
 **Branch:** `feat/sft-folded-format`
 
 The single source of truth for the orchestrator SFT work: the diagnosis, the fix, the data,
@@ -24,8 +24,13 @@ A **pre-launch audit found one critical bug** (§9): the training run would have
 reintroduced the very prompt gap this work exists to close. It is fixed, with regression tests,
 and re-verified on the real data.
 
-**NEXT ACTION: submit.** See §10. Nothing has been submitted to SLURM. Test suite: **496
-passed**.
+**Training and evaluation are now DONE.** Job run tag `06-08-2026_21-47-25300018` trained 186
+steps, val loss falling monotonically 0.5404 → 0.4234 (`data/adapters/qwen3-8b-sft-folded-v1/
+06-08-2026_21-47-25300018/selection.json`); best == last checkpoint (step 186). The adapter is
+archived at `data/adapters/qwen3-8b-sft-folded-v1/06-08-2026_21-47-25300018/best_adapter/`, and
+all five `sft_inference` configs were pointed at it and run on 2026-08-07 (§8 has the numbers).
+**NEXT ACTION: fold the results into Ch 7** of the thesis — see §8 for the numbers and the one
+open question (AIME) they raise. Test suite: **496 passed**.
 
 ---
 
@@ -449,6 +454,37 @@ silently overwrites those edits. `generate_configs.py` is not the source of trut
 `lora_inference`. Prefer editing `SFT_ADAPTER_PLACEHOLDER` and regenerating over hand-editing
 five files.
 
+### Results (run tag `06-08-2026_21-47-25300018`, evaluated 2026-08-07)
+
+All five configs were run against `best_adapter` (== `last_adapter`, both step 186). Raw output
+under `experiments/results/sft_inference/<dataset>/qwen8B_sub1_7b_none/*/metrics.json`. Compared
+against the thesis's matched no-thinking baseline (Table `tab:adaptation_combined`, 8B
+orchestrator + frozen 1.7B sub-agents, no adapter) and the existing GRPO-LoRA row from
+`orchestrator_ft_results.csv`:
+
+| Benchmark | Baseline | GRPO-LoRA | **SFT-folded** |
+|---|---|---|---|
+| GAIA | 7.9 (13/165) | 12.7 (21/165) | **12.7 (21/165)** |
+| GPQA | 41.9 (83/198) | 46.5 | **41.4 (82/198)** |
+| AIME | 23.3 | 18.3 | **10.0 (6/60)** |
+| MuSiQue | 9.5 | 14.0 | **17.5 (35/200)** |
+| HLE | 3.0 | 10.0 | **8.5 (17/200)** |
+
+The format fix clears the bar it was built for on three of five benchmarks: SFT now beats the
+pre-adaptation baseline on GAIA, MuSiQue and HLE, which the pre-fold native-format adapter never
+did (§2 — every prior SFT number sat below base). GPQA is a wash (82 vs 83 correct, within noise).
+
+**AIME is the open question.** SFT-folded scores 6/60 (10.0%), matching the *pre-fold* native
+adapter's AIME number from the 2026-06-17 session note exactly (also 6/60) and well below both
+the baseline (23.3%) and GRPO-LoRA (18.3%). Total tool calls on AIME collapsed to 20 (3
+`web_search` + 17 `code_generator`) against the baseline run's 79 — the adapter is answering from
+memory far more than the baseline does. A plausible mechanism is the row-level composition shift
+from §6 (folding dilutes math to 1172/2995 rows against search's 1823/2995, versus the 1:1
+trajectory-level balance), but that is a hypothesis, not yet established: the training-side
+tool-call rate wasn't measured directly, and no ablation (e.g. re-running §10's
+`--drop-planning-answers`, or rebalancing rows rather than trajectories) has been tried. Needs one
+sentence in Ch 7 either way; do not claim the mechanism without further evidence.
+
 ---
 
 ## 9. Pre-launch audit: one critical bug
@@ -589,8 +625,9 @@ left. Scratch quota is 8 TiB at ~0.2% used. `$USER` on the compute node is `azyw
 
 ## 11. What is not done
 
-- **No completed training run.** Nothing is running. Launch per §10.
-- **No SFT eval result**, and therefore no number for the thesis yet.
+- **Training and eval are done** (§1, §8) — run tag `06-08-2026_21-47-25300018`, five-benchmark
+  eval on 2026-08-07. **Not yet done:** folding the §8 numbers and the AIME regression into Ch 7
+  of the thesis, and investigating *why* AIME regressed (hypothesis in §8, not yet tested).
 - **No in-training generation eval.** Deliberate: a format mismatch is visible at step 0, so the
   pre-flight gate catches this class of bug at a fraction of the cost. An in-training callback
   would catch *degradation over training*, a different failure. Worth adding only if you want
