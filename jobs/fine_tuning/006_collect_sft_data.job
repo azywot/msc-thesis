@@ -1,0 +1,103 @@
+#!/bin/bash
+#SBATCH --job-name=SFTCollect
+#SBATCH --partition=gpu_h100
+# GPU layout (4× H100 NVL ~94 GB each):
+#   Qwen3-32B  tp=2 → GPUs 0+1  (~64 GB weights, vLLM KV ~0.9 util)
+#   Qwen3-1.7B tp=1 → GPU 2     (~3.5 GB; shared by web_search + code_generator)
+#   GPU 3: spare headroom
+#SBATCH --gpus=4
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=60:00:00
+#SBATCH --output=out/fine_tuning/sft_collect/collect_%A.log
+#SBATCH --error=out/fine_tuning/sft_collect/collect_%A.err
+
+# Run Qwen3-32B (ORCHESTRATOR_ONLY thinking, sub-agent mode) on the 1800
+# training questions and save correct trajectories as SFT training data.
+#
+# Prerequisites:
+#   - 001_prepare_data.job completed (creates data/training/train/combined_train.parquet)
+#
+# Output:
+#   data/training/sft/sft_train.parquet    — correct trajectories (messages column)
+#   data/training/sft/collected_<ts>.json  — all trajectories + yield stats
+#
+# To smoke-test on 50 rows first (single pass):
+#   Add --subset 50 --n-samples 1 to the python call below.
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis — SFT Data Collection"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+# Under sbatch, SLURM copies this script to /var/spool/slurm, so the script's own location
+# cannot be used. SLURM_SUBMIT_DIR is the dir sbatch was invoked from.
+PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$HOME/azywot/msc-thesis}}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+
+if [[ -f ".env" ]]; then
+    echo "Loading environment variables from .env..."
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${SERPER_API_KEY:-}" && -z "${TAVILY_API_KEY:-}" ]]; then
+    echo "ERROR: SERPER_API_KEY or TAVILY_API_KEY must be set."
+    exit 1
+fi
+
+source activate agent_engine
+# Conda env's libstdc++ must take precedence over the older system /lib64 version.
+# Without this, libicui18n.so.78 fails with "CXXABI_1.3.15 not found".
+export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+
+for required_file in \
+    data/training/train/combined_train.parquet
+do
+    if [[ ! -f "$required_file" ]]; then
+        echo "ERROR: Missing required file: $required_file"
+        echo "Run jobs/fine_tuning/001_prepare_data.job first."
+        exit 1
+    fi
+done
+
+mkdir -p out/fine_tuning/sft_collect
+mkdir -p data/training/sft
+
+# export PYTHONUNBUFFERED=1
+
+echo ""
+echo "Starting SFT data collection..."
+echo "Config:  experiments/configs/fine_tuning/collect_sft_qwen32b.yaml"
+echo "Parquet: data/training/train/combined_train.parquet"
+echo "Output:  data/training/sft/"
+echo ""
+
+python scripts/collect_sft_data.py \
+    --config     experiments/configs/fine_tuning/collect_sft_qwen32b.yaml \
+    --parquet    data/training/train/combined_train.parquet \
+    --output-dir data/training/sft \
+    --n-samples  3
+
+echo ""
+echo "Collection complete at: $(date)"
+echo ""
+echo "Output files:"
+ls -lh data/training/sft/ 2>/dev/null || echo "  (no files found — check log for errors)"
+echo ""
+echo "Next step — inspect yield and kick off SFT training:"
+echo "  python scripts/inspect_sft_data.py data/training/sft/sft_train.parquet"
+echo "  sbatch jobs/fine_tuning/007_train_sft.job"

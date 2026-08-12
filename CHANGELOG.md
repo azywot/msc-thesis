@@ -9,6 +9,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased] — feat/gepa-integration
 
 ### Added
+- **Orchestrator SFT: memory-folded training format** (`feat/sft-folded-format`) — fixes the SFT
+  adapter landing below the base model. Diagnosis: SFT rows were stored as the native multi-turn
+  transcript the teacher produced, but the orchestrator never sees that at inference — every
+  non-baseline turn rebuilds a fresh `[system, user]` prompt via `_build_memory_prompt`. Verified
+  by executing both code paths: 0/194 sampled decision points had matching train-vs-inference
+  conditioning.
+  - `scripts/build_sft_parquet.py --format folded` — expands one trajectory into one
+    `[system, user, assistant]` row per orchestrator decision, importing the orchestrator's own
+    `_format_action_history` / `_extract_sub_goal` helpers so the folded prompt cannot drift from
+    the real one. `--from-parquet` refolds the shipped native parquet in place (968→2995 train
+    rows, 108→362 val); `--drop-planning-answers` / `--planning-suffix` also added.
+  - `src/verl_ext/folded_sft_dataset.py` (`FoldedSFTDataset`) — VERL `data.custom_cls` dataset
+    that renders the prompt with `add_generation_prompt=True`, closing a second, independent bug
+    (`MultiTurnSFTDataset` tokenises each turn in isolation, so targets began 4 tokens before
+    Qwen3's `<think>\n\n</think>\n\n` generation-prompt block, on every row).
+  - `scripts/check_sft_folded_format.py` — pre-flight gate (prompt identity, span purity, no
+    thinking/tool-output in the loss, no truncation); the training job runs it and refuses to
+    start on failure.
+  - `scripts/finalize_sft_run.py`, `scripts/sft_checkpoint_janitor.py` — VERL's SFT trainer writes
+    the full ~33 GB FSDP state dict per checkpoint (no `lora_adapter/`, unlike the RL path); these
+    reconstruct the sharded DTensor LoRA weights into ~350 MB PEFT adapters during training and
+    keep only best/last.
+  - `jobs/fine_tuning/008_{train,test}_sft_folded.job`, `experiments/configs/qwen3/sft_inference/`
+    (5 eval configs) — full run + eval pipeline; `007_train_sft.job` (native format) kept
+    untouched for comparison.
+  - Trained (run tag `06-08-2026_21-47-25300018`, val loss 0.5404→0.4234 over 186 steps) and
+    evaluated on all five benchmarks; beats the pre-adaptation baseline on GAIA/MuSiQue/HLE, flat
+    on GPQA, regresses on AIME (open question — see `docs/sft_status.md` §8).
 - **GEPA inference pipeline** — run inference with GEPA-optimised prompts without any code changes
   - `gepa_prompt_path` config field added to `ExperimentConfig` (`src/agent_engine/config/schema.py`); when set, `run_experiment.py` loads `system_prompt` and `planning_suffix` from the JSON file, bypassing `PromptBuilder` entirely
   - `scripts/run_experiment.py` — checks `gepa_prompt_path`; if present, reads the two components and passes `planning_suffix` to `AgenticOrchestrator` (previously `planning_suffix` was never forwarded from the runner to the orchestrator, so GEPA-optimised suffixes had no effect)

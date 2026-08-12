@@ -1,0 +1,190 @@
+#!/bin/bash
+#SBATCH --job-name=SFTTrain
+#SBATCH --partition=gpu_h100
+# LoRA SFT needs far less than the 4 GPUs GRPO uses — no rollouts, no sub-agent
+# server, no AgentFlow, no colocated vLLM. With LoRA rank=64 all-linear on
+# Qwen3-8B, only ~250 MB of adapter params are trained; base weights stay
+# frozen in bf16. 2× H100 NVL is comfortable headroom for FSDP + optimizer.
+#SBATCH --gpus=2
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=8:00:00
+#SBATCH --output=out/fine_tuning/sft_train/sft_%A.log
+#SBATCH --error=out/fine_tuning/sft_train/sft_%A.err
+
+# SFT on Qwen3-8B orchestrator — distilled from Qwen3-32B teacher trajectories
+# collected by 006_collect_sft_data.job + scripts/build_sft_parquet.py.
+#
+#   ~968 train rows / ~108 val rows (balanced math:search ≈ 1:1, <think> stripped,
+#   one trajectory per question, preferring tool-using trajectories).
+#   3 epochs, train_batch_size=32 → ~30 steps/epoch, ~90 steps total.
+#
+# Unlike GRPO (005_train.job), SFT trains on FIXED (prompt, correct response)
+# pairs with cross-entropy loss — the tool calls and tool results are already
+# baked into the collected `messages` as static turns. No live tool calls
+# happen during training, so none of the following are needed:
+#   - frozen sub-agent vLLM server (port 9998)
+#   - AgentFlow server (port 9999)
+#   - rollout workers (train_orchestrator.py)
+#   - SERPER_API_KEY / TAVILY_API_KEY
+# VERL's MultiTurnSFTDataset masks loss to zero on system/user/tool turns —
+# only the orchestrator's assistant turns (planning, tool_call, final answer)
+# are trained on. Sub-agent weights (Qwen3-1.7B) are never touched.
+#
+# Prerequisites:
+#   - 006_collect_sft_data.job completed (collected_<ts>.jsonl)
+#   - scripts/build_sft_parquet.py run (creates sft_train.parquet + sft_val.parquet)
+#
+# Output:
+#   /scratch-shared/$USER/fine_tuning/sft/qwen3-8b-sft-v1/global_step_<N>/
+#     ├── model_world_size_*_rank_*.pt   (raw sharded FSDP state dict — not directly usable)
+#     ├── lora_train_meta.json           (rank/alpha metadata only, no weights)
+#     └── huggingface/                   (tokenizer + config)
+#
+#   Unlike GRPO's actor checkpoints, VERL's SFT trainer does NOT write a ready
+#   PEFT adapter — it only saves on a step schedule (save_freq) with no notion of
+#   "best". scripts/select_best_sft_checkpoint.py (run at the end of this job)
+#   parses val/loss from the log, picks the lowest-loss checkpoint that was
+#   actually saved, and runs `verl.model_merger` to produce a usable adapter at:
+#     <DEFAULT_LOCAL_DIR>/global_step_<best>/merged_best/lora_adapter/
+#       ├── adapter_model.safetensors
+#       └── adapter_config.json
+#
+# To smoke-test the launch command first, salloc 2 H100 GPUs and run the same
+# torchrun command with: trainer.total_epochs=1 data.train_max_samples=64
+# trainer.save_freq=-1 trainer.test_freq=-1   (confirms import + a few steps, no OOM)
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis — Orchestrator SFT Training"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+# Under sbatch, SLURM copies this script to /var/spool/slurm, so the script's own location
+# cannot be used. SLURM_SUBMIT_DIR is the dir sbatch was invoked from.
+PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$HOME/azywot/msc-thesis}}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+export CACHE_DIR=/scratch-shared/$USER/cache
+
+if [[ -f ".env" ]]; then
+    echo "Loading environment variables from .env..."
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    echo "Warning: WANDB_API_KEY is not set; W&B logging may fail."
+fi
+
+# cosmas-train is created once by jobs/fine_tuning/001_prepare_data.job and is
+# where VERL (verl.trainer.sft_trainer) is installed — same env as 005_train.job.
+if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
+    echo "ERROR: conda env 'cosmas-train' not found."
+    echo "Run jobs/fine_tuning/001_prepare_data.job first (creates env + training data)."
+    exit 1
+fi
+
+source activate cosmas-train
+export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+export PYTHONUNBUFFERED=1
+
+mkdir -p out/fine_tuning/sft_train
+
+for required_file in \
+    data/training/sft/sft_train.parquet \
+    data/training/sft/sft_val.parquet
+do
+    if [[ ! -f "$required_file" ]]; then
+        echo "ERROR: Missing required file: $required_file"
+        echo "Run scripts/build_sft_parquet.py first (after 006_collect_sft_data.job)."
+        exit 1
+    fi
+done
+
+EXPERIMENT_NAME="qwen3-8b-sft-v1"
+DEFAULT_LOCAL_DIR="/scratch-shared/${USER}/fine_tuning/sft/${EXPERIMENT_NAME}"
+
+echo ""
+echo "Starting SFT training..."
+echo "Train data: data/training/sft/sft_train.parquet"
+echo "Val data:   data/training/sft/sft_val.parquet"
+echo "Checkpoints will be written to: $DEFAULT_LOCAL_DIR"
+echo ""
+
+SFT_LOG="out/fine_tuning/sft_train/sft_${SLURM_JOB_ID:-local}_verl.log"
+# SLURM/ROCm conflict: ROCR_VISIBLE_DEVICES leaks into the environment on H100 nodes.
+# VERL raises if both ROCR_VISIBLE_DEVICES and CUDA_VISIBLE_DEVICES are set.
+unset ROCR_VISIBLE_DEVICES
+
+# Redirect caches away from /home (quota ~10 GB) to scratch-shared.
+# Triton compiles GPU kernels on first backward pass and caches them here —
+# failure to write this cache crashes training at the first gradient step.
+export TRITON_CACHE_DIR="/scratch-shared/${USER}/triton_cache"
+export WANDB_CACHE_DIR="/scratch-shared/${USER}/wandb_cache"
+mkdir -p "$TRITON_CACHE_DIR" "$WANDB_CACHE_DIR"
+torchrun --nproc_per_node=2 -m verl.trainer.sft_trainer \
+    data.train_files=data/training/sft/sft_train.parquet \
+    data.val_files=data/training/sft/sft_val.parquet \
+    data.messages_key=messages \
+    data.max_length=16384 \
+    data.max_token_len_per_gpu=16384 \
+    data.truncation=right \
+    data.ignore_input_ids_mismatch=True \
+    data.train_batch_size=32 \
+    data.micro_batch_size_per_gpu=2 \
+    model.path=Qwen/Qwen3-8B \
+    model.lora_rank=64 \
+    model.lora_alpha=64 \
+    model.target_modules=all-linear \
+    optim.lr=2e-5 \
+    optim.lr_warmup_steps=20 \
+    trainer.project_name=msc-thesis-sft \
+    trainer.experiment_name="${EXPERIMENT_NAME}" \
+    trainer.total_epochs=3 \
+    trainer.save_freq=20 \
+    trainer.test_freq=20 \
+    trainer.n_gpus_per_node=2 \
+    trainer.logger="['console','wandb']" \
+    "trainer.default_local_dir=${DEFAULT_LOCAL_DIR}" \
+    > "$SFT_LOG" 2>&1
+SFT_EXIT=$?
+
+echo ""
+if [[ $SFT_EXIT -ne 0 ]]; then
+    echo "FAIL — SFT trainer exited with code $SFT_EXIT. See $SFT_LOG"
+    exit $SFT_EXIT
+fi
+
+echo "Training complete at: $(date)"
+echo ""
+echo "Checkpoints written under: $DEFAULT_LOCAL_DIR"
+find "$DEFAULT_LOCAL_DIR" -maxdepth 1 -name "global_step_*" -type d | sort -V
+
+# VERL's SFT trainer saves on a step schedule only (save_freq) — there is no
+# "best" checkpoint tracking, and each global_step_<N>/ holds raw FSDP shards +
+# lora_train_meta.json (metadata only, no adapter weights). Pick the checkpoint
+# with the lowest validation loss and merge it into a usable PEFT adapter.
+echo ""
+echo "Selecting best checkpoint by val/loss and merging its LoRA adapter..."
+python scripts/select_best_sft_checkpoint.py \
+    --log-file "$SFT_LOG" \
+    --checkpoint-dir "$DEFAULT_LOCAL_DIR" \
+    || echo "WARNING: best-checkpoint selection/merge failed — inspect $SFT_LOG and merge manually with verl.model_merger."
+
+echo ""
+echo "Next step — point a lora_inference config at the merged adapter and evaluate:"
+echo "  BEST_STEP=\$(python -c \"import json; print(json.load(open('$DEFAULT_LOCAL_DIR/best_checkpoint.json'))['best_global_step'])\" 2>/dev/null)"
+echo "  # Update lora_adapter_path in e.g. experiments/configs/qwen3/lora_inference/*/qwen8B_*.yaml to:"
+echo "  #   $DEFAULT_LOCAL_DIR/global_step_\$BEST_STEP/merged_best/lora_adapter"
+echo "  # (frozen Qwen3-1.7B sub-agents are unaffected — same setup as GRPO inference)"

@@ -1,0 +1,348 @@
+#!/bin/bash
+#SBATCH --job-name=SFTFolded
+#SBATCH --partition=gpu_h100
+# Same footprint as 007: LoRA SFT needs no rollouts, no sub-agent server, no colocated
+# vLLM. With rank=64 all-linear on Qwen3-8B only ~250 MB of adapter params are trained.
+#SBATCH --gpus=2
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+# Job 25268454 ran 50 of ~187 steps in 8m43s, so the full run is ~40 min. Requesting 30h for
+# that only costs queue priority; 2h leaves ~3x headroom over the observed rate.
+#SBATCH --time=08:00:00
+#SBATCH --output=out/fine_tuning/sft_train/sft_folded_%A.log
+#SBATCH --error=out/fine_tuning/sft_train/sft_folded_%A.err
+
+# SFT on Qwen3-8B orchestrator, memory-FOLDED format. Supersedes 007_train_sft.job.
+#
+# Why this job exists
+# -------------------
+# 007 trained on the stored native multi-turn transcript
+# ([system, user, assistant(plan), assistant(tool_call), tool, ..., assistant(answer)]),
+# but the orchestrator never sees that at inference: every non-baseline turn is rebuilt
+# as a fresh [system, user] memory prompt by AgenticOrchestrator._build_memory_prompt
+# (orchestrator.py:641-664). Measured over 60 sampled trajectories, 194/194 decision
+# points had a training context that differed from the inference context, diverging at
+# the first token after the shared system prompt. The adapter minimised cross-entropy
+# honestly on a distribution it is never evaluated on, which is why loss fell while task
+# performance regressed. Val loss could not catch it: the val split had the same defect.
+#
+# What changed vs 007
+# -------------------
+#   data.train_files / val_files  -> sft_folded_*.parquet (one row per orchestrator
+#                                    decision; 968 -> 2995 train, 108 -> 362 val)
+#   data.custom_cls               -> FoldedSFTDataset, which renders the prompt with
+#                                    add_generation_prompt=True so the target begins
+#                                    after <|im_start|>assistant\n<think>\n\n</think>\n\n,
+#                                    exactly as at inference. MultiTurnSFTDataset begins
+#                                    it 4 tokens earlier, on every target.
+#   data.ignore_input_ids_mismatch-> REMOVED. It silenced precisely this class of bug.
+#   trainer.total_epochs 3 -> 2   -> 2995 rows / batch 32 ~= 94 steps/epoch, so 2 epochs
+#                                    ~= 187 steps vs 007's ~90. Keeps the run comparable
+#                                    in optimizer steps rather than in epochs.
+#   trainer.save_freq/test_freq   -> 25, giving ~7 checkpoints over the run, of which only
+#                                    the best-val-loss and the last survive: the job ends by
+#                                    extracting both as ~365 MB PEFT adapters and deleting
+#                                    every 33 GB FSDP checkpoint (finalize_sft_run.py).
+#   checkpoint.save_contents      -> drop 'optimizer' (~1.3 GB/checkpoint). Nothing resumes
+#                                    from these; trainer.resume_mode=disable makes that
+#                                    explicit rather than leaving a half-resumable state.
+#   checkpoint layout             -> lora_adapters/<experiment>/<run-tag>/, matching GRPO.
+#   checkpoint janitor            -> NEW. verl writes the full ~32 GB FSDP state dict at every
+#                                    save, so converting only at the end peaks at ~8 x 32 GB
+#                                    = ~256 GB and a cancelled job leaves all of it (this is
+#                                    what job 25268454 did). sft_checkpoint_janitor.py runs
+#                                    alongside training and collapses each checkpoint to its
+#                                    ~350 MB adapter as soon as verl's atomic tracker file
+#                                    marks it complete, so the peak is ~32-64 GB plus a few GB
+#                                    of adapters. finalize_sft_run.py then selects best/last
+#                                    from whatever form each step is in.
+# Held fixed for comparability: model, LoRA rank/alpha/targets, lr, batch sizes,
+# max_length, the trajectory set, and the train/val membership (the fold runs after the
+# split, so no question moves between splits).
+#
+# Still true, unchanged from 007: NO tools execute during SFT. This is static
+# cross-entropy over fixed rows. No sub-agent vLLM server, no AgentFlow server, no
+# rollout workers, no SERPER_API_KEY / TAVILY_API_KEY. Simulated tool results live
+# inside the folded user turn as "- Result:" prose and carry zero loss by construction;
+# only orchestrator-authored text is supervised.
+#
+# Prerequisites:
+#   python scripts/build_sft_parquet.py \
+#       --from-parquet data/training/sft/sft_train.parquet \
+#       --output-dir data/training/sft --output-name sft_folded_train.parquet
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSc Thesis — Orchestrator SFT (folded format)"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+# Locate the checkout. 007 hardcoded /projects/0/gusr0608/msc-thesis, which is not readable
+# by every account. Deriving it from BASH_SOURCE alone does not work either: under sbatch,
+# SLURM copies this script to /var/spool/slurm on the compute node, so BASH_SOURCE points at
+# the spool copy. So: try each candidate and accept only one that actually looks like the
+# repo, instead of trusting any single mechanism.
+_is_repo() { [[ -n "${1:-}" && -f "$1/scripts/build_sft_parquet.py" ]]; }
+_JOB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+for _cand in "${PROJECT_DIR:-}" \
+             "${SLURM_SUBMIT_DIR:-}" \
+             "$(cd "${_JOB_DIR}/../.." 2>/dev/null && pwd)" \
+             "$HOME/azywot/msc-thesis"; do
+    if _is_repo "$_cand"; then PROJECT_DIR="$_cand"; break; fi
+done
+if ! _is_repo "${PROJECT_DIR:-}"; then
+    echo "ERROR: could not locate the msc-thesis checkout."
+    echo "  Tried: \$PROJECT_DIR, \$SLURM_SUBMIT_DIR (${SLURM_SUBMIT_DIR:-unset}),"
+    echo "         script dir (${_JOB_DIR:-unset}), \$HOME/azywot/msc-thesis"
+    echo "  Fix: sbatch --export=ALL,PROJECT_DIR=/path/to/msc-thesis $0"
+    exit 1
+fi
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+export CACHE_DIR=/scratch-shared/$USER/cache
+
+if [[ -f ".env" ]]; then
+    echo "Loading environment variables from .env..."
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    echo "Warning: WANDB_API_KEY is not set; W&B logging may fail."
+fi
+
+if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
+    echo "ERROR: conda env 'cosmas-train' not found."
+    echo "Run jobs/fine_tuning/001_prepare_data.job first (creates env + training data)."
+    exit 1
+fi
+
+source activate cosmas-train
+export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+export PYTHONUNBUFFERED=1
+
+mkdir -p out/fine_tuning/sft_train
+
+TRAIN_FILE=data/training/sft/sft_folded_train.parquet
+VAL_FILE=data/training/sft/sft_folded_val.parquet
+
+for required_file in "$TRAIN_FILE" "$VAL_FILE"; do
+    if [[ ! -f "$required_file" ]]; then
+        echo "ERROR: Missing required file: $required_file"
+        echo "Build it with:"
+        echo "  python scripts/build_sft_parquet.py --from-parquet data/training/sft/sft_train.parquet \\"
+        echo "      --output-dir data/training/sft --output-name sft_folded_train.parquet"
+        exit 1
+    fi
+done
+
+# ── Pre-flight: the training context must equal the inference context ────────────
+# A format mismatch is visible at step 0, so gate on it here rather than discovering it
+# from a regressed benchmark weeks later. This is the check that was missing first time.
+echo ""
+echo "Pre-flight: verifying folded rows render exactly as inference does..."
+python scripts/check_sft_folded_format.py \
+    --folded "$TRAIN_FILE" --native data/training/sft/sft_train.parquet \
+    --max-length 16384
+python scripts/check_sft_folded_format.py \
+    --folded "$VAL_FILE" --native data/training/sft/sft_val.parquet \
+    --max-length 16384
+echo "Pre-flight passed."
+
+EXPERIMENT_NAME="qwen3-8b-sft-folded-v1"
+# Same layout as the GRPO LoRA runs (launch_verl.py:158-163):
+#   /scratch-shared/$USER/fine_tuning/lora_adapters/<experiment>/<run-tag>/
+# so SFT and GRPO adapters sit side by side and a run never clobbers its predecessor.
+RUN_TAG="$(date +%d-%m-%Y_%H-%M)-${SLURM_JOB_ID:-local}"
+DEFAULT_LOCAL_DIR="/scratch-shared/${USER}/fine_tuning/lora_adapters/${EXPERIMENT_NAME}/${RUN_TAG}"
+echo "Run tag: $RUN_TAG"
+
+echo ""
+echo "Starting SFT training (folded format)..."
+echo "Train data: $TRAIN_FILE"
+echo "Val data:   $VAL_FILE"
+echo "Checkpoints will be written to: $DEFAULT_LOCAL_DIR"
+echo ""
+
+# Two data flags below are deliberate and load-bearing:
+#   data.enable_thinking_default=false — verl's sft_trainer_engine.yaml ships
+#     `enable_thinking_default: none`, which YAML parses as the STRING "none" and the trainer
+#     passes straight through to data.custom_cls. Anything truthy makes Qwen3's template take
+#     its thinking branch, so the generation prompt loses <think>\n\n</think>\n\n and the
+#     4-token gap this whole format change exists to close silently comes back. Passing an
+#     explicit boolean here states the intent at the call site; FoldedSFTDataset also refuses
+#     to infer thinking from a non-boolean, and the pre-flight gate now runs with verl's real
+#     config so a regression fails there first.
+#   data.truncation=error — the gate proves 0 of 3357 rows exceed max_length (observed max
+#     9832), so this can only fire on a regression. `right` would silently drop the tail of a
+#     target together with its <|im_end|>, training the model never to stop.
+SFT_LOG="out/fine_tuning/sft_train/sft_folded_${SLURM_JOB_ID:-local}_verl.log"
+# SLURM/ROCm conflict: ROCR_VISIBLE_DEVICES leaks into the environment on H100 nodes.
+unset ROCR_VISIBLE_DEVICES
+
+export TRITON_CACHE_DIR="/scratch-shared/${USER}/triton_cache"
+export WANDB_CACHE_DIR="/scratch-shared/${USER}/wandb_cache"
+mkdir -p "$TRITON_CACHE_DIR" "$WANDB_CACHE_DIR"
+
+# ── Collapse checkpoints to adapters *while* training runs ───────────────────────
+# verl writes the full ~32 GB FSDP state dict at every save. Converting only at the end means
+# a peak of ~8 x 32 GB = ~256 GB, and a cancelled job leaves all of it behind — which is what
+# happened to job 25268454. The janitor converts each checkpoint as soon as verl's atomic
+# tracker file says it is complete, so the peak is one or two checkpoints plus a few GB of
+# adapters. It never touches a checkpoint above the tracker value, and deletes shards only
+# after the adapter exists. Safe to delete because trainer.resume_mode=disable: nothing here
+# is ever read back. If the janitor dies, finalize_sft_run.py still cleans up at the end.
+JANITOR_STOP="${DEFAULT_LOCAL_DIR}.training_done"
+JANITOR_LOG="out/fine_tuning/sft_train/sft_folded_${SLURM_JOB_ID:-local}_janitor.log"
+rm -f "$JANITOR_STOP"
+mkdir -p "$DEFAULT_LOCAL_DIR"
+# CUDA_VISIBLE_DEVICES="" so this background process can never initialise a CUDA context and
+# take memory from the two GPUs training is using. It only ever loads tensors to CPU.
+CUDA_VISIBLE_DEVICES="" python scripts/sft_checkpoint_janitor.py \
+    --ckpt-dir "$DEFAULT_LOCAL_DIR" \
+    --stop-file "$JANITOR_STOP" \
+    --poll-seconds 60 \
+    --lora-rank 64 --lora-alpha 64 \
+    > "$JANITOR_LOG" 2>&1 &
+JANITOR_PID=$!
+echo "Checkpoint janitor running (pid $JANITOR_PID), log: $JANITOR_LOG"
+
+# Stop the janitor however this job ends, including scancel or a crash, so it cannot outlive
+# the job and keep deleting under a later run.
+cleanup_janitor() {
+    touch "$JANITOR_STOP" 2>/dev/null || true
+    kill "$JANITOR_PID" 2>/dev/null || true
+}
+trap cleanup_janitor EXIT INT TERM
+
+# `|| SFT_EXIT=$?` is load-bearing: under `set -e` a bare failing command aborts the script
+# immediately, so `SFT_EXIT=$?` on the next line would never run and the diagnostic below would
+# be unreachable. The `|| ...` puts the command in a condition context, which suspends `set -e`.
+SFT_EXIT=0
+torchrun --nproc_per_node=2 -m verl.trainer.sft_trainer \
+    data.train_files="$TRAIN_FILE" \
+    data.val_files="$VAL_FILE" \
+    data.messages_key=messages \
+    data.max_length=16384 \
+    data.max_token_len_per_gpu=16384 \
+    data.truncation=error \
+    data.custom_cls.path="${PROJECT_DIR}/src/verl_ext/folded_sft_dataset.py" \
+    data.custom_cls.name=FoldedSFTDataset \
+    data.enable_thinking_default=false \
+    data.train_batch_size=32 \
+    data.micro_batch_size_per_gpu=2 \
+    model.path=Qwen/Qwen3-8B \
+    model.lora_rank=64 \
+    model.lora_alpha=64 \
+    model.target_modules=all-linear \
+    optim.lr=2e-5 \
+    optim.lr_warmup_steps=20 \
+    trainer.project_name=msc-thesis-sft \
+    trainer.experiment_name="${EXPERIMENT_NAME}" \
+    trainer.total_epochs=2 \
+    trainer.save_freq=25 \
+    trainer.test_freq=25 \
+    trainer.n_gpus_per_node=2 \
+    "checkpoint.save_contents=['model','extra']" \
+    trainer.resume_mode=disable \
+    trainer.logger="['console','wandb']" \
+    "trainer.default_local_dir=${DEFAULT_LOCAL_DIR}" \
+    > "$SFT_LOG" 2>&1 || SFT_EXIT=$?
+
+# Stop the janitor and let it finish its final sweep BEFORE finalize runs, so the two never
+# work on the same checkpoint at once. It wakes within --poll-seconds of the stop file
+# appearing, sweeps once more (catching a checkpoint written during its last sleep), and exits.
+echo ""
+echo "Stopping the checkpoint janitor and waiting for its final sweep..."
+touch "$JANITOR_STOP"
+wait "$JANITOR_PID" 2>/dev/null || true
+trap - EXIT INT TERM
+rm -f "$JANITOR_STOP"
+echo "Janitor finished. Summary:"
+grep -cE "Collapsed global_step" "$JANITOR_LOG" 2>/dev/null | sed 's/^/  checkpoints collapsed during training: /' || true
+grep -E "ERROR" "$JANITOR_LOG" 2>/dev/null | tail -5 || true
+
+echo ""
+if [[ $SFT_EXIT -ne 0 ]]; then
+    echo "FAIL — SFT trainer exited with code $SFT_EXIT. See $SFT_LOG"
+    exit $SFT_EXIT
+fi
+
+echo "Training complete at: $(date)"
+echo ""
+echo "Under $DEFAULT_LOCAL_DIR:"
+find "$DEFAULT_LOCAL_DIR" -maxdepth 1 -name "global_step_*" -type d | sort -V
+find "$DEFAULT_LOCAL_DIR/step_adapters" -maxdepth 1 -name "step_*" -type d 2>/dev/null | sort -V
+
+# ── Keep only the best and last adapters ─────────────────────────────────────────
+# verl's SFT trainer writes the full FSDP state dict (~33 GB/checkpoint for Qwen3-8B) and,
+# unlike the RL path, never writes a lora_adapter/ dir. finalize_sft_run.py reconstructs the
+# LoRA weights from ALL rank shards (they are sharded DTensors — rank 0 alone holds half of
+# each tensor, so scripts/merge_lora.py cannot be used here), writes ~365 MB PEFT adapters
+# for the best-val-loss and final checkpoints, then deletes every shard.
+echo ""
+echo "Selecting best/last checkpoints and extracting adapters..."
+FINALIZE_EXIT=0
+python scripts/finalize_sft_run.py \
+    --ckpt-dir "$DEFAULT_LOCAL_DIR" \
+    --log "$SFT_LOG" \
+    --lora-rank 64 --lora-alpha 64 || FINALIZE_EXIT=$?
+if [[ $FINALIZE_EXIT -ne 0 ]]; then
+    echo "WARNING — adapter extraction failed (exit $FINALIZE_EXIT)."
+    echo "The FSDP checkpoints were NOT deleted; rerun manually:"
+    echo "  python scripts/finalize_sft_run.py --ckpt-dir $DEFAULT_LOCAL_DIR --log $SFT_LOG"
+fi
+
+# ── Archive the adapters off scratch ─────────────────────────────────────────────
+# /scratch-shared is not durable. The GRPO adapters
+# (lora_adapters/qwen3-8b-grpo-search-math{,-v2}/) were purged from it while every
+# experiments/configs/qwen3/lora_inference/* config still pointed at them, which is why those
+# evaluations can no longer be re-run. An adapter is ~365 MB against a 200 GiB home quota, so
+# copy it while it exists rather than relying on remembering to. data/* is gitignored.
+ARCHIVE_DIR="${PROJECT_DIR}/data/adapters/${EXPERIMENT_NAME}/${RUN_TAG}"
+if [[ $FINALIZE_EXIT -eq 0 && -d "$DEFAULT_LOCAL_DIR/best_adapter" ]]; then
+    echo ""
+    echo "Archiving adapters to durable storage: $ARCHIVE_DIR"
+    mkdir -p "$ARCHIVE_DIR"
+    for _adapter in best_adapter last_adapter; do
+        if [[ -d "$DEFAULT_LOCAL_DIR/$_adapter" ]]; then
+            cp -r "$DEFAULT_LOCAL_DIR/$_adapter" "$ARCHIVE_DIR/"
+            echo "  copied $_adapter"
+        fi
+    done
+    [[ -f "$DEFAULT_LOCAL_DIR/selection.json" ]] && cp "$DEFAULT_LOCAL_DIR/selection.json" "$ARCHIVE_DIR/"
+    du -sh "$ARCHIVE_DIR"
+else
+    echo ""
+    echo "WARNING — no best_adapter to archive; the scratch copy is the only one and scratch is purged."
+fi
+
+echo ""
+echo "Validation loss by step:"
+grep -oE "step:[0-9]+ - val/loss:[0-9.]+" "$SFT_LOG" || echo "  (none found in $SFT_LOG)"
+
+echo ""
+echo "Kept under $DEFAULT_LOCAL_DIR:"
+ls -la "$DEFAULT_LOCAL_DIR" 2>/dev/null
+
+echo ""
+echo "Next step — evaluate. The adapters are PEFT-format, same as the GRPO ones, so point"
+echo "an SFT inference config at one directly (no merge step needed). The eval configs are"
+echo "already generated at experiments/configs/qwen3/sft_inference/<dataset>/; replace the"
+echo "<run-tag> placeholder in each with this run's, i.e. set:"
+echo "    lora_adapter_path: \"$ARCHIVE_DIR/best_adapter\""
+echo "or regenerate them after updating SFT_ADAPTER_PLACEHOLDER in scripts/generate_configs.py:"
+echo "    python scripts/generate_configs.py --suite sft_inference"
+echo "Then: ./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/sft_inference"
+echo "Use the ARCHIVE path, not the scratch one: scratch is purged (see the GRPO adapters)."
+echo "Selection details are in $DEFAULT_LOCAL_DIR/selection.json."
