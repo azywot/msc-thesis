@@ -25,7 +25,7 @@ Deleting is safe because the job sets `trainer.resume_mode=disable`: nothing rea
 checkpoints back. A shard directory is removed only after its adapter exists on disk, and a
 failed extraction leaves that checkpoint alone for `finalize_sft_run.py` to retry at the end.
 
-Usage (see 008_train_sft_folded.job, which runs this in the background):
+Usage (see 007_train_sft_folded.job, which runs this in the background):
     python scripts/sft_checkpoint_janitor.py \\
         --ckpt-dir <trainer.default_local_dir> --stop-file <path touched when training ends>
 """

@@ -147,7 +147,7 @@ LORA_ADAPTER_PLACEHOLDER = (
     "qwen3-8b-grpo-search-math/22-05-2026_00-01-23031012/global_step_20/actor/lora_adapter"
 )
 
-# SFT adapters are archived off scratch by 008_train_sft_folded.job, because scratch is not
+# SFT adapters are archived off scratch by 007_train_sft_folded.job, because scratch is not
 # durable: the GRPO adapter directories were purged from /scratch-shared while the configs above
 # still pointed at them. Replace <run-tag> with the value the training job prints.
 SFT_ADAPTER_PLACEHOLDER = (
@@ -464,7 +464,7 @@ SUITES = {
         "split_overrides": {},
         "adapter_label":   "SFT",
         "adapter_desc":    "SFT-adapted",
-        "train_job":       "008_train_sft_folded.job",
+        "train_job":       "007_train_sft_folded.job",
         # Replace <run-tag> with the value from the training job log before running inference.
         "lora_adapter_path": SFT_ADAPTER_PLACEHOLDER,
     },

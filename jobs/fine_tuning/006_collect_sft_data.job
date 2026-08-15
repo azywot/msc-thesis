@@ -100,5 +100,5 @@ ls -lh data/training/sft/ 2>/dev/null || echo "  (no files found — check log f
 echo ""
 echo "Next step — inspect yield and kick off SFT training:"
 echo "  python scripts/inspect_sft_data.py data/training/sft/sft_train.parquet"
-echo "  sbatch jobs/fine_tuning/008_test_sft_folded.job   # verify first, no GPU cost"
-echo "  sbatch jobs/fine_tuning/008_train_sft_folded.job"
+echo "  sbatch jobs/fine_tuning/007_run_tests_for_sft_folded.job   # verify first, no GPU cost"
+echo "  sbatch jobs/fine_tuning/007_train_sft_folded.job"

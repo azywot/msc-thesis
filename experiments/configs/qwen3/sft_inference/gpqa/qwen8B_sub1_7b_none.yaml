@@ -1,5 +1,5 @@
 # GPQA — SFT-adapted Qwen3-8B orchestrator + Qwen3-1.7B subagents, thinking disabled
-# Update lora_adapter_path once training is complete (replace <run-tag> printed by 008_train_sft_folded.job).
+# Update lora_adapter_path once training is complete (replace <run-tag> printed by 007_train_sft_folded.job).
 
 name: "SFT_eval_gpqa_qwen8B_sub1_7b_none"
 description: "[SFT inference] GPQA diamond with SFT-adapted Qwen3-8B orchestrator (thinking disabled) + Qwen3-1.7B subagents (no thinking)."

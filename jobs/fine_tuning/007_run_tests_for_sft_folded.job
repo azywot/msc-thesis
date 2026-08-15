@@ -9,7 +9,7 @@
 #SBATCH --output=out/fine_tuning/tests/sft_folded_tests_%A.log
 #SBATCH --error=out/fine_tuning/tests/sft_folded_tests_%A.err
 
-# Verification suite for the folded-SFT pipeline. Run this before 008_train_sft_folded.job,
+# Verification suite for the folded-SFT pipeline. Run this before 007_train_sft_folded.job,
 # and after any change to build_sft_parquet.py or verl_ext/folded_sft_dataset.py.
 #
 # Why this job exists
@@ -76,7 +76,7 @@ FOLDED_TRAIN=data/training/sft/sft_folded_train.parquet
 FOLDED_VAL=data/training/sft/sft_folded_val.parquet
 NATIVE_TRAIN=data/training/sft/sft_train.parquet
 NATIVE_VAL=data/training/sft/sft_val.parquet
-MAX_LENGTH=16384   # must match data.max_length in 008_train_sft_folded.job
+MAX_LENGTH=16384   # must match data.max_length in 007_train_sft_folded.job
 
 FAILURES=()
 note_fail() { FAILURES+=("$1"); echo "  ✗ FAIL: $1"; }
@@ -209,7 +209,7 @@ if [[ $? -eq 0 ]]; then note_pass "decoded example rendered"; else note_fail "de
 echo ""
 echo "=========================================="
 if [[ ${#FAILURES[@]} -eq 0 ]]; then
-    echo "ALL STAGES PASSED — safe to submit 008_train_sft_folded.job"
+    echo "ALL STAGES PASSED — safe to submit 007_train_sft_folded.job"
     echo "Finished at: $(date)"
     echo "=========================================="
     exit 0

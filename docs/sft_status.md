@@ -151,8 +151,8 @@ until the source-of-record run is readable.
 | `scripts/check_sft_folded_format.py` | new | Pre-flight gate, run before training and by the job itself. Asserts prompt identity, span purity, no thinking, no tool output, tool calls retained, no degenerate rows, no truncation. |
 | `scripts/finalize_sft_run.py` | new | Selects best-val-loss and last, extracts both as PEFT adapters (DTensor-correct), deletes the shards. |
 | `scripts/sft_checkpoint_janitor.py` | new | Collapses checkpoints to adapters *during* training (§7.2). |
-| `jobs/fine_tuning/008_train_sft_folded.job` | new | The training job. Supersedes `007_train_sft.job` (since removed — §12), whose training format did not match the orchestrator's inference format. |
-| `jobs/fine_tuning/008_test_sft_folded.job` | new | CPU-only verification suite: tests, gate, gate trip-wire, gate under the training env, one decoded example. |
+| `jobs/fine_tuning/007_train_sft_folded.job` | new | The training job. Supersedes `007_train_sft.job` (since removed — §12), whose training format did not match the orchestrator's inference format. |
+| `jobs/fine_tuning/007_run_tests_for_sft_folded.job` | new | CPU-only verification suite: tests, gate, gate trip-wire, gate under the training env, one decoded example. |
 | `experiments/configs/qwen3/sft_inference/` | new | Five eval configs (§8). |
 | `tests/unit/test_sft_folded_format.py` | new | 32 tests. |
 
@@ -526,7 +526,7 @@ Fixed in three independent places:
 2. `check_sft_folded_format.py` loads **verl's real config defaults** and builds the dataset from
    them, so the gate exercises the configuration training uses. It reproduces them hard-coded
    when verl is not importable, so it is never weaker than training.
-3. `008_train_sft_folded.job` passes `data.enable_thinking_default=false` explicitly.
+3. `007_train_sft_folded.job` passes `data.enable_thinking_default=false` explicitly.
 
 Regression tests parametrise over `"none"`, `None`, `"None"`, `""`, `0` (must stay no-thinking)
 and over real booleans (must be honoured). Re-verified with the job's exact config on both real
@@ -578,10 +578,10 @@ over `max_length`.
 cd /gpfs/home3/xchen1/azywot/msc-thesis
 
 # 1. Full verification suite (CPU partition, no GPU cost)
-sbatch jobs/fine_tuning/008_test_sft_folded.job
+sbatch jobs/fine_tuning/007_run_tests_for_sft_folded.job
 
 # 2. Train — ~187 steps, 2x H100, ~40 min wall clock, schedules immediately
-sbatch jobs/fine_tuning/008_train_sft_folded.job
+sbatch jobs/fine_tuning/007_train_sft_folded.job
 
 # 3. After training: paste the run tag the job prints into SFT_ADAPTER_PLACEHOLDER
 #    in scripts/generate_configs.py, then regenerate and evaluate
@@ -589,14 +589,14 @@ python scripts/generate_configs.py --suite sft_inference
 ./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/sft_inference
 ```
 
-Job 008 runs the pre-flight gate itself and refuses to start training if it fails. It also
-extracts the adapters and archives them, so there is no manual post-training step.
+The training job runs the pre-flight gate itself and refuses to start training if it fails. It
+also extracts the adapters and archives them, so there is no manual post-training step.
 
 Local checks, worth re-running after any change to `build_sft_parquet.py` or
 `folded_sft_dataset.py`:
 
 ```bash
-bash -n jobs/fine_tuning/008_train_sft_folded.job   # and 008_test, 006
+bash -n jobs/fine_tuning/007_train_sft_folded.job   # and 007_run_tests_for_sft_folded, 006
 conda activate agent_engine
 python -m pytest tests/ -q --ignore=tests/unit/test_fine_tuning_rollout.py   # expect 496
 python scripts/check_sft_folded_format.py \

@@ -769,10 +769,10 @@ python scripts/build_sft_parquet.py \
     --output-dir data/training/sft --output-name sft_folded_train.parquet
 
 # 3. Verify everything on the CPU partition (tests, gate, gate trip-wire) - no GPU cost
-sbatch jobs/fine_tuning/008_test_sft_folded.job
+sbatch jobs/fine_tuning/007_run_tests_for_sft_folded.job
 
 # 4. Train (~187 steps, 2xH100, ~40 min)
-sbatch jobs/fine_tuning/008_train_sft_folded.job
+sbatch jobs/fine_tuning/007_train_sft_folded.job
 
 # 5. Evaluate: paste the run tag the job prints into SFT_ADAPTER_PLACEHOLDER
 #    in scripts/generate_configs.py, then regenerate and run
@@ -795,8 +795,8 @@ There is no manual post-training step: the job selects the best-val-loss and las
 | File | Purpose | Log |
 |------|---------|-----|
 | `jobs/fine_tuning/006_collect_sft_data.job` | Collect teacher trajectories | `out/fine_tuning/sft_collect/collect_<job_id>.log` |
-| `jobs/fine_tuning/008_test_sft_folded.job` | CPU verification suite (tests + gate + trip-wire) | `out/fine_tuning/tests/sft_folded_tests_<job_id>.log` |
-| `jobs/fine_tuning/008_train_sft_folded.job` | Folded-format training run | `out/fine_tuning/sft_train/sft_folded_<job_id>.log` |
+| `jobs/fine_tuning/007_run_tests_for_sft_folded.job` | CPU verification suite (tests + gate + trip-wire) | `out/fine_tuning/tests/sft_folded_tests_<job_id>.log` |
+| `jobs/fine_tuning/007_train_sft_folded.job` | Folded-format training run | `out/fine_tuning/sft_train/sft_folded_<job_id>.log` |
 
 Eval configs live in `experiments/configs/qwen3/sft_inference/` (five benchmarks, `thinking_mode: NO`, orchestrator named `Qwen3-8B-SFT` so W&B keeps it distinct from the GRPO rows).
 
