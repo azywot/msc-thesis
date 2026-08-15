@@ -2,7 +2,7 @@
 
 VERL 0.7.1 saves actor checkpoints to:
     <ckpt_dir>/global_step_<N>/actor/
-        ├── model_world_size_<W>_rank_*.pt            # FSDP full-state-dict (base + LoRA layers)
+        ├── model_world_size_<W>_rank_*.pt            # FSDP state dict (base [+ LoRA layers])
         └── lora_adapter/                             # written only when USE_LORA=true
             ├── adapter_model.safetensors             # PEFT-format LoRA tensors
             └── adapter_config.json                   # rank/alpha/target_modules baked in
@@ -12,8 +12,22 @@ hyperparams needed, since they're already in ``adapter_config.json``.
 If the adapter dir is missing (e.g. an older checkpoint), it falls back to the
 FSDP shard path and reconstructs the PEFT model from CLI args.
 
-For full-parameter training (USE_LORA=false) there are no LoRA keys; the script
-saves the base model with the FSDP-shard state dict applied.
+For full-parameter training (USE_LORA=false) there are no LoRA keys; the script saves the
+base model with the FSDP-shard state dict applied. This is the RL path only
+(``verl/workers/fsdp_workers.py``), which writes a single already-consolidated
+``model_world_size_<W>_rank_0.pt`` regardless of world size — that single file is a complete,
+correctly-shaped state dict, so a plain ``torch.load`` + ``load_state_dict`` is enough.
+
+Do NOT point this script at an SFT full-parameter checkpoint. ``verl.trainer.sft_trainer``
+uses a different checkpoint manager, with two layout differences that break this script's
+assumptions: shards live directly under ``global_step_<N>/`` (no ``actor/`` subdirectory, so
+this script exits at "actor directory not found" before it gets anywhere), and even if you
+worked around that, each rank's file holds only that rank's *local slice* of every tensor —
+none of them is the complete model, so loading one directly would silently populate the model
+with `1/world_size` of every weight. Use ``scripts/finalize_sft_run.py --mode full`` (or
+``scripts/sft_checkpoint_janitor.py --mode full`` during training) for that checkpoint type —
+it gathers all ranks via ``verl_ext.checkpoint_utils.reconstruct_full_tensors`` before writing
+anything.
 
 Default LoRA adapter root on Snellius (set by ``scripts/launch_verl.py`` when
 USE_LORA=true): ``/scratch-shared/$USER/fine_tuning/lora_adapters/<experiment>/<run-tag>/``.
@@ -42,22 +56,32 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from verl_ext.checkpoint_utils import find_model_shards  # noqa: E402
+
 
 def find_model_shard(actor_dir: Path) -> Path:
-    """Return the rank-0 consolidated shard from the actor checkpoint directory.
+    """Return the single consolidated shard from an RL-path actor checkpoint directory.
 
-    VERL saves with FSDP FULL_STATE_DICT (rank0_only=True), producing a single file
-    named model_world_size_<W>_rank_0.pt regardless of training world size.
+    VERL's RL checkpoint manager saves with FSDP FULL_STATE_DICT (rank0_only=True), so exactly
+    one file is written, model_world_size_<W>_rank_0.pt, and it already holds the complete
+    state dict regardless of training world size. More than one model_world_size_*_rank_*.pt
+    file here means this is not that layout — see the module docstring.
     """
-    candidates = sorted(actor_dir.glob("model_world_size_*_rank_0.pt"))
-    if not candidates:
+    shards = find_model_shards(actor_dir)
+    if not shards:
         raise FileNotFoundError(
-            f"No model_world_size_*_rank_0.pt in {actor_dir}\n"
-            "Check that the checkpoint completed successfully (job 009/010 step 5)."
+            f"No model_world_size_*_rank_*.pt in {actor_dir}\n"
+            "Check that the checkpoint completed successfully."
         )
-    if len(candidates) > 1:
-        print(f"  Warning: multiple rank-0 shards found; using {candidates[0]}")
-    return candidates[0]
+    if len(shards) > 1:
+        raise ValueError(
+            f"{len(shards)} model_world_size_*_rank_*.pt files in {actor_dir}, not 1.\n"
+            "This looks like an SFT-trainer SHARDED_STATE_DICT checkpoint (each rank file "
+            "holds only its own slice of every tensor), not an RL FULL_STATE_DICT one — see "
+            "the module docstring. Use scripts/finalize_sft_run.py --mode full instead."
+        )
+    return shards[0]
 
 
 def main() -> None:
@@ -127,7 +151,8 @@ def main() -> None:
         print(f"Found verl-written PEFT adapter at: {adapter_dir}")
         _merge_from_peft_dir(base_model, adapter_dir, output_dir, dtype_str=args.dtype)
     else:
-        # Older checkpoint or full-FT — read the FSDP shard.
+        # Older checkpoint or full-FT — read the FSDP shard. Raises with a pointer to
+        # finalize_sft_run.py if this turns out to be an SFT-trainer sharded checkpoint.
         shard_path = find_model_shard(actor_dir)
         print(f"No lora_adapter/ found; falling back to FSDP shard: {shard_path}")
         state_dict = torch.load(shard_path, map_location="cpu", weights_only=True)

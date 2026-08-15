@@ -1,16 +1,19 @@
-"""Convert VERL SFT checkpoints to LoRA adapters *during* training, then delete the shards.
+"""Convert VERL SFT checkpoints to their small form *during* training, then delete the shards.
 
 Why this exists
 ---------------
 `verl.trainer.sft_trainer` writes the full FSDP state dict at every save: ~32 GB per
-checkpoint for Qwen3-8B, of which ~350 MB is trained weight. Converting only at the end of
-the run means the peak on disk is `save_freq` count x 32 GB (~256 GB for a 187-step run at
-save_freq=25), and a cancelled job leaves all of it behind — which is exactly what happened
-to job 25268454.
+checkpoint for Qwen3-8B. Converting only at the end of the run means the peak on disk is
+`save_freq` count x 32 GB (~256 GB for a 187-step run at save_freq=25), and a cancelled job
+leaves all of it behind — which is exactly what happened to job 25268454. This is true whether
+the run is `--mode lora` (~350 MB trained weight per checkpoint) or `--mode full` (~16 GB, the
+whole model) — either way the useful output is far smaller than the ~32 GB shard set it comes
+from, so the same collapse-during-training strategy applies to both.
 
-This janitor runs alongside training and collapses each checkpoint to its adapter as soon as
-the checkpoint is complete, so the peak is one or two checkpoints (~32-64 GB) plus a few GB
-of adapters, and a cancelled job leaves almost nothing.
+This janitor runs alongside training and collapses each checkpoint to its small form as soon
+as the checkpoint is complete, so the peak is one or two checkpoints (~32-64 GB) plus a few GB
+(`--mode lora`) or tens of GB (`--mode full`) of extracted checkpoints, and a cancelled job
+leaves almost nothing.
 
 Knowing when a checkpoint is complete
 -------------------------------------
@@ -25,6 +28,14 @@ Deleting is safe because the job sets `trainer.resume_mode=disable`: nothing rea
 checkpoints back. A shard directory is removed only after its adapter exists on disk, and a
 failed extraction leaves that checkpoint alone for `finalize_sft_run.py` to retry at the end.
 
+CPU RAM, `--mode full` only: unlike `--mode lora` (which only ever materialises the tiny LoRA
+subset of keys), reconstructing a full checkpoint touches every tensor in the model, so this
+process's peak RAM is on the order of the model's full-precision checkpoint size (~32 GB for
+Qwen3-8B) rather than the ~350 MB a LoRA extraction needs. The job script runs this with
+`CUDA_VISIBLE_DEVICES=""` so it never competes with training for GPU memory, but it has not
+been run against the node's actual available system RAM — watch it on the first `--mode full`
+run.
+
 Usage (see 007_train_sft_folded.job, which runs this in the background):
     python scripts/sft_checkpoint_janitor.py \\
         --ckpt-dir <trainer.default_local_dir> --stop-file <path touched when training ends>
@@ -38,14 +49,19 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-# Same extraction code the end-of-run script uses, and the same layout constant, so the two
-# cannot disagree about where per-step adapters live.
+# Same extraction code the end-of-run script uses, and the same layout constants, so the two
+# cannot disagree about where per-step checkpoints live.
 from finalize_sft_run import (  # noqa: E402
     STEP_ADAPTERS_DIRNAME,
+    STEP_CHECKPOINTS_DIRNAME,
     _step_num,
     dir_size,
     extract_adapter,
+    extract_full_checkpoint,
 )
+
+_DONE_MARKER = {"lora": "adapter_model.safetensors", "full": "config.json"}
+_STEP_DIRNAME = {"lora": STEP_ADAPTERS_DIRNAME, "full": STEP_CHECKPOINTS_DIRNAME}
 
 logging.basicConfig(level=logging.INFO,
                     format="[%(asctime)s] JANITOR %(levelname)s %(message)s",
@@ -66,7 +82,7 @@ def read_tracker(ckpt_dir: Path):
         return None  # mid-rename or malformed; the next poll will see it
 
 
-def sweep(ckpt_dir: Path, lora_rank: int, lora_alpha: int) -> int:
+def sweep(ckpt_dir: Path, mode: str, lora_rank: int, lora_alpha: int, base_model: str) -> int:
     """Convert every complete, unconverted checkpoint and delete its shards.
 
     Returns the number of checkpoints collapsed this pass. Never raises for a single bad
@@ -77,7 +93,8 @@ def sweep(ckpt_dir: Path, lora_rank: int, lora_alpha: int) -> int:
     if latest is None:
         return 0
 
-    step_adapters = ckpt_dir / STEP_ADAPTERS_DIRNAME
+    done_marker = _DONE_MARKER[mode]
+    step_out_dir = ckpt_dir / _STEP_DIRNAME[mode]
     collapsed = 0
 
     for d in sorted(ckpt_dir.glob("global_step_*"), key=lambda p: _step_num(p) or -1):
@@ -89,20 +106,22 @@ def sweep(ckpt_dir: Path, lora_rank: int, lora_alpha: int) -> int:
         if not any(d.glob("model_world_size_*_rank_*.pt")):
             continue  # created but unwritten (a cancelled save); leave it for finalize
 
-        out = step_adapters / f"step_{step}"
+        out = step_out_dir / f"step_{step}"
         try:
-            if not (out / "adapter_model.safetensors").is_file():
+            if not (out / done_marker).is_file():
                 logger.info("Converting global_step_%d ...", step)
                 # Extract into a hidden staging dir and rename into place. A janitor killed
-                # mid-write (scancel, node failure) would otherwise leave a truncated
-                # adapter_model.safetensors that looks finished to the next pass, and the
-                # shards would be deleted against it. The staging name does not match
-                # `step_*`, so nothing downstream can pick it up; the rename is atomic
-                # within the filesystem.
-                staging = step_adapters / f".tmp_step_{step}"
+                # mid-write (scancel, node failure) would otherwise leave a truncated output
+                # that looks finished to the next pass, and the shards would be deleted
+                # against it. The staging name does not match `step_*`, so nothing downstream
+                # can pick it up; the rename is atomic within the filesystem.
+                staging = step_out_dir / f".tmp_step_{step}"
                 if staging.exists():
                     shutil.rmtree(staging)
-                extract_adapter(d, staging, lora_rank, lora_alpha)
+                if mode == "lora":
+                    extract_adapter(d, staging, lora_rank, lora_alpha)
+                else:
+                    extract_full_checkpoint(d, staging, base_model)
                 if out.exists():
                     shutil.rmtree(out)
                 staging.rename(out)
@@ -111,8 +130,8 @@ def sweep(ckpt_dir: Path, lora_rank: int, lora_alpha: int) -> int:
                          "place for finalize_sft_run.py.", step, e)
             continue
 
-        if not (out / "adapter_model.safetensors").is_file():
-            logger.error("No adapter written for global_step_%d; not deleting its shards.", step)
+        if not (out / done_marker).is_file():
+            logger.error("Nothing written for global_step_%d; not deleting its shards.", step)
             continue
 
         freed = dir_size(d)
@@ -130,29 +149,38 @@ def main() -> int:
     p.add_argument("--stop-file", required=True,
                    help="Poll until this file exists, then do one final sweep and exit.")
     p.add_argument("--poll-seconds", type=float, default=60.0)
-    p.add_argument("--lora-rank", type=int, default=64)
+    p.add_argument("--mode", choices=["lora", "full"], default="lora",
+                   help="Must match the run: 'lora' extracts PEFT adapters, 'full' consolidates "
+                        "full-parameter checkpoints into HuggingFace model directories.")
+    p.add_argument("--lora-rank", type=int, default=64, help="--mode lora only.")
     p.add_argument("--lora-alpha", type=int, default=64,
-                   help="Overridden by lora_train_meta.json when the checkpoint has it.")
+                   help="--mode lora only. Overridden by lora_train_meta.json when present.")
+    p.add_argument("--base-model", default="Qwen/Qwen3-8B",
+                   help="--mode full only. Fallback if a checkpoint's huggingface/ subdir is missing.")
     p.add_argument("--once", action="store_true", help="Single sweep, then exit (for testing).")
     args = p.parse_args()
 
     ckpt_dir, stop_file = Path(args.ckpt_dir), Path(args.stop_file)
-    logger.info("Watching %s (poll %.0fs, stop file %s)", ckpt_dir, args.poll_seconds, stop_file)
+    logger.info("Watching %s (mode=%s, poll %.0fs, stop file %s)",
+               ckpt_dir, args.mode, args.poll_seconds, stop_file)
+
+    def _sweep_once() -> int:
+        if not ckpt_dir.is_dir():
+            return 0
+        return sweep(ckpt_dir, args.mode, args.lora_rank, args.lora_alpha, args.base_model)
 
     if args.once:
-        n = sweep(ckpt_dir, args.lora_rank, args.lora_alpha) if ckpt_dir.is_dir() else 0
+        n = _sweep_once()
         logger.info("Single sweep collapsed %d checkpoint(s).", n)
         return 0
 
     total = 0
     while not stop_file.exists():
-        if ckpt_dir.is_dir():
-            total += sweep(ckpt_dir, args.lora_rank, args.lora_alpha)
+        total += _sweep_once()
         time.sleep(args.poll_seconds)
 
     # Training has stopped, but the last checkpoint may have landed during the final sleep.
-    if ckpt_dir.is_dir():
-        total += sweep(ckpt_dir, args.lora_rank, args.lora_alpha)
+    total += _sweep_once()
     logger.info("Stop file seen. Collapsed %d checkpoint(s) in total. Exiting.", total)
     return 0
 

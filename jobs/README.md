@@ -36,7 +36,7 @@ For setup instructions, job file descriptions, and how to submit experiments see
 | `003_smoke_4b.job` | Smoke-test the fine-tuning pipeline with Qwen3-4B (2 GPUs) |
 | `004_smoke_8b.job` | Smoke-test the fine-tuning pipeline with Qwen3-8B (3 GPUs: GPU 0 = sub-agent, GPUs 1–2 = VERL N_GPUS=2) |
 | `004_smoke_8b_load.job` | Verifies LoRA mid-run resume end-to-end (loads a saved checkpoint, runs 2 new steps, asserts log signals + new checkpoints) |
-| `005_train.job` | Full orchestrator GRPO run — Qwen3-8B LoRA, 2 epochs, 4×H100 GPUs, 48h walltime |
+| `005_train.job` | Full orchestrator GRPO run — Qwen3-8B, 2 epochs, 4×H100 GPUs, 48h walltime; LoRA by default, full-parameter via `USE_LORA: "false"` in `experiments/configs/fine_tuning/config.yaml` |
 
 #### SFT (distillation)
 
@@ -45,6 +45,7 @@ For setup instructions, job file descriptions, and how to submit experiments see
 | `006_collect_sft_data.job` | Run Qwen3-32B teacher (ORCHESTRATOR_ONLY thinking, sub-agent mode) on the 1800 GRPO training questions and save correct trajectories as SFT training data (4×H100) |
 | `007_run_tests_for_sft_folded.job` | CPU-only verification suite for the folded-format pipeline (tests, pre-flight gate, gate trip-wire) |
 | `007_train_sft_folded.job` | SFT distillation of Qwen3-8B orchestrator from the Qwen3-32B teacher trajectories, memory-folded prompt format — LoRA rank 64, ~187 steps, 2×H100 |
+| `007_train_sft_full.job` | Same, full parameter (no LoRA) — every weight trained, 4×H100 |
 
 ### `grpo_inference/` — GRPO / SFT / base-model evaluation jobs
 

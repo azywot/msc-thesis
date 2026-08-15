@@ -1,0 +1,301 @@
+#!/bin/bash
+#SBATCH --job-name=SFTFoldedFull
+#SBATCH --partition=gpu_h100
+# 4 GPUs, not 007_train_sft_folded's 2: full-parameter AdamW needs fp32 master weights +
+# fp32 optimizer moments on top of the bf16 weights/grads that LoRA also carries, and there
+# is no adapter to shrink it back down to ~1% of the model. Unlike 005_train.job's full-FT
+# RL run, there is no colocated vLLM and no reference policy here (SFT is plain supervised
+# cross-entropy, not RL) — no rollout server, no ref shard, no ~42 GB of vLLM KV cache to
+# share the budget with — so 4 H100s (~94 GB each) is comfortably more headroom than the RL
+# case needed for the same GPU count. Estimate, not yet run: FSDP-sharded across 4 GPUs,
+# ~4 GB weights + ~4 GB grads + ~16 GB optimizer moments (fp32 m+v) + ~8 GB fp32 master
+# weights per GPU =~ 32 GB/GPU before activations, against a 94 GB budget with no rollout
+# server sharing it. Watch ft_*_gpu.csv on the first run and adjust
+# data.micro_batch_size_per_gpu down if it runs tight.
+#SBATCH --gpus=4
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=08:00:00
+#SBATCH --output=out/fine_tuning/sft_train/sft_full_%A.log
+#SBATCH --error=out/fine_tuning/sft_train/sft_full_%A.err
+
+# SFT on Qwen3-8B orchestrator, memory-FOLDED format, FULL-PARAMETER (no LoRA). Same data,
+# same format, same pre-flight gate as 007_train_sft_folded.job — the only difference is that
+# every weight is trained, not just a rank-64 adapter. Run this instead of
+# 007_train_sft_folded.job when the goal is a fully fine-tuned checkpoint rather than an
+# adapter; run both if you want to compare them (see docs/sft_status.md).
+#
+# What differs from 007_train_sft_folded.job
+# --------------------------------------------
+#   model.lora_rank / lora_alpha / target_modules  -> REMOVED. Omitting them is what makes
+#                                                      verl train every parameter instead of
+#                                                      wrapping the model in a LoRA adapter.
+#   trainer.n_gpus_per_node                        -> 4 (was 2; see the memory comment above).
+#   checkpoint layout                              -> full_ft/<experiment>/<run-tag>/, a
+#                                                      sibling of lora_adapters/ so a full-FT
+#                                                      run can never be mistaken for, or
+#                                                      overwrite, a LoRA one.
+#   checkpoint janitor / finalize                  -> both called with --mode full. A full
+#                                                      checkpoint has no LoRA keys to filter
+#                                                      for, so the extraction step
+#                                                      (verl_ext.checkpoint_utils via
+#                                                      scripts/finalize_sft_run.py) gathers
+#                                                      every key from the sharded FSDP state
+#                                                      dict and writes a complete HuggingFace
+#                                                      model directory instead of a ~365 MB
+#                                                      adapter. That output is ~16 GB
+#                                                      (bf16 Qwen3-8B), not ~350 MB — the
+#                                                      "keep only best + last" logic still
+#                                                      applies, it just frees less of the
+#                                                      original ~32 GB/checkpoint shard set.
+#
+# Held fixed vs 007_train_sft_folded.job: model, data (sft_folded_{train,val}.parquet), lr,
+# batch sizes, max_length, epochs, the pre-flight format gate. See
+# 007_train_sft_folded.job's own header for why the folded format exists at all.
+#
+# Prerequisites:
+#   python scripts/build_sft_parquet.py \
+#       --from-parquet data/training/sft/sft_train.parquet \
+#       --output-dir data/training/sft --output-name sft_folded_train.parquet
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSc Thesis — Orchestrator SFT (folded format, full parameter)"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+# Locate the checkout. Under sbatch, SLURM copies this script to /var/spool/slurm on the
+# compute node, so BASH_SOURCE points at the spool copy. Try each candidate and accept only
+# one that actually looks like the repo, instead of trusting any single mechanism.
+_is_repo() { [[ -n "${1:-}" && -f "$1/scripts/build_sft_parquet.py" ]]; }
+_JOB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+for _cand in "${PROJECT_DIR:-}" \
+             "${SLURM_SUBMIT_DIR:-}" \
+             "$(cd "${_JOB_DIR}/../.." 2>/dev/null && pwd)" \
+             "$HOME/azywot/msc-thesis"; do
+    if _is_repo "$_cand"; then PROJECT_DIR="$_cand"; break; fi
+done
+if ! _is_repo "${PROJECT_DIR:-}"; then
+    echo "ERROR: could not locate the msc-thesis checkout."
+    echo "  Tried: \$PROJECT_DIR, \$SLURM_SUBMIT_DIR (${SLURM_SUBMIT_DIR:-unset}),"
+    echo "         script dir (${_JOB_DIR:-unset}), \$HOME/azywot/msc-thesis"
+    echo "  Fix: sbatch --export=ALL,PROJECT_DIR=/path/to/msc-thesis $0"
+    exit 1
+fi
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+export CACHE_DIR=/scratch-shared/$USER/cache
+
+if [[ -f ".env" ]]; then
+    echo "Loading environment variables from .env..."
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    echo "Warning: WANDB_API_KEY is not set; W&B logging may fail."
+fi
+
+if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
+    echo "ERROR: conda env 'cosmas-train' not found."
+    echo "Run jobs/fine_tuning/001_prepare_data.job first (creates env + training data)."
+    exit 1
+fi
+
+source activate cosmas-train
+export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+export PYTHONUNBUFFERED=1
+
+mkdir -p out/fine_tuning/sft_train
+
+TRAIN_FILE=data/training/sft/sft_folded_train.parquet
+VAL_FILE=data/training/sft/sft_folded_val.parquet
+BASE_MODEL=Qwen/Qwen3-8B
+
+for required_file in "$TRAIN_FILE" "$VAL_FILE"; do
+    if [[ ! -f "$required_file" ]]; then
+        echo "ERROR: Missing required file: $required_file"
+        echo "Build it with:"
+        echo "  python scripts/build_sft_parquet.py --from-parquet data/training/sft/sft_train.parquet \\"
+        echo "      --output-dir data/training/sft --output-name sft_folded_train.parquet"
+        exit 1
+    fi
+done
+
+# ── Pre-flight: the training context must equal the inference context ────────────
+# Same gate as 007_train_sft_folded.job — the format bug it guards against does not care
+# whether the run trains an adapter or every parameter.
+echo ""
+echo "Pre-flight: verifying folded rows render exactly as inference does..."
+python scripts/check_sft_folded_format.py \
+    --folded "$TRAIN_FILE" --native data/training/sft/sft_train.parquet \
+    --max-length 16384
+python scripts/check_sft_folded_format.py \
+    --folded "$VAL_FILE" --native data/training/sft/sft_val.parquet \
+    --max-length 16384
+echo "Pre-flight passed."
+
+EXPERIMENT_NAME="qwen3-8b-sft-full-v1"
+# Sibling of lora_adapters/, not inside it — a full-FT run must never be discoverable at a
+# path an SFT_ADAPTER_PLACEHOLDER-style config substitution would treat as an adapter dir.
+RUN_TAG="$(date +%d-%m-%Y_%H-%M)-${SLURM_JOB_ID:-local}"
+DEFAULT_LOCAL_DIR="/scratch-shared/${USER}/fine_tuning/full_ft/${EXPERIMENT_NAME}/${RUN_TAG}"
+echo "Run tag: $RUN_TAG"
+
+echo ""
+echo "Starting SFT training (folded format, full parameter)..."
+echo "Train data: $TRAIN_FILE"
+echo "Val data:   $VAL_FILE"
+echo "Checkpoints will be written to: $DEFAULT_LOCAL_DIR"
+echo ""
+
+# Same two load-bearing data flags as 007_train_sft_folded.job — see that job's header for
+# why data.enable_thinking_default and data.truncation are set explicitly rather than left
+# at verl's defaults.
+SFT_LOG="out/fine_tuning/sft_train/sft_full_${SLURM_JOB_ID:-local}_verl.log"
+unset ROCR_VISIBLE_DEVICES
+
+export TRITON_CACHE_DIR="/scratch-shared/${USER}/triton_cache"
+export WANDB_CACHE_DIR="/scratch-shared/${USER}/wandb_cache"
+mkdir -p "$TRITON_CACHE_DIR" "$WANDB_CACHE_DIR"
+
+# ── Collapse checkpoints to full HF directories *while* training runs ────────────────
+# Same reasoning as 007_train_sft_folded.job's janitor: verl writes the full ~32 GB FSDP
+# state dict at every save, and a cancelled job left every one of them behind once already
+# (job 25268454). --mode full reconstructs and writes a complete HF checkpoint (~16 GB)
+# instead of a ~350 MB adapter, but it is still far smaller than the shard set it replaces,
+# so collapsing during training rather than only at the end still matters.
+# Unlike --mode lora, reconstruction touches every tensor (not just a ~350 MB subset), so
+# this process's peak CPU RAM is on the order of the full checkpoint size (~32 GB). It runs
+# with CUDA_VISIBLE_DEVICES="" so it cannot take GPU memory from training either way; the RAM
+# side of this has not been run against the node's actual availability yet.
+JANITOR_STOP="${DEFAULT_LOCAL_DIR}.training_done"
+JANITOR_LOG="out/fine_tuning/sft_train/sft_full_${SLURM_JOB_ID:-local}_janitor.log"
+rm -f "$JANITOR_STOP"
+mkdir -p "$DEFAULT_LOCAL_DIR"
+CUDA_VISIBLE_DEVICES="" python scripts/sft_checkpoint_janitor.py \
+    --ckpt-dir "$DEFAULT_LOCAL_DIR" \
+    --stop-file "$JANITOR_STOP" \
+    --poll-seconds 60 \
+    --mode full --base-model "$BASE_MODEL" \
+    > "$JANITOR_LOG" 2>&1 &
+JANITOR_PID=$!
+echo "Checkpoint janitor running (pid $JANITOR_PID), log: $JANITOR_LOG"
+
+cleanup_janitor() {
+    touch "$JANITOR_STOP" 2>/dev/null || true
+    kill "$JANITOR_PID" 2>/dev/null || true
+}
+trap cleanup_janitor EXIT INT TERM
+
+SFT_EXIT=0
+torchrun --nproc_per_node=4 -m verl.trainer.sft_trainer \
+    data.train_files="$TRAIN_FILE" \
+    data.val_files="$VAL_FILE" \
+    data.messages_key=messages \
+    data.max_length=16384 \
+    data.max_token_len_per_gpu=16384 \
+    data.truncation=error \
+    data.custom_cls.path="${PROJECT_DIR}/src/verl_ext/folded_sft_dataset.py" \
+    data.custom_cls.name=FoldedSFTDataset \
+    data.enable_thinking_default=false \
+    data.train_batch_size=32 \
+    data.micro_batch_size_per_gpu=2 \
+    model.path="$BASE_MODEL" \
+    optim.lr=2e-5 \
+    optim.lr_warmup_steps=20 \
+    trainer.project_name=msc-thesis-sft \
+    trainer.experiment_name="${EXPERIMENT_NAME}" \
+    trainer.total_epochs=2 \
+    trainer.save_freq=25 \
+    trainer.test_freq=25 \
+    trainer.n_gpus_per_node=4 \
+    "checkpoint.save_contents=['model','extra']" \
+    trainer.resume_mode=disable \
+    trainer.logger="['console','wandb']" \
+    "trainer.default_local_dir=${DEFAULT_LOCAL_DIR}" \
+    > "$SFT_LOG" 2>&1 || SFT_EXIT=$?
+
+echo ""
+echo "Stopping the checkpoint janitor and waiting for its final sweep..."
+touch "$JANITOR_STOP"
+wait "$JANITOR_PID" 2>/dev/null || true
+trap - EXIT INT TERM
+rm -f "$JANITOR_STOP"
+echo "Janitor finished. Summary:"
+grep -cE "Collapsed global_step" "$JANITOR_LOG" 2>/dev/null | sed 's/^/  checkpoints collapsed during training: /' || true
+grep -E "ERROR" "$JANITOR_LOG" 2>/dev/null | tail -5 || true
+
+echo ""
+if [[ $SFT_EXIT -ne 0 ]]; then
+    echo "FAIL — SFT trainer exited with code $SFT_EXIT. See $SFT_LOG"
+    exit $SFT_EXIT
+fi
+
+echo "Training complete at: $(date)"
+echo ""
+echo "Under $DEFAULT_LOCAL_DIR:"
+find "$DEFAULT_LOCAL_DIR" -maxdepth 1 -name "global_step_*" -type d | sort -V
+find "$DEFAULT_LOCAL_DIR/step_checkpoints" -maxdepth 1 -name "step_*" -type d 2>/dev/null | sort -V
+
+# ── Keep only the best and last checkpoints ──────────────────────────────────────
+echo ""
+echo "Selecting best/last checkpoints and writing full HuggingFace model directories..."
+FINALIZE_EXIT=0
+python scripts/finalize_sft_run.py \
+    --ckpt-dir "$DEFAULT_LOCAL_DIR" \
+    --log "$SFT_LOG" \
+    --mode full --base-model "$BASE_MODEL" || FINALIZE_EXIT=$?
+if [[ $FINALIZE_EXIT -ne 0 ]]; then
+    echo "WARNING — checkpoint extraction failed (exit $FINALIZE_EXIT)."
+    echo "The FSDP shards were NOT deleted; rerun manually:"
+    echo "  python scripts/finalize_sft_run.py --ckpt-dir $DEFAULT_LOCAL_DIR --log $SFT_LOG --mode full"
+fi
+
+# ── Archive the checkpoints off scratch ───────────────────────────────────────────
+# /scratch-shared is not durable (see 007_train_sft_folded.job's note on the purged GRPO
+# adapters). A full checkpoint is ~16 GB against a 200 GiB home quota — copy it while it
+# exists. data/* is gitignored.
+ARCHIVE_DIR="${PROJECT_DIR}/data/checkpoints/${EXPERIMENT_NAME}/${RUN_TAG}"
+if [[ $FINALIZE_EXIT -eq 0 && -d "$DEFAULT_LOCAL_DIR/best_checkpoint" ]]; then
+    echo ""
+    echo "Archiving checkpoints to durable storage: $ARCHIVE_DIR"
+    mkdir -p "$ARCHIVE_DIR"
+    for _ckpt in best_checkpoint last_checkpoint; do
+        if [[ -d "$DEFAULT_LOCAL_DIR/$_ckpt" ]]; then
+            cp -r "$DEFAULT_LOCAL_DIR/$_ckpt" "$ARCHIVE_DIR/"
+            echo "  copied $_ckpt"
+        fi
+    done
+    [[ -f "$DEFAULT_LOCAL_DIR/selection.json" ]] && cp "$DEFAULT_LOCAL_DIR/selection.json" "$ARCHIVE_DIR/"
+    du -sh "$ARCHIVE_DIR"
+else
+    echo ""
+    echo "WARNING — no best_checkpoint to archive; the scratch copy is the only one and scratch is purged."
+fi
+
+echo ""
+echo "Validation loss by step:"
+grep -oE "step:[0-9]+ - val/loss:[0-9.]+" "$SFT_LOG" || echo "  (none found in $SFT_LOG)"
+
+echo ""
+echo "Kept under $DEFAULT_LOCAL_DIR:"
+ls -la "$DEFAULT_LOCAL_DIR" 2>/dev/null
+
+echo ""
+echo "Next step — evaluate. Unlike the LoRA adapters, this is a complete HuggingFace model"
+echo "directory: point an inference config's path_or_id straight at it and leave"
+echo "lora_adapter_path unset, e.g.:"
+echo "    path_or_id: \"$ARCHIVE_DIR/best_checkpoint\""
+echo "Use the ARCHIVE path, not the scratch one: scratch is purged."
+echo "Selection details are in $DEFAULT_LOCAL_DIR/selection.json."
