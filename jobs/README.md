@@ -43,7 +43,8 @@ For setup instructions, job file descriptions, and how to submit experiments see
 | File | Purpose |
 |------|---------|
 | `006_collect_sft_data.job` | Run Qwen3-32B teacher (ORCHESTRATOR_ONLY thinking, sub-agent mode) on the 1800 GRPO training questions and save correct trajectories as SFT training data (4×H100) |
-| `007_train_sft.job` | SFT distillation of Qwen3-8B orchestrator from the Qwen3-32B teacher trajectories — LoRA rank 64, ~90 steps, 2×H100 |
+| `008_test_sft_folded.job` | CPU-only verification suite for the folded-format pipeline (tests, pre-flight gate, gate trip-wire) |
+| `008_train_sft_folded.job` | SFT distillation of Qwen3-8B orchestrator from the Qwen3-32B teacher trajectories, memory-folded prompt format — LoRA rank 64, ~187 steps, 2×H100 |
 
 ### `grpo_inference/` — GRPO / SFT / base-model evaluation jobs
 

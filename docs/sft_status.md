@@ -32,6 +32,12 @@ all five `sft_inference` configs were pointed at it and run on 2026-08-07 (§8 h
 **NEXT ACTION: fold the results into Ch 7** of the thesis — see §8 for the numbers and the one
 open question (AIME) they raise. Test suite: **496 passed**.
 
+**`007_train_sft.job` (the original training job) has been removed from the repo.** Its
+training conversation format did not match the orchestrator's inference format, which is the
+bug this document diagnoses, and it is superseded entirely by the folded pipeline below; it was
+kept around for a while as a comparison artifact, but that risked reading as if the broken
+pipeline were still current. References to it below (§2, §6, §12) are historical.
+
 ---
 
 ## 2. The bug, and the evidence for it
@@ -66,7 +72,7 @@ the val split had exactly the same defect.
 Both sides were produced by running the production code:
 
 - **Training side:** `verl.utils.dataset.multiturn_sft_dataset.MultiTurnSFTDataset`,
-  constructed with the exact flags `007_train_sft.job:135-142` passes, then decoding
+  constructed with the exact flags the (now-removed) `007_train_sft.job:135-142` passed, then decoding
   `input_ids` and the `loss_mask == 1` positions.
 - **Inference side:** the orchestrator's own `_build_memory_prompt`, `_commit_tool_result`,
   `_format_action_history`, `_extract_sub_goal` and the real `parse_tool_call`, driven on a
@@ -99,7 +105,7 @@ adapter was trained to start generating 4 tokens earlier than it is ever sampled
 **every** target.
 
 VERL's own sanity check fails on **60/60** sampled rows, delta **exactly 4 tokens** every time.
-`007_train_sft.job:141` silenced it with `data.ignore_input_ids_mismatch=True`. Folding alone
+The removed `007_train_sft.job:141` silenced it with `data.ignore_input_ids_mismatch=True`. Folding alone
 does **not** fix this — measured on a real folded row:
 
 | Path | Prompt tokens | Identical to inference? |
@@ -145,7 +151,7 @@ until the source-of-record run is readable.
 | `scripts/check_sft_folded_format.py` | new | Pre-flight gate, run before training and by the job itself. Asserts prompt identity, span purity, no thinking, no tool output, tool calls retained, no degenerate rows, no truncation. |
 | `scripts/finalize_sft_run.py` | new | Selects best-val-loss and last, extracts both as PEFT adapters (DTensor-correct), deletes the shards. |
 | `scripts/sft_checkpoint_janitor.py` | new | Collapses checkpoints to adapters *during* training (§7.2). |
-| `jobs/fine_tuning/008_train_sft_folded.job` | new | The training job. 007 is left untouched so the native run stays reproducible for comparison. |
+| `jobs/fine_tuning/008_train_sft_folded.job` | new | The training job. Supersedes `007_train_sft.job` (since removed — §12), whose training format did not match the orchestrator's inference format. |
 | `jobs/fine_tuning/008_test_sft_folded.job` | new | CPU-only verification suite: tests, gate, gate trip-wire, gate under the training env, one decoded example. |
 | `experiments/configs/qwen3/sft_inference/` | new | Five eval configs (§8). |
 | `tests/unit/test_sft_folded_format.py` | new | 32 tests. |
@@ -254,8 +260,8 @@ format the model is evaluated in, not bloat added by the fold.
 Two consequences, both already handled:
 
 1. **Steps per epoch tripled**: 2995 / 32 ≈ 94 steps vs 968 / 32 ≈ 30. This is why job 008 sets
-   `total_epochs=2` (~187 steps) where 007 used 3 (~90): the run is matched on optimizer steps,
-   not on epochs.
+   `total_epochs=2` (~187 steps) where the removed `007_train_sft.job` used 3 (~90): the run was
+   matched on optimizer steps, not on epochs.
 2. **Long trajectories now contribute more rows.** A 9-turn trajectory yields 9 rows where a
    turn-0 answer yields 1. Search trajectories run longer than math ones, so the 484/484
    trajectory balance becomes 1172/1823 at row level. That is the mechanism behind decision 2
@@ -298,7 +304,7 @@ data/training/sft/sft_folded_{train,val}.jsonl        (human-readable mirrors)
 **1. Turn-0 answers (175 train rows, 18.1%): KEPT.** These teach answering at turn 0, which is
 the *Premature direct answering* failure mode in the Ch 6 taxonomy. `--drop-planning-answers`
 is implemented and tested but **not used**. Rationale: format is then the only variable that
-changed against the 007 run, so the comparison stays clean. If *Premature direct answering*
+changed against the (now-removed) 007 run, so the comparison stayed clean. If *Premature direct answering*
 shows up in the eval, dropping them is a one-flag rebuild and a follow-up run.
 
 **2. Loss-level composition shift: ACCEPTED, to be stated in Ch 7.** Trajectories stay 484 math
@@ -590,7 +596,7 @@ Local checks, worth re-running after any change to `build_sft_parquet.py` or
 `folded_sft_dataset.py`:
 
 ```bash
-bash -n jobs/fine_tuning/008_train_sft_folded.job   # and 008_test, 006, 007
+bash -n jobs/fine_tuning/008_train_sft_folded.job   # and 008_test, 006
 conda activate agent_engine
 python -m pytest tests/ -q --ignore=tests/unit/test_fine_tuning_rollout.py   # expect 496
 python scripts/check_sft_folded_format.py \
@@ -649,8 +655,9 @@ worktree and vanished: no `--format folded`, no `_fold_trajectory`, no tests, an
 commit (`git log --all -S"_fold_trajectory"` was empty), despite the docs of the time claiming
 it was "implemented, tested, and run successfully". Its *numbers* all reproduced exactly, so
 those docs were a reliable spec, but the code was rewritten from scratch. `select_best_sft_
-checkpoint.py`, referenced by `007_train_sft.job:180`, likewise never existed in any commit.
-This is the reason for the standing recommendation to commit `stash@{0}`.
+checkpoint.py`, referenced by `007_train_sft.job:180`, likewise never existed in any commit
+(`007_train_sft.job` has since been removed from the repo entirely — see §1). This is the
+reason for the standing recommendation to commit `stash@{0}`.
 
 **Job 25268454 — ran 8m43s, then cancelled on purpose.** The in-job pre-flight gate passed on
 both splits. What it proved before being stopped:
@@ -674,8 +681,8 @@ shards instead of treating one as "last". Its 33 GB of leftovers were deleted on
 batch script to `/var/spool/slurm` on the compute node. Fixed in both 008 jobs by trying
 candidates in order and accepting only one that *validates* as the repo (`scripts/build_sft_
 parquet.py` present): `$PROJECT_DIR` → `$SLURM_SUBMIT_DIR` → script dir →
-`$HOME/azywot/msc-thesis`. **007 has the same class of fragility** (a hardcoded
-`/projects/0/gusr0608`), so copy the resolution block if that job is ever reused.
+`$HOME/azywot/msc-thesis`. **007 had the same class of fragility** (a hardcoded
+`/projects/0/gusr0608`); moot now that it has been removed.
 
 **Post-cancel fixes**, all since verified: checkpoints moved to the GRPO layout;
 `checkpoint.save_contents=['model','extra']`; `trainer.resume_mode=disable`;

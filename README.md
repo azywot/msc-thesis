@@ -795,7 +795,6 @@ There is no manual post-training step: the job selects the best-val-loss and las
 | File | Purpose | Log |
 |------|---------|-----|
 | `jobs/fine_tuning/006_collect_sft_data.job` | Collect teacher trajectories | `out/fine_tuning/sft_collect/collect_<job_id>.log` |
-| `jobs/fine_tuning/007_train_sft.job` | Original native-format run (kept for comparison; superseded) | `out/fine_tuning/sft_train/sft_<job_id>.log` |
 | `jobs/fine_tuning/008_test_sft_folded.job` | CPU verification suite (tests + gate + trip-wire) | `out/fine_tuning/tests/sft_folded_tests_<job_id>.log` |
 | `jobs/fine_tuning/008_train_sft_folded.job` | Folded-format training run | `out/fine_tuning/sft_train/sft_folded_<job_id>.log` |
 
