@@ -381,11 +381,11 @@ experiments/configs/
 
 ```bash
 # Regenerate all suites (baseline + agentflow)
-python experiments/configs/generate_configs.py
+python scripts/generate_configs.py
 
 # Regenerate a single suite
-python experiments/configs/generate_configs.py --suite baseline
-python experiments/configs/generate_configs.py --suite agentflow
+python scripts/generate_configs.py --suite baseline
+python scripts/generate_configs.py --suite agentflow
 ```
 
 Or via SLURM:
@@ -748,7 +748,7 @@ Training on the stored multi-turn transcript therefore optimises a distribution 
 | Train | 968 | 2995 | 589,805 |
 | Val | 108 | 362 | 66,556 |
 
-A folded row is one decision, a native row was a whole trajectory, so the row count is just the assistant-turn count. The supervision is byte-for-byte identical to the native format; only the conditioning changes.
+A folded row (consistent with inference) is one decision, a multi-turn row was a whole trajectory, so the row count is just the assistant-turn count. The supervision is byte-for-byte identical to the multi-turn format; only the conditioning changes.
 
 Two components enforce this:
 
@@ -760,21 +760,30 @@ Two components enforce this:
 ### Quick start
 
 ```bash
-# 1. Collect teacher trajectories (only needed once; produces collected_*.jsonl)
+# 1. Collect teacher trajectories (only needed once; produces collected_*.jsonl,
+#    NOT sft_train.parquet)
 sbatch jobs/fine_tuning/006_collect_sft_data.job
 
-# 2. Build the memory-folded parquets from the shipped native ones
+# 2. Build the multi-turn sft_train.parquet / sft_val.parquet from that jsonl.
+#    --reference-parquet must be passed explicitly: the script's own default points at
+#    an unreadable /projects/0/gusr0608 path.
+python scripts/build_sft_parquet.py data/training/sft/collected_<ts>.jsonl \
+    --output-dir data/training/sft \
+    --reference-parquet data/training/train/combined_train.parquet
+
+# 3. Fold those multi-turn parquets into the memory-folded rows — consistent with
+#    what inference actually builds — that training uses
 python scripts/build_sft_parquet.py \
     --from-parquet data/training/sft/sft_train.parquet \
     --output-dir data/training/sft --output-name sft_folded_train.parquet
 
-# 3. Verify everything on the CPU partition (tests, gate, gate trip-wire) - no GPU cost
+# 4. Verify everything on the CPU partition (tests, gate, gate trip-wire) - no GPU cost
 sbatch jobs/fine_tuning/007_run_tests_for_sft_folded.job
 
-# 4. Train (~187 steps, 2xH100, ~40 min)
+# 5. Train (~187 steps, 2xH100, ~40 min)
 sbatch jobs/fine_tuning/007_train_sft_folded.job
 
-# 5. Evaluate: paste the run tag the job prints into SFT_ADAPTER_PLACEHOLDER
+# 6. Evaluate: paste the run tag the job prints into SFT_ADAPTER_PLACEHOLDER
 #    in scripts/generate_configs.py, then regenerate and run
 python scripts/generate_configs.py --suite sft_inference
 ./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/sft_inference

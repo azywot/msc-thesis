@@ -18,7 +18,7 @@
 #
 # Why this job exists
 # -------------------
-# 007 trained on the stored native multi-turn transcript
+# 007 trained on the stored multi-turn transcript
 # ([system, user, assistant(plan), assistant(tool_call), tool, ..., assistant(answer)]),
 # but the orchestrator never sees that at inference: every non-baseline turn is rebuilt
 # as a fresh [system, user] memory prompt by AgenticOrchestrator._build_memory_prompt

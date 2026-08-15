@@ -22,7 +22,7 @@
 # Five stages, each independently fatal:
 #   1. Full unit-test suite            — logic, in the env the tests were written in.
 #   2. Gate on the real folded data    — every row renders exactly as inference does.
-#   3. Trip-wire                       — the gate must REJECT the native parquets. A gate
+#   3. Trip-wire                       — the gate must REJECT the multi-turn parquets. A gate
 #                                        that passes everything proves nothing.
 #   4. Same gate under cosmas-train    — the class is authored/tested in agent_engine but
 #                                        imported by VERL in cosmas-train, which has a
@@ -123,15 +123,15 @@ python scripts/check_sft_folded_format.py \
 if [[ $? -eq 0 ]]; then note_pass "gate on folded VAL"; else note_fail "gate on folded VAL"; fi
 
 # ── Stage 3: trip-wire ───────────────────────────────────────────────────────────
-# Feed the gate the native parquet it is supposed to reject. If this passes, the gate is
+# Feed the gate the multi-turn parquet it is supposed to reject. If this passes, the gate is
 # broken and stage 2 was meaningless.
 echo ""
-echo "── Stage 3/5: trip-wire — the gate must REJECT native format ────────────────"
+echo "── Stage 3/5: trip-wire — the gate must REJECT multi-turn format ────────────────"
 if python scripts/check_sft_folded_format.py \
        --folded "$NATIVE_TRAIN" --max-length "$MAX_LENGTH" > /dev/null 2>&1; then
-    note_fail "trip-wire — gate ACCEPTED the native parquet; it is not discriminating"
+    note_fail "trip-wire — gate ACCEPTED the multi-turn parquet; it is not discriminating"
 else
-    note_pass "trip-wire — gate rejected the native parquet (exit non-zero, as required)"
+    note_pass "trip-wire — gate rejected the multi-turn parquet (exit non-zero, as required)"
 fi
 
 # ── Stage 4: same gate in the training environment ───────────────────────────────
