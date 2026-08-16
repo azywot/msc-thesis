@@ -1674,6 +1674,26 @@ suite 561 -> 696 passed + 1 xfailed.  Four notes for the reader:
 
 ### Task 18: Archive superseded docs
 
+> **BLOCKED before Step 1 — `docs/archive/` is gitignored.**  `.gitignore:101`
+> is a bare `archive/`, which matches at every depth, so every `git mv` below
+> would move real documents into an untracked directory: `git add -A` skips
+> them, the commit deletes the originals, and the "archive" survives only in
+> the working tree.  Found in Task 17, when `docs/archive/known-issues.md`
+> silently failed to stage.
+>
+> Resolve before moving anything.  Options, cheapest first:
+> 1. Add a negation `!docs/archive/` after the `archive/` rule.  One line, and
+>    it leaves the original rule's intent (ignore generated
+>    `experiments/configs/archive/`, `out/.../archive/`) intact.
+> 2. Narrow the rule to the paths it was meant for.  Cleaner, but it needs a
+>    check that nothing else in the tree relies on the broad form.
+> 3. Archive somewhere not named `archive/` (`docs/historical/`).  No
+>    `.gitignore` edit at all.
+>
+> Either way this is a config change: **propose it and wait for a go-ahead**
+> before editing `.gitignore`.  Verify with `git check-ignore -v <path>` after,
+> and confirm `git status` lists the moved files before committing.
+
 - [ ] **Step 1: Move, don't delete**
 
 ```bash
