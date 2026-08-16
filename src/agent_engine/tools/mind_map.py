@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.tool import BaseTool, ToolResult
+from .registry import register_tool
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -546,3 +547,37 @@ class MindMapTool(BaseTool):
         self.entries.clear()
         self.graphrag_instances.clear()
         self.current_question_id = None
+
+
+@register_tool("mind_map")
+def build_mind_map(deps) -> MindMapTool:
+    """Construct the mind map tool (moved verbatim from ``setup_tools``).
+
+    Two deliberate departures from the other factories, both preserving the
+    original behaviour:
+
+    * The storage path is *created* here.  That ``mkdir`` is a side effect of
+      construction, not of first use, and moving it would change when the
+      directory appears on disk.
+    * The provider lookup is ``model_providers.get(...) if not direct_mode``,
+      with no ``and model_providers`` guard -- unlike every other tool.  A
+      ``None`` ``model_providers`` in sub-agent mode therefore raises
+      ``AttributeError`` here where the others quietly yield ``None``.  Using
+      ``deps.provider_for`` would silently convert that crash into a
+      misconfigured run, so it is left as-is.
+    """
+    if deps.mind_map_storage_path is not None:
+        deps.mind_map_storage_path.mkdir(parents=True, exist_ok=True)
+        storage_path = str(deps.mind_map_storage_path)
+    else:
+        storage_path = str(deps.config.cache_dir / "mind_map")
+
+    direct_mode = deps.direct_mode
+    mind_map_model = deps.model_providers.get("mind_map") if not direct_mode else None
+    return MindMapTool(
+        direct_mode=direct_mode,
+        storage_path=storage_path,
+        use_graphrag=True,
+        model_provider=mind_map_model,
+        use_thinking=deps.use_subagent_thinking,
+    )

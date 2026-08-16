@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from ..core.tool import BaseTool, ToolResult
+from .registry import register_tool
 from ..utils.logging import get_logger
 from ..utils.parsing import strip_thinking_tags
 
@@ -453,3 +454,15 @@ class CodeGeneratorTool(BaseTool):
             task = kwargs.get('task', '')
             return isinstance(task, str) and len(task.strip()) > 0
 
+
+
+@register_tool("code_generator")
+def build_code_generator(deps) -> CodeGeneratorTool:
+    """Construct the code generator tool (moved verbatim from ``setup_tools``)."""
+    return CodeGeneratorTool(
+        timeout_seconds=60,
+        temp_dir=str(deps.config.cache_dir / "code_temp"),
+        model_provider=deps.provider_for("code_generator"),
+        use_thinking=deps.use_subagent_thinking,
+        return_code=deps.config.tools.return_code,
+    )

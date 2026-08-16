@@ -12,6 +12,7 @@ import json
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..core.tool import BaseTool, ToolResult
+from .registry import register_tool
 from ..utils.logging import get_logger
 from ..utils.parsing import strip_thinking_tags
 from ..external.serper import SerperRM
@@ -428,3 +429,28 @@ Now you should analyze each web page and find helpful information based on the c
             return False
         query = kwargs['query']
         return isinstance(query, str) and len(query.strip()) > 0
+
+
+@register_tool("web_search")
+def build_web_search(deps) -> WebSearchTool:
+    """Construct the web search tool (moved verbatim from ``setup_tools``)."""
+    provider = deps.config.tools.web_tool_provider
+    api_key = deps.api_keys.get(provider)
+    if not api_key:
+        raise RuntimeError(
+            f"{provider.upper()}_API_KEY environment variable is required "
+            f"for web_tool_provider='{provider}'"
+        )
+    return WebSearchTool(
+        api_key=api_key,
+        provider=provider,
+        search_cache=deps.cache_manager.search_cache,
+        url_cache=deps.cache_manager.url_cache,
+        top_k=deps.config.tools.top_k_results,
+        max_doc_len=deps.config.tools.max_doc_len,
+        model_provider=deps.provider_for("web_search"),
+        fetch_urls=True,
+        use_thinking=deps.use_subagent_thinking,
+        cache_manager=deps.cache_manager,
+        max_search_content_chars=deps.config.tools.max_search_content_chars,
+    )

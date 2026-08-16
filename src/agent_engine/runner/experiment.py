@@ -22,126 +22,20 @@ load_dotenv()
 
 from agent_engine.config import load_experiment_config
 from agent_engine.models.base import get_tool_call_format
-from agent_engine.core import ToolRegistry, AgenticOrchestrator
+from agent_engine.core import AgenticOrchestrator
 from agent_engine.utils import setup_logging, set_seed
 from agent_engine.utils.wandb_logging import log_results_wandb
-from agent_engine.tools import (
-    WebSearchTool,
-    CodeGeneratorTool,
-    MindMapTool,
-    TextInspectorTool,
-    ImageInspectorTool,
-)
 from agent_engine.datasets import DatasetRegistry
 from agent_engine.prompts import PromptBuilder
 from agent_engine.caching import CacheManager
 
 from agent_engine.runner.metrics import compute_metrics
 from agent_engine.runner.providers import setup_model_provider
+from agent_engine.runner.tools import build_tool_registry
+from agent_engine.tools.registry import ToolDeps
 
 
 logger = logging.getLogger(__name__)
-
-
-def setup_tools(
-    config,
-    cache_manager,
-    api_keys: Dict[str, str],
-    model_providers: Optional[Dict[str, Any]] = None,
-    orchestrator_model=None,
-    mind_map_storage_path: Optional[Path] = None,
-) -> ToolRegistry:
-    """Set up tools based on configuration.
-
-    Args:
-        config: Experiment configuration
-        cache_manager: Cache manager instance
-        api_keys: Dictionary of API keys
-        model_providers: Dictionary of model providers for sub-agent mode (optional)
-        mind_map_storage_path: Optional run-specific path for mind_map cache
-            (e.g. cache_dir/mind_map/gaia/all_validation/2026-02-22_123abc).
-            If None, falls back to config.cache_dir / "mind_map".
-
-    Returns:
-        ToolRegistry with registered tools
-    """
-    tools = ToolRegistry()
-
-    # Determine if we use sub-agent thinking
-    use_subagent_thinking = config.use_subagent_thinking()
-    direct_mode = config.tools.direct_tool_call
-
-    for tool_name in config.tools.enabled_tools:
-        if tool_name == "web_search":
-            # Get model provider for sub-agent mode
-            search_model = model_providers.get("web_search") if not direct_mode and model_providers else None
-            # Select the correct API key based on provider
-            provider = config.tools.web_tool_provider
-            api_key = api_keys.get(provider)
-            if not api_key:
-                raise RuntimeError(f"{provider.upper()}_API_KEY environment variable is required for web_tool_provider='{provider}'")
-            tools.register(WebSearchTool(
-                api_key=api_key,
-                provider=provider,
-                search_cache=cache_manager.search_cache,
-                url_cache=cache_manager.url_cache,
-                top_k=config.tools.top_k_results,
-                max_doc_len=config.tools.max_doc_len,
-                model_provider=search_model,
-                fetch_urls=True,
-                use_thinking=use_subagent_thinking,
-                cache_manager=cache_manager,
-                max_search_content_chars=config.tools.max_search_content_chars,
-            ))
-        elif tool_name == "code_generator":
-            # Get model provider for sub-agent mode
-            coding_model = model_providers.get("code_generator") if not direct_mode and model_providers else None
-            tools.register(CodeGeneratorTool(
-                timeout_seconds=60,
-                temp_dir=str(config.cache_dir / "code_temp"),
-                model_provider=coding_model,
-                use_thinking=use_subagent_thinking,
-                return_code=config.tools.return_code,
-            ))
-        elif tool_name == "mind_map":
-            # In sub-agent mode, GraphRAG runs with a local model — no OpenAI key needed (mirrors MAT).
-            # Use run-specific path when provided (mirrors results: cache/mind_map/{dataset}/{split}/{date}_{job_id})
-            if mind_map_storage_path is not None:
-                mind_map_storage_path.mkdir(parents=True, exist_ok=True)
-                storage_path = str(mind_map_storage_path)
-            else:
-                storage_path = str(config.cache_dir / "mind_map")
-            mind_map_model = model_providers.get("mind_map") if not direct_mode else None
-            tools.register(MindMapTool(
-                direct_mode=direct_mode,
-                storage_path=storage_path,
-                use_graphrag=True,
-                model_provider=mind_map_model,
-                use_thinking=use_subagent_thinking,
-            ))
-        elif tool_name == "text_inspector":
-            # Get model provider for sub-agent mode (optional for text inspector)
-            text_inspector_model = model_providers.get("text_inspector") if not direct_mode and model_providers else None
-            tools.register(TextInspectorTool(
-                max_chars=50000,
-                model_provider=text_inspector_model,
-                use_thinking=use_subagent_thinking
-            ))
-        elif tool_name == "image_inspector":
-            # Image inspector requires a VLM, so only enable in non-direct mode
-            if not direct_mode:
-                # Get VLM model provider for image analysis (required)
-                vlm_model = model_providers.get("image_inspector") if model_providers else None
-                if vlm_model is None:
-                    logger.warning("image_inspector enabled but no VLM model provider configured - tool will fail at runtime")
-                tools.register(ImageInspectorTool(
-                    model_provider=vlm_model,
-                    use_thinking=use_subagent_thinking
-                ))
-            else:
-                logger.warning("image_inspector is disabled in direct mode (requires VLM)")
-
-    return tools
 
 
 def run_experiment(args):
@@ -258,11 +152,14 @@ def run_experiment(args):
 
     # Setup tools
     logger.info(f"Setting up tools: {config.tools.enabled_tools}")
-    tools = setup_tools(
-        config, cache_manager, api_keys, model_providers,
+    tools = build_tool_registry(ToolDeps(
+        config=config,
+        cache_manager=cache_manager,
+        api_keys=api_keys,
+        model_providers=model_providers,
         orchestrator_model=orchestrator_model,
         mind_map_storage_path=mind_map_storage,
-    )
+    ))
 
     # Initialize prompt builder
     prompt_builder = PromptBuilder()

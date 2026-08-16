@@ -10,6 +10,24 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-15-repo-handover-design.md`
 
+## Progress
+
+| Phase | Tasks | Commit | Status |
+|---|---|---|---|
+| 0 — safety net | 1-7 | `3f8b206`..`b85c95e` | done |
+| 1 — packaging, dead path inserts | 8 | `4472f6a` | done |
+| 2 — promote runner into `src/` | 9-10 | `7625a9e` | done |
+| 3 — tool factory registry | 11 | `cbe2802` | done |
+| 4 — `DatasetSpec` | 12 | | next |
+| 5 — orchestrator batching collapse | 13-15 | | |
+| 6 — analysis move + shims | 16 | | |
+| 7 — tests for untested modules | 17 | | |
+| 8 — docs, archive, final verification | 18-20 | | |
+
+Keep this table current when a phase lands. Checkboxes alone proved too easy to
+misread after a context handoff: an all-unticked plan sitting on top of ten
+landed commits invites redoing finished work.
+
 ## Global Constraints
 
 - **Behaviour must be identical, not equivalent.** Where cleanliness and behaviour-identity conflict, behaviour-identity wins and the ugliness is documented instead of fixed.
@@ -113,7 +131,7 @@ No production code is touched in this phase. Every task records current behaviou
 **Interfaces:**
 - Produces: `FIXTURE_DIR: Path`, `assert_matches_fixture(name: str, actual: str, update: bool) -> None`, pytest option `--update-fixtures`.
 
-- [ ] **Step 1: Create the root conftest that unblocks `pytest`**
+- [x] **Step 1: Create the root conftest that unblocks `pytest`**
 
 `tests/conftest.py`:
 
@@ -153,7 +171,7 @@ def pytest_ignore_collect(collection_path, config):
     return False
 ```
 
-- [ ] **Step 2: Create the fixture harness**
+- [x] **Step 2: Create the fixture harness**
 
 `tests/characterization/__init__.py` is empty. `tests/characterization/conftest.py`:
 
@@ -204,12 +222,12 @@ def assert_matches_fixture(name: str, actual: str, update: bool) -> None:
     assert actual == expected, f"Behaviour changed against fixture {name}"
 ```
 
-- [ ] **Step 3: Verify root pytest now collects cleanly**
+- [x] **Step 3: Verify root pytest now collects cleanly**
 
 Run: `/home/xchen1/.conda/envs/agent_engine/bin/python -m pytest -q 2>&1 | tail -5`
 Expected: `496 passed` with 0 errors (previously: collection error).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/conftest.py tests/characterization/
@@ -229,7 +247,7 @@ git commit -m "test: add characterization fixture harness and unblock root pytes
 
 **Critical:** `generate_configs.py` writes to paths derived from its own constants. It must be invoked with an output root pointed at a temp directory. Read `scripts/generate_configs.py` to find how the output root is determined; if it is hardcoded, monkeypatch that constant rather than editing the script in this phase.
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```python
 """B1: `generate_configs.py` output must not change.
@@ -272,29 +290,29 @@ def test_generated_configs_unchanged(tmp_path, update_fixtures, monkeypatch):
     assert_matches_fixture("configs.manifest", _manifest(out), update_fixtures)
 ```
 
-- [ ] **Step 2: Check whether `--output-root` exists**
+- [x] **Step 2: Check whether `--output-root` exists**
 
 Run: `grep -n "output.root\|add_argument\|OUTPUT_ROOT\|CONFIG_ROOT" scripts/generate_configs.py | head -20`
 
 If no such flag exists, add it in this task as a **strictly additive, default-preserving** argument: the default must be the existing hardcoded root, so invoking the script with no flags behaves exactly as before. This is the one production edit permitted in Phase 0, because the fixture cannot be recorded safely without it.
 
-- [ ] **Step 3: Record the fixture**
+- [x] **Step 3: Record the fixture**
 
 Run: `/home/xchen1/.conda/envs/agent_engine/bin/python -m pytest tests/characterization/test_configs_unchanged.py -q --update-fixtures`
 Expected: PASS, and `tests/characterization/fixtures/configs.manifest` now exists with ~417 lines.
 
-- [ ] **Step 4: Verify the fixture is not vacuous**
+- [x] **Step 4: Verify the fixture is not vacuous**
 
 Temporarily change any literal string in `scripts/generate_configs.py` (e.g. a `description` field), then run B1.
 Expected: FAIL with "Behaviour changed against fixture configs.manifest".
 Revert the change, re-run B1, expect PASS.
 
-- [ ] **Step 5: Confirm `experiments/configs/` was never touched**
+- [x] **Step 5: Confirm `experiments/configs/` was never touched**
 
 Run: `git status --porcelain experiments/configs | wc -l`
 Expected: `0`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add tests/characterization/test_configs_unchanged.py tests/characterization/fixtures/configs.manifest scripts/generate_configs.py
@@ -309,7 +327,7 @@ git commit -m "test: lock generate_configs.py output with a characterization fix
 - Create: `tests/characterization/test_prompts_unchanged.py`
 - Create: `tests/characterization/fixtures/prompts.json`
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```python
 """B2: exported system prompts and tool schemas must not change."""
@@ -338,17 +356,17 @@ def test_exported_prompts_unchanged(tmp_path, update_fixtures):
     assert_matches_fixture("prompts.json", canonical, update_fixtures)
 ```
 
-- [ ] **Step 2: Confirm the CLI flag name**
+- [x] **Step 2: Confirm the CLI flag name**
 
 Run: `grep -n "add_argument" scripts/export_prompts.py`
 If the flag is not `--output`, use the real one in the test. Do not change the script.
 
-- [ ] **Step 3: Record and verify non-vacuous**
+- [x] **Step 3: Record and verify non-vacuous**
 
 Run: `pytest tests/characterization/test_prompts_unchanged.py -q --update-fixtures` → PASS.
 Then edit one word in `src/agent_engine/prompts/templates/system/base.yaml`, run B2, expect FAIL. Revert, expect PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/characterization/test_prompts_unchanged.py tests/characterization/fixtures/prompts.json
@@ -367,7 +385,7 @@ git commit -m "test: lock exported prompts and tool schemas"
 
 **Why not reuse `_MockProvider`:** `tests/unit/test_smoke.py:_MockProvider` returns the *same* text for every prompt. B3 needs a different output per turn (a web_search call, then a code_generator call, then a final answer), so it needs a queue.
 
-- [ ] **Step 1: Write the provider**
+- [x] **Step 1: Write the provider**
 
 ```python
 """A model provider that replays a fixed script of outputs.
@@ -430,12 +448,12 @@ class ScriptedProvider(BaseModelProvider):
         pass
 ```
 
-- [ ] **Step 2: Sanity check it imports**
+- [x] **Step 2: Sanity check it imports**
 
 Run: `/home/xchen1/.conda/envs/agent_engine/bin/python -c "import sys; sys.path.insert(0,'tests'); from characterization.scripted_provider import ScriptedProvider; print('ok')"`
 Expected: `ok`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/characterization/scripted_provider.py
@@ -455,7 +473,7 @@ This is **the** gate for Phase 5. It must cover, in one batch: multiple states i
 **Interfaces:**
 - Consumes: `ScriptedProvider` (Task 4), `assert_matches_fixture` (Task 1).
 
-- [ ] **Step 1: Write fake tools that exercise both deferral paths**
+- [x] **Step 1: Write fake tools that exercise both deferral paths**
 
 ```python
 """B3: the orchestrator's batching control flow must not change.
@@ -541,7 +559,7 @@ class FakeCodeGenerator(BaseTool):
         return ToolResult(success=True, output=f"RAN[{code}]", metadata={})
 ```
 
-- [ ] **Step 2: Write the trace serialiser and the test**
+- [x] **Step 2: Write the trace serialiser and the test**
 
 The scenario below is chosen so each of the five required conditions is reachable.
 **The `analysis_cache` hit must occur in a *later turn* than the miss**, because the
@@ -639,12 +657,12 @@ def test_orchestrator_trace_unchanged(update_fixtures):
 the queue. Do not silently pad the queue: a changed call count is itself a behaviour
 change worth understanding.
 
-- [ ] **Step 3: Record the fixture**
+- [x] **Step 3: Record the fixture**
 
 Run: `pytest tests/characterization/test_orchestrator_trace.py -q --update-fixtures`
 Expected: PASS, fixture written.
 
-- [ ] **Step 4: Prove the fixture is not vacuous — this step is mandatory**
+- [x] **Step 4: Prove the fixture is not vacuous — this step is mandatory**
 
 Make each of these three mutations one at a time in `src/agent_engine/core/orchestrator.py`, run B3, confirm FAIL, then revert:
 
@@ -654,7 +672,7 @@ Make each of these three mutations one at a time in `src/agent_engine/core/orche
 
 If any mutation does **not** turn B3 red, the fixture is too weak: extend it until it does. A fixture that never fails is worse than no fixture.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/characterization/test_orchestrator_trace.py tests/characterization/fixtures/orchestrator_trace.txt
@@ -673,12 +691,12 @@ git commit -m "test: lock orchestrator batching trace (gate for the batching col
 
 **Critical:** `experiments/results/` is gitignored and 12 GB. Fixtures must **not** copy run data. Pick a small, fixed set of runs, record only the *derived output*, and skip the test with a clear reason if the runs are absent, so the suite still passes on a fresh clone.
 
-- [ ] **Step 1: Choose the replay corpus**
+- [x] **Step 1: Choose the replay corpus**
 
 Run: `find experiments/results -name raw_results.json | sort | head -20`
 Pick 3 runs spanning different datasets (at least one GAIA for `per_level`, one AIME). Record their repo-relative paths as a module constant `REPLAY_RUNS`.
 
-- [ ] **Step 2: Write the metrics replay test**
+- [x] **Step 2: Write the metrics replay test**
 
 Verified shape: `raw_results.json` is a **bare JSON list** (not a dict with a `results`
 key). Each row has `question_id`, `metadata` (e.g. `{"year": 2024, "problem_id": 60}` for
@@ -751,7 +769,7 @@ Task 9. Until then, import from the script by file path:
 Task 10 Step 3 switches it to the package import. The **fixture must not be regenerated**
 at that switch.
 
-- [ ] **Step 3: Write the failure-mode replay test**
+- [x] **Step 3: Write the failure-mode replay test**
 
 ```python
 """B5: failure-mode classification over recorded runs must not change.
@@ -811,17 +829,17 @@ Until Task 16 the import is `from failure_modes.analyze_failure_modes import cla
 with the existing `sys.path` insert, matching what `tests/unit/test_analyze_failure_modes.py`
 already does.
 
-- [ ] **Step 4: Record both fixtures**
+- [x] **Step 4: Record both fixtures**
 
 Run: `pytest tests/characterization/test_metrics_replay.py tests/characterization/test_failure_modes_replay.py -q --update-fixtures`
 Expected: PASS (not skipped — if skipped, the corpus paths are wrong).
 
-- [ ] **Step 5: Prove non-vacuous**
+- [x] **Step 5: Prove non-vacuous**
 
 Change `_STRATIFIED` in `run_experiment.py` to drop `"gaia"`, run B4, expect FAIL, revert.
 Change one threshold in `classify_failure`, run B5, expect FAIL, revert.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add tests/characterization/test_metrics_replay.py tests/characterization/test_failure_modes_replay.py tests/characterization/fixtures/
@@ -832,17 +850,17 @@ git commit -m "test: lock metrics and failure-mode classification by replay over
 
 ### Task 7: Phase 0 gate
 
-- [ ] **Step 1: Run everything**
+- [x] **Step 1: Run everything**
 
 Run: `/home/xchen1/.conda/envs/agent_engine/bin/python -m pytest -q`
 Expected: all pass, 0 errors, 0 unexpected skips.
 
-- [ ] **Step 2: Confirm no production behaviour changed in Phase 0**
+- [x] **Step 2: Confirm no production behaviour changed in Phase 0**
 
 Run: `git diff main --stat -- src/ scripts/`
 Expected: only `scripts/generate_configs.py` (the additive `--output-root` flag from Task 2). Nothing else.
 
-- [ ] **Step 3: Record the baseline count**
+- [x] **Step 3: Record the baseline count**
 
 Run: `/home/xchen1/.conda/envs/agent_engine/bin/python -m pytest -q 2>&1 | tail -1`
 Write the number into the plan's Global Constraints as the running baseline. Every later phase must meet or exceed it.
@@ -857,7 +875,7 @@ Write the number into the plan's Global Constraints as the running baseline. Eve
 - Modify: `pyproject.toml`
 - Modify: 14 files containing `sys.path.insert(..., "src")`
 
-- [ ] **Step 1: List the exact inserts to delete**
+- [x] **Step 1: List the exact inserts to delete**
 
 Run:
 ```bash
@@ -865,11 +883,11 @@ grep -rn 'sys.path.insert' src/ scripts/ tests/ examples/ --include='*.py' | gre
 ```
 Delete only the ones resolving to `src`. **Keep** every insert resolving to `scripts` — those are load-bearing until Phase 6.
 
-- [ ] **Step 2: Delete them, plus any now-unused `import sys` / `from pathlib import Path`**
+- [x] **Step 2: Delete them, plus any now-unused `import sys` / `from pathlib import Path`**
 
 Only remove the imports if nothing else in the file uses them. Check each file.
 
-- [ ] **Step 3: Fix packaging metadata in `pyproject.toml`**
+- [x] **Step 3: Fix packaging metadata in `pyproject.toml`**
 
 **No `[project.scripts]` block is added in this task.** An entry point whose target module
 does not yet exist installs a console script that crashes on invocation, so each one is
@@ -888,7 +906,7 @@ Homepage = "https://github.com/azywot/msc-thesis"
 Repository = "https://github.com/azywot/msc-thesis"
 ```
 
-- [ ] **Step 4: Verify imports still resolve without the inserts**
+- [x] **Step 4: Verify imports still resolve without the inserts**
 
 Run:
 ```bash
@@ -897,11 +915,11 @@ Run:
 ```
 Expected: both succeed.
 
-- [ ] **Step 5: Run ALL gates**
+- [x] **Step 5: Run ALL gates**
 
 Expected: B1-B6 all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -921,11 +939,11 @@ git commit -m "chore: drop redundant sys.path inserts, correct packaging metadat
 **Interfaces:**
 - Produces: `agent_engine.runner.providers.setup_model_provider(model_config, api_keys, model_cache=None)`; `agent_engine.runner.metrics.compute_metrics(results, examples, dataset_name)` and `level_key(example, dataset_name)`.
 
-- [ ] **Step 1: Move the code verbatim**
+- [x] **Step 1: Move the code verbatim**
 
 Cut `setup_model_provider` (`scripts/run_experiment.py:42-99`) into `providers.py`, and `_level_key` + `_compute_metrics` (`:580-683`) into `metrics.py`, renamed to `level_key` and `compute_metrics`. Copy the bodies **character for character**, including comments and the `_STRATIFIED` set. Add the module imports each needs.
 
-- [ ] **Step 2: Re-export from the script for backwards compatibility**
+- [x] **Step 2: Re-export from the script for backwards compatibility**
 
 In `scripts/run_experiment.py`:
 
@@ -937,11 +955,11 @@ from agent_engine.runner.providers import setup_model_provider
 
 The old private names stay bound so B4's dynamic import of the script keeps working unchanged.
 
-- [ ] **Step 3: Run ALL gates**
+- [x] **Step 3: Run ALL gates**
 
 Expected: B1-B6 pass. B4 especially — it loads `run_experiment.py` and calls `_compute_metrics`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -956,11 +974,11 @@ git commit -m "refactor: promote model-provider setup and metrics into agent_eng
 - Create: `src/agent_engine/runner/experiment.py`
 - Modify: `scripts/run_experiment.py`
 
-- [ ] **Step 1: Move `run_experiment`, `_make_run_dir`, `_write_json`, `_short_id`, `_config_to_dict`**
+- [x] **Step 1: Move `run_experiment`, `_make_run_dir`, `_write_json`, `_short_id`, `_config_to_dict`**
 
 Move `scripts/run_experiment.py:201-579` verbatim into `experiment.py`. Move `main()` too. Keep every log message identical, including emoji and spacing — `experiment.log` is a run artefact.
 
-- [ ] **Step 2: Reduce the script to a shim**
+- [x] **Step 2: Reduce the script to a shim**
 
 ```python
 #!/usr/bin/env python
@@ -972,11 +990,11 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 3: Update B4's import**
+- [x] **Step 3: Update B4's import**
 
 `test_metrics_replay.py` currently loads the script by file path. Change it to `from agent_engine.runner.metrics import compute_metrics`. The recorded fixture must **not** be regenerated — it must still match.
 
-- [ ] **Step 4: Add the entry point**
+- [x] **Step 4: Add the entry point**
 
 ```toml
 [project.scripts]
@@ -985,7 +1003,7 @@ cosmas-run = "agent_engine.runner.experiment:main"
 
 Then reinstall: `/home/xchen1/.conda/envs/agent_engine/bin/pip install -e . --no-deps`
 
-- [ ] **Step 5: Verify the CLI still works both ways**
+- [x] **Step 5: Verify the CLI still works both ways**
 
 ```bash
 /home/xchen1/.conda/envs/agent_engine/bin/python scripts/run_experiment.py --help
@@ -993,7 +1011,7 @@ Then reinstall: `/home/xchen1/.conda/envs/agent_engine/bin/pip install -e . --no
 ```
 Expected: identical help text.
 
-- [ ] **Step 6: Run ALL gates, then commit**
+- [x] **Step 6: Run ALL gates, then commit**
 
 ```bash
 git add -A
@@ -1015,7 +1033,7 @@ git commit -m "refactor: move run_experiment into agent_engine.runner, script be
 **Interfaces:**
 - Produces: `ToolDeps` (frozen dataclass: `config`, `cache_manager`, `api_keys`, `model_providers`, `orchestrator_model`, `mind_map_storage_path`); `@register_tool(name)`; `build_tool_registry(deps) -> ToolRegistry`.
 
-- [ ] **Step 1: Write the registry**
+- [x] **Step 1: Write the registry**
 
 ```python
 """Tool construction registry.
@@ -1081,7 +1099,7 @@ def registered_tools():
     return sorted(_FACTORIES)
 ```
 
-- [ ] **Step 2: Move each construction block verbatim into a decorated factory**
+- [x] **Step 2: Move each construction block verbatim into a decorated factory**
 
 For each of the five tools, move the body from `setup_tools`'s `if/elif` into the tool's own module. Example for web_search, in `src/agent_engine/tools/web_search.py`:
 
@@ -1112,7 +1130,7 @@ def build_web_search(deps) -> "WebSearchTool":
 
 **Preserve the quirks exactly:** the `mind_map` factory must keep the `mind_map_storage_path.mkdir(parents=True, exist_ok=True)` side effect and the `direct_mode` (not `provider_for`) provider selection; the `image_inspector` factory must return `None` in direct mode and log the same warning; `text_inspector` keeps `max_chars=50000`; `code_generator` keeps `timeout_seconds=60` and `temp_dir=str(config.cache_dir / "code_temp")`. Re-read `scripts/run_experiment.py:100-200` line by line while doing this; do not work from memory.
 
-- [ ] **Step 3: Write `build_tool_registry` in `runner/tools.py`**
+- [x] **Step 3: Write `build_tool_registry` in `runner/tools.py`**
 
 ```python
 def build_tool_registry(deps: ToolDeps) -> ToolRegistry:
@@ -1124,9 +1142,9 @@ def build_tool_registry(deps: ToolDeps) -> ToolRegistry:
     return tools
 ```
 
-- [ ] **Step 4: Delete `setup_tools` and call the new path from `experiment.py`**
+- [x] **Step 4: Delete `setup_tools` and call the new path from `experiment.py`**
 
-- [ ] **Step 5: Add seam-completeness tests**
+- [x] **Step 5: Add seam-completeness tests**
 
 Both seams get a test that fails loudly when someone adds a thing halfway. The
 model-family one covers the spec's "model families" seam, which has no other task.
@@ -1155,7 +1173,7 @@ def test_every_model_family_has_a_tool_call_format():
 pre-existing gap. Per the global constraints: report it, mark it `xfail` with the reason,
 and do not change `_TOOL_CALL_FORMAT` — adding an entry would change behaviour.
 
-- [ ] **Step 6: Run ALL gates, then commit**
+- [x] **Step 6: Run ALL gates, then commit**
 
 ```bash
 git add -A
