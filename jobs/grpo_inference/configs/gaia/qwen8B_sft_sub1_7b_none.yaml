@@ -1,5 +1,8 @@
 # GAIA — SFT LoRA-adapted Qwen3-8B orchestrator + Qwen3-1.7B subagents, thinking disabled
-# SFT checkpoint: job 23617473, global_step_90 (final step, best val/loss 0.451)
+# TODO: set lora_adapter_path below to the SAME SFT checkpoint as CKPT_DIR in
+#   ../../SFT_eval_gaia_qwen8B_sub1_7b_none.job. If they disagree the job's merge
+#   step rebuilds an adapter the YAML never loads, and the eval silently runs the
+#   wrong checkpoint — corrupting the BASE/GRPO/SFT comparison. Keep them in sync.
 
 name: "SFT_eval_gaia_qwen8B_sub1_7b_none"
 description: "[SFT inference] GAIA all_validation with SFT LoRA-adapted Qwen3-8B orchestrator (thinking disabled) + Qwen3-1.7B subagents (no thinking)."
@@ -18,7 +21,7 @@ models:
     family: "qwen3"
     path_or_id: "Qwen/Qwen3-8B"
     role: "orchestrator"
-    lora_adapter_path: "/scratch-shared/xchen/fine_tuning/sft/qwen3-8b-sft-v1/global_step_90/merged_best/lora_adapter"
+    lora_adapter_path: "<TODO: path to merged SFT LoRA adapter, e.g. /scratch-shared/xchen/fine_tuning/sft/qwen3-8b-sft-v1/global_step_90/merged_best/lora_adapter>"
   web_search:
     name: "Qwen3-1.7B"
     family: "qwen3"
