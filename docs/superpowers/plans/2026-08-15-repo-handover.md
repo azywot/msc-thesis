@@ -1689,7 +1689,7 @@ suite 561 -> 696 passed + 1 xfailed.  Four notes for the reader:
 > committing Step 3** -- a silent no-op here is unrecoverable once the
 > originals are gone.
 
-- [ ] **Step 1: Move, don't delete**
+- [x] **Step 1: Move, don't delete**
 
 ```bash
 mkdir -p docs/archive
@@ -1701,7 +1701,7 @@ git mv docs/superpowers docs/archive/superpowers
 
 Keep the current handover spec and plan out of the archive.
 
-- [ ] **Step 2: Prepend a banner to every archived file**
+- [x] **Step 2: Prepend a banner to every archived file**
 
 ```markdown
 > **HISTORICAL — not maintained.** Archived 2026-08-15 during the repository
@@ -1709,11 +1709,32 @@ Keep the current handover spec and plan out of the archive.
 > it may be stale. For current documentation see `docs/`.
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add -A && git commit -m "docs: archive superseded planning and status documents"
 ```
+
+**Corrected while executing (2026-08-16).** Landed as `d64c26c`, 24 documents
+moved.  Three things the plan did not account for:
+
+1. **Step 1's two instructions contradicted each other.**  `git mv
+   docs/superpowers docs/archive/superpowers` moves the current handover plan
+   and spec, which the very next line says to keep out of the archive -- they
+   live under that directory.  Resolved by moving only the `2026-05-*`
+   siblings, which also keeps every existing reference to the handover plan
+   valid, including the one this work is driven from.
+2. **A move that leaves dangling pointers is worse than no move.**  The plan
+   had no step for this; 21 references across `CHANGELOG.md`, `README.md`,
+   four experiment configs, two job scripts and two `src/` comments pointed at
+   the old paths, plus 13 cross-references inside the archive and two
+   repo-root links that needed another `../` at the new depth.  The banner
+   covers staleness from *drift*; links broken by *the move* are ours to fix.
+   Verified with a repo-wide link check afterwards.
+3. **Do not run a blanket find-and-replace over the plan file itself.**  Doing
+   so rewrote Task 18's own `git mv` command into `git mv docs/archive/... 
+   docs/archive/`, turning the instruction into nonsense.  Exclude the plan,
+   or restore its command blocks afterwards.
 
 ---
 
