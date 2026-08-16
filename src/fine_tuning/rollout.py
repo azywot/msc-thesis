@@ -283,14 +283,15 @@ class OrchestratorRollout(LitAgent):
         try:
             base_provider = self._build_provider(endpoint, temperature)
             capturing_provider = _CapturingProvider(base_provider)
-            tool_registry = self._get_or_build_tools()
+            provider_for_orchestrator = self._wrap_provider(capturing_provider, task)
+            tool_registry = self._wrap_tools(self._get_or_build_tools(), task)
             system_prompt = self._prompt_builder.build_system_prompt(
                 dataset_name=_prompt_dataset_for_data_source(data_source),
                 tool_schemas=tool_registry.get_all_schemas(),
                 direct_tool_call=False,
             )
             orchestrator = AgenticOrchestrator(
-                model_provider=capturing_provider,
+                model_provider=provider_for_orchestrator,
                 tool_registry=tool_registry,
                 max_turns=self.max_turns,
                 use_thinking=self.use_thinking,
@@ -343,6 +344,9 @@ class OrchestratorRollout(LitAgent):
                         prompt={"token_ids": t["prompt_ids"]},
                         response={"token_ids": t["response_ids"], "text": t.get("response_text", "")},
                         reward=reward_value,
+                        # Prefix-RFT marks replayed teacher turns here; absent for
+                        # ordinary GRPO rollouts, where it is always False.
+                        metadata={"prefix": bool(t.get("is_prefix", False))},
                     )
                     for t in turns
                 ]
@@ -372,6 +376,20 @@ class OrchestratorRollout(LitAgent):
                 self.subagent_endpoint, self.subagent_model
             )
         return self._tool_registry
+
+    # ------------------------------------------------------------------ #
+    # Subclass seams                                                       #
+    # ------------------------------------------------------------------ #
+    # Prefix-RFT interposes replay shims here (see fine_tuning/prefix_rollout.py).
+    # The base implementations are identity, so ordinary GRPO is unaffected.
+
+    def _wrap_provider(self, provider, task):
+        """Seam for subclasses. Base returns the provider unchanged."""
+        return provider
+
+    def _wrap_tools(self, registry, task):
+        """Seam for subclasses. Base returns the registry unchanged."""
+        return registry
 
     # ------------------------------------------------------------------ #
     # Rollout persistence                                                  #
