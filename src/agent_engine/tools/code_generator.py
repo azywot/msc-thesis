@@ -455,6 +455,66 @@ class CodeGeneratorTool(BaseTool):
             return isinstance(task, str) and len(task.strip()) > 0
 
 
+    # ----------------------------------------------------------------- #
+    # BatchedTool protocol                                              #
+    # ----------------------------------------------------------------- #
+    #
+    # Moved from the orchestrator's _schedule_code_job / _flush_code_batch /
+    # _run_code_generation_batch.  Behaviour is unchanged; only the owner moved.
+
+    batch_priority = 20  # code flushes after web (see WebSearchTool)
+
+    def prepare(self, state, tool_call, args):
+        """Defer code generation, or short-circuit with a ToolResult."""
+        from ..core.batching import BatchJob
+        from ..utils.reasoning_context import get_attachment_context_for_code
+
+        task = args.get("task", "")
+        if not task:
+            logger.info("Tool call: %s, %s", tool_call["name"], tool_call.get("arguments", {}))
+            return ToolResult(
+                success=False, output="", metadata={},
+                error="Missing required code_generator arguments",
+            )
+
+        try:
+            att_ctx = get_attachment_context_for_code(state)
+            prompt = self.build_task_prompt(task, context=att_ctx)
+        except Exception as exc:
+            return ToolResult(success=False, output="", metadata={}, error=str(exc))
+        return BatchJob(state=state, tool_call=tool_call, tool=self,
+                        payload={"prompt": prompt})
+
+    def batch_prompt(self, job) -> str:
+        return job.payload["prompt"]
+
+    def finalize(self, job, generation) -> ToolResult:
+        """Extract the generated code and run it.
+
+        The ``Tool call:`` line is logged *here*, after extraction and
+        immediately before execution -- later in the sequence than the web
+        tool, which logs in ``pre_batch``.  That difference is original and
+        observable in ``experiment.log``.
+
+        The returned output is stripped here because ``flush_batches`` commits
+        it untouched; the executed result can itself contain think tags when
+        ``return_code`` is set.
+        """
+        try:
+            text = strip_thinking_tags(generation.text)
+            code = self.extract_code_from_llm_response(text)
+            logger.info("Tool call: %s, %s", job.tool_call["name"], job.tool_call.get("arguments", {}))
+            tr = self.execute(code=code, task=None)
+        except Exception as exc:
+            tr = ToolResult(success=False, output="", metadata={}, error=str(exc))
+        return ToolResult(
+            success=tr.success,
+            output=strip_thinking_tags(tr.output or ""),
+            metadata=tr.metadata,
+            error=tr.error,
+            usage=tr.usage,
+        )
+
 
 @register_tool("code_generator")
 def build_code_generator(deps) -> CodeGeneratorTool:

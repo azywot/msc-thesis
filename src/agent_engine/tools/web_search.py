@@ -431,6 +431,110 @@ Now you should analyze each web page and find helpful information based on the c
         return isinstance(query, str) and len(query.strip()) > 0
 
 
+    # ----------------------------------------------------------------- #
+    # BatchedTool protocol                                              #
+    # ----------------------------------------------------------------- #
+    #
+    # Moved from the orchestrator's _schedule_web_job / _flush_web_batch /
+    # _fetch_urls_for_web_jobs / _run_web_analysis_batch.  Behaviour is
+    # unchanged; only the owner moved.
+
+    batch_priority = 10  # web flushes before code: its analyses populate a
+                         # cache a code job in the same turn may read.
+
+    @property
+    def analysis_cache(self) -> Dict[str, str]:
+        """Query -> analysis text, populated by :meth:`finalize`.
+
+        Lazily created, mirroring the orchestrator's old ``_get_analysis_cache``
+        so a tool built without one still works.
+        """
+        cache = getattr(self, "_analysis_cache", None)
+        if cache is None:
+            cache = {}
+            self._analysis_cache = cache
+        return cache
+
+    def prepare(self, state, tool_call, args):
+        """Defer a search, or short-circuit with a ToolResult."""
+        from ..core.batching import BatchJob
+
+        query = args.get("query", "")
+        if not query:
+            logger.info("Tool call: %s, %s", tool_call["name"], tool_call.get("arguments", {}))
+            return ToolResult(
+                success=False, output="", metadata={},
+                error="Missing required web_search arguments",
+            )
+
+        analysis_cache = self.analysis_cache
+        if query in analysis_cache:
+            logger.info("Tool call: %s, %s", tool_call["name"], tool_call.get("arguments", {}))
+            return ToolResult(
+                success=True,
+                output=analysis_cache[query],
+                metadata={"cached": True, "query": query, "mode": "sub-agent"},
+            )
+
+        try:
+            payload = self.search_and_format(query)
+        except Exception as exc:
+            return ToolResult(success=False, output="", metadata={"query": query}, error=str(exc))
+        return BatchJob(state=state, tool_call=tool_call, tool=self,
+                        payload={"query": query, "payload": payload})
+
+    def pre_batch(self, jobs) -> None:
+        """Log every deferred call, then fetch all URLs across all jobs at once.
+
+        Logging happens here, not in ``finalize``, because the old
+        ``_flush_web_batch`` logged every job *before* fetching.  The code tool
+        logs in ``finalize`` instead -- the two orders differ on purpose.
+        """
+        for job in jobs:
+            logger.info("Tool call: %s, %s", job.tool_call["name"], job.tool_call.get("arguments", {}))
+
+        all_urls: set = set()
+        url_snippets: Dict[str, str] = {}
+        for job in jobs:
+            payload = job.payload["payload"]
+            for url in payload.get("urls_to_fetch", []):
+                all_urls.add(url)
+                snippet = payload.get("url_snippets", {}).get(url)
+                if snippet:
+                    url_snippets[url] = snippet
+
+        if not all_urls:
+            return
+
+        logger.info(f"Batch fetching {len(all_urls)} URLs across {len(jobs)} web_search calls")
+        try:
+            use_jina = getattr(jobs[0].tool, "use_jina", False)
+            fetched = fetch_page_content(list(all_urls), use_jina=use_jina, snippets=url_snippets)
+            for job in jobs:
+                if hasattr(job.tool, "url_cache"):
+                    job.tool.url_cache.update(fetched)
+            logger.info(f"Successfully fetched {len(fetched)} URLs")
+            if self.cache_manager and fetched:
+                self.cache_manager.save_url_cache()
+        except Exception:
+            logger.exception("Error during batch URL fetching")
+
+    def batch_prompt(self, job) -> str:
+        query = job.payload["query"]
+        payload = job.payload["payload"]
+        return self.build_analysis_prompt(
+            query, self._format_results(payload.get("results", []), query)
+        )
+
+    def finalize(self, job, generation) -> ToolResult:
+        """Strip, cache, and return.  Output is committed as-is by flush_batches."""
+        query = job.payload["query"]
+        text = strip_thinking_tags(generation.text)
+        self.analysis_cache[query] = text
+        return ToolResult(success=True, output=text,
+                          metadata={"query": query, "mode": "sub-agent"})
+
+
 @register_tool("web_search")
 def build_web_search(deps) -> WebSearchTool:
     """Construct the web search tool (moved verbatim from ``setup_tools``)."""
