@@ -14,8 +14,21 @@
 
 - **Behaviour must be identical, not equivalent.** Where cleanliness and behaviour-identity conflict, behaviour-identity wins and the ugliness is documented instead of fixed.
 - **Python interpreter for all commands:** `/home/xchen1/.conda/envs/agent_engine/bin/python`. There is no `conda` on PATH in non-interactive shells; do not try to `conda activate`.
-- **Repo root:** `/gpfs/home3/xchen1/azywot/msc-thesis`. Branch: `chore/clean-the-code`.
-- **Baseline to preserve:** 496 tests pass; `tests/unit/test_fine_tuning_rollout.py` cannot be collected in the `agent_engine` env (needs `agentops`).
+- **Repo root:** `/gpfs/home3/xchen1/azywot/msc-thesis`. Branch: `chore/refactor-the-code`.
+- **Branch point is `6a4671b`, not `main`.** The branch already carried unrelated
+  commits (SFT support, job renames) before this work started, and those touched
+  `experiments/configs/`. Every "did I change X?" check must diff against
+  `6a4671b..HEAD`, never `main..HEAD`, or it reports someone else's changes as
+  this refactor's.
+- **Baseline to preserve: 503 tests pass** as of the Phase 0 gate, 0 failures,
+  0 skips. (Was 496 before Phase 0; the 7 added are the characterization gates.)
+  Every later phase must meet or exceed 503. `tests/unit/test_fine_tuning_rollout.py`
+  is still uncollectable in the `agent_engine` env (needs `agentops`) and is
+  skipped by `tests/conftest.py`.
+- **B4/B5 skip when `experiments/results/` is absent.** On this machine they run;
+  on a fresh clone they skip and the suite reports 501. That is expected, not a
+  regression -- but it means a run showing 501 has *not* verified the metrics or
+  the failure classifier.
 - **Never run `scripts/generate_configs.py` against `experiments/configs/`.** It is not idempotent and rewrites 10 committed LoRA configs. All config tests write to a temp directory.
 - **Never modify `src/fine_tuning/agentflow/`** except to add `VENDORED.md`. It is vendored third-party code.
 - **`classify_failure` is frozen.** Its logic is moved byte-identical, never edited.
@@ -34,7 +47,7 @@ Referenced by number throughout. Run from the repo root.
 | B3 | `python -m pytest tests/characterization/test_orchestrator_trace.py -q` | pass |
 | B4 | `python -m pytest tests/characterization/test_metrics_replay.py -q` | pass |
 | B5 | `python -m pytest tests/characterization/test_failure_modes_replay.py -q` | pass |
-| B6 | `python -m pytest -q` | 496+ pass, 0 fail |
+| B6 | `python -m pytest -q` | 503+ pass, 0 fail (501 on a checkout without `experiments/results/`) |
 
 `ALL` means run every gate B1-B6.
 
@@ -1648,6 +1661,33 @@ breakage:
 
 Run the suite; expect green.
 
+- [ ] **Step 0c: Give B4/B5 a hermetic synthetic corpus**
+
+**The gap this closes.** B4 and B5 replay over `experiments/results/`, which is
+gitignored, multi-gigabyte, and full of ground-truth answers for gated datasets
+(GAIA, GPQA). None of it can be committed, so both tests `pytest.skip` on a
+fresh clone. They protect the thesis numbers on the machine that produced them
+and offer a new researcher nothing.
+
+Create `tests/unit/test_metrics_and_classifier.py` with a small hand-built
+corpus — a few dozen synthetic rows, no real questions or answers — asserting
+*properties* rather than a recorded snapshot:
+
+1. Rows covering each of the six failure modes, asserting `classify_failure`
+   returns the expected label for each. Derive the rows from the classifier's
+   documented rules (visual tool called → `modality_tool_gap`, a tool repeated
+   `MIN_LOOP_REPEATS` times → `tool_loop_or_empty_final`, and so on), so the
+   test states the taxonomy rather than echoing whatever the code happens to do.
+2. Priority-order coverage: a row matching two rules at once must get the
+   higher-priority label. The classifier is explicitly first-match-wins, and
+   that ordering is the part a careless edit breaks.
+3. `compute_metrics` over a synthetic stratified dataset (`per_level` present,
+   correct per-level accuracy and token sums) and an unstratified one
+   (`per_level` absent).
+
+Keep B4/B5 as they are: replay guards the real numbers, these guard the logic.
+The two are complementary, and only these run on a fresh clone.
+
 - [ ] **Step 1: Full suite from a clean shell**
 
 Run: `cd /gpfs/home3/xchen1/azywot/msc-thesis && /home/xchen1/.conda/envs/agent_engine/bin/python -m pytest -q`
@@ -1663,10 +1703,13 @@ Expected: all pass. After Step 0a only the B3/B4/B5 fixtures remain.
 Run: `git log --oneline -- tests/characterization/fixtures/`
 Expected: each fixture appears in its Phase 0 recording commit, then nowhere else until the Step 0a deletion commit. Any *other* commit touching a fixture means a refactor changed behaviour and the baseline was moved to hide it — investigate before proceeding. The one legitimate exception is a deliberate `--update-fixtures` commit for the LoRA-config decision, if that was resolved.
 
-- [ ] **Step 4: Confirm `experiments/configs/` is untouched across the whole branch**
+- [ ] **Step 4: Confirm `experiments/configs/` is untouched by this work**
 
-Run: `git diff main --stat -- experiments/configs/`
-Expected: empty.
+Run: `git diff 6a4671b --stat -- experiments/configs/`
+Expected: empty. Diff against the branch point, **not** `main`: five
+`sft_inference` configs were already modified by the pre-existing commit
+`0ba9338 rename 008 -> 007 jobs`, and a `main..HEAD` diff wrongly attributes
+them to this refactor.
 
 - [ ] **Step 5: Verify both CLIs and one real config load**
 
