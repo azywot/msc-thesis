@@ -1,3 +1,7 @@
+> **HISTORICAL — not maintained.** Archived 2026-08-16 during the repository
+> handover. Kept for the reasoning it records; paths, commands, and numbers in
+> it may be stale. For current documentation see `docs/`.
+
 # A Two-Month Fine-Tuning Approach: Evidence-Gated Next-Action SFT
 
 ## Summary
@@ -53,7 +57,7 @@ This target cuts across the three largest actionable failure modes:
 
 The intervention intentionally does **not** try to solve modality/tool-coverage failures. Many of those failures come from image or video requirements while image inspection was disabled. Fine-tuning can teach graceful refusal later, but it cannot create missing visual tools.
 
-The AIME no-coder ablation also fits this framing. Removing the coder improves AIME from 55.0% to 60.0%, but the full AIME run made **zero** `code_generator` calls. Therefore, this is not evidence that the coder sub-agent returned bad code. It is evidence that tool availability can change the orchestrator's direct reasoning trajectory even when the tool is unused. The narrowed SFT plan should address this as an orchestrator-control issue: the model should learn when computation is actually needed, when to call `code_generator` with a precise verification sub-goal, and when to answer directly without being distracted by the mere presence of tools. A detailed analysis is provided in `docs/failure_mode_and_fine_tuning/coding_failures.md`.
+The AIME no-coder ablation also fits this framing. Removing the coder improves AIME from 55.0% to 60.0%, but the full AIME run made **zero** `code_generator` calls. Therefore, this is not evidence that the coder sub-agent returned bad code. It is evidence that tool availability can change the orchestrator's direct reasoning trajectory even when the tool is unused. The narrowed SFT plan should address this as an orchestrator-control issue: the model should learn when computation is actually needed, when to call `code_generator` with a precise verification sub-goal, and when to answer directly without being distracted by the mere presence of tools. A detailed analysis is provided in `docs/archive/failure_mode_and_fine_tuning/coding_failures.md`.
 
 ---
 

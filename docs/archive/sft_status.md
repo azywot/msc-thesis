@@ -1,3 +1,7 @@
+> **HISTORICAL — not maintained.** Archived 2026-08-16 during the repository
+> handover. Kept for the reasoning it records; paths, commands, and numbers in
+> it may be stale. For current documentation see `docs/`.
+
 # Orchestrator SFT: status and handover
 
 **Last updated:** 2026-08-12
@@ -728,9 +732,9 @@ and present before it.
 
 ## Related documents
 
-- `docs/grpo_sft_walkthrough.md` — how to run the fine-tuning pipeline end to end (conda env, HF
+- `docs/archive/grpo_sft_walkthrough.md` — how to run the fine-tuning pipeline end to end (conda env, HF
   access, API keys, smoke tests, training, LoRA inference, merging). Covers GRPO as well.
-- `docs/fine_tuning_v2/verl_documentation_lora.md` — vendored verl reference on LoRA config.
-- `docs/failure_modes_fine_tuning_alignment.md` — links the Ch 6 failure modes to fine-tuning
+- `docs/archive/fine_tuning_v2/verl_documentation_lora.md` — vendored verl reference on LoRA config.
+- `docs/archive/failure_modes_fine_tuning_alignment.md` — links the Ch 6 failure modes to fine-tuning
   design.
 - MALGAI workshop paper: https://openreview.net/forum?id=RLHUTcvsA9

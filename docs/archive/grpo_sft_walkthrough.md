@@ -1,8 +1,12 @@
+> **HISTORICAL — not maintained.** Archived 2026-08-16 during the repository
+> handover. Kept for the reasoning it records; paths, commands, and numbers in
+> it may be stale. For current documentation see `docs/`.
+
 # Fine-Tuning Walkthrough
 
 This guide walks through running the orchestrator fine-tuning pipeline from scratch on Snellius.
 
-For a general project overview (setup, running experiments, config reference), see [`README.md`](../README.md) and [`CLAUDE.md`](../CLAUDE.md).
+For a general project overview (setup, running experiments, config reference), see [`README.md`](../../README.md) and [`CLAUDE.md`](../../CLAUDE.md).
 
 **What this actually trains:** GRPO (Group Relative Policy Optimisation - an RL method). The model learns by rolling out full agentic trajectories on real questions and receiving a reward based on answer correctness. We fine-tune Qwen3-8B with LoRA adapters so it becomes a better orchestrator in the CoSMAS multi-agent framework.
 

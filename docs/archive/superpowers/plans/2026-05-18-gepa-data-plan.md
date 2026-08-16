@@ -1,3 +1,7 @@
+> **HISTORICAL — not maintained.** Archived 2026-08-16 during the repository
+> handover. Kept for the reasoning it records; paths, commands, and numbers in
+> it may be stale. For current documentation see `docs/`.
+
 # GEPA Data Plan Implementation
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -927,7 +931,7 @@ name: "GEPA_gaia_qwen3_8b"
 description: >
   GEPA two-component prompt optimisation for gaia.yaml (GAIA / HLE / MuSiQue prompts).
   Uses Search-R1 (75%) + DeepMath (25%, no difficulty filter) as clean,
-  non-overlapping optimization data. See docs/superpowers/plans/2026-05-18-gepa-data-plan.md.
+  non-overlapping optimization data. See docs/archive/superpowers/plans/2026-05-18-gepa-data-plan.md.
 
 benchmark: "gaia"
 thinking_mode: "ORCHESTRATOR_ONLY"
@@ -1018,7 +1022,7 @@ git commit -m "feat(gepa): update gaia.yaml to use Search-R1/DeepMath data
 
 Replaces thesis-benchmark (gaia raw_results.json) with clean
 non-overlapping Search-R1 + DeepMath optimization data per the
-GEPA data plan (docs/superpowers/plans/2026-05-18-gepa-data-plan.md).
+GEPA data plan (docs/archive/superpowers/plans/2026-05-18-gepa-data-plan.md).
 Also sets minibatch_size=3 (GEPA paper default, from 10)."
 ```
 
@@ -1040,7 +1044,7 @@ description: >
   Uses DeepMath-103K (difficulty >= 5, 75%) + Search-R1 (25%) as clean,
   non-overlapping optimization data. Targets AIME failure mode: direct
   reasoning without Coder delegation (55.8% of failures).
-  See docs/superpowers/plans/2026-05-18-gepa-data-plan.md.
+  See docs/archive/superpowers/plans/2026-05-18-gepa-data-plan.md.
 
 benchmark: "math"
 thinking_mode: "ORCHESTRATOR_ONLY"

@@ -1,10 +1,14 @@
+> **HISTORICAL — not maintained.** Archived 2026-08-16 during the repository
+> handover. Kept for the reasoning it records; paths, commands, and numbers in
+> it may be stale. For current documentation see `docs/`.
+
 # GEPA Reflective Feedback — Iteration 2 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Tighten the reflective records that `AgentGEPAAdapter` produces — unify thinking-snippet caps, add last-turn thinking to `system_prompt` records, symmetrize `planning_suffix` records, and replace head-of-list slicing in `_balanced_sample` with a seeded shuffle.
 
-**Architecture:** Three small refinements to `src/gepa_integration/adapter.py` plus tests and docs. No orchestrator or state-schema changes — all data is already on `ExecutionState`. Iteration 1's `_diagnose` is unchanged. Spec: `docs/superpowers/specs/2026-05-15-gepa-integration-design.md`, "Addendum 2026-05-18 (Iteration 2)".
+**Architecture:** Three small refinements to `src/gepa_integration/adapter.py` plus tests and docs. No orchestrator or state-schema changes — all data is already on `ExecutionState`. Iteration 1's `_diagnose` is unchanged. Spec: `docs/archive/superpowers/specs/2026-05-15-gepa-integration-design.md`, "Addendum 2026-05-18 (Iteration 2)".
 
 **Tech stack:** Python 3.11+, pytest, `gepa==0.0.22`. Test env on Snellius: `conda activate agent_engine` (pydantic, gepa installed). Login-node Python lacks pydantic, so tests must run on a compute node or the user's local `.venv`.
 
@@ -703,7 +707,7 @@ parity with the system-prompt record shape. `_balanced_sample` now
 shuffles each bucket with `random.Random(self._sample_seed)` (default
 seed `0`) before slicing, so the reflector's records are not biased by
 the minibatch's arrival order while remaining reproducible across runs.
-See `docs/superpowers/specs/2026-05-15-gepa-integration-design.md`
+See `docs/archive/superpowers/specs/2026-05-15-gepa-integration-design.md`
 Iteration 2 addendum for the full rationale.
 ```
 

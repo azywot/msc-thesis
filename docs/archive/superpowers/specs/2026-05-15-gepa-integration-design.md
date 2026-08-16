@@ -1,3 +1,7 @@
+> **HISTORICAL — not maintained.** Archived 2026-08-16 during the repository
+> handover. Kept for the reasoning it records; paths, commands, and numbers in
+> it may be stale. For current documentation see `docs/`.
+
 # GEPA Integration Design
 **Date:** 2026-05-15
 **Thesis chapter:** System Adaptation

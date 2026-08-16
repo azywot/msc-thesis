@@ -1,3 +1,7 @@
+> **HISTORICAL — not maintained.** Archived 2026-08-16 during the repository
+> handover. Kept for the reasoning it records; paths, commands, and numbers in
+> it may be stale. For current documentation see `docs/`.
+
 # Orchestrator RL Fine-Tuning Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -8,7 +12,7 @@
 
 **Tech Stack:** Python 3.11, VERL 0.5.0, agentflow (local clone), vLLM 0.9.2, PyTorch 2.7.0, LoRA rank-64, GRPO, W&B, Snellius SLURM, HuggingFace datasets, pyarrow parquet.
 
-**Spec:** `docs/superpowers/specs/2026-05-06-orchestrator-finetuning-design.md`
+**Spec:** `docs/archive/superpowers/specs/2026-05-06-orchestrator-finetuning-design.md`
 
 ---
 

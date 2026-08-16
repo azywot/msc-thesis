@@ -12,7 +12,7 @@ Table 5 (failure mode × benchmark counts) in the thesis was produced by
 *manual trace-level labelling*, not by this script.  Each of the 2 534 failed
 question-run records was read individually — including the full action_history,
 tool results, and question text — and assigned a label using the six-mode
-taxonomy defined in docs/failure_mode_and_fine_tuning/failure_mode.md.  The
+taxonomy defined in docs/archive/failure_mode_and_fine_tuning/failure_mode.md.  The
 per-question assignments, representative examples, and source file/question-ID
 lists are recorded in that document (Appendix A sections).
 

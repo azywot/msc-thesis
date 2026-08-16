@@ -154,10 +154,10 @@ msc-thesis/
 | Failure-mode & rollout analysis | `scripts/failure_modes/` |
 | All-wrong / all-correct (all-good) rollout groups | [`scripts/failure_modes/fine_tuning/all_wrong.py`](#all-wrong--all-correct-all-good-group-analysis) |
 | Fine-tuning the orchestrator | `src/fine_tuning/README.md` |
-| Fine-tuning ↔ failure mode analysis | `docs/failure_modes_fine_tuning_alignment.md` |
+| Fine-tuning ↔ failure mode analysis | `docs/archive/failure_modes_fine_tuning_alignment.md` |
 | GEPA prompt optimisation | `scripts/run_gepa.py` + `experiments/configs/gepa/` + `src/gepa_integration/` |
 | GEPA inference (using optimised prompts) | `experiments/configs/qwen3/gepa_inference/` + `jobs/generated/GEPA_eval_*.job` |
-| GEPA design spec | `docs/superpowers/specs/2026-05-15-gepa-integration-design.md` |
+| GEPA design spec | `docs/archive/superpowers/specs/2026-05-15-gepa-integration-design.md` |
 
 ---
 
@@ -727,7 +727,7 @@ Results land under `experiments/results/gepa_inference/<dataset>/<variant>/` and
 
 ### Design
 
-See `docs/superpowers/specs/2026-05-15-gepa-integration-design.md` for the full design spec covering: candidate schema, data strategy, failure-stratified splits, reflective dataset construction, GEPA hyperparameters, and the thesis narrative.
+See `docs/archive/superpowers/specs/2026-05-15-gepa-integration-design.md` for the full design spec covering: candidate schema, data strategy, failure-stratified splits, reflective dataset construction, GEPA hyperparameters, and the thesis narrative.
 
 ---
 
@@ -735,7 +735,7 @@ See `docs/superpowers/specs/2026-05-15-gepa-integration-design.md` for the full 
 
 Supervised fine-tuning of the Qwen3-8B orchestrator with a rank-64 LoRA, on trajectories collected from a stronger teacher. Unlike GEPA, this updates weights; unlike the GRPO run, it needs no rollouts - training is static cross-entropy, so **no tools execute, no sub-agent server runs, and no `SERPER_API_KEY`/`TAVILY_API_KEY` is needed** (only `WANDB_API_KEY`, for logging).
 
-**Full status, evidence and handover: [`docs/sft_status.md`](docs/sft_status.md).** Read it before changing anything here.
+**Full status, evidence and handover: [`docs/archive/sft_status.md`](docs/archive/sft_status.md).** Read it before changing anything here.
 
 ### The format rule (the thing to get right)
 

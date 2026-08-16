@@ -1,3 +1,7 @@
+> **HISTORICAL — not maintained.** Archived 2026-08-16 during the repository
+> handover. Kept for the reasoning it records; paths, commands, and numbers in
+> it may be stale. For current documentation see `docs/`.
+
 # Val Set Redesign: 50-Sample Mixed Val (20 AIME / 20 Search-R1 / 10 DeepMath)
 
 **Date:** 2026-05-14

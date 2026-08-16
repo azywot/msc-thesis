@@ -45,7 +45,7 @@ from ..failure_modes import (
 
 # ---------------------------------------------------------------------------
 # Baseline inventory: the four selected direct-tools runs per benchmark.
-# Paths copied verbatim from docs/failure_mode_and_fine_tuning/failure_mode.md
+# Paths copied verbatim from docs/archive/failure_mode_and_fine_tuning/failure_mode.md
 # (the "earliest completed" run per config), so the join matches the manual doc.
 # ---------------------------------------------------------------------------
 _NB = "experiments/results/NEW_baseline"

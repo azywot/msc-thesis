@@ -241,7 +241,7 @@ and writing the same output paths, so commands recorded in thesis notes keep wor
 ### 5. Vendored code
 
 `src/fine_tuning/agentflow/` is a wholesale copy of the external AgentFlow repository
-(per `docs/superpowers/plans/2026-05-13-vendor-agentflow.md`). It is treated as vendored:
+(per `docs/archive/superpowers/plans/2026-05-13-vendor-agentflow.md`). It is treated as vendored:
 code untouched, excluded from restyling, and documented by a new
 `src/fine_tuning/agentflow/VENDORED.md` recording upstream origin, version, and the exact
 local modifications (the 8 fixed absolute imports and the removed `_agentflow_path.py`).

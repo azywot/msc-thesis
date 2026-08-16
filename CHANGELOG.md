@@ -38,7 +38,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     artifact, since it caused confusion about which pipeline is current.
   - Trained (run tag `06-08-2026_21-47-25300018`, val loss 0.5404→0.4234 over 186 steps) and
     evaluated on all five benchmarks; beats the pre-adaptation baseline on GAIA/MuSiQue/HLE, flat
-    on GPQA, regresses on AIME (open question — see `docs/sft_status.md` §8).
+    on GPQA, regresses on AIME (open question — see `docs/archive/sft_status.md` §8).
 - **GEPA inference pipeline** — run inference with GEPA-optimised prompts without any code changes
   - `gepa_prompt_path` config field added to `ExperimentConfig` (`src/agent_engine/config/schema.py`); when set, `run_experiment.py` loads `system_prompt` and `planning_suffix` from the JSON file, bypassing `PromptBuilder` entirely
   - `scripts/run_experiment.py` — checks `gepa_prompt_path`; if present, reads the two components and passes `planning_suffix` to `AgenticOrchestrator` (previously `planning_suffix` was never forwarded from the runner to the orchestrator, so GEPA-optimised suffixes had no effect)
@@ -96,7 +96,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - **Removed**: `src/fine_tuning/agentflow/verl/peft_vllm_weight_sync_patch.py` (the monkey-patch that worked around verl 0.5's two FSDP→vLLM LoRA sync bugs — re-added `.base_layer.` keys, and missing `llm_engine` on vLLM V1). verl 0.6.0 deprecated `ShardingManager` entirely, so the patched class no longer exists; the workaround targets dead code
   - **Removed**: `from . import peft_vllm_weight_sync_patch` and the three `apply_patch()` call sites (main process, Ray `worker_process_setup_hook`, and `TaskRunner.run`) in `src/fine_tuning/agentflow/verl/entrypoint.py`
   - `flash-attn==2.8.1` (installed separately after env creation) may need a newer wheel for torch 2.10 — verify on first smoke run before deciding
-  - Documented in `docs/fine_tuning_v2/verl_upgrade_0.7.1.md`
+  - Documented in `docs/archive/fine_tuning_v2/verl_upgrade_0.7.1.md`
   - **Not yet validated on Snellius** — needs `jobs/009_test_small_ft_example.job` smoke run to confirm rollout, FSDP→vLLM weight sync, and reward path. If the new rollout-server architecture surfaces a regression analogous to the old V1 issue, the patch file is recoverable from git history at this commit's parent
 - **GEPA reflective records iteration 2** (`src/gepa_integration/adapter.py`) — record-shape and sample-selection refinements layered on top of the Iteration 1 enriched feedback (see spec addendum 2026-05-18)
   - Unified `_THINKING_SNIPPET_LEN = 800` (was 1500); the same cap now applies to every thinking field across both record types so per-call budget is predictable. Truncation helper `_truncate_thinking` deduplicates the three call sites (first-turn, last-turn, plan thinking)
@@ -111,7 +111,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Correct-case feedback is now one line carrying tool counts and turn count, so successful trajectories give the reflector positive structural signal (not just `CORRECT`)
   - Token-budget impact: ~150 extra tokens per wrong record; at `_MAX_RECORDS = 8` the per-reflective-call overhead is ≤1.2 K tokens — well inside the existing 32 K reflector budget
   - Deliberately *not* an LLM judge: a same-family Qwen3-32B judge would duplicate the reflector's "implicit credit assignment" job and confabulate failure stories for hard questions. The deterministic path keeps the structured signal as a sanity floor; future open-ended benchmarks can *append* a judge paragraph to `_diagnose` without removing the lines
-  - Documented in `src/gepa_integration/README.md` (new "Feedback design (μ_f for CoSMAS)" section with the line-by-line failure-mode table) and as a dated addendum in `docs/superpowers/specs/2026-05-15-gepa-integration-design.md`
+  - Documented in `src/gepa_integration/README.md` (new "Feedback design (μ_f for CoSMAS)" section with the line-by-line failure-mode table) and as a dated addendum in `docs/archive/superpowers/specs/2026-05-15-gepa-integration-design.md`
 - **`tests/gepa_integration/test_adapter.py`** — +14 tests covering each `_diagnose` line plus an end-to-end check that the tool-error signal reaches both reflective record types; `test_make_reflective_dataset_correct_feedback` relaxed from exact `== "CORRECT"` to `.startswith("CORRECT")` for the new one-line correct format. Total test count in `tests/gepa_integration/` is now 58 (was 32)
 
 ### Added
@@ -185,8 +185,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `jobs/train_orchestrator.sh` — SLURM job script for Snellius
 - `jobs/environment_train.yml` — conda env pinned to AgentFlow stack (verl==0.5.0, vllm==0.9.2)
 - `OpenAIProvider`: optional `base_url` parameter for vLLM-compatible API endpoints
-- Design spec and implementation plan in `docs/superpowers/`
-- `docs/failure_modes_fine_tuning_alignment.md` — analysis linking thesis failure modes to fine-tuning design
+- Design spec and implementation plan in `docs/archive/superpowers/`
+- `docs/archive/failure_modes_fine_tuning_alignment.md` — analysis linking thesis failure modes to fine-tuning design
 - `pyproject.toml`: `[training]` optional extras group
 
 ### Changed
