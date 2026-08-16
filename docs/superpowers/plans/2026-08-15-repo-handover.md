@@ -1674,25 +1674,20 @@ suite 561 -> 696 passed + 1 xfailed.  Four notes for the reader:
 
 ### Task 18: Archive superseded docs
 
-> **BLOCKED before Step 1 — `docs/archive/` is gitignored.**  `.gitignore:101`
-> is a bare `archive/`, which matches at every depth, so every `git mv` below
-> would move real documents into an untracked directory: `git add -A` skips
-> them, the commit deletes the originals, and the "archive" survives only in
-> the working tree.  Found in Task 17, when `docs/archive/known-issues.md`
-> silently failed to stage.
+> **Resolved — `docs/archive/` was gitignored; a negation was added.**
+> `.gitignore:101` is a bare `archive/`, which matches at every depth, so every
+> `git mv` below would have moved a real document into an untracked directory:
+> `git add -A` skips it, the commit deletes the original, and the "archive"
+> survives only in the working tree.  Found in Task 17, when
+> `docs/archive/known-issues.md` silently failed to stage.
 >
-> Resolve before moving anything.  Options, cheapest first:
-> 1. Add a negation `!docs/archive/` after the `archive/` rule.  One line, and
->    it leaves the original rule's intent (ignore generated
->    `experiments/configs/archive/`, `out/.../archive/`) intact.
-> 2. Narrow the rule to the paths it was meant for.  Cleaner, but it needs a
->    check that nothing else in the tree relies on the broad form.
-> 3. Archive somewhere not named `archive/` (`docs/historical/`).  No
->    `.gitignore` edit at all.
->
-> Either way this is a config change: **propose it and wait for a go-ahead**
-> before editing `.gitignore`.  Verify with `git check-ignore -v <path>` after,
-> and confirm `git status` lists the moved files before committing.
+> Fixed by appending `!docs/archive/` after the rule, keeping the original's
+> intent (ignore generated `experiments/configs/archive/` and friends) intact.
+> Verified in both directions with `git check-ignore -v`: `docs/archive/` is
+> trackable, `experiments/configs/archive/` and a nested `archive/` are still
+> ignored.  **Still confirm `git status` lists the moved files before
+> committing Step 3** -- a silent no-op here is unrecoverable once the
+> originals are gone.
 
 - [ ] **Step 1: Move, don't delete**
 
