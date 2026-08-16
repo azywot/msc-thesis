@@ -54,6 +54,10 @@ def main():
     logger.info("Loaded %d rows from %s", len(df), args.parquet)
     logger.info("Columns: %s", list(df.columns))
 
+    if len(df) == 0:
+        logger.info("Parquet has no rows; nothing to inspect.")
+        return
+
     # ── Composition ───────────────────────────────────────────────────────────
     by_src = Counter(df["data_source"])
     logger.info("=" * 70)

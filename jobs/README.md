@@ -36,14 +36,16 @@ For setup instructions, job file descriptions, and how to submit experiments see
 | `003_smoke_4b.job` | Smoke-test the fine-tuning pipeline with Qwen3-4B (2 GPUs) |
 | `004_smoke_8b.job` | Smoke-test the fine-tuning pipeline with Qwen3-8B (3 GPUs: GPU 0 = sub-agent, GPUs 1–2 = VERL N_GPUS=2) |
 | `004_smoke_8b_load.job` | Verifies LoRA mid-run resume end-to-end (loads a saved checkpoint, runs 2 new steps, asserts log signals + new checkpoints) |
-| `005_train.job` | Full orchestrator GRPO run — Qwen3-8B LoRA, 2 epochs, 4×H100 GPUs, 48h walltime |
+| `005_train.job` | Full orchestrator GRPO run — Qwen3-8B, 2 epochs, 4×H100 GPUs, 72h walltime; LoRA by default, full-parameter via `USE_LORA: "false"` in `experiments/configs/fine_tuning/config.yaml` |
 
 #### SFT (distillation)
 
 | File | Purpose |
 |------|---------|
 | `006_collect_sft_data.job` | Run Qwen3-32B teacher (ORCHESTRATOR_ONLY thinking, sub-agent mode) on the 1800 GRPO training questions and save correct trajectories as SFT training data (4×H100) |
-| `007_train_sft.job` | SFT distillation of Qwen3-8B orchestrator from the Qwen3-32B teacher trajectories — LoRA rank 64, ~90 steps, 2×H100 |
+| `007_run_tests_for_sft_folded.job` | CPU-only verification suite for the folded-format pipeline (tests, pre-flight gate, gate trip-wire) |
+| `007_train_sft_folded.job` | SFT distillation of Qwen3-8B orchestrator from the Qwen3-32B teacher trajectories, memory-folded prompt format — LoRA rank 64, ~187 steps, 2×H100 |
+| `007_train_sft_full.job` | Same, full parameter (no LoRA) — every weight trained, 4×H100 |
 
 ### `grpo_inference/` — GRPO / SFT / base-model evaluation jobs
 
@@ -62,6 +64,8 @@ checkpoints on the same AgentFlow setup (Qwen3-8B orchestrator + Qwen3-1.7B sub-
 | `configs/aime/`, `configs/gaia/` | Per-job experiment YAMLs (`qwen8B_sub1_7b_none.yaml` = GRPO, `qwen8B_sft_sub1_7b_none.yaml` = SFT, `qwen8B_base_sub1_7b_none.yaml` = base) |
 
 Results land in `experiments/results/{grpo,sft,base}_inference/{aime,gaia}/qwen8B_sub1_7b_none/`.
+
+> **Note — checkpoint paths are placeholders.** The `lora_adapter_path` in `configs/*/qwen8B_sft_sub1_7b_none.yaml` and the `CKPT_DIR`/`PROJECT_DIR` in the `*_eval_*.job` files point at specific absolute paths from a prior Snellius run. They are not auto-generated — update them to your own SFT checkpoint / project directory before submitting. The folded-format pipeline (`jobs/fine_tuning/007_train_sft_folded.job`) archives its `best_adapter` under `data/adapters/<experiment>/<run-tag>/`; point the SFT eval configs there if you want to evaluate a folded run.
 
 ### `gepa/` — GEPA-based prompt optimization runs
 

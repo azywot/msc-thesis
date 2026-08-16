@@ -538,6 +538,14 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.format == "folded" and args.keep_thinking:
+        parser.error(
+            "--keep-thinking is incompatible with --format folded: the folded user turn "
+            "mirrors _build_memory_prompt, which at inference never contains <think> blocks "
+            "(thinking is off), so supervising them would train on a prompt the orchestrator "
+            "is never sampled from. Drop --keep-thinking, or use --format native."
+        )
+
     if args.from_parquet:
         _refold_parquet(args)
         return

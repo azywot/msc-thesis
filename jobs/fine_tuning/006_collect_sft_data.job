@@ -19,8 +19,15 @@
 #   - 001_prepare_data.job completed (creates data/training/train/combined_train.parquet)
 #
 # Output:
-#   data/training/sft/sft_train.parquet    — correct trajectories (messages column)
-#   data/training/sft/collected_<ts>.json  — all trajectories + yield stats
+#   data/training/sft/collected_<ts>.jsonl  — all trajectories + yield stats
+#
+# This job does NOT write sft_train.parquet. Build it from the jsonl afterwards:
+#   python scripts/build_sft_parquet.py data/training/sft/collected_<ts>.jsonl \
+#       --output-dir data/training/sft \
+#       --reference-parquet data/training/train/combined_train.parquet
+# (--reference-parquet must be passed explicitly — the script's own default points at
+# an unreadable /projects/0/gusr0608 path.) This writes sft_train.parquet + sft_val.parquet,
+# the multi-turn inputs the folded build (see README) then refolds.
 #
 # To smoke-test on 50 rows first (single pass):
 #   Add --subset 50 --n-samples 1 to the python call below.
@@ -98,6 +105,11 @@ echo ""
 echo "Output files:"
 ls -lh data/training/sft/ 2>/dev/null || echo "  (no files found — check log for errors)"
 echo ""
-echo "Next step — inspect yield and kick off SFT training:"
+echo "Next step — build sft_train.parquet from the jsonl above, then inspect and train:"
+echo "  python scripts/build_sft_parquet.py data/training/sft/collected_<ts>.jsonl \\"
+echo "      --output-dir data/training/sft --reference-parquet data/training/train/combined_train.parquet"
 echo "  python scripts/inspect_sft_data.py data/training/sft/sft_train.parquet"
-echo "  sbatch jobs/fine_tuning/007_train_sft.job"
+echo "  python scripts/build_sft_parquet.py --from-parquet data/training/sft/sft_train.parquet \\"
+echo "      --output-dir data/training/sft --output-name sft_folded_train.parquet"
+echo "  sbatch jobs/fine_tuning/007_run_tests_for_sft_folded.job   # verify first, no GPU cost"
+echo "  sbatch jobs/fine_tuning/007_train_sft_folded.job"

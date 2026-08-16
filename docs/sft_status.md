@@ -32,13 +32,19 @@ all five `sft_inference` configs were pointed at it and run on 2026-08-07 (§8 h
 **NEXT ACTION: fold the results into Ch 7** of the thesis — see §8 for the numbers and the one
 open question (AIME) they raise. Test suite: **496 passed**.
 
+**`007_train_sft.job` (the original training job) has been removed from the repo.** Its
+training conversation format did not match the orchestrator's inference format, which is the
+bug this document diagnoses, and it is superseded entirely by the folded pipeline below; it was
+kept around for a while as a comparison artifact, but that risked reading as if the broken
+pipeline were still current. References to it below (§2, §6, §12) are historical.
+
 ---
 
 ## 2. The bug, and the evidence for it
 
 ### What was wrong
 
-SFT rows were stored as the native multi-turn transcript the teacher produced:
+SFT rows were stored as the multi-turn transcript the teacher produced:
 
 ```
 [system, user, assistant(plan), assistant(tool_call), tool(result), ..., assistant(answer)]
@@ -66,7 +72,7 @@ the val split had exactly the same defect.
 Both sides were produced by running the production code:
 
 - **Training side:** `verl.utils.dataset.multiturn_sft_dataset.MultiTurnSFTDataset`,
-  constructed with the exact flags `007_train_sft.job:135-142` passes, then decoding
+  constructed with the exact flags the (now-removed) `007_train_sft.job:135-142` passed, then decoding
   `input_ids` and the `loss_mask == 1` positions.
 - **Inference side:** the orchestrator's own `_build_memory_prompt`, `_commit_tool_result`,
   `_format_action_history`, `_extract_sub_goal` and the real `parse_tool_call`, driven on a
@@ -99,7 +105,7 @@ adapter was trained to start generating 4 tokens earlier than it is ever sampled
 **every** target.
 
 VERL's own sanity check fails on **60/60** sampled rows, delta **exactly 4 tokens** every time.
-`007_train_sft.job:141` silenced it with `data.ignore_input_ids_mismatch=True`. Folding alone
+The removed `007_train_sft.job:141` silenced it with `data.ignore_input_ids_mismatch=True`. Folding alone
 does **not** fix this — measured on a real folded row:
 
 | Path | Prompt tokens | Identical to inference? |
@@ -145,8 +151,8 @@ until the source-of-record run is readable.
 | `scripts/check_sft_folded_format.py` | new | Pre-flight gate, run before training and by the job itself. Asserts prompt identity, span purity, no thinking, no tool output, tool calls retained, no degenerate rows, no truncation. |
 | `scripts/finalize_sft_run.py` | new | Selects best-val-loss and last, extracts both as PEFT adapters (DTensor-correct), deletes the shards. |
 | `scripts/sft_checkpoint_janitor.py` | new | Collapses checkpoints to adapters *during* training (§7.2). |
-| `jobs/fine_tuning/008_train_sft_folded.job` | new | The training job. 007 is left untouched so the native run stays reproducible for comparison. |
-| `jobs/fine_tuning/008_test_sft_folded.job` | new | CPU-only verification suite: tests, gate, gate trip-wire, gate under the training env, one decoded example. |
+| `jobs/fine_tuning/007_train_sft_folded.job` | new | The training job. Supersedes `007_train_sft.job` (since removed — §12), whose training format did not match the orchestrator's inference format. |
+| `jobs/fine_tuning/007_run_tests_for_sft_folded.job` | new | CPU-only verification suite: tests, gate, gate trip-wire, gate under the training env, one decoded example. |
 | `experiments/configs/qwen3/sft_inference/` | new | Five eval configs (§8). |
 | `tests/unit/test_sft_folded_format.py` | new | 32 tests. |
 
@@ -212,12 +218,12 @@ python scripts/build_sft_parquet.py \
 | plan-with-tool-call trajectories handled | 109 | 16 |
 | planning-answered trajectories handled | 175 | 14 |
 | Tokens: total / mean / p95 / max | 4,062,350 / 1356.4 / 2040 / 7300 | 500,014 / 1381.3 / 2032 / 9832 |
-| (native, for comparison) | 1,587,150 / 1639.6 / 2338 / 7255 | 186,668 / 1728.4 / 2426 / 9821 |
+| (multi-turn, for comparison) | 1,587,150 / 1639.6 / 2338 / 7255 | 186,668 / 1728.4 / 2426 / 9821 |
 
 ### Why the row count multiplied (968 → 2995)
 
-No data was added. **A native row is a whole trajectory; a folded row is one orchestrator
-decision.** Those 968 trajectories contain exactly 2995 assistant turns, so 2995 is the
+No data was added. **A multi-turn row is a whole trajectory; a folded row (consistent with
+inference) is one orchestrator decision.** Those 968 trajectories contain exactly 2995 assistant turns, so 2995 is the
 assistant-turn count, not a multiplier applied to anything:
 
 | assistant turns in a trajectory | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
@@ -231,7 +237,7 @@ trajectory is plan → one tool call → answer.
 
 **The supervision is byte-for-byte identical.** Measured over every row:
 
-| | native | folded | ratio |
+| | multi-turn | folded | ratio |
 |---|---|---|---|
 | supervised tokens, train | 589,805 | **589,805** | 1.000 |
 | supervised tokens, val | 66,556 | **66,556** | 1.000 |
@@ -247,15 +253,15 @@ many-per-row.
 
 The system prompt and question are re-rendered in every row because that is literally what the
 orchestrator does at inference: `_build_memory_prompt` rebuilds `[system, user]` from scratch
-at every decision. The native format amortised that prefix across one long sequence; the
+at every decision. The multi-turn format amortised that prefix across one long sequence; the
 deployed system never does. The extra ~2.5M tokens are the real conditioning cost of the
 format the model is evaluated in, not bloat added by the fold.
 
 Two consequences, both already handled:
 
 1. **Steps per epoch tripled**: 2995 / 32 ≈ 94 steps vs 968 / 32 ≈ 30. This is why job 008 sets
-   `total_epochs=2` (~187 steps) where 007 used 3 (~90): the run is matched on optimizer steps,
-   not on epochs.
+   `total_epochs=2` (~187 steps) where the removed `007_train_sft.job` used 3 (~90): the run was
+   matched on optimizer steps, not on epochs.
 2. **Long trajectories now contribute more rows.** A 9-turn trajectory yields 9 rows where a
    turn-0 answer yields 1. Search trajectories run longer than math ones, so the 484/484
    trajectory balance becomes 1172/1823 at row level. That is the mechanism behind decision 2
@@ -276,11 +282,11 @@ identical results), and re-verified under verl's real config after the §9 fix:
 | Rows over `max_length=16384` | 0 | 0 |
 | Targets retaining `<tool_call>` | 1343 (1234 actions + 109 plans) | 176 |
 | `extra_info` populated | 2995/2995 | 362/362 |
-| Every native question present | yes | yes |
-| Columns identical to native | yes | yes |
+| Every multi-turn question present | yes | yes |
+| Columns identical to multi-turn | yes | yes |
 | No question straddles train/val | yes | |
 
-The gate is a real trip-wire, not a rubber stamp: it exits **1** on the native parquet and **0**
+The gate is a real trip-wire, not a rubber stamp: it exits **1** on the multi-turn parquet and **0**
 on the folded one, both confirmed.
 
 Files on disk (gitignored via `.gitignore:48 data/*`):
@@ -298,7 +304,7 @@ data/training/sft/sft_folded_{train,val}.jsonl        (human-readable mirrors)
 **1. Turn-0 answers (175 train rows, 18.1%): KEPT.** These teach answering at turn 0, which is
 the *Premature direct answering* failure mode in the Ch 6 taxonomy. `--drop-planning-answers`
 is implemented and tested but **not used**. Rationale: format is then the only variable that
-changed against the 007 run, so the comparison stays clean. If *Premature direct answering*
+changed against the (now-removed) 007 run, so the comparison stayed clean. If *Premature direct answering*
 shows up in the eval, dropping them is a one-flag rebuild and a follow-up run.
 
 **2. Loss-level composition shift: ACCEPTED, to be stated in Ch 7.** Trajectories stay 484 math
@@ -309,7 +315,7 @@ loss level**, so it is a confound that must be disclosed rather than left implic
 search rows back to 1:1 would discard ~651 real supervision rows to preserve a ratio that was
 itself only a heuristic mirror of `combined_train`.
 
-**Ch 7 needs one sentence to this effect:** the folded and native runs use the same trajectories
+**Ch 7 needs one sentence to this effect:** the folded and multi-turn runs use the same trajectories
 and the same balanced 1:1 math/search sampling, but because the folded format supervises one row
 per orchestrator decision and search trajectories take more steps, the loss-level ratio is
 1:1.56 rather than 1:1.
@@ -471,10 +477,10 @@ orchestrator + frozen 1.7B sub-agents, no adapter) and the existing GRPO-LoRA ro
 | HLE | 3.0 | 10.0 | **8.5 (17/200)** |
 
 The format fix clears the bar it was built for on three of five benchmarks: SFT now beats the
-pre-adaptation baseline on GAIA, MuSiQue and HLE, which the pre-fold native-format adapter never
+pre-adaptation baseline on GAIA, MuSiQue and HLE, which the pre-fold multi-turn adapter never
 did (§2 — every prior SFT number sat below base). GPQA is a wash (82 vs 83 correct, within noise).
 
-**AIME is the open question.** SFT-folded scores 6/60 (10.0%), matching the *pre-fold* native
+**AIME is the open question.** SFT-folded scores 6/60 (10.0%), matching the *pre-fold* multi-turn
 adapter's AIME number from the 2026-06-17 session note exactly (also 6/60) and well below both
 the baseline (23.3%) and GRPO-LoRA (18.3%). Total tool calls on AIME collapsed to 20 (3
 `web_search` + 17 `code_generator`) against the baseline run's 79 — the adapter is answering from
@@ -520,7 +526,7 @@ Fixed in three independent places:
 2. `check_sft_folded_format.py` loads **verl's real config defaults** and builds the dataset from
    them, so the gate exercises the configuration training uses. It reproduces them hard-coded
    when verl is not importable, so it is never weaker than training.
-3. `008_train_sft_folded.job` passes `data.enable_thinking_default=false` explicitly.
+3. `007_train_sft_folded.job` passes `data.enable_thinking_default=false` explicitly.
 
 Regression tests parametrise over `"none"`, `None`, `"None"`, `""`, `0` (must stay no-thinking)
 and over real booleans (must be honoured). Re-verified with the job's exact config on both real
@@ -571,11 +577,23 @@ over `max_length`.
 ```bash
 cd /gpfs/home3/xchen1/azywot/msc-thesis
 
+# 0. Data prep, only needed from a fresh checkout (§5 has the shipped-run numbers):
+#    collect trajectories (produces collected_<ts>.jsonl, not a parquet), build the
+#    multi-turn sft_train/val.parquet from it, then fold those into the rows
+#    (consistent with inference) that training uses.
+#    --reference-parquet must be passed explicitly on the middle command — the script's
+#    own default points at an unreadable /projects/0/gusr0608 path.
+sbatch jobs/fine_tuning/006_collect_sft_data.job
+python scripts/build_sft_parquet.py data/training/sft/collected_<ts>.jsonl \
+    --output-dir data/training/sft --reference-parquet data/training/train/combined_train.parquet
+python scripts/build_sft_parquet.py --from-parquet data/training/sft/sft_train.parquet \
+    --output-dir data/training/sft --output-name sft_folded_train.parquet
+
 # 1. Full verification suite (CPU partition, no GPU cost)
-sbatch jobs/fine_tuning/008_test_sft_folded.job
+sbatch jobs/fine_tuning/007_run_tests_for_sft_folded.job
 
 # 2. Train — ~187 steps, 2x H100, ~40 min wall clock, schedules immediately
-sbatch jobs/fine_tuning/008_train_sft_folded.job
+sbatch jobs/fine_tuning/007_train_sft_folded.job
 
 # 3. After training: paste the run tag the job prints into SFT_ADAPTER_PLACEHOLDER
 #    in scripts/generate_configs.py, then regenerate and evaluate
@@ -583,14 +601,14 @@ python scripts/generate_configs.py --suite sft_inference
 ./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/sft_inference
 ```
 
-Job 008 runs the pre-flight gate itself and refuses to start training if it fails. It also
-extracts the adapters and archives them, so there is no manual post-training step.
+The training job runs the pre-flight gate itself and refuses to start training if it fails. It
+also extracts the adapters and archives them, so there is no manual post-training step.
 
 Local checks, worth re-running after any change to `build_sft_parquet.py` or
 `folded_sft_dataset.py`:
 
 ```bash
-bash -n jobs/fine_tuning/008_train_sft_folded.job   # and 008_test, 006, 007
+bash -n jobs/fine_tuning/007_train_sft_folded.job   # and 007_run_tests_for_sft_folded, 006
 conda activate agent_engine
 python -m pytest tests/ -q --ignore=tests/unit/test_fine_tuning_rollout.py   # expect 496
 python scripts/check_sft_folded_format.py \
@@ -626,19 +644,15 @@ left. Scratch quota is 8 TiB at ~0.2% used. `$USER` on the compute node is `azyw
 ## 11. What is not done
 
 - **Training and eval are done** (§1, §8) — run tag `06-08-2026_21-47-25300018`, five-benchmark
-  eval on 2026-08-07. **Not yet done:** folding the §8 numbers and the AIME regression into Ch 7
-  of the thesis, and investigating *why* AIME regressed (hypothesis in §8, not yet tested).
-- **No in-training generation eval.** Deliberate: a format mismatch is visible at step 0, so the
-  pre-flight gate catches this class of bug at a fraction of the cost. An in-training callback
-  would catch *degradation over training*, a different failure. Worth adding only if you want
-  that too.
-- **`stash@{0}` on `main` is still uncommitted** — the `history_mode` work (3 files, +66/-4),
-  which evaluates the *existing* adapter in native format with no retraining. It is a viable
-  fallback and one `git stash drop` from being lost, exactly like the fold code was.
-  **Recommend committing it to a branch.**
+  eval on 2026-08-07. **Not yet done (re-verified 2026-08-15):** folding the §8 numbers and the
+  AIME regression into Ch 7 of the thesis — `sections/7_adaptation.tex` still has only the GEPA
+  and LoRA/GRPO methods, no SFT section, none of the §8 numbers anywhere — and investigating
+  *why* AIME regressed (hypothesis in §8, not yet tested; no newer analysis artifact exists).
 - `/projects/0/gusr0608` is no longer referenced by any SFT code path, but still appears in
-  `jobs/grpo_inference/*.job` (10 files hardcode `/gpfs/work5/0/gusr0608/msc-thesis`). Those are
-  historical eval jobs that already ran; worth cleaning up only if those evals are re-run.
+  **6** `jobs/grpo_inference/*.job` files (re-verified 2026-08-15, was previously miscounted as
+  10): `GRPO_eval_{gaia,aime}`, `SFT_eval_{gaia,aime}`, `BASE_eval_{gaia,aime}`, all
+  `qwen8B_sub1_7b_none.job`, hardcoding `/gpfs/work5/0/gusr0608/msc-thesis`. Those are historical
+  eval jobs that already ran; worth cleaning up only if those evals are re-run.
 
 ---
 
@@ -649,8 +663,8 @@ worktree and vanished: no `--format folded`, no `_fold_trajectory`, no tests, an
 commit (`git log --all -S"_fold_trajectory"` was empty), despite the docs of the time claiming
 it was "implemented, tested, and run successfully". Its *numbers* all reproduced exactly, so
 those docs were a reliable spec, but the code was rewritten from scratch. `select_best_sft_
-checkpoint.py`, referenced by `007_train_sft.job:180`, likewise never existed in any commit.
-This is the reason for the standing recommendation to commit `stash@{0}`.
+checkpoint.py`, referenced by `007_train_sft.job:180`, likewise never existed in any commit
+(`007_train_sft.job` has since been removed from the repo entirely — see §1).
 
 **Job 25268454 — ran 8m43s, then cancelled on purpose.** The in-job pre-flight gate passed on
 both splits. What it proved before being stopped:
@@ -674,8 +688,8 @@ shards instead of treating one as "last". Its 33 GB of leftovers were deleted on
 batch script to `/var/spool/slurm` on the compute node. Fixed in both 008 jobs by trying
 candidates in order and accepting only one that *validates* as the repo (`scripts/build_sft_
 parquet.py` present): `$PROJECT_DIR` → `$SLURM_SUBMIT_DIR` → script dir →
-`$HOME/azywot/msc-thesis`. **007 has the same class of fragility** (a hardcoded
-`/projects/0/gusr0608`), so copy the resolution block if that job is ever reused.
+`$HOME/azywot/msc-thesis`. **007 had the same class of fragility** (a hardcoded
+`/projects/0/gusr0608`); moot now that it has been removed.
 
 **Post-cancel fixes**, all since verified: checkpoints moved to the GRPO layout;
 `checkpoint.save_contents=['model','extra']`; `trainer.resume_mode=disable`;

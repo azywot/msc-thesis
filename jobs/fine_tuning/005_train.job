@@ -291,7 +291,14 @@ if [[ "$USE_LORA_LOWER" == "true" ]]; then
     echo "    --output-dir /scratch-shared/$USER/fine_tuning/lora_adapters/${EXPERIMENT_NAME}/merged"
     echo "  # merge_lora.py prefers \$LATEST_CKPT/actor/lora_adapter/ (hyperparams from adapter_config.json)."
 else
-    echo "Next step — locate latest checkpoint and evaluate (full FT — no merge needed):"
+    echo "Next step — locate latest checkpoint and consolidate into a HuggingFace model dir:"
     echo "  LATEST_CKPT=\$(find $CKPT_DIR -maxdepth 3 -name 'global_step_*' -type d | sort -V | tail -1)"
-    echo "  # Load actor/model_world_size_*_rank_*.pt directly with from_pretrained."
+    echo "  python scripts/merge_lora.py \\"
+    echo "    --checkpoint \"\$LATEST_CKPT\" \\"
+    echo "    --base-model Qwen/Qwen3-8B \\"
+    echo "    --output-dir /scratch-shared/$USER/msc-thesis/fine_tuning/${EXPERIMENT_NAME}/merged"
+    echo "  # actor/model_world_size_*_rank_*.pt is NOT directly loadable with from_pretrained:"
+    echo "  # it is written FULL_STATE_DICT/rank0_only (one complete file, not a shard set), but"
+    echo "  # still needs merge_lora.py's load_state_dict + save_pretrained to become a proper"
+    echo "  # HF checkpoint directory (config.json, tokenizer, safetensors index)."
 fi

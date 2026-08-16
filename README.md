@@ -381,11 +381,11 @@ experiments/configs/
 
 ```bash
 # Regenerate all suites (baseline + agentflow)
-python experiments/configs/generate_configs.py
+python scripts/generate_configs.py
 
 # Regenerate a single suite
-python experiments/configs/generate_configs.py --suite baseline
-python experiments/configs/generate_configs.py --suite agentflow
+python scripts/generate_configs.py --suite baseline
+python scripts/generate_configs.py --suite agentflow
 ```
 
 Or via SLURM:
@@ -748,7 +748,7 @@ Training on the stored multi-turn transcript therefore optimises a distribution 
 | Train | 968 | 2995 | 589,805 |
 | Val | 108 | 362 | 66,556 |
 
-A folded row is one decision, a native row was a whole trajectory, so the row count is just the assistant-turn count. The supervision is byte-for-byte identical to the native format; only the conditioning changes.
+A folded row (consistent with inference) is one decision, a multi-turn row was a whole trajectory, so the row count is just the assistant-turn count. The supervision is byte-for-byte identical to the multi-turn format; only the conditioning changes.
 
 Two components enforce this:
 
@@ -760,44 +760,59 @@ Two components enforce this:
 ### Quick start
 
 ```bash
-# 1. Collect teacher trajectories (only needed once; produces collected_*.jsonl)
+# 1. Collect teacher trajectories (only needed once; produces collected_*.jsonl,
+#    NOT sft_train.parquet)
 sbatch jobs/fine_tuning/006_collect_sft_data.job
 
-# 2. Build the memory-folded parquets from the shipped native ones
+# 2. Build the multi-turn sft_train.parquet / sft_val.parquet from that jsonl.
+#    --reference-parquet must be passed explicitly: the script's own default points at
+#    an unreadable /projects/0/gusr0608 path.
+python scripts/build_sft_parquet.py data/training/sft/collected_<ts>.jsonl \
+    --output-dir data/training/sft \
+    --reference-parquet data/training/train/combined_train.parquet
+
+# 3. Fold those multi-turn parquets into the memory-folded rows — consistent with
+#    what inference actually builds — that training uses
 python scripts/build_sft_parquet.py \
     --from-parquet data/training/sft/sft_train.parquet \
     --output-dir data/training/sft --output-name sft_folded_train.parquet
 
-# 3. Verify everything on the CPU partition (tests, gate, gate trip-wire) - no GPU cost
-sbatch jobs/fine_tuning/008_test_sft_folded.job
+# 4. Verify everything on the CPU partition (tests, gate, gate trip-wire) - no GPU cost
+sbatch jobs/fine_tuning/007_run_tests_for_sft_folded.job
 
-# 4. Train (~187 steps, 2xH100, ~40 min)
-sbatch jobs/fine_tuning/008_train_sft_folded.job
+# 5. Train — LoRA (~187 steps, 2xH100, ~40 min):
+sbatch jobs/fine_tuning/007_train_sft_folded.job
+#    or full parameter, every weight trained instead of a rank-64 adapter (4xH100):
+sbatch jobs/fine_tuning/007_train_sft_full.job
 
-# 5. Evaluate: paste the run tag the job prints into SFT_ADAPTER_PLACEHOLDER
+# 6. Evaluate.
+#    LoRA: paste the run tag the job prints into SFT_ADAPTER_PLACEHOLDER
 #    in scripts/generate_configs.py, then regenerate and run
 python scripts/generate_configs.py --suite sft_inference
 ./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/sft_inference
+#    Full parameter: point an inference config's path_or_id straight at the archived
+#    best_checkpoint/ directory the job prints (no lora_adapter_path, no merge step).
 ```
 
-There is no manual post-training step: the job selects the best-val-loss and last checkpoints, extracts them as PEFT adapters, deletes the shards, and archives the adapters into `data/adapters/<experiment>/<run-tag>/`.
+There is no manual post-training step for either: the job selects the best-val-loss and last checkpoints, extracts them (PEFT adapters for LoRA, complete HuggingFace model directories for full parameter), deletes the shards, and archives the result into `data/adapters/<experiment>/<run-tag>/` (LoRA) or `data/checkpoints/<experiment>/<run-tag>/` (full parameter).
 
 ### Checkpoint handling
 
-`verl.trainer.sft_trainer` never writes a `lora_adapter/` directory (only the RL path does). It writes the full FSDP state dict: ~32 GB per checkpoint, of which ~350 MB is trained weight, and the shards are **sharded DTensors**, so rank 0 alone holds half of each tensor.
+`verl.trainer.sft_trainer` never writes a `lora_adapter/` directory (only the RL path does). It writes the full FSDP state dict: ~32 GB per checkpoint, of which ~350 MB is trained weight for a LoRA run (every byte, for a full-parameter one), and the shards are **sharded DTensors**, so rank 0 alone holds only its own slice of each tensor.
 
-- `scripts/sft_checkpoint_janitor.py` runs alongside training and collapses each checkpoint to its adapter as soon as verl's atomic tracker file marks it complete, keeping the peak at ~32-64 GB instead of ~256 GB.
-- `scripts/finalize_sft_run.py` selects best/last across whatever form each step is in and cleans up.
-- **`scripts/merge_lora.py` must not be used on SFT checkpoints** - it reads rank 0 only and would silently produce a half-weight adapter.
+- `scripts/sft_checkpoint_janitor.py` runs alongside training and collapses each checkpoint as soon as verl's atomic tracker file marks it complete, keeping the peak at ~32-64 GB instead of ~256 GB. `--mode lora` (default) or `--mode full` selects which.
+- `scripts/finalize_sft_run.py` selects best/last across whatever form each step is in and cleans up; same `--mode` flag.
+- `src/verl_ext/checkpoint_utils.py` holds the shared DTensor-gathering logic both of the above call.
+- **`scripts/merge_lora.py` must not be used on SFT checkpoints** (LoRA or full-parameter) — it expects the RL path's `actor/` layout and single consolidated shard, and exits with an error pointing at `finalize_sft_run.py --mode full` if it sees the SFT trainer's layout instead.
 
 ### Job files
 
 | File | Purpose | Log |
 |------|---------|-----|
 | `jobs/fine_tuning/006_collect_sft_data.job` | Collect teacher trajectories | `out/fine_tuning/sft_collect/collect_<job_id>.log` |
-| `jobs/fine_tuning/007_train_sft.job` | Original native-format run (kept for comparison; superseded) | `out/fine_tuning/sft_train/sft_<job_id>.log` |
-| `jobs/fine_tuning/008_test_sft_folded.job` | CPU verification suite (tests + gate + trip-wire) | `out/fine_tuning/tests/sft_folded_tests_<job_id>.log` |
-| `jobs/fine_tuning/008_train_sft_folded.job` | Folded-format training run | `out/fine_tuning/sft_train/sft_folded_<job_id>.log` |
+| `jobs/fine_tuning/007_run_tests_for_sft_folded.job` | CPU verification suite (tests + gate + trip-wire) | `out/fine_tuning/tests/sft_folded_tests_<job_id>.log` |
+| `jobs/fine_tuning/007_train_sft_folded.job` | Folded-format training run, LoRA rank 64 | `out/fine_tuning/sft_train/sft_folded_<job_id>.log` |
+| `jobs/fine_tuning/007_train_sft_full.job` | Same, full parameter (no LoRA) | `out/fine_tuning/sft_train/sft_full_<job_id>.log` |
 
 Eval configs live in `experiments/configs/qwen3/sft_inference/` (five benchmarks, `thinking_mode: NO`, orchestrator named `Qwen3-8B-SFT` so W&B keeps it distinct from the GRPO rows).
 

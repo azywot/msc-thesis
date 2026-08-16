@@ -12,11 +12,13 @@
 #SBATCH --output=out/fine_tuning/sft_train/sft_folded_%A.log
 #SBATCH --error=out/fine_tuning/sft_train/sft_folded_%A.err
 
-# SFT on Qwen3-8B orchestrator, memory-FOLDED format. Supersedes 007_train_sft.job.
+# SFT on Qwen3-8B orchestrator, memory-FOLDED format. Supersedes the original job
+# (007_train_sft.job, since removed from the repo), whose training format did not match
+# inference — see docs/sft_status.md.
 #
 # Why this job exists
 # -------------------
-# 007 trained on the stored native multi-turn transcript
+# 007 trained on the stored multi-turn transcript
 # ([system, user, assistant(plan), assistant(tool_call), tool, ..., assistant(answer)]),
 # but the orchestrator never sees that at inference: every non-baseline turn is rebuilt
 # as a fresh [system, user] memory prompt by AgenticOrchestrator._build_memory_prompt

@@ -31,9 +31,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     the full ~33 GB FSDP state dict per checkpoint (no `lora_adapter/`, unlike the RL path); these
     reconstruct the sharded DTensor LoRA weights into ~350 MB PEFT adapters during training and
     keep only best/last.
-  - `jobs/fine_tuning/008_{train,test}_sft_folded.job`, `experiments/configs/qwen3/sft_inference/`
-    (5 eval configs) — full run + eval pipeline; `007_train_sft.job` (native format) kept
-    untouched for comparison.
+  - `jobs/fine_tuning/007_train_sft_folded.job`, `jobs/fine_tuning/007_run_tests_for_sft_folded.job`, `experiments/configs/qwen3/sft_inference/`
+    (5 eval configs) — full run + eval pipeline. The original job
+    (`007_train_sft.job`) trained on a conversation format the orchestrator never uses at
+    inference (see diagnosis above); it has been removed rather than kept as a comparison
+    artifact, since it caused confusion about which pipeline is current.
   - Trained (run tag `06-08-2026_21-47-25300018`, val loss 0.5404→0.4234 over 186 steps) and
     evaluated on all five benchmarks; beats the pre-adaptation baseline on GAIA/MuSiQue/HLE, flat
     on GPQA, regresses on AIME (open question — see `docs/sft_status.md` §8).

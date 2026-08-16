@@ -9,7 +9,7 @@
 #SBATCH --output=out/fine_tuning/tests/sft_folded_tests_%A.log
 #SBATCH --error=out/fine_tuning/tests/sft_folded_tests_%A.err
 
-# Verification suite for the folded-SFT pipeline. Run this before 008_train_sft_folded.job,
+# Verification suite for the folded-SFT pipeline. Run this before 007_train_sft_folded.job,
 # and after any change to build_sft_parquet.py or verl_ext/folded_sft_dataset.py.
 #
 # Why this job exists
@@ -22,7 +22,7 @@
 # Five stages, each independently fatal:
 #   1. Full unit-test suite            — logic, in the env the tests were written in.
 #   2. Gate on the real folded data    — every row renders exactly as inference does.
-#   3. Trip-wire                       — the gate must REJECT the native parquets. A gate
+#   3. Trip-wire                       — the gate must REJECT the multi-turn parquets. A gate
 #                                        that passes everything proves nothing.
 #   4. Same gate under cosmas-train    — the class is authored/tested in agent_engine but
 #                                        imported by VERL in cosmas-train, which has a
@@ -76,7 +76,7 @@ FOLDED_TRAIN=data/training/sft/sft_folded_train.parquet
 FOLDED_VAL=data/training/sft/sft_folded_val.parquet
 NATIVE_TRAIN=data/training/sft/sft_train.parquet
 NATIVE_VAL=data/training/sft/sft_val.parquet
-MAX_LENGTH=16384   # must match data.max_length in 008_train_sft_folded.job
+MAX_LENGTH=16384   # must match data.max_length in 007_train_sft_folded.job
 
 FAILURES=()
 note_fail() { FAILURES+=("$1"); echo "  ✗ FAIL: $1"; }
@@ -123,15 +123,15 @@ python scripts/check_sft_folded_format.py \
 if [[ $? -eq 0 ]]; then note_pass "gate on folded VAL"; else note_fail "gate on folded VAL"; fi
 
 # ── Stage 3: trip-wire ───────────────────────────────────────────────────────────
-# Feed the gate the native parquet it is supposed to reject. If this passes, the gate is
+# Feed the gate the multi-turn parquet it is supposed to reject. If this passes, the gate is
 # broken and stage 2 was meaningless.
 echo ""
-echo "── Stage 3/5: trip-wire — the gate must REJECT native format ────────────────"
+echo "── Stage 3/5: trip-wire — the gate must REJECT multi-turn format ────────────────"
 if python scripts/check_sft_folded_format.py \
        --folded "$NATIVE_TRAIN" --max-length "$MAX_LENGTH" > /dev/null 2>&1; then
-    note_fail "trip-wire — gate ACCEPTED the native parquet; it is not discriminating"
+    note_fail "trip-wire — gate ACCEPTED the multi-turn parquet; it is not discriminating"
 else
-    note_pass "trip-wire — gate rejected the native parquet (exit non-zero, as required)"
+    note_pass "trip-wire — gate rejected the multi-turn parquet (exit non-zero, as required)"
 fi
 
 # ── Stage 4: same gate in the training environment ───────────────────────────────
@@ -209,7 +209,7 @@ if [[ $? -eq 0 ]]; then note_pass "decoded example rendered"; else note_fail "de
 echo ""
 echo "=========================================="
 if [[ ${#FAILURES[@]} -eq 0 ]]; then
-    echo "ALL STAGES PASSED — safe to submit 008_train_sft_folded.job"
+    echo "ALL STAGES PASSED — safe to submit 007_train_sft_folded.job"
     echo "Finished at: $(date)"
     echo "=========================================="
     exit 0
