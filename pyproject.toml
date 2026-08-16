@@ -80,6 +80,9 @@ training = [
     "uvicorn>=0.29.0",       # server.py
 ]
 
+[project.scripts]
+cosmas-run = "agent_engine.runner.experiment:main"
+
 [project.urls]
 Homepage = "https://github.com/azywot/msc-thesis"
 Repository = "https://github.com/azywot/msc-thesis"

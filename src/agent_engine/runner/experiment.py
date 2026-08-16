@@ -1,0 +1,535 @@
+"""Experiment execution: wiring, the run loop, and result writing.
+
+Moved verbatim from ``scripts/run_experiment.py``. That script is now a thin
+CLI wrapper around :func:`main` here, so the same run can be driven from a
+shell, from the ``cosmas-run`` entry point, or from another Python process.
+
+Log messages are reproduced exactly, including emoji and spacing: they are
+written to ``experiment.log`` inside every run directory and are a run artefact
+that existing analyses read.
+"""
+
+import argparse
+import json
+import os
+import logging
+from pathlib import Path
+from datetime import datetime
+from typing import List, Dict, Any, Optional, Tuple
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from agent_engine.config import load_experiment_config
+from agent_engine.models.base import get_tool_call_format
+from agent_engine.core import ToolRegistry, AgenticOrchestrator
+from agent_engine.utils import setup_logging, set_seed
+from agent_engine.utils.wandb_logging import log_results_wandb
+from agent_engine.tools import (
+    WebSearchTool,
+    CodeGeneratorTool,
+    MindMapTool,
+    TextInspectorTool,
+    ImageInspectorTool,
+)
+from agent_engine.datasets import DatasetRegistry
+from agent_engine.prompts import PromptBuilder
+from agent_engine.caching import CacheManager
+
+from agent_engine.runner.metrics import compute_metrics
+from agent_engine.runner.providers import setup_model_provider
+
+
+logger = logging.getLogger(__name__)
+
+
+def setup_tools(
+    config,
+    cache_manager,
+    api_keys: Dict[str, str],
+    model_providers: Optional[Dict[str, Any]] = None,
+    orchestrator_model=None,
+    mind_map_storage_path: Optional[Path] = None,
+) -> ToolRegistry:
+    """Set up tools based on configuration.
+
+    Args:
+        config: Experiment configuration
+        cache_manager: Cache manager instance
+        api_keys: Dictionary of API keys
+        model_providers: Dictionary of model providers for sub-agent mode (optional)
+        mind_map_storage_path: Optional run-specific path for mind_map cache
+            (e.g. cache_dir/mind_map/gaia/all_validation/2026-02-22_123abc).
+            If None, falls back to config.cache_dir / "mind_map".
+
+    Returns:
+        ToolRegistry with registered tools
+    """
+    tools = ToolRegistry()
+
+    # Determine if we use sub-agent thinking
+    use_subagent_thinking = config.use_subagent_thinking()
+    direct_mode = config.tools.direct_tool_call
+
+    for tool_name in config.tools.enabled_tools:
+        if tool_name == "web_search":
+            # Get model provider for sub-agent mode
+            search_model = model_providers.get("web_search") if not direct_mode and model_providers else None
+            # Select the correct API key based on provider
+            provider = config.tools.web_tool_provider
+            api_key = api_keys.get(provider)
+            if not api_key:
+                raise RuntimeError(f"{provider.upper()}_API_KEY environment variable is required for web_tool_provider='{provider}'")
+            tools.register(WebSearchTool(
+                api_key=api_key,
+                provider=provider,
+                search_cache=cache_manager.search_cache,
+                url_cache=cache_manager.url_cache,
+                top_k=config.tools.top_k_results,
+                max_doc_len=config.tools.max_doc_len,
+                model_provider=search_model,
+                fetch_urls=True,
+                use_thinking=use_subagent_thinking,
+                cache_manager=cache_manager,
+                max_search_content_chars=config.tools.max_search_content_chars,
+            ))
+        elif tool_name == "code_generator":
+            # Get model provider for sub-agent mode
+            coding_model = model_providers.get("code_generator") if not direct_mode and model_providers else None
+            tools.register(CodeGeneratorTool(
+                timeout_seconds=60,
+                temp_dir=str(config.cache_dir / "code_temp"),
+                model_provider=coding_model,
+                use_thinking=use_subagent_thinking,
+                return_code=config.tools.return_code,
+            ))
+        elif tool_name == "mind_map":
+            # In sub-agent mode, GraphRAG runs with a local model — no OpenAI key needed (mirrors MAT).
+            # Use run-specific path when provided (mirrors results: cache/mind_map/{dataset}/{split}/{date}_{job_id})
+            if mind_map_storage_path is not None:
+                mind_map_storage_path.mkdir(parents=True, exist_ok=True)
+                storage_path = str(mind_map_storage_path)
+            else:
+                storage_path = str(config.cache_dir / "mind_map")
+            mind_map_model = model_providers.get("mind_map") if not direct_mode else None
+            tools.register(MindMapTool(
+                direct_mode=direct_mode,
+                storage_path=storage_path,
+                use_graphrag=True,
+                model_provider=mind_map_model,
+                use_thinking=use_subagent_thinking,
+            ))
+        elif tool_name == "text_inspector":
+            # Get model provider for sub-agent mode (optional for text inspector)
+            text_inspector_model = model_providers.get("text_inspector") if not direct_mode and model_providers else None
+            tools.register(TextInspectorTool(
+                max_chars=50000,
+                model_provider=text_inspector_model,
+                use_thinking=use_subagent_thinking
+            ))
+        elif tool_name == "image_inspector":
+            # Image inspector requires a VLM, so only enable in non-direct mode
+            if not direct_mode:
+                # Get VLM model provider for image analysis (required)
+                vlm_model = model_providers.get("image_inspector") if model_providers else None
+                if vlm_model is None:
+                    logger.warning("image_inspector enabled but no VLM model provider configured - tool will fail at runtime")
+                tools.register(ImageInspectorTool(
+                    model_provider=vlm_model,
+                    use_thinking=use_subagent_thinking
+                ))
+            else:
+                logger.warning("image_inspector is disabled in direct mode (requires VLM)")
+
+    return tools
+
+
+def run_experiment(args):
+    """Run complete experiment.
+
+    Args:
+        args: Command-line arguments
+    """
+    logger = setup_logging()
+
+    logger.info(f"Loading config from: {args.config}")
+    config = load_experiment_config(Path(args.config))
+
+    output_dir = Path(args.output_dir) if args.output_dir else config.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_dir, date_str, job_id = _make_run_dir(output_dir, config.dataset.split)
+
+    # Mind map cache path mirrors results: cache/mind_map/{dataset}/{split}/{date}_{job_id}
+    mind_map_storage = (
+        Path(config.cache_dir) / "mind_map" / config.dataset.name / config.dataset.split / f"{date_str}_{job_id}"
+    )
+
+    logger = setup_logging(log_file=run_dir / "experiment.log")
+    logger.info("=" * 80)
+    logger.info(f"Starting experiment: {datetime.now()}")
+    logger.info("=" * 80)
+    logger.info(f"Experiment: {config.name}")
+    logger.info(f"Description: {config.description}")
+
+    set_seed(config.seed)
+    start_time = datetime.now().isoformat()
+
+    logger.info("Seed: %s  dataset: %s/%s  thinking: %s  direct_tool_call: %s",
+                config.seed, config.dataset.name, config.dataset.split,
+                getattr(config.thinking_mode, "value", "?"), config.tools.direct_tool_call)
+    logger.info("Enabled tools: %s", list(config.tools.enabled_tools))
+
+    api_keys = {
+        "serper": os.getenv("SERPER_API_KEY"),
+        "tavily": os.getenv("TAVILY_API_KEY"),
+        "openai": os.getenv("OPENAI_API_KEY"),
+        "anthropic": os.getenv("ANTHROPIC_API_KEY"),
+    }
+
+    _provider = config.tools.web_tool_provider
+    _dataset = config.dataset.name
+    _cache_root = f"{config.cache_dir}/{_provider}/{_dataset}"
+    logger.info("Initializing web cache at: %s  (provider: %s, dataset: %s)", _cache_root, _provider, _dataset)
+    cache_manager = CacheManager(
+        config.cache_dir,
+        web_tool_provider=_provider,
+        dataset_name=_dataset,
+    )
+
+    logger.info(f"Loading dataset: {config.dataset.name}")
+    dataset = DatasetRegistry.get(config.dataset)
+    examples = dataset.get_subset(config.dataset.subset_num)
+    logger.info(f"Loaded {len(examples)} examples")
+
+    model_cache: Dict[str, Any] = {}
+
+    # Resolve GPU assignments before loading any model so utilization and GPU pinning
+    # are set automatically (mirrors multi-agent-tools behaviour).
+    # Skip entirely when all models use the MLX backend (no GPU management needed).
+    _all_mlx = all(
+        getattr(cfg, "backend", "vllm") == "mlx"
+        for cfg in config.models.values()
+    )
+    try:
+        if _all_mlx:
+            raise RuntimeError("skip — all models use MLX backend")
+        from agent_engine.models.vllm_provider import resolve_gpu_assignments
+        gpu_assignments = resolve_gpu_assignments(config)
+
+        def _apply_gpu_assignment(model_cfg) -> None:
+            if model_cfg is None:
+                return
+            path = model_cfg.path_or_id
+            if path in gpu_assignments:
+                util, gpu_ids = gpu_assignments[path]
+                if model_cfg.gpu_memory_utilization is None:
+                    model_cfg.gpu_memory_utilization = util
+                if model_cfg.gpu_ids is None and gpu_ids is not None:
+                    model_cfg.gpu_ids = gpu_ids
+
+        _apply_gpu_assignment(config.get_model("orchestrator"))
+        for _tool in config.tools.enabled_tools:
+            _apply_gpu_assignment(config.get_model(_tool))
+    except Exception as _e:
+        logger.warning("GPU assignment resolution skipped (%s); using per-model defaults.", _e)
+
+    logger.info(f"Initializing orchestrator model: {config.get_model('orchestrator').name}")
+    orchestrator_model = setup_model_provider(config.get_model("orchestrator"), api_keys, model_cache)
+
+    # For each enabled tool: use models.<tool> if specified, else fall back to orchestrator.
+    model_providers = {}
+    if not config.tools.direct_tool_call:
+        logger.info("Sub-agent mode enabled - initializing tool models")
+
+        for tool_name in config.tools.enabled_tools:
+            model_cfg = config.get_model(tool_name)
+            if model_cfg is not None:
+                logger.info(f"Initializing {tool_name} model: {model_cfg.name}")
+                model_providers[tool_name] = setup_model_provider(model_cfg, api_keys, model_cache)
+            else:
+                logger.info(f"No models.{tool_name} in config — using orchestrator model as fallback")
+                model_providers[tool_name] = orchestrator_model
+
+        logger.info(f"Thinking mode: {config.thinking_mode.value}")
+        logger.info(f"Orchestrator uses thinking: {config.use_orchestrator_thinking()}")
+        logger.info(f"Sub-agents use thinking: {config.use_subagent_thinking()}")
+    else:
+        logger.info("Direct tool mode enabled - no sub-agent models needed")
+
+    # Setup tools
+    logger.info(f"Setting up tools: {config.tools.enabled_tools}")
+    tools = setup_tools(
+        config, cache_manager, api_keys, model_providers,
+        orchestrator_model=orchestrator_model,
+        mind_map_storage_path=mind_map_storage,
+    )
+
+    # Initialize prompt builder
+    prompt_builder = PromptBuilder()
+
+    logger.info("Run output directory: %s", run_dir)
+
+    orchestrator = None
+    results: List[Dict[str, Any]] = []
+    metrics: Dict[str, Any] = {}
+    system_prompt_for_config: Optional[str] = None
+
+    logger.info("="*80)
+    logger.info("Starting evaluation")
+    logger.info("="*80)
+
+    try:
+        # Capture the common system prompt once for this run (same for all questions).
+        tool_schemas = tools.get_all_schemas()
+        orch_family = config.get_model("orchestrator").family
+        gepa_planning_suffix: Optional[str] = None
+        gepa_prompt_path = getattr(config, "gepa_prompt_path", None)
+        if gepa_prompt_path is not None:
+            gepa_prompt_path = Path(gepa_prompt_path)
+            logger.info(f"Loading GEPA prompt from {gepa_prompt_path}")
+            with open(gepa_prompt_path, "r", encoding="utf-8") as f:
+                gepa_data = json.load(f)
+            system_prompt_for_config = gepa_data["system_prompt"]
+            gepa_planning_suffix = gepa_data.get("planning_suffix")
+            logger.info("GEPA system_prompt loaded (%d chars)", len(system_prompt_for_config))
+            if gepa_planning_suffix:
+                logger.info("GEPA planning_suffix loaded (%d chars)", len(gepa_planning_suffix))
+        else:
+            system_prompt_for_config = prompt_builder.build_system_prompt(
+                dataset_name=config.dataset.name,
+                tool_schemas=tool_schemas,
+                max_search_limit=config.tools.max_search_limit,
+                direct_tool_call=config.tools.direct_tool_call,
+                baseline=getattr(config, "baseline", False),
+                tool_call_format=get_tool_call_format(config.get_model("orchestrator").family),
+            )
+
+        orchestrator = AgenticOrchestrator(
+            model_provider=orchestrator_model,
+            tool_registry=tools,
+            max_turns=config.max_turns,
+            tool_limits={'web_search': config.tools.max_search_limit},
+            use_thinking=config.use_orchestrator_thinking(),
+            cache_manager=cache_manager,
+            baseline=config.baseline,
+            planning_suffix=gepa_planning_suffix,
+        )
+
+        raw_batch = getattr(config, "batch_size", -1) or -1
+        batch_size = len(examples) if raw_batch <= 0 else max(1, int(raw_batch))
+
+        def _chunks(seq, size: int):
+            for i in range(0, len(seq), size):
+                yield i, seq[i : i + size]
+
+        for base_idx, batch in _chunks(examples, batch_size):
+            logger.info(f"\nProcessing batch {base_idx + 1}-{base_idx + len(batch)} / {len(examples)}")
+
+            # Reuse the common system prompt for all questions in the batch
+            system_prompts = [system_prompt_for_config] * len(batch)
+
+            try:
+                states = orchestrator.run_batch(
+                    questions=[ex.question for ex in batch],
+                    question_ids=[ex.question_id for ex in batch],
+                    system_prompts=system_prompts,
+                    attachments=[ex.get_attachments() for ex in batch],
+                )
+            except Exception as e:
+                logger.error(f"Error processing batch starting at {base_idx}: {e}", exc_info=True)
+                for ex in batch:
+                    results.append({"question_id": ex.question_id, "question": ex.question, "error": str(e)})
+                continue
+
+            for ex, state in zip(batch, states):
+                prediction = state.answer or ""
+                eval_result = dataset.evaluate(
+                    prediction=prediction,
+                    ground_truth=ex.answer,
+                    metadata=ex.metadata,
+                )
+                token_usage = state.metadata.get("token_usage", {})
+                results.append({
+                    "question_id": ex.question_id,
+                    "question": ex.question,
+                    "prediction": prediction,
+                    "ground_truth": ex.answer,
+                    "correct": bool(eval_result.get("correct", False)),
+                    "evaluation": eval_result,
+                    "query_analysis": state.query_analysis,
+                    "action_history": state.action_history,
+                    "output_messages": state.output_messages,
+                    "turns": state.turn,
+                    "tool_counts": state.tool_counts,
+                    "token_usage": token_usage,
+                    "metadata": ex.metadata,
+                })
+                logger.info(
+                    "Q%s tokens — prompt: %d  completion: %d  total: %d",
+                    ex.question_id,
+                    token_usage.get("prompt_tokens", 0),
+                    token_usage.get("completion_tokens", 0),
+                    token_usage.get("total_tokens", 0),
+                )
+
+            # Flush intermediate raw results every 10 examples
+            if (base_idx + len(batch)) % 10 == 0:
+                _write_json(run_dir / "raw_results.partial.json", results)
+                cache_manager.save_caches()
+
+    finally:
+        cache_manager.save_caches()
+
+        # ── raw_results.json ────────────────────────────────────────────────
+        _write_json(run_dir / "raw_results.json", results)
+        # Remove partial file if it exists
+        (run_dir / "raw_results.partial.json").unlink(missing_ok=True)
+
+        # ── metrics.json ────────────────────────────────────────────────────
+        metrics = compute_metrics(results, examples, config.dataset.name)
+        metrics["start_time"] = start_time
+        metrics["end_time"] = datetime.now().isoformat()
+        _write_json(run_dir / "metrics.json", metrics)
+
+        # ── config.json ─────────────────────────────────────────────────────
+        config_dict = _config_to_dict(config)
+        if system_prompt_for_config is not None:
+            config_dict["system_prompt"] = system_prompt_for_config
+        config_dict["config_path"] = str(args.config)
+        _write_json(run_dir / "config.json", config_dict)
+
+        logger.info("Results saved to: %s", run_dir)
+
+        # ── W&B logging ─────────────────────────────────────────────────────
+        if getattr(config, "use_wandb", False):
+            project = getattr(config, "wandb_project", None)
+            if not project:
+                logger.warning("use_wandb=true but wandb_project is not set; skipping W&B logging.")
+            else:
+                orchestrator_model_config = config.get_model("orchestrator")
+                model_name = orchestrator_model_config.name if orchestrator_model_config else "unknown"
+                mode = "direct" if config.tools.direct_tool_call else "subagent"
+                enabled = set(config.tools.enabled_tools or [])
+                log_results_wandb(
+                    project=str(project),
+                    run_name=str(config.name),
+                    dataset_name=str(config.dataset.name),
+                    dataset_split=str(config.dataset.split),
+                    subset_num=int(getattr(config.dataset, "subset_num", -1)),
+                    model_name=str(model_name),
+                    mode=mode,
+                    thinking_mode=str(config.thinking_mode.value),
+                    direct_tool_call=bool(config.tools.direct_tool_call),
+                    enable_search_tool=("web_search" in enabled),
+                    enable_code_tool=("code_generator" in enabled),
+                    mind_map=("mind_map" in enabled),
+                    enable_text_inspector_tool=("text_inspector" in enabled),
+                    enable_image_inspector_tool=("image_inspector" in enabled),
+                    final_metrics=metrics,
+                    tool_stats=metrics.get("tool_usage"),
+                    metrics_path=str(run_dir / "metrics.json"),
+                    config_summary=config_dict,
+                    config_path=str(run_dir / "config.json"),
+                )
+
+        if orchestrator is not None:
+            orchestrator.cleanup()
+
+    overall = metrics.get("overall", {})
+    accuracy = overall.get("accuracy", 0.0)
+    logger.info("="*80)
+    logger.info("EXPERIMENT COMPLETE")
+    logger.info("="*80)
+    logger.info("Total examples : %d", len(examples))
+    logger.info("Accuracy: %.2f%%", accuracy * 100)
+    logger.info("Results saved to: %s", run_dir)
+
+
+def _write_json(path: Path, data: Any) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+
+def _make_run_dir(output_dir: Path, split: str) -> Tuple[Path, str, str]:
+    """Create and return (run_dir, date_str, job_id). run_dir = {split}_YYYY-MM-DD-HH-MM-SS-{job_id}/."""
+    date_str = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    job_id = os.environ.get("SLURM_JOB_ID") or _short_id()
+    run_dir = output_dir / f"{split}_{date_str}_{job_id}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir, date_str, job_id
+
+
+def _short_id() -> str:
+    """Generate a short random hex ID for non-SLURM runs."""
+    import secrets
+    return secrets.token_hex(3)
+
+
+def _config_to_dict(config) -> Dict[str, Any]:
+    """Serialise config to a dict, stripping sensitive fields."""
+    _SENSITIVE = {"openai_api_key", "anthropic_api_key", "serper_api_key"}
+
+    def _model_cfg(m) -> Dict[str, Any]:
+        if m is None:
+            return {}
+        d = {
+            "name": m.name,
+            "family": m.family.value if hasattr(m.family, "value") else str(m.family),
+            "path_or_id": m.path_or_id,
+            "role": m.role,
+            "backend": getattr(m, "backend", "vllm"),
+            "max_model_len": m.max_model_len,
+            "max_tokens": m.max_tokens,
+            "temperature": m.temperature,
+            "top_p": m.top_p,
+            "top_k": m.top_k,
+            "repetition_penalty": m.repetition_penalty,
+            "supports_thinking": m.supports_thinking,
+        }
+        return d
+
+    d: Dict[str, Any] = {
+        "name": config.name,
+        "description": getattr(config, "description", "") or "",
+        "seed": config.seed,
+        "use_wandb": getattr(config, "use_wandb", False),
+        "wandb_project": getattr(config, "wandb_project", None),
+        "thinking_mode": getattr(config.thinking_mode, "value", str(config.thinking_mode)),
+        "baseline": getattr(config, "baseline", False),
+        "max_turns": getattr(config, "max_turns", None),
+        "batch_size": getattr(config, "batch_size", -1),
+        "dataset": {
+            "name": config.dataset.name,
+            "split": config.dataset.split,
+            "subset_num": getattr(config.dataset, "subset_num", None),
+        },
+        "tools": {
+            "enabled_tools": list(config.tools.enabled_tools),
+            "direct_tool_call": config.tools.direct_tool_call,
+            "max_search_limit": getattr(config.tools, "max_search_limit", None),
+            "top_k_results": getattr(config.tools, "top_k_results", None),
+        },
+        "models": {},
+    }
+    for role in ("orchestrator", "web_search", "code_generator", "text_inspector", "mind_map", "image_inspector"):
+        if config.has_model(role):
+            d["models"][role] = _model_cfg(config.get_model(role))
+
+    # Drop anything sensitive just in case
+    for key in _SENSITIVE:
+        d.pop(key, None)
+
+    return d
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(description="Run agent_engine experiment")
+    parser.add_argument("--config", type=str, required=True,
+                       help="Path to experiment config YAML file")
+    parser.add_argument("--output-dir", type=str,
+                       help="Output directory (overrides config)")
+    args = parser.parse_args()
+
+    run_experiment(args)

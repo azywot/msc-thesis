@@ -5,38 +5,28 @@ adding a benchmark cannot change what an already-recorded run scores, so it
 stays valid as the system grows.
 """
 
-import importlib.util
 import json
 from types import SimpleNamespace
 
 import pytest
 
+from agent_engine.runner.metrics import compute_metrics
+
 from .conftest import assert_matches_fixture
-from .replay_corpus import REPLAY_RUNS, REPO, dataset_name_for, load_rows, missing_runs
-
-
-def _load_compute_metrics():
-    """Import ``_compute_metrics`` from the runner script by path.
-
-    The metrics code moves into ``agent_engine.runner.metrics`` later in the
-    refactor.  When it does, this helper switches to a package import -- and
-    the fixture must NOT be regenerated at that switch.  A relocation that
-    changes the numbers is exactly what this gate exists to catch.
-    """
-    spec = importlib.util.spec_from_file_location(
-        "_runexp_for_replay", REPO / "scripts" / "run_experiment.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module._compute_metrics
+from .replay_corpus import REPLAY_RUNS, dataset_name_for, load_rows, missing_runs
 
 
 def test_metrics_replay_unchanged(update_fixtures):
+    """The fixture predates the move out of ``scripts/run_experiment.py``.
+
+    It was recorded against ``_compute_metrics`` loaded from the script by file
+    path, and is deliberately NOT regenerated now that the function lives in
+    ``agent_engine.runner.metrics``: matching the old bytes is the proof that
+    relocating the code left the numbers alone.
+    """
     missing = missing_runs()
     if missing:
         pytest.skip(f"replay corpus not present in this checkout: {missing}")
-
-    compute_metrics = _load_compute_metrics()
 
     payload = {}
     for run in REPLAY_RUNS:
