@@ -34,6 +34,7 @@ Instruct). **Backends:** vLLM (cluster), MLX (Apple Silicon), OpenAI / Anthropic
 | Add a tool or sub-agent | [docs/guides/add-a-tool-or-subagent.md](docs/guides/add-a-tool-or-subagent.md) |
 | Add a model family | [docs/guides/add-a-model-family.md](docs/guides/add-a-model-family.md) |
 | Add an adaptation method | [docs/guides/add-an-adaptation-method.md](docs/guides/add-an-adaptation-method.md) |
+| Change the RL / GEPA training data | [docs/guides/change-training-data.md](docs/guides/change-training-data.md) |
 | Contribute code | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Know what is broken | [docs/known-issues.md](docs/known-issues.md) |
 

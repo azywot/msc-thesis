@@ -80,6 +80,10 @@ conversations teaches a format the model never sees at inference. That mismatch
 made an early SFT run score *below* the base model. `src/verl_ext/folded_sft_dataset.py`
 exists to produce in-format rows. See [pipelines/sft.md](../pipelines/sft.md).
 
+(This is about the *row format*, distinct from *which data* fills the rows -
+for changing the RL/GEPA source mix, see
+[change-training-data.md](change-training-data.md).)
+
 ## Level 3 - online adaptation (like RL)
 
 The deepest hook, and the only one that needs the orchestrator to run *inside*

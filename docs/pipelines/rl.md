@@ -32,7 +32,7 @@ only accuracy but **whether tool-use rates moved**.
 | Trained | Qwen3-8B orchestrator only; sub-agents frozen at Qwen3-1.7B |
 | Method | Flow GRPO - the final reward propagates to every turn (planning, tool calls, synthesis) |
 | Reward | Binary: 1.0 correct / 0.0 otherwise, via the **same** `evaluate_answer()` the benchmarks use |
-| Data | 1800 questions: 900 Search-R1 (85% HotpotQA / 15% NQ) + 900 DeepMath (difficulty ≥ 3) |
+| Data | 1800 questions: 900 Search-R1 (85% HotpotQA / 15% NQ) + 900 DeepMath (difficulty ≥ 3). Reweighting/filtering is a CLI flag; a new source is code - see [guides/change-training-data.md](../guides/change-training-data.md) |
 | Val / test | 50-row val (20 search / 10 math / 20 AIME) for checkpoint selection; 200-row test held out |
 | LoRA | Rank 64, alpha 64, all-linear; ~250–500 MB adapter vs ~16 GB full FT |
 | Rollouts | 8 per question in training (the GRPO group); 1 greedy in validation |

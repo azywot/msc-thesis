@@ -223,6 +223,12 @@ has a guide:
 | A model family | `ModelFamily` enum + the `_*_FAMILIES` frozensets | [add-a-model-family](guides/add-a-model-family.md) |
 | An adaptation method | GEPA / SFT / RL hook points | [add-an-adaptation-method](guides/add-an-adaptation-method.md) |
 
+A fifth thing people commonly want to change is not a clean seam and is called
+out as such: the RL/GEPA **training data**. Reweighting or filtering the
+existing sources is a CLI flag; adding a genuinely different source is real
+code (a normaliser + a downloader, no table to add a row to). See
+[change-training-data](guides/change-training-data.md).
+
 The shared principle: **the orchestrator dispatches on capability, not on
 name.** There is no `if tool_name == "web_search"` anywhere in the turn loop,
 and adding a tool does not mean editing an if/elif chain. When you find

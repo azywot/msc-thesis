@@ -36,6 +36,11 @@ Both are 300 examples: 150 `D_feedback` / 50 `D_pareto` / 100 test. Built by
 `src/gepa_integration/data/prepare.py`. Multi-answer Search-R1 examples carry
 `answer_aliases` so every valid answer string scores correctly.
 
+Both presets are entries in a `_PRESETS` dict - a third mix is a new entry, no
+other code changes. Swapping in a different underlying dataset (not just a
+different mix of Search-R1/DeepMath) is real code, not a flag - see
+[guides/change-training-data.md](../guides/change-training-data.md).
+
 Evaluation is on the 100 held-out test examples, never seen during optimisation.
 
 ---
