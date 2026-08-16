@@ -14,6 +14,7 @@ from ..models.base import BaseModelProvider, _THINK_PREFIX_FAMILIES
 from ..utils.logging import get_logger
 from ..utils.parsing import extract_answer, parse_tool_call, strip_thinking_tags
 from ..utils.reasoning_context import get_attachment_context_for_code
+from .batching import BatchedTool, BatchJob, flush_batches
 from .state import ExecutionState
 from .tool import ToolRegistry, ToolResult
 
@@ -70,23 +71,9 @@ _DEFAULT_PLANNING_SUFFIX_TOOLS = (
 
 
 # ---------------------------------------------------------------------------
-# Typed job descriptors for batched tool execution
+# Result descriptor for tools that run inline.  Deferred work uses BatchJob
+# from .batching instead.
 # ---------------------------------------------------------------------------
-
-class _WebJob(NamedTuple):
-    state: ExecutionState
-    tool_call: Dict[str, Any]
-    tool: Any
-    query: str
-    payload: Dict[str, Any]
-
-
-class _CodeJob(NamedTuple):
-    state: ExecutionState
-    tool_call: Dict[str, Any]
-    tool: Any
-    prompt: str
-
 
 class _ImmediateResult(NamedTuple):
     state: ExecutionState
@@ -380,8 +367,7 @@ class AgenticOrchestrator:
                 s.finished = True
             return
 
-        web_jobs: List[_WebJob] = []
-        code_jobs: List[_CodeJob] = []
+        jobs_by_tool: Dict[str, List[BatchJob]] = {}
         immediate_results: List[_ImmediateResult] = []
 
         for s, gen_result in zip(active, gen_results):
@@ -390,7 +376,7 @@ class AgenticOrchestrator:
             tool_call = parse_tool_call(gen_result.text)
 
             if tool_call:
-                self._classify_tool_call(s, tool_call, gen_result.text, web_jobs, code_jobs, immediate_results)
+                self._classify_tool_call(s, tool_call, gen_result.text, jobs_by_tool, immediate_results)
             else:
                 s.finished = True
                 s.answer = extract_answer(gen_result.text)
@@ -398,21 +384,20 @@ class AgenticOrchestrator:
                 logger.info(f"Q{s.question_id} finished. Answer: {s.answer}")
 
         self._apply_immediate_results(immediate_results)
-        if web_jobs:
-            self._flush_web_batch(web_jobs)
-        if code_jobs:
-            self._flush_code_batch(code_jobs)
+        if jobs_by_tool:
+            # self._commit_tool_result is looked up on the instance at call time
+            # so a subclass or a test double still sees its own commit path.
+            flush_batches(jobs_by_tool, self._commit_tool_result, _accumulate_usage)
 
     def _classify_tool_call(
         self,
         state: ExecutionState,
         tool_call: Dict[str, Any],
         output_text: str,
-        web_jobs: List[_WebJob],
-        code_jobs: List[_CodeJob],
+        jobs_by_tool: Dict[str, List[BatchJob]],
         immediate_results: List[_ImmediateResult],
     ) -> None:
-        """Route a tool call to the appropriate execution path."""
+        """Route a tool call to the batched or the immediate path."""
         tool_name = tool_call["name"]
         tool = self.tools.get(tool_name)
         args = tool_call.get("arguments") or {}
@@ -423,70 +408,30 @@ class AgenticOrchestrator:
         # Handles web_search, code_generator, and mind_map (mirrors MAT).
         self._index_reasoning_in_mind_map(output_text, tool_name, state)
 
-        if tool and tool_name == "web_search" and not getattr(tool, "direct_mode", True):
-            self._schedule_web_job(state, tool_call, tool, args, web_jobs, immediate_results)
+        if tool is not None and self._is_batched(tool):
+            # prepare() either defers the work or short-circuits with a result
+            # (missing arguments, a cache hit, or a failure while preparing).
+            outcome = tool.prepare(state, tool_call, args)
+            if isinstance(outcome, BatchJob):
+                jobs_by_tool.setdefault(tool_name, []).append(outcome)
+            else:
+                immediate_results.append(_ImmediateResult(state, tool_call, outcome))
+            return
 
-        elif tool and tool_name == "code_generator" and not getattr(tool, "direct_mode", True):
-            self._schedule_code_job(state, tool_call, tool, args, code_jobs, immediate_results)
-
-        elif tool and tool_name == "mind_map":
+        if tool and tool_name == "mind_map":
             tool.set_current_question(state.question_id)
-            immediate_results.append(_ImmediateResult(state, tool_call, self._execute_tool(tool_call, state)))
 
-        else:
-            immediate_results.append(_ImmediateResult(state, tool_call, self._execute_tool(tool_call, state)))
+        immediate_results.append(_ImmediateResult(state, tool_call, self._execute_tool(tool_call, state)))
 
-    def _schedule_web_job(
-        self,
-        state: ExecutionState,
-        tool_call: Dict[str, Any],
-        tool: Any,
-        args: Dict[str, Any],
-        web_jobs: List[_WebJob],
-        immediate_results: List[_ImmediateResult],
-    ) -> None:
-        query = args.get("query", "")
-        if not query or not hasattr(tool, "build_analysis_prompt") or not hasattr(tool, "search_and_format"):
-            logger.info("Tool call: %s, %s", tool_call["name"], tool_call.get("arguments", {}))
-            tr = ToolResult(success=False, output="", metadata={}, error="Missing required web_search arguments")
-            immediate_results.append(_ImmediateResult(state, tool_call, tr))
-            return
+    @staticmethod
+    def _is_batched(tool: Any) -> bool:
+        """Whether *tool* defers its work to a batched sub-agent call.
 
-        analysis_cache = self._get_analysis_cache(tool)
-        if query in analysis_cache:
-            logger.info("Tool call: %s, %s", tool_call["name"], tool_call.get("arguments", {}))
-            tr = ToolResult(success=True, output=analysis_cache[query], metadata={"cached": True, "query": query, "mode": "sub-agent"})
-            immediate_results.append(_ImmediateResult(state, tool_call, tr))
-            return
-
-        try:
-            payload = tool.search_and_format(query)
-            web_jobs.append(_WebJob(state, tool_call, tool, query, payload))
-        except Exception as exc:
-            immediate_results.append(_ImmediateResult(state, tool_call, ToolResult(success=False, output="", metadata={"query": query}, error=str(exc))))
-
-    def _schedule_code_job(
-        self,
-        state: ExecutionState,
-        tool_call: Dict[str, Any],
-        tool: Any,
-        args: Dict[str, Any],
-        code_jobs: List[_CodeJob],
-        immediate_results: List[_ImmediateResult],
-    ) -> None:
-        task = args.get("task", "")
-        if not task or not hasattr(tool, "build_task_prompt") or not hasattr(tool, "execute_code"):
-            logger.info("Tool call: %s, %s", tool_call["name"], tool_call.get("arguments", {}))
-            tr = ToolResult(success=False, output="", metadata={}, error="Missing required code_generator arguments")
-            immediate_results.append(_ImmediateResult(state, tool_call, tr))
-            return
-
-        try:
-            att_ctx = get_attachment_context_for_code(state)
-            prompt = tool.build_task_prompt(task, context=att_ctx)
-            code_jobs.append(_CodeJob(state, tool_call, tool, prompt))
-        except Exception as exc:
-            immediate_results.append(_ImmediateResult(state, tool_call, ToolResult(success=False, output="", metadata={}, error=str(exc))))
+        Direct mode is checked as well as the protocol: the batched tools still
+        implement ``execute`` for direct use, and in direct mode they must take
+        the immediate path exactly as they did before.
+        """
+        return isinstance(tool, BatchedTool) and not getattr(tool, "direct_mode", True)
 
     def _apply_immediate_results(self, results: List[_ImmediateResult]) -> None:
         """Commit tool responses and update usage tracking for immediate results."""
@@ -494,103 +439,6 @@ class AgenticOrchestrator:
             _accumulate_usage(item.state, item.result.usage)
             clean_output = strip_thinking_tags(item.result.output or "")
             self._commit_tool_result(item.state, item.tool_call, clean_output)
-
-    # ------------------------------------------------------------------ #
-    # Batched web search                                                  #
-    # ------------------------------------------------------------------ #
-
-    def _flush_web_batch(self, jobs: List[_WebJob]) -> None:
-        """Fetch URLs across all web jobs then run batched LLM analysis."""
-        for job in jobs:
-            logger.info("Tool call: %s, %s", job.tool_call["name"], job.tool_call.get("arguments", {}))
-        self._fetch_urls_for_web_jobs(jobs)
-
-        groups: Dict[int, List[_WebJob]] = {}
-        for job in jobs:
-            provider_id = id(getattr(job.tool, "model_provider", None))
-            groups.setdefault(provider_id, []).append(job)
-
-        for group in groups.values():
-            self._run_web_analysis_batch(group)
-
-    def _fetch_urls_for_web_jobs(self, jobs: List[_WebJob]) -> None:
-        """Batch-fetch all URLs needed across all web search jobs."""
-        all_urls: set = set()
-        url_snippets: Dict[str, str] = {}
-        for job in jobs:
-            for url in job.payload.get("urls_to_fetch", []):
-                all_urls.add(url)
-                snippet = job.payload.get("url_snippets", {}).get(url)
-                if snippet:
-                    url_snippets[url] = snippet
-
-        if not all_urls:
-            return
-
-        from ..external.url_fetcher import fetch_page_content
-        logger.info(f"Batch fetching {len(all_urls)} URLs across {len(jobs)} web_search calls")
-        try:
-            use_jina = getattr(jobs[0].tool, "use_jina", False)
-            fetched = fetch_page_content(list(all_urls), use_jina=use_jina, snippets=url_snippets)
-            for job in jobs:
-                if hasattr(job.tool, "url_cache"):
-                    job.tool.url_cache.update(fetched)
-            logger.info(f"Successfully fetched {len(fetched)} URLs")
-            if self.cache_manager and fetched:
-                self.cache_manager.save_url_cache()
-        except Exception:
-            logger.exception("Error during batch URL fetching")
-
-    def _run_web_analysis_batch(self, jobs: List[_WebJob]) -> None:
-        """Run LLM analysis for a group of web search jobs sharing a provider."""
-        provider = getattr(jobs[0].tool, "model_provider", None)
-        analysis_cache = self._get_analysis_cache(jobs[0].tool)
-
-        prompts = [
-            job.tool.build_analysis_prompt(
-                job.query,
-                job.tool._format_results(job.payload.get("results", []), job.query),
-            )
-            for job in jobs
-        ]
-        gen_outputs = provider.generate(prompts) if provider else []
-
-        for job, out in zip(jobs, gen_outputs):
-            _accumulate_usage(job.state, out.usage)
-            text = strip_thinking_tags(out.text)
-            analysis_cache[job.query] = text
-            self._commit_tool_result(job.state, job.tool_call, text)
-
-    # ------------------------------------------------------------------ #
-    # Batched code generation                                             #
-    # ------------------------------------------------------------------ #
-
-    def _flush_code_batch(self, jobs: List[_CodeJob]) -> None:
-        """Run batched LLM code writing then execute each script."""
-        groups: Dict[int, List[_CodeJob]] = {}
-        for job in jobs:
-            provider_id = id(getattr(job.tool, "model_provider", None))
-            groups.setdefault(provider_id, []).append(job)
-
-        for group in groups.values():
-            self._run_code_generation_batch(group)
-
-    def _run_code_generation_batch(self, jobs: List[_CodeJob]) -> None:
-        """LLM code-write + execute for a group sharing a provider."""
-        provider = getattr(jobs[0].tool, "model_provider", None)
-        gen_outputs = provider.generate([job.prompt for job in jobs]) if provider else []
-
-        for job, out in zip(jobs, gen_outputs):
-            _accumulate_usage(job.state, out.usage)
-            try:
-                text = strip_thinking_tags(out.text)
-                code = job.tool.extract_code_from_llm_response(text)
-                logger.info("Tool call: %s, %s", job.tool_call["name"], job.tool_call.get("arguments", {}))
-                tr = job.tool.execute(code=code, task=None)
-            except Exception as exc:
-                tr = ToolResult(success=False, output="", metadata={}, error=str(exc))
-            clean_output = strip_thinking_tags(tr.output or "")
-            self._commit_tool_result(job.state, job.tool_call, clean_output)
 
     # ------------------------------------------------------------------ #
     # Message construction                                                #
@@ -935,12 +783,3 @@ class AgenticOrchestrator:
         if not ctx_tool or not getattr(ctx_tool, "use_graphrag", False):
             return None
         return getattr(ctx_tool, "graphrag_instances", {}).get(state.question_id)
-
-    @staticmethod
-    def _get_analysis_cache(tool: Any) -> Dict[str, str]:
-        """Lazily create and return the per-tool web-analysis cache."""
-        cache = getattr(tool, "_analysis_cache", None)
-        if cache is None:
-            cache = {}
-            setattr(tool, "_analysis_cache", cache)
-        return cache

@@ -30,8 +30,10 @@ rather than assumed:
 import json
 from typing import Any, Dict, List
 
+from agent_engine.core.batching import BatchJob
 from agent_engine.core.orchestrator import AgenticOrchestrator
 from agent_engine.core.tool import BaseTool, ToolRegistry, ToolResult
+from agent_engine.utils.parsing import strip_thinking_tags
 
 from .conftest import assert_matches_fixture
 from .scripted_provider import ScriptedProvider
@@ -53,6 +55,7 @@ class FakeWebSearch(BaseTool):
         self.url_cache: Dict[str, str] = {}
         self.use_jina = False
         self._analysis_cache: Dict[str, str] = {}
+        self.pre_batch_batch_sizes: List[int] = []
 
     @property
     def name(self) -> str:
@@ -68,22 +71,51 @@ class FakeWebSearch(BaseTool):
     def execute(self, **kwargs) -> ToolResult:
         return ToolResult(success=True, output="direct", metadata={})
 
-    # -- deferred (sub-agent) contract -------------------------------------
-    def search_and_format(self, query: str) -> Dict[str, Any]:
+    # -- BatchedTool protocol ----------------------------------------------
+    # Mirrors WebSearchTool's real implementation.  The EVENTS strings are
+    # unchanged from the pre-protocol version of this fake and fire at the same
+    # points in the sequence, so the recorded fixture stays byte-identical
+    # across the collapse.
+
+    batch_priority = 10
+
+    def prepare(self, state, tool_call, args):
+        query = args.get("query", "")
+        if not query:
+            return ToolResult(success=False, output="", metadata={},
+                              error="Missing required web_search arguments")
+        if query in self._analysis_cache:
+            return ToolResult(success=True, output=self._analysis_cache[query],
+                              metadata={"cached": True, "query": query, "mode": "sub-agent"})
         EVENTS.append(f"web.prepare({query})")
         if query == "boom":
-            raise RuntimeError("search backend exploded")
-        return {"results": [{"title": query}], "urls_to_fetch": [], "url_snippets": {}}
+            return ToolResult(success=False, output="", metadata={"query": query},
+                              error="search backend exploded")
+        return BatchJob(state=state, tool_call=tool_call, tool=self,
+                        payload={"query": query,
+                                 "payload": {"results": [{"title": query}],
+                                             "urls_to_fetch": [], "url_snippets": {}}})
 
-    def _format_results(self, results, query) -> str:
-        return f"RESULTS({query})"
+    def pre_batch(self, jobs) -> None:
+        # Deliberately emits no EVENT: the hook is new, and adding a line here
+        # would change the recorded trace for a reason unrelated to behaviour.
+        # Coverage comes from the pre_batch_batch_sizes assertion in the test.
+        self.pre_batch_batch_sizes.append(len(jobs))
 
-    def build_analysis_prompt(self, query: str, formatted: str) -> str:
+    def batch_prompt(self, job) -> str:
         # Emitted during the web *flush*, not during classification.  Without an
         # event on this side of the flush there is nothing for the code flush's
         # event to be ordered against, and swapping the two would be invisible.
+        query = job.payload["query"]
         EVENTS.append(f"web.analyse({query})")
-        return f"ANALYSE {query} :: {formatted}"
+        return f"ANALYSE {query} :: RESULTS({query})"
+
+    def finalize(self, job, generation) -> ToolResult:
+        query = job.payload["query"]
+        text = strip_thinking_tags(generation.text)
+        self._analysis_cache[query] = text
+        return ToolResult(success=True, output=text,
+                          metadata={"query": query, "mode": "sub-agent"})
 
 
 class FakeCodeGenerator(BaseTool):
@@ -105,17 +137,27 @@ class FakeCodeGenerator(BaseTool):
     def get_schema(self) -> Dict[str, Any]:
         return {"type": "function", "function": {"name": "code_generator", "parameters": {}}}
 
-    # -- deferred (sub-agent) contract -------------------------------------
-    def build_task_prompt(self, task: str, context=None) -> str:
+    # -- BatchedTool protocol ----------------------------------------------
+    batch_priority = 20
+
+    def prepare(self, state, tool_call, args):
+        task = args.get("task", "")
+        if not task:
+            return ToolResult(success=False, output="", metadata={},
+                              error="Missing required code_generator arguments")
         EVENTS.append(f"code.prepare({task})")
-        return f"WRITE CODE FOR {task}"
+        return BatchJob(state=state, tool_call=tool_call, tool=self,
+                        payload={"prompt": f"WRITE CODE FOR {task}"})
 
-    def extract_code_from_llm_response(self, text: str) -> str:
-        return text.strip()
+    def batch_prompt(self, job) -> str:
+        return job.payload["prompt"]
 
-    def execute_code(self, code):  # noqa: D401 - presence is what the orchestrator checks
-        """Required by ``_schedule_code_job``'s hasattr guard; never called here."""
-        raise AssertionError("execute_code should not be called by the batched path")
+    def finalize(self, job, generation) -> ToolResult:
+        code = strip_thinking_tags(generation.text).strip()
+        tr = self.execute(code=code, task=None)
+        return ToolResult(success=tr.success,
+                          output=strip_thinking_tags(tr.output or ""),
+                          metadata=tr.metadata, error=tr.error, usage=tr.usage)
 
     def execute(self, code=None, task=None) -> ToolResult:
         EVENTS.append(f"code.finalize({code!r})")
@@ -228,8 +270,9 @@ def test_orchestrator_trace_unchanged(update_fixtures):
     web_provider = ScriptedProvider(["<think>searching</think>ANALYSIS OF ALPHA"], name="web-sub")
     code_provider = ScriptedProvider(["print(1 + 1)"], name="code-sub")
 
+    web_tool = FakeWebSearch(web_provider)
     tools = ToolRegistry()
-    tools.register(FakeWebSearch(web_provider))
+    tools.register(web_tool)
     tools.register(FakeCodeGenerator(code_provider))
     tools.register(FakeTextInspector())
 
@@ -269,6 +312,14 @@ def test_orchestrator_trace_unchanged(update_fixtures):
     )
     assert web_provider.remaining == 0, "web sub-agent script unconsumed"
     assert code_provider.remaining == 0, "code sub-agent script unconsumed"
+
+    # The pre_batch hook runs once per flush, over ALL of that tool's jobs.
+    # Asserted here rather than recorded in the fixture: the hook postdates the
+    # fixture, so emitting an event for it would change the trace for a reason
+    # that has nothing to do with behaviour.
+    assert web_tool.pre_batch_batch_sizes == [1], (
+        f"expected one web flush of one job, got {web_tool.pre_batch_batch_sizes}"
+    )
 
     trace = _serialise(
         states,

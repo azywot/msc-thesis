@@ -19,8 +19,8 @@
 | 2 — promote runner into `src/` | 9-10 | `7625a9e` | done |
 | 3 — tool factory registry | 11 | `caf6ad8` | done |
 | 4 — `DatasetSpec` | 12 | `2cee5a2` | done |
-| 5 — orchestrator batching collapse | 13-15 | | next |
-| 6 — analysis move + shims | 16 | | |
+| 5 — orchestrator batching collapse | 13-15 | `ccbafd9`,`1f5ab2f`,PENDING | done |
+| 6 — analysis move + shims | 16 | | next |
 | 7 — tests for untested modules | 17 | | |
 | 8 — docs, archive, final verification | 18-20 | | |
 
@@ -1338,7 +1338,7 @@ stratification cases, all with 0 mismatches.
 
 **This is the highest-risk task in the plan. B3 is the gate. Do not proceed to Task 14 until B3 is green.**
 
-- [ ] **Step 1: Write the protocol**
+- [x] **Step 1: Write the protocol**
 
 ```python
 """Tool-agnostic batching for sub-agent tools.
@@ -1387,7 +1387,7 @@ class BatchedTool(Protocol):
         """Optional hook run once over ALL jobs for this tool, before grouping."""
 ```
 
-- [ ] **Step 2: Write `flush_batches`**
+- [x] **Step 2: Write `flush_batches`**
 
 ```python
 def flush_batches(jobs_by_tool, commit, accumulate_usage) -> None:
@@ -1424,7 +1424,7 @@ def flush_batches(jobs_by_tool, commit, accumulate_usage) -> None:
 
 **Check against the original before believing this is right.** In particular: the original computes prompts with `job.tool.<method>` per job, not `group[0].tool`; if a group can ever mix tool instances, use `job.tool`. Re-read `_run_web_analysis_batch` and `_run_code_generation_batch` and match exactly.
 
-- [ ] **Step 3: Commit the module alone (not yet wired in)**
+- [x] **Step 3: Commit the module alone (not yet wired in)**
 
 ```bash
 git add src/agent_engine/core/batching.py
@@ -1439,19 +1439,19 @@ git commit -m "feat: add tool-agnostic batching protocol (not yet wired)"
 - Modify: `src/agent_engine/tools/web_search.py`
 - Modify: `src/agent_engine/tools/code_generator.py`
 
-- [ ] **Step 1: Implement on `WebSearchTool`**
+- [x] **Step 1: Implement on `WebSearchTool`**
 
 `batch_priority = 10`. `prepare` carries over, in order: the missing-`query` guard returning a failed `ToolResult`, the `analysis_cache` hit returning a successful cached `ToolResult` with `metadata={"cached": True, "query": query, "mode": "sub-agent"}`, and the `search_and_format` call whose exception becomes a failed `ToolResult`. `pre_batch` performs the cross-job URL fetch (`fetch_page_content`, `url_cache.update`, `cache_manager.save_url_cache`). `batch_prompt` is `build_analysis_prompt(query, self._format_results(payload["results"], query))`. `finalize` strips thinking tags, writes `analysis_cache[query]`, returns `ToolResult(success=True, output=text, ...)`.
 
-- [ ] **Step 2: Implement on `CodeGeneratorTool`**
+- [x] **Step 2: Implement on `CodeGeneratorTool`**
 
 `batch_priority = 20`. `prepare` carries over the missing-`task` guard and `build_task_prompt(task, context=get_attachment_context_for_code(state))`, with exceptions becoming failed `ToolResult`s. No `pre_batch`. `finalize` strips, calls `extract_code_from_llm_response`, logs the `Tool call:` line **at that point** (not earlier — the log order differs from web on purpose), calls `execute(code=code, task=None)`, and returns the result.
 
-- [ ] **Step 3: Do not wire the orchestrator yet. Run ALL gates.**
+- [x] **Step 3: Do not wire the orchestrator yet. Run ALL gates.**
 
 Expected: B3 still green — nothing calls the new methods yet.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -1465,11 +1465,11 @@ git commit -m "feat: implement BatchedTool on web_search and code_generator"
 **Files:**
 - Modify: `src/agent_engine/core/orchestrator.py`
 
-- [ ] **Step 1: Replace `_classify_tool_call`'s dispatch**
+- [x] **Step 1: Replace `_classify_tool_call`'s dispatch**
 
 A tool is deferred if it satisfies the `BatchedTool` protocol **and** `not getattr(tool, "direct_mode", True)`. Otherwise it is immediate. Preserve the `mind_map` branch's `tool.set_current_question(state.question_id)` side effect and the `_index_reasoning_in_mind_map` call, which happens for **every** tool call before dispatch.
 
-- [ ] **Step 2: Replace the flush block in `_process_batch_turn`**
+- [x] **Step 2: Replace the flush block in `_process_batch_turn`**
 
 ```python
 self._apply_immediate_results(immediate_results)
@@ -1479,21 +1479,42 @@ if jobs_by_tool:
 
 where `_commit_batched_result(state, tool_call, text)` applies `strip_thinking_tags` then `self._commit_tool_result(...)`, matching the old commit path.
 
-- [ ] **Step 3: Delete `_WebJob`, `_CodeJob`, `_schedule_web_job`, `_schedule_code_job`, `_flush_web_batch`, `_fetch_urls_for_web_jobs`, `_run_web_analysis_batch`, `_flush_code_batch`, `_run_code_generation_batch`, `_get_analysis_cache`**
+- [x] **Step 3: Delete `_WebJob`, `_CodeJob`, `_schedule_web_job`, `_schedule_code_job`, `_flush_web_batch`, `_fetch_urls_for_web_jobs`, `_run_web_analysis_batch`, `_flush_code_batch`, `_run_code_generation_batch`, `_get_analysis_cache`**
 
-- [ ] **Step 4: Run B3 — the moment of truth**
+- [x] **Step 4: Run B3 — the moment of truth**
 
 Run: `/home/xchen1/.conda/envs/agent_engine/bin/python -m pytest tests/characterization/test_orchestrator_trace.py -q`
 Expected: PASS against the **unmodified** fixture.
 
 If it fails, diff the actual trace against the fixture and fix the code, **never** the fixture. If it cannot be made green within reasonable effort, revert Tasks 13-15 (`git revert`) and report; every other phase still stands.
 
-- [ ] **Step 5: Run ALL gates, then commit**
+- [x] **Step 5: Run ALL gates, then commit**
 
 ```bash
 git add -A
 git commit -m "refactor: collapse web/code batching behind the BatchedTool protocol"
 ```
+
+**Corrected while executing (2026-08-16).** Three things this task did not
+anticipate:
+
+1. **B3's fakes had to be ported to the new protocol.** They implemented the old
+   `search_and_format`/`build_task_prompt` contract, so after the dispatch
+   change they no longer looked batched and dropped to the immediate path,
+   turning B3 red for a reason unrelated to behaviour. They were rewritten to
+   emit the *same* EVENTS at the same points, and the fixture then matched
+   byte-for-byte with no `--update-fixtures`. Because both sides of the gate
+   moved, the three mutations were re-run against the new code to confirm the
+   fixture still bites.
+2. **`finalize` owns its output cleaning; `flush_batches` commits
+   `result.output` untouched.** Step 2's `_commit_batched_result` wrapper would
+   have stripped the web path twice, and `strip_thinking_tags` is not idempotent
+   on text carrying two orphaned `</think>` markers.
+3. **B3 cannot cover the tools.** It drives fakes, so mutating the real
+   `WebSearchTool`/`CodeGeneratorTool` prepare/finalize logic leaves it green --
+   verified, not assumed. `tests/unit/test_batched_tools.py` was added for that
+   logic and mutation-tested: 8 mutations across the tools and the batching
+   module, all caught.
 
 ---
 
