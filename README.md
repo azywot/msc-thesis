@@ -19,6 +19,8 @@ constant, which is what makes the comparison worth anything.
 **Models:** Qwen3 (0.6B–32B), DeepSeek-R1-Distill (7B, 32B), OLMo 3 (Think /
 Instruct). **Backends:** vLLM (cluster), MLX (Apple Silicon), OpenAI / Anthropic.
 
+![Framework diagram](data/static/FrameworkDiagram.jpg)
+
 ---
 
 ## Documentation
