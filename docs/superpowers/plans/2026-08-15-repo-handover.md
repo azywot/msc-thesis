@@ -21,8 +21,8 @@
 | 4 — `DatasetSpec` | 12 | `2cee5a2` | done |
 | 5 — orchestrator batching collapse | 13-15 | `ccbafd9`,`1f5ab2f`,5ce62de | done |
 | 6 — analysis move + shims | 16 | `ea8a814` | done |
-| 7 — tests for untested modules | 17 | | next |
-| 8 — docs, archive, final verification | 18-20 | | |
+| 7 — tests for untested modules | 17 | `7eac7d6` | done |
+| 8 — docs, archive, final verification | 18-20 | | next |
 
 Keep this table current when a phase lands. Checkboxes alone proved too easy to
 misread after a context handoff: an all-unticked plan sitting on top of ten
@@ -1623,24 +1623,50 @@ git commit -m "refactor: move failure-mode analysis into the package, scripts be
 
 These are new tests over **unchanged** code. Network must never be touched: stub `requests` at the module boundary.
 
-- [ ] **Step 1: Read each module and list its real behaviours before writing a line of test**
+- [x] **Step 1: Read each module and list its real behaviours before writing a line of test**
 
 For each, write down: what it returns on the happy path, what it does on malformed input, what it does on an HTTP error. Test what the code **does**, not what it should do — this is characterization, not specification.
 
-- [ ] **Step 2: Write the tests**
+- [x] **Step 2: Write the tests**
 
 Cover per module: cache round-trip and persistence for `CacheManager`; exact-match, numeric, and list answers for `gaia_scorer`; the `re.search` full-definition detection and the double-prepend guard for `bigcodebench_scorer` (documented in CLAUDE.md as a real subtlety); timeout and non-200 handling for `url_fetcher`, `serper`, `tavily`.
 
-- [ ] **Step 3: If a test fails, STOP**
+- [x] **Step 3: If a test fails, STOP**
 
 A failure here has found a pre-existing bug. Per the global constraints: **report it, do not fix it.** Record it in the commit message and in `docs/archive/known-issues.md`, and mark the test `xfail` with the reason so the suite stays green and the bug stays visible.
 
-- [ ] **Step 4: Run ALL gates, then commit**
+- [x] **Step 4: Run ALL gates, then commit**
 
 ```bash
 git add -A
 git commit -m "test: cover cache manager, scorers, and external clients"
 ```
+
+**Corrected while executing (2026-08-16).** Landed as `7eac7d6`; 135 tests,
+suite 561 -> 696 passed + 1 xfailed.  Four notes for the reader:
+
+1. **Known issues do not live in `docs/archive/`.**  The plan said to record
+   them there, but `.gitignore:101` has a bare `archive/` rule, so anything
+   under `docs/archive/` is untracked -- the file would never have been
+   committed.  It is at **`docs/known-issues.md`** instead, which is also the
+   better home: archived documents carry a HISTORICAL banner, and a live list
+   of open defects is the opposite of historical.  **Task 18 hits the same
+   rule** and must resolve it before `git mv`-ing anything into
+   `docs/archive/` -- see the note added there.
+2. **Five pre-existing issues found, none fixed**, per the Step 3 rule.  The
+   high-severity one: `_strip_markdown_fences` ends in `.strip()`, which
+   removes a bare function body's indentation, so bigcodebench's
+   `code_prompt` prepend path always produces an `IndentationError`.  Pinned
+   with `xfail(strict=True)`.  Full write-ups in `docs/known-issues.md`.
+3. **Each suite was mutation-tested** (16 mutations, all killed).  One
+   survived at first -- deleting the close-call length window -- because the
+   test that should have caught it returned `False` for an unrelated reason.
+   Rewritten to assert the letters check passes *first*, so only the window
+   can explain the rejection.  Worth repeating for any test whose expected
+   value is `False`: assert why, not just what.
+4. **Do not run `isort` across `tests/unit/`.**  Doing so reformatted 15
+   unrelated committed test files; they were reverted.  Format only the files
+   the task creates.
 
 ---
 
