@@ -281,3 +281,71 @@ change would produce before overwriting the committed tree.
 
 The configs under `gepa/`, `fine_tuning/`, `local/` and `datasets_examples/` are
 hand-written and the generator does not touch them.
+
+### Adding or customising a suite
+
+A suite is one entry in the `SUITES` dict near the top of
+`scripts/generate_configs.py`. It is the cross product of a set of **datasets**
+and a set of **variants** (model/tool/thinking combinations), written out as one
+YAML per pair.
+
+Seven keys are required - every existing suite sets all of them:
+
+```python
+SUITES = {
+    "my_suite": {
+        "description_tag": "[My Suite]",           # prepended to each config's description
+        "name_prefix":     "my_prefix",            # prepended to each config's name
+        "output_dir_root": "./experiments/results/my_suite",
+        "config_subdir":   "qwen3/my_suite",       # -> experiments/configs/qwen3/my_suite/
+        "baseline":        False,                  # True = skip the planning turn
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},                     # per-dataset split overrides
+        # plus a source of variants, below
+    },
+}
+```
+
+Variants normally come from one of two keys:
+
+| Key | Use |
+|---|---|
+| `variants` | One list for every dataset. Pick one of the sixteen `VARIANTS_*` lists defined above `SUITES`, or write your own. |
+| `variants_by_dataset` | `{dataset: [...]}` when one benchmark needs a different set; falls back to `variants` for datasets not listed. |
+
+The exception is a suite whose `variant_type` derives its own combinations.
+`subagent_orchestrator_ablation` sets neither key: its `subagent_orch_ablation`
+path builds a leave-one-out config per tool from each dataset's own tool list,
+so the variants are computed rather than declared. If you write a new
+`variant_type`, it owns that decision too.
+
+The rest are optional, and each defaults to the behaviour you would expect if
+you omitted it:
+
+| Key | Default | Effect |
+|---|---|---|
+| `num_gpus` | - | GPU count for the generated SLURM job. |
+| `force_num_gpus` | `False` | Use the suite's `num_gpus` even when the variant's model declares its own. |
+| `datasets` | all seven | Restrict to a subset of `gaia`, `hle`, `gpqa`, `aime`, `math500`, `musique`, `bigcodebench`. |
+| `variant_type` | `"standard"` | Selects a different config-building path: `orch_capacity`, `lora_inference`, or `subagent_orch_ablation`. |
+| `no_thinking_mode` | `False` | Force `thinking_mode: NO` across the suite. |
+| `lora_adapter_path` | - | Required when `variant_type` is `lora_inference`. |
+| `adapter_label`, `adapter_desc` | `"LoRA"`, `"LoRA-adapted"` | Naming for adapter-based suites. |
+| `train_job` | `"005_train.job"` | The training job referenced in generated descriptions. |
+
+Then regenerate - preview first:
+
+```bash
+python scripts/generate_configs.py --output-root /tmp/preview
+diff -r /tmp/preview/qwen3/my_suite experiments/configs/qwen3/my_suite
+python scripts/generate_configs.py
+```
+
+> **The generator deletes before it writes.** `generate_suite` clears
+> `*/*.yaml` and `*/*.yml` under the suite directory first, so a hand-written
+> file living in a generated suite's folder does not survive. Keep hand-written
+> configs in `local/`, `gepa/` or `fine_tuning/`, which the generator never
+> touches.
+>
+> It is also **not idempotent against hand-edits**: regenerating reverts any
+> manual change to a generated file without reporting it.
