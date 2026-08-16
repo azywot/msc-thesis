@@ -2,7 +2,7 @@
 
 A tool is anything the orchestrator can call by emitting a tool call. Adding one
 means writing a class and a factory. **You do not edit the orchestrator**, and
-there is no dispatch chain to extend — if you find yourself adding a name check
+there is no dispatch chain to extend - if you find yourself adding a name check
 to `core/`, stop and re-read this page.
 
 > This guide was executed end to end against the code it describes, by building
@@ -110,7 +110,7 @@ from .echo import EchoTool  # noqa: F401
 ```
 
 If you skip this, `build_tool("echo", deps)` returns `None` and the tool is
-silently missing — the same behaviour as a typo'd name. Symptom: the model
+silently missing - the same behaviour as a typo'd name. Symptom: the model
 never calls your tool and nothing in the log explains why.
 
 ## 4. Enable it in a config
@@ -138,7 +138,7 @@ print(registered_tools())
 
 Everything above gives you a tool that runs inline. A **sub-agent** additionally
 calls an LLM to interpret its own output, and that call should be batched with
-the other questions in the turn — otherwise a 200-question run makes 200
+the other questions in the turn - otherwise a 200-question run makes 200
 separate generation calls.
 
 Implement the `BatchedTool` protocol (`core/batching.py`). It is
@@ -161,7 +161,7 @@ class EchoTool(BaseTool):
         return BatchJob(state, tool_call, self, {"message": message})
 
     def pre_batch(self, jobs):
-        """Optional. Cross-job work, once per turn — bulk I/O belongs here."""
+        """Optional. Cross-job work, once per turn - bulk I/O belongs here."""
 
     def batch_prompt(self, job):
         return self.model_provider.apply_chat_template(
@@ -215,7 +215,7 @@ but **skipping step 3**:
 registered: ['code_generator', 'image_inspector', 'mind_map', 'text_inspector', 'web_search']
 ```
 
-No error, no warning — just absent. After adding the import to
+No error, no warning - just absent. After adding the import to
 `tools/__init__.py`:
 
 ```
@@ -226,7 +226,7 @@ schema name matches: True
 ```
 
 Then driven through the real `AgenticOrchestrator` with a scripted model
-provider (no GPU needed — script the generations and the rest of the loop is
+provider (no GPU needed - script the generations and the rest of the loop is
 real):
 
 ```
@@ -239,7 +239,7 @@ action_history : echo | Echo the phrase | ECHO: hello
 > **Gotcha the walkthrough exposed.** In AgentFlow mode the orchestrator runs a
 > **planning turn before turn 1**, and any tool call in the planning output is
 > parsed and *discarded* ("produced tool call (discarded)" in the log). A
-> scripted provider therefore needs three responses — plan, tool call, answer —
+> scripted provider therefore needs three responses - plan, tool call, answer -
 > not two. Getting this wrong looks like the tool never being called: the answer
 > comes back correct and `tool_calls` is empty. In baseline mode there is no
 > planning turn and the first response is the tool call.

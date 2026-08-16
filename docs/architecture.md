@@ -2,8 +2,8 @@
 
 CoSMAS answers one research question: **does structured multi-agent
 collaboration help a small LLM, or does it just add machinery?** Everything in
-the design exists to make that comparison fair, so the two execution modes —
-AgentFlow and baseline — share every component except the ones under test.
+the design exists to make that comparison fair, so the two execution modes -
+AgentFlow and baseline - share every component except the ones under test.
 
 This page describes how a question becomes a result. For the knobs, see
 [configuration.md](configuration.md); for how to extend any of it, see
@@ -48,7 +48,7 @@ turn N+1: [Q1, Q3, Q4]     →  one generate() call  →  3 outputs
 This is why a 200-question run is feasible at all: the GPU sees a handful of
 large batches rather than thousands of single-sequence calls. It is also why
 several things in the code look more complicated than a single-question agent
-would — the complexity buys throughput.
+would - the complexity buys throughput.
 
 `batch_size: 1` disables cross-question batching, which is the setting to use
 when debugging one question.
@@ -60,7 +60,7 @@ when debugging one question.
 `_process_batch_turn` (`core/orchestrator.py`) is the heart of the system:
 
 1. **Increment** every active state's turn counter.
-2. **Build one prompt per state** — the memory prompt in AgentFlow mode, the
+2. **Build one prompt per state** - the memory prompt in AgentFlow mode, the
    growing conversation in baseline mode.
 3. **One batched `generate()`.** If it raises, every state in the batch is
    marked failed and finished; one bad batch does not take down the run.
@@ -72,17 +72,17 @@ when debugging one question.
 When a question hits `max_turns` without answering, it is not simply dropped:
 the orchestrator sends one final "you are out of tool calls, answer now" nudge
 and records `max_turns_reached: true` in its metadata. Those rows are still
-scored, which matters when reading the metrics — a low score can mean bad
+scored, which matters when reading the metrics - a low score can mean bad
 answers or exhausted turns, and only the metadata distinguishes them.
 
 ### Two kinds of tool call
 
 `_classify_tool_call` routes each call down one of two paths:
 
-- **Immediate** — the tool runs inline and returns a `ToolResult` right away.
+- **Immediate** - the tool runs inline and returns a `ToolResult` right away.
   This is every tool in `direct_tool_call: true` mode, and always the case for
   `mind_map`, `text_inspector` and `image_inspector`.
-- **Batched** — the tool defers. It returns a `BatchJob` instead of a result,
+- **Batched** - the tool defers. It returns a `BatchJob` instead of a result,
   and all jobs for that tool are executed together after the turn's generation.
 
 A tool is batched when it satisfies the `BatchedTool` protocol *and* is not in
@@ -95,7 +95,7 @@ def _is_batched(tool):
 ```
 
 `BatchedTool` is a `runtime_checkable` `Protocol`, so a new tool opts in simply
-by implementing the methods — there is no registry of batched tools to update
+by implementing the methods - there is no registry of batched tools to update
 and nothing to remember to edit.
 
 ---
@@ -111,12 +111,12 @@ So batched tools split into three phases (`core/batching.py`):
 | Phase | Runs | Does |
 |---|---|---|
 | `prepare(state, tool_call, args)` | per call, inline | The non-LLM work. Returns a `BatchJob` to defer, **or** a `ToolResult` to short-circuit (missing arguments, cache hit, failure). |
-| `pre_batch(jobs)` | once per tool per turn | Cross-job work — `web_search` fetches all URLs for all jobs here, in one parallel pass. |
+| `pre_batch(jobs)` | once per tool per turn | Cross-job work - `web_search` fetches all URLs for all jobs here, in one parallel pass. |
 | `batch_prompt(job)` → `finalize(job, generation)` | once per job | Build the prompt; turn the generation into a `ToolResult`. |
 
 `flush_batches` then:
 
-1. sorts tools by `batch_priority` ascending — `web_search` is 10,
+1. sorts tools by `batch_priority` ascending - `web_search` is 10,
    `code_generator` is 20, and the order is load-bearing because a web analysis
    populates a cache a code job in the same turn may read;
 2. calls `pre_batch` for each tool;
@@ -134,7 +134,7 @@ So batched tools split into three phases (`core/batching.py`):
 ## State
 
 One `ExecutionState` per question (`core/state.py`) carries both conversations
-at once — which is what makes the two modes comparable:
+at once - which is what makes the two modes comparable:
 
 | Field | Used by | Holds |
 |---|---|---|
@@ -165,13 +165,13 @@ Baseline skips it.
 
 ### 2. What the model sees each turn
 
-**Baseline** — the conversation grows:
+**Baseline** - the conversation grows:
 
 ```
 [system, user, assistant, tool, assistant, tool, ...]
 ```
 
-**AgentFlow** — the prompt is rebuilt from structured memory every turn, and is
+**AgentFlow** - the prompt is rebuilt from structured memory every turn, and is
 always exactly two messages:
 
 ```
@@ -201,7 +201,7 @@ tokens emitted.
 
 AgentFlow prompts instruct the model to emit `<sub_goal>...</sub_goal>` before
 each `<tool_call>`. `_extract_sub_goal` parses it (truncating at 500 chars) into
-`action_history`. An empty string means the model did not comply — worth
+`action_history`. An empty string means the model did not comply - worth
 checking when a run underperforms, since it degrades the memory record itself.
 
 Note that these prompts come from different template files entirely: AgentFlow
@@ -244,7 +244,7 @@ src/agent_engine/
   prompts/     templates/*.yaml + builder.py
   runner/      experiment.py (the run loop), providers.py, tools.py, metrics.py
   external/    serper, tavily, url_fetcher
-  caching/     manager.py — the search/URL cache
+  caching/     manager.py - the search/URL cache
   analysis/    failure-mode classifier and the analyses over recorded runs
   utils/       parsing (tool-call formats), logging
 ```

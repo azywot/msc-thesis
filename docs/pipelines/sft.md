@@ -1,4 +1,4 @@
-# SFT pipeline — supervised fine-tuning of the orchestrator
+# SFT pipeline - supervised fine-tuning of the orchestrator
 
 Supervised fine-tuning of the Qwen3-8B orchestrator on trajectories from a
 stronger teacher, with a rank-64 LoRA or full-parameter.
@@ -8,12 +8,12 @@ tools execute, no sub-agent server runs, and no `SERPER_API_KEY` /
 `TAVILY_API_KEY` is needed. Only `WANDB_API_KEY`, for logging.
 
 Historical status and evidence: [`../archive/sft_status.md`](../archive/sft_status.md)
-(archived — read it before changing anything here, but check its paths against
+(archived - read it before changing anything here, but check its paths against
 the current tree).
 
 ---
 
-## The format rule — the thing to get right
+## The format rule - the thing to get right
 
 This is the part that has already cost this project a wrong result, so it comes
 first.
@@ -47,8 +47,8 @@ Three components enforce this:
   so the folded prompt cannot drift from the real one.
 - **`src/verl_ext/folded_sft_dataset.py`** (`FoldedSFTDataset`, wired in via
   verl's `data.custom_cls`) renders with `add_generation_prompt=True` so it
-  matches inference token-for-token — *including* Qwen3's empty
-  `<think>\n\n</think>` block — and supervises only `target + <|im_end|>`.
+  matches inference token-for-token - *including* Qwen3's empty
+  `<think>\n\n</think>` block - and supervises only `target + <|im_end|>`.
 - **`scripts/check_sft_folded_format.py`** is a pre-flight gate asserting prompt
   identity, span purity, no thinking, no tool output in the loss, and no
   truncation, on every row. The training job runs it and **refuses to start** if
@@ -78,7 +78,7 @@ python scripts/build_sft_parquet.py \
     --from-parquet data/training/sft/sft_train.parquet \
     --output-dir data/training/sft --output-name sft_folded_train.parquet
 
-# 4. Verify on the CPU partition — tests, gate, and gate trip-wire. No GPU cost.
+# 4. Verify on the CPU partition - tests, gate, and gate trip-wire. No GPU cost.
 sbatch jobs/fine_tuning/007_run_tests_for_sft_folded.job
 
 # 5. Train. LoRA rank 64 (~187 steps, 2xH100, ~40 min):
@@ -91,7 +91,7 @@ Step 4 is cheap and catches the expensive mistakes. Run it.
 
 ## Evaluating the result
 
-**LoRA** — paste the run tag the job prints into `SFT_ADAPTER_PLACEHOLDER` in
+**LoRA** - paste the run tag the job prints into `SFT_ADAPTER_PLACEHOLDER` in
 `scripts/generate_configs.py`, then regenerate and run:
 
 ```bash
@@ -99,7 +99,7 @@ python scripts/generate_configs.py --suite sft_inference
 ./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/sft_inference
 ```
 
-**Full parameter** — point an inference config's `path_or_id` straight at the
+**Full parameter** - point an inference config's `path_or_id` straight at the
 archived `best_checkpoint/` directory the job prints. No `lora_adapter_path`, no
 merge step.
 
@@ -121,7 +121,7 @@ model directories for full parameter), deletes the shards, and archives into
 `data/checkpoints/<experiment>/<run-tag>/`.
 
 Why that machinery exists: `verl.trainer.sft_trainer` never writes a
-`lora_adapter/` directory — only the RL path does. It writes the full FSDP state
+`lora_adapter/` directory - only the RL path does. It writes the full FSDP state
 dict, ~32 GB per checkpoint, of which ~350 MB is trained weight for a LoRA run.
 The shards are **sharded DTensors**, so rank 0 holds only its own slice of each
 tensor.

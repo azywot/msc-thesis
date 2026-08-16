@@ -52,7 +52,7 @@ Each run creates a timestamped subdirectory under `output_dir/`, e.g.
 | `experiment.log` | Full run log |
 
 > A surviving `raw_results.partial.json` means the run **did not finish**. It is
-> the first thing to check when a result set looks short — the partial file is
+> the first thing to check when a result set looks short - the partial file is
 > still valid JSON and still analysable, but it is not a complete run.
 
 ## Reading the results
@@ -74,20 +74,20 @@ per_level:   the same, per stratification bucket (stratified datasets only)
 
 `accuracy` comes from each result row's `evaluation.accuracy`, which the
 dataset's own `evaluate()` produced. Different benchmarks therefore mean
-different things by "accuracy" — GAIA's scorer normalises numbers and lists,
+different things by "accuracy" - GAIA's scorer normalises numbers and lists,
 GPQA compares option letters, BigCodeBench executes tests.
 
 ### Reading a low score
 
 Before concluding the model is bad, check three things in `raw_results.json`:
 
-1. **`metadata.max_turns_reached`** — the question ran out of turns and was
+1. **`metadata.max_turns_reached`** - the question ran out of turns and was
    force-answered. A cluster of these means `max_turns` is too low or the model
    is looping, not that its reasoning is wrong.
 2. **Tool outputs that are error strings.** `url_fetcher` returns its errors *as
    page text* (`"Error fetching …"`), so a dead network looks like unhelpful
    search results rather than a crash.
-3. **Empty `sub_goal` fields in `action_history`** (AgentFlow runs) — the model
+3. **Empty `sub_goal` fields in `action_history`** (AgentFlow runs) - the model
    is not following the prompt format, which degrades the structured memory it
    sees on every later turn.
 
@@ -105,7 +105,7 @@ cache/serper/gaia_validation/
     .cache.lock
 ```
 
-This is what makes re-runs cheap and repeatable — a repeated run of the same
+This is what makes re-runs cheap and repeatable - a repeated run of the same
 questions costs no API calls. Writes merge rather than overwrite (disk ∪ memory,
 memory wins), so parallel SLURM workers sharing a cache directory do not clobber
 each other.
@@ -122,10 +122,10 @@ python -m agent_engine.analysis.failure_modes --output-dir ./out    # where to w
 ```
 
 It takes `--root` (the repo root, correctly defaulted) and `--output-dir`, not
-a path to a single `raw_results.json` — it sweeps recorded runs and writes
+a path to a single `raw_results.json` - it sweeps recorded runs and writes
 `breakdown.json` / `breakdown.csv`.
 
-`classify_failure` is **frozen** — the thesis's taxonomy counts come from it and
+`classify_failure` is **frozen** - the thesis's taxonomy counts come from it and
 a characterization fixture replays it over recorded runs. Do not change its
 body; add a new function if you need a different taxonomy.
 

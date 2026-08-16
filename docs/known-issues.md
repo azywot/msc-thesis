@@ -2,7 +2,7 @@
 
 Defects found while writing characterization tests during the repository
 handover refactor (2026-08-16). They are recorded here rather than fixed,
-because that refactor's contract was *no behaviour change* — fixing any of
+because that refactor's contract was *no behaviour change* - fixing any of
 these would move results that the thesis already reports.
 
 Each entry names the test that pins the current behaviour, so the fix and the
@@ -36,12 +36,12 @@ which raises `IndentationError` before any test runs. The task scores 0
 regardless of whether the code was right.
 
 This branch exists specifically to handle a prediction that is a bare function
-body, so that whole path is unusable today. Only the full-definition branch —
-where the model emits `def task_func(...)` itself — works, which is the common
+body, so that whole path is unusable today. Only the full-definition branch -
+where the model emits `def task_func(...)` itself - works, which is the common
 case under the current prompts and is why the defect has not shown up in
 reported numbers.
 
-**Fix sketch:** dedent-preserving extraction — return the fence group with
+**Fix sketch:** dedent-preserving extraction - return the fence group with
 trailing whitespace stripped and leading *newlines* stripped, but not leading
 spaces (`group(1).strip("\n").rstrip()`). Re-scoring any affected BigCodeBench
 run afterwards is required before comparing to earlier numbers.
@@ -50,7 +50,7 @@ run afterwards is required before comparing to earlier numbers.
 
 ## 2. `question_scorer` raises on a `None` ground truth
 
-**Severity:** low — no loader produces one today.
+**Severity:** low - no loader produces one today.
 **Status:** open by design (upstream parity). Pinned by `tests/unit/test_gaia_scorer.py::test_a_none_ground_truth_raises`.
 
 `is_float` in `src/agent_engine/datasets/evaluators/gaia_scorer.py` catches only
@@ -80,14 +80,14 @@ bare `"$1,000"` against `"1000"` takes the numeric path and passes.
 
 ## 4. `CacheManager.save_caches` skips the normalisation `save_search_cache` applies
 
-**Severity:** cosmetic — self-correcting on the next load.
+**Severity:** cosmetic - self-correcting on the next load.
 **Status:** open. Pinned by `tests/unit/test_cache_manager.py::test_save_search_cache_normalises_but_save_caches_does_not`.
 
 `save_search_cache` passes `normalize=True`; `save_caches` writes the merged
 dict straight out. A malformed search-cache value written through `save_caches`
 therefore reaches disk intact and is only cleaned when a later process loads it.
-Code reading `search_cache.json` directly — an analysis script, a cache
-inspector — sees the difference; code going through `CacheManager` does not.
+Code reading `search_cache.json` directly - an analysis script, a cache
+inspector - sees the difference; code going through `CacheManager` does not.
 
 ---
 
@@ -97,7 +97,7 @@ inspector — sees the difference; code going through `CacheManager` does not.
 **Status:** open. Noted by `tests/unit/test_bigcodebench_scorer.py::test_the_scorer_shells_out_to_a_bare_python`.
 
 `evaluate_bigcodebench` calls `subprocess.Popen(["python", tmp_path])`, resolved
-through `PATH` — not `sys.executable`. On the Snellius login node that resolves
+through `PATH` - not `sys.executable`. On the Snellius login node that resolves
 to the system Python 3.9, several minor versions behind the project's 3.11, so a
 prediction using newer syntax (`match`, `X | Y` unions) is scored wrong for
 reasons unrelated to the model. Check `which python` before trusting a

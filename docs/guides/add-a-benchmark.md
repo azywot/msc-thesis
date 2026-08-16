@@ -2,7 +2,7 @@
 
 Three pieces: a **loader** that turns files into `DatasetExample`s, a
 **`DatasetSpec` row** that says how the benchmark is prompted and reported, and
-optionally a **prompt template**. Nothing else changes — the orchestrator and
+optionally a **prompt template**. Nothing else changes - the orchestrator and
 the runner never learn your benchmark's name.
 
 > This guide was executed end to end by adding a two-example `toybench`, running
@@ -62,8 +62,8 @@ Conventions the existing loaders follow, worth matching:
 - **A malformed row is logged and skipped, not fatal.** One bad line should not
   lose a 200-question run.
 - **`answer` is a string.** `question_scorer` calls `is_float(ground_truth)`,
-  which raises `TypeError` on `None` — see [known-issues](../known-issues.md).
-- **Anything you want to slice by later goes in `metadata`** — level, category,
+  which raises `TypeError` on `None` - see [known-issues](../known-issues.md).
+- **Anything you want to slice by later goes in `metadata`** - level, category,
   year, subject.
 
 Register the module so the decorator runs, in
@@ -94,14 +94,14 @@ The four fields:
 | `template` | Prompt-template stem. `None` = no mapping; the raw name is tried, then the base template with a warning. |
 | `stratified` | Whether `compute_metrics` emits a `per_level` breakdown. |
 | `level_field` | The `metadata` key holding the level. |
-| `level_fallback_field` | Consulted only when `level_field` is **absent** — not when it is present-but-`None`. |
+| `level_fallback_field` | Consulted only when `level_field` is **absent** - not when it is present-but-`None`. |
 
 Reuse an existing template when the task shape matches: GAIA, HLE and MuSiQue
 all use `gaia`; AIME, MATH500, AMC and DeepMath all use `math`. A new template
 is only needed for a genuinely new answer format.
 
 > **Lookup is case-sensitive.** `get_spec("toybench")` resolves; `"ToyBench"`
-> silently returns the default spec — no template mapping and no stratification.
+> silently returns the default spec - no template mapping and no stratification.
 > Use the exact registered spelling in your config. This is preserved
 > deliberately from the code the spec table replaced, so it is not going to be
 > "fixed".
@@ -109,12 +109,12 @@ is only needed for a genuinely new answer format.
 ## 3. Add a prompt template (only if needed)
 
 Templates live in `src/agent_engine/prompts/templates/system/` and come in
-pairs — `<name>.yaml` for AgentFlow and `<name>_baseline.yaml` for baseline.
+pairs - `<name>.yaml` for AgentFlow and `<name>_baseline.yaml` for baseline.
 Currently: `base`, `gaia`, `gpqa`, `math`, `bigcodebench`.
 
 **Both files are required.** `PromptBuilder` appends `_baseline` in baseline
 mode, so a missing baseline file falls back to `base` with a warning in
-`experiment.log` — the run still completes, silently comparing your benchmark's
+`experiment.log` - the run still completes, silently comparing your benchmark's
 AgentFlow prompt against the generic baseline prompt. That is a broken
 comparison that produces plausible-looking numbers, which is worse than a crash.
 
@@ -133,7 +133,7 @@ tools:
 ```
 
 For a suite of configs, add a suite to `scripts/generate_configs.py` rather than
-writing them by hand — see [configuration.md](../configuration.md#where-configs-live).
+writing them by hand - see [configuration.md](../configuration.md#where-configs-live).
 
 ## 5. Verify before spending GPU time
 
@@ -190,7 +190,7 @@ template lines confirm the spec row worked: `toybench` renders byte-identical to
 
 > **Two API details the walkthrough corrected.** `DatasetRegistry.get` takes a
 > `DatasetConfig`, not a name string. And `compute_metrics` reads each result
-> row's **`evaluation`** sub-dict — `{"correct": True}` at the top level is
+> row's **`evaluation`** sub-dict - `{"correct": True}` at the top level is
 > ignored and everything scores zero. The row shape the runner writes is
 > `{"question_id", "evaluation", "tool_counts", "token_usage", ...}`; if your
 > accuracy comes out 0.0 with obviously-correct predictions, check that first.

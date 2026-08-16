@@ -1,4 +1,4 @@
-# GEPA pipeline — prompt adaptation
+# GEPA pipeline - prompt adaptation
 
 GEPA evolves the orchestrator's **system prompt** and **planning-turn suffix**
 from the agent's own execution traces. No weights change: a Qwen3-32B reflector
@@ -15,7 +15,7 @@ Two components per benchmark:
 
 | Component | What it is |
 |---|---|
-| `system_prompt` | The full system prompt — preamble, few-shot example, final instructions. Tool schemas inside `<tools>…</tools>` are **protected and never modified**. |
+| `system_prompt` | The full system prompt - preamble, few-shot example, final instructions. Tool schemas inside `<tools>…</tools>` are **protected and never modified**. |
 | `planning_suffix` | The instruction block appended to the user query on turn 0, the planning turn. |
 
 The agent configuration during optimisation is fixed and matches the
@@ -28,9 +28,9 @@ shared vLLM instance), `thinking_mode: ORCHESTRATOR_ONLY`, sub-agent mode
 Sourced from open datasets that do **not** overlap the evaluation benchmarks,
 so the held-out test sets stay clean:
 
-- **GAIA preset** — 75% Search-R1 (85/15 HotpotQA/NQ) + 25% DeepMath (no
+- **GAIA preset** - 75% Search-R1 (85/15 HotpotQA/NQ) + 25% DeepMath (no
   difficulty filter).
-- **MATH preset** — 75% DeepMath (difficulty ≥ 5) + 25% Search-R1.
+- **MATH preset** - 75% DeepMath (difficulty ≥ 5) + 25% Search-R1.
 
 Both are 300 examples: 150 `D_feedback` / 50 `D_pareto` / 100 test. Built by
 `src/gepa_integration/data/prepare.py`. Multi-answer Search-R1 examples carry
@@ -49,10 +49,10 @@ sbatch jobs/gepa/000_prep_gepa_data.job
 # 2. Install the gepa package into the conda env
 sbatch jobs/gepa/001_install_gepa_deps.job
 
-# 3. CPU smoke test — imports, split integrity, evaluator
+# 3. CPU smoke test - imports, split integrity, evaluator
 sbatch jobs/gepa/002_smoke_gepa.job
 
-# 4. GPU smoke test — 1 GEPA step on 2 real examples (3xH100, ~1h)
+# 4. GPU smoke test - 1 GEPA step on 2 real examples (3xH100, ~1h)
 sbatch jobs/gepa/003_smoke_gepa_gpu.job
 
 # 5. Full optimisation, submitted independently (each ~24h, 3xH100)
@@ -69,7 +69,7 @@ python scripts/run_gepa.py --mode diff     --config experiments/configs/gepa/gai
 ```
 
 `--mode diff` shows what the optimiser changed, which is the interesting output
-scientifically — a prompt that improved for an unreadable reason is a weaker
+scientifically - a prompt that improved for an unreadable reason is a weaker
 result than one whose rewrite you can explain.
 
 ## Outputs
@@ -81,12 +81,12 @@ Under `experiments/results/gepa/<benchmark>/<TIMESTAMP>_<JOB_ID>/`:
 | `best_candidate.json` | The optimised `{"system_prompt": ..., "planning_suffix": ...}` |
 | `seed_candidate.json` | The starting candidate, for diffing |
 | `gepa_results.json` | Held-out test evaluation, in `raw_results.json` format |
-| `gepa_state.bin` | Full pickled optimisation state, written after each step — **auto-resumes** if `run_dir` already contains it |
+| `gepa_state.bin` | Full pickled optimisation state, written after each step - **auto-resumes** if `run_dir` already contains it |
 | `generated_best_outputs_valset/` | Per-task best rollouts on the validation set (when `track_best_outputs: true`) |
 | `optimize.stderr`, `evaluate.stderr` | Per-step stderr; replayed on failure |
 
 The auto-resume is worth knowing about in both directions: a re-submitted job
-continues rather than restarting, which is what you want after a timeout — and
+continues rather than restarting, which is what you want after a timeout - and
 is *not* what you want if you meant to start fresh. Use a new `run_dir` for a
 clean run.
 
@@ -100,7 +100,7 @@ No code changes. Point any inference config at the candidate file:
 gepa_prompt_path: experiments/results/gepa/gaia/<run>/best_candidate.json
 ```
 
-This bypasses `PromptBuilder` entirely — `system_prompt` and `planning_suffix`
+This bypasses `PromptBuilder` entirely - `system_prompt` and `planning_suffix`
 are read from the file. Because the builder is skipped, the dataset's normal
 template is not consulted at all, so a GEPA config's results are comparable to a
 normal run only in the sense that everything *else* is identical.
@@ -116,4 +116,4 @@ feedback. `reflection.py` turns failures into reflector-readable text and
 failure-mode analysis, so the seed knows about the taxonomy).
 
 A different prompt optimiser only needs to produce a JSON file with the two keys
-— see [guides/add-an-adaptation-method.md](../guides/add-an-adaptation-method.md).
+- see [guides/add-an-adaptation-method.md](../guides/add-an-adaptation-method.md).

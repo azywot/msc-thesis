@@ -1,4 +1,4 @@
-# Vendored code — do not restyle
+# Vendored code - do not restyle
 
 Everything in this directory is a **copy of an external project**. It is not
 CoSMAS code and it is not maintained here.
@@ -7,7 +7,7 @@ CoSMAS code and it is not maintained here.
 |---|---|
 | Upstream | `https://github.com/shin-ee-chen/AgentFlow.git` |
 | Vendored | 2026-06-01, in commit `8ed8f41` ("Feat/fine tuning (#20)") |
-| Scope | 29 files — the subset the training pipeline actually uses |
+| Scope | 29 files - the subset the training pipeline actually uses |
 | Local changes | Import rewrites only (below) |
 
 ---
@@ -35,7 +35,7 @@ Deliberately as little as possible:
    @hydra.main(config_path="pkg://fine_tuning.agentflow/verl", config_name="config", ...)
    ```
 
-2. **`_agentflow_path.py` deleted** — the `sys.path` hack the vendored package
+2. **`_agentflow_path.py` deleted** - the `sys.path` hack the vendored package
    makes unnecessary.
 
 3. **`verl/peft_vllm_weight_sync_patch.py` removed** during the verl upgrade.
@@ -67,7 +67,7 @@ be silently reverted.
 1. Clone upstream at the target revision.
 2. Copy the same file subset over this directory.
 3. Re-apply the import rewrites in change 1 above.
-4. Run the RL smoke test — `sbatch jobs/fine_tuning/004_smoke_8b.job` — before
+4. Run the RL smoke test - `sbatch jobs/fine_tuning/004_smoke_8b.job` - before
    anything long.
 5. Update the table at the top of this file with the new revision and date.
 
@@ -79,7 +79,7 @@ test failure.
 
 ## Related
 
-- [`../README.md`](../README.md) — the RL pipeline this code serves
-- [`../../verl_ext/`](../../verl_ext/) — our own verl extensions, which *are*
+- [`../README.md`](../README.md) - the RL pipeline this code serves
+- [`../../verl_ext/`](../../verl_ext/) - our own verl extensions, which *are*
   CoSMAS code and *should* follow project style
-- [`../../../docs/pipelines/rl.md`](../../../docs/pipelines/rl.md) — pipeline overview
+- [`../../../docs/pipelines/rl.md`](../../../docs/pipelines/rl.md) - pipeline overview

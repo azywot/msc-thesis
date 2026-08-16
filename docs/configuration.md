@@ -2,7 +2,7 @@
 
 Every experiment is one YAML file. The loader
 (`src/agent_engine/config/loader.py`) parses it into the Pydantic models in
-`src/agent_engine/config/schema.py`, and **the schema is the authority** — if
+`src/agent_engine/config/schema.py`, and **the schema is the authority** - if
 this page and `schema.py` disagree, the schema is right and this page is stale.
 
 > **A typo'd key is silently ignored.** The models do not set
@@ -73,7 +73,7 @@ orchestrator is also driven directly by the fine-tuning rollout code.
 
 Batching is what makes a 200-question run tractable: all questions advance one
 turn together, so each turn is a single large `generate()` call instead of 200
-small ones. The cost is memory — `-1` on a large dataset with long contexts can
+small ones. The cost is memory - `-1` on a large dataset with long contexts can
 exceed VRAM. Start at `-1`, drop to a fixed size if the run OOMs.
 
 `batch_size: 1` is not just "slower"; it is a genuinely different execution
@@ -83,7 +83,7 @@ debugging a single question.
 ### `thinking_mode`
 
 Which components emit `<think>` output. `ORCHESTRATOR_ONLY` and
-`SUBAGENTS_ONLY` exist so the two can be varied independently — several thesis
+`SUBAGENTS_ONLY` exist so the two can be varied independently - several thesis
 ablations turn on exactly that split.
 
 How thinking is switched on differs by family and is handled for you: Qwen3 and
@@ -115,7 +115,7 @@ models:
 
 > If two roles share the same `path_or_id` **and** the same LoRA adapter, the
 > runner reuses one loaded instance instead of paying for the weights twice.
-> The adapter is part of the cache key — a base model and the same model with an
+> The adapter is part of the cache key - a base model and the same model with an
 > adapter are two different instances.
 
 | Key | Type | Default | Notes |
@@ -139,7 +139,7 @@ models:
 | `lora_adapter_path` | str \| null | `null` | PEFT adapter directory. |
 | `max_lora_rank` | int | `64` | **Must match the training rank.** vLLM's own default is 16; ours is 64. |
 
-Family defaults are not all identical — OLMo 3 ships sampling parameters from
+Family defaults are not all identical - OLMo 3 ships sampling parameters from
 its model card (`temperature=0.6`, `top_p=0.95`, `top_k=-1`,
 `repetition_penalty=1.0`) rather than the table above. Check the configs under
 `experiments/configs/olmo3/` before copying numbers from a Qwen config.
@@ -171,9 +171,9 @@ tools:
 
 The single most consequential tool setting.
 
-- `true` — the orchestrator gets the tool's raw output. No sub-agent, no extra
+- `true` - the orchestrator gets the tool's raw output. No sub-agent, no extra
   model, no extra GPU.
-- `false` — each tool runs its own sub-agent LLM that reads the raw output and
+- `false` - each tool runs its own sub-agent LLM that reads the raw output and
   returns an analysis. Requires a `models` entry per tool, and turns those tools
   into *batched* tools: their work is deferred and flushed as one grouped
   generation call per turn. See
@@ -184,7 +184,7 @@ The single most consequential tool setting.
 Required for BigCodeBench, where the harness executes the prediction itself and
 a tool that already ran the code would produce the wrong artefact.
 `scripts/generate_configs.py` sets this automatically for BigCodeBench
-tool-using configs — do not rely on remembering it by hand.
+tool-using configs - do not rely on remembering it by hand.
 
 ---
 
@@ -235,7 +235,7 @@ gepa_prompt_path: experiments/results/gepa/gaia/<run>/best_candidate.json
 
 When set, `PromptBuilder` is bypassed entirely: `system_prompt` and
 `planning_suffix` are read from the file instead of being assembled from
-templates. This is how a GEPA-optimised prompt is evaluated — see
+templates. This is how a GEPA-optimised prompt is evaluated - see
 [pipelines/gepa.md](pipelines/gepa.md). Because it short-circuits the builder,
 a config with this key set ignores the dataset's normal template.
 

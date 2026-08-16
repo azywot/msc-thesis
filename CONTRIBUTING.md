@@ -17,7 +17,7 @@ cp .env.example .env         # SERPER_API_KEY or TAVILY_API_KEY at minimum
 
 On the cluster, `sbatch jobs/001_setup.job` builds the `agent_engine` conda
 environment instead. Note that `conda` is not on `PATH` in non-interactive
-shells — invoke the interpreter by full path in scripts and job files.
+shells - invoke the interpreter by full path in scripts and job files.
 
 ## Tests
 
@@ -33,9 +33,9 @@ not executable, and collection aborts before any test runs.
 
 ### Two kinds of test
 
-**`tests/unit/`** — ordinary tests. Add them freely.
+**`tests/unit/`** - ordinary tests. Add them freely.
 
-**`tests/characterization/`** — these lock *current* behaviour against committed
+**`tests/characterization/`** - these lock *current* behaviour against committed
 fixtures. They exist to prove a refactor changed nothing:
 
 | Fixture | Locks |
@@ -64,12 +64,12 @@ valid indefinitely and are what protect the thesis numbers.
 
 - **Assert why, not just what.** A test expecting `False` should assert that the
   earlier conditions passed, or it will keep passing for the wrong reason after
-  the code changes. This has actually happened — a mutation survived because a
+  the code changes. This has actually happened - a mutation survived because a
   test returned `False` before ever reaching the logic under test.
 - **Characterize, don't specify.** When testing existing code, record what it
   *does*. If that differs from what the docstring promises, say so in the test.
 - **Never touch the network.** Stub `requests` at the module boundary and make
-  the default fixture *fail* on an unstubbed call — a test that reaches the
+  the default fixture *fail* on an unstubbed call - a test that reaches the
   network hangs on a socket instead of failing fast.
 
 ## Style
@@ -88,7 +88,7 @@ fifteen files nobody asked you to touch and buries your actual change.
 
 ### Adding something
 
-There are four extension seams and a guide for each — see
+There are four extension seams and a guide for each - see
 [docs/guides/](docs/guides/). All four share a rule: **the orchestrator
 dispatches on capability, not on name.** If your change requires an
 `if tool_name == ...` in `src/agent_engine/core/`, the capability belongs in a
@@ -97,7 +97,7 @@ protocol or a spec table instead.
 ### Refactoring something
 
 1. Make sure the behaviour is covered before you start. If it is not, add the
-   test first — a test written after the change only proves the change is
+   test first - a test written after the change only proves the change is
    self-consistent.
 2. Change it.
 3. Run the full suite *including* characterization.
@@ -109,7 +109,7 @@ protocol or a spec table instead.
 
 Report it in [docs/known-issues.md](docs/known-issues.md) with a failing test
 marked `xfail(strict=True)`. Then decide separately whether to fix it, because
-**fixing a scoring bug changes reported numbers** — that is a research decision,
+**fixing a scoring bug changes reported numbers** - that is a research decision,
 not a code cleanup, and it means re-running affected experiments.
 
 `classify_failure` in `src/agent_engine/analysis/failure_modes.py` is **frozen**.
@@ -151,6 +151,6 @@ log knows no behaviour moved.
 | verl extensions | `src/verl_ext/` |
 | Entry points | `scripts/` |
 | SLURM | `jobs/` |
-| Docs | `docs/` — architecture, configuration, guides, pipelines |
+| Docs | `docs/` - architecture, configuration, guides, pipelines |
 
 Start with [docs/architecture.md](docs/architecture.md).

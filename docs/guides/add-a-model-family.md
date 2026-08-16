@@ -4,10 +4,10 @@ Onboarding a family is mostly a matter of answering questions about its chat
 template and its tool-call syntax, then recording each answer in the right
 table. All the tables are in `src/agent_engine/models/base.py`, and each is a
 `frozenset` keyed by `ModelFamily`, so a family opts in to a quirk by appearing
-in a set — there is no per-family `if` chain anywhere.
+in a set - there is no per-family `if` chain anywhere.
 
-The families already handled — Qwen3, DeepSeek-R1-Distill, OLMo 3 Think and
-Instruct — between them cover most of the ways a template can misbehave, so the
+The families already handled - Qwen3, DeepSeek-R1-Distill, OLMo 3 Think and
+Instruct - between them cover most of the ways a template can misbehave, so the
 existing entries double as worked examples.
 
 ---
@@ -39,9 +39,9 @@ turn gates `thinking_mode`.
 
 There are two mechanisms and a family uses exactly one:
 
-- **A template kwarg** — `_ENABLE_THINKING_KWARG_FAMILIES` (Qwen3, QwQ). The
+- **A template kwarg** - `_ENABLE_THINKING_KWARG_FAMILIES` (Qwen3, QwQ). The
   provider passes `enable_thinking=True/False` to the chat template.
-- **Prefix forcing** — `_THINK_PREFIX_FAMILIES` (DeepSeek). The provider appends
+- **Prefix forcing** - `_THINK_PREFIX_FAMILIES` (DeepSeek). The provider appends
   `"<think>\n"` to prime reasoning, or `"<think>\n\n</think>\n"` to suppress it.
 
 A family that always thinks and offers no switch (OLMo 3 Think) appears in
@@ -64,7 +64,7 @@ _TOOL_ROLE_AS_ENVIRONMENT_FAMILIES = frozenset({OLMO_THINK, OLMO_INSTRUCT})
 ```
 
 The orchestrator emits `role: tool` turns. OLMo 3 Think's template has no `tool`
-branch and **silently drops them** — the model simply never sees any tool
+branch and **silently drops them** - the model simply never sees any tool
 output, and nothing errors. Listed families get those turns rewritten to
 `role: environment` before rendering.
 
@@ -79,7 +79,7 @@ _SUPPRESS_NO_FUNCTIONS_SUFFIX_FAMILIES = frozenset({OLMO_THINK})
 ```
 
 OLMo 3 Think appends *"You do not currently have access to any functions."* to
-any system message lacking a `functions` key — directly contradicting our system
+any system message lacking a `functions` key - directly contradicting our system
 prompt, which lists the tools. Listed families get `functions=""` injected to
 neutralise it.
 
@@ -99,16 +99,16 @@ _TOOL_CALL_FORMAT: Dict[ModelFamily, ToolCallFormat] = {
 > **This table is sparse on purpose.** Unlisted families default to
 > `ToolCallFormat.JSON`, so a family that emits standard
 > `<tool_call>{...}</tool_call>` needs no entry at all. Do not "complete" the
-> table — `get_tool_call_format(family)` is the accessor, and it resolves every
+> table - `get_tool_call_format(family)` is the accessor, and it resolves every
 > family, listed or not.
 
 The three formats:
 
 | Format | Syntax |
 |---|---|
-| `JSON` | `<tool_call>{"name": ..., "arguments": {...}}</tool_call>` — last one wins |
-| `PYTHONIC` | `<function_calls>\ntool(arg=val)\n</function_calls>` — newline-delimited |
-| `JSON_SINGLE` | `{"tool_call": {"name": ..., "arguments": {...}}}` — no XML wrapper, first occurrence wins |
+| `JSON` | `<tool_call>{"name": ..., "arguments": {...}}</tool_call>` - last one wins |
+| `PYTHONIC` | `<function_calls>\ntool(arg=val)\n</function_calls>` - newline-delimited |
+| `JSON_SINGLE` | `{"tool_call": {"name": ..., "arguments": {...}}}` - no XML wrapper, first occurrence wins |
 
 The format also feeds `PromptBuilder`, which documents the expected syntax in
 the system prompt, so the model is *told* to emit what the parser expects.
@@ -129,7 +129,7 @@ _FAMILY_DEFAULTS: ClassVar[Dict[str, Dict[str, Any]]] = {
 
 These are applied by a `mode="before"` validator using `setdefault`, so an
 explicit value in the YAML always wins. `top_k: -1` disables top-k in vLLM and
-`repetition_penalty: 1.0` is the no-op — that is how you express "the card does
+`repetition_penalty: 1.0` is the no-op - that is how you express "the card does
 not set this".
 
 ## 4. Teach the parser, if needed
@@ -178,7 +178,7 @@ behind by a rename.
 
 ## 6. Add configs
 
-Families get their own config directory — `experiments/configs/qwen3/`,
+Families get their own config directory - `experiments/configs/qwen3/`,
 `deepseek/`, `olmo3/`. If the family should appear across a whole suite, add it
 to `scripts/generate_configs.py` rather than hand-writing files; see
 [configuration.md](../configuration.md#where-configs-live).
