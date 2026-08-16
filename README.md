@@ -93,7 +93,7 @@ python scripts/download_datasets.py --dataset gaia     # or one at a time
 ## Run one experiment
 
 ```bash
-python scripts/run_experiment.py --config experiments/configs/qwen3/agentflow/gaia.yaml
+python scripts/run_experiment.py --config experiments/configs/qwen3/agentflow/gaia/qwen8B_subagent_tools_all.yaml
 ```
 
 `--config` is required. Override the output location rather than overwriting a

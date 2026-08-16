@@ -9,7 +9,7 @@ by this one.
 ## One run
 
 ```bash
-python scripts/run_experiment.py --config experiments/configs/qwen3/agentflow/gaia.yaml
+python scripts/run_experiment.py --config experiments/configs/qwen3/agentflow/gaia/qwen8B_subagent_tools_all.yaml
 ```
 
 `--config` is required. `--output-dir` overrides the config's `output_dir`,
