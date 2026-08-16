@@ -5,12 +5,9 @@ behaviours that previously differed between the duplicated copies -- relative
 path handling and missing-folder handling -- are pinned here.
 """
 
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "scripts/failure_modes/fine_tuning"))
-
-from runs import latest_run
+from agent_engine.analysis.fine_tuning.runs import latest_run
 
 
 def _run(parent, name, with_results=True):

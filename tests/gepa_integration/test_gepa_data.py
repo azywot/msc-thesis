@@ -8,8 +8,6 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
-
 # ---------------------------------------------------------------------------
 # Helpers — use the fine_tuning normalised row schema (not the GEPA output schema)
 # prepare.py's _norm_to_example expects: "question", "result", "data_source",

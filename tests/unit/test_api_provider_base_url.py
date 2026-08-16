@@ -1,6 +1,3 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from unittest.mock import patch, MagicMock
 from agent_engine.models.api_provider import OpenAIProvider

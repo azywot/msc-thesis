@@ -6,11 +6,7 @@ for each dataset, without running a full experiment.
 
 import argparse
 import json
-import sys
 from pathlib import Path
-
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from agent_engine.prompts import PromptBuilder
 from agent_engine.tools import (

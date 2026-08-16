@@ -6,14 +6,11 @@ tool-using subgroup is entirely wrong.
 """
 
 import json
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "scripts/failure_modes/fine_tuning"))
-
 import pytest
-from all_wrong import collect, latex_composition, with_rates
-from rollout_groups import domain_order
+from agent_engine.analysis.fine_tuning.all_wrong import collect, latex_composition, with_rates
+from agent_engine.analysis.fine_tuning.rollout_groups import domain_order
 
 
 def _group(root, domain, question, outcomes):

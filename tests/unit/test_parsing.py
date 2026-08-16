@@ -1,10 +1,5 @@
 """Unit tests for agent_engine.utils.parsing."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
-
 import pytest
 from agent_engine.utils.parsing import extract_answer, parse_tool_call, strip_thinking_tags
 

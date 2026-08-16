@@ -10,7 +10,7 @@ delegating to a sub-agent. GRPO on retrieval-intensive (Search-R1 / HotpotQA+NQ)
 (DeepMath) training data *hopefully* creates pressure toward tool use — tool-less rollouts lose reward,
 tool-using rollouts win.
 
-Full failure-mode analysis: `docs/failure_modes_fine_tuning_alignment.md`
+Full failure-mode analysis: `docs/archive/failure_modes_fine_tuning_alignment.md`
 
 ---
 

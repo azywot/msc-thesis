@@ -1,6 +1,3 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 import pytest
 pytest.importorskip("math_verify", reason="math_verify not installed in local dev env; tests run on cluster")

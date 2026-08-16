@@ -16,8 +16,6 @@ import sys
 import traceback
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 PASS = "PASS"
 FAIL = "FAIL"
 results: list[tuple[str, str, str]] = []  # (check, status, detail)

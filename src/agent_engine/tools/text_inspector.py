@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..core.tool import BaseTool, ToolResult
+from .registry import register_tool
 from ..utils.logging import get_logger
 from ..utils.parsing import strip_thinking_tags
 
@@ -590,3 +591,13 @@ class TextInspectorTool(BaseTool):
         # Orchestrator injects `full_file_path` for attached files.
         file_path = kwargs.get("full_file_path")
         return isinstance(file_path, str) and len(file_path) > 0
+
+
+@register_tool("text_inspector")
+def build_text_inspector(deps) -> TextInspectorTool:
+    """Construct the text inspector tool (moved verbatim from ``setup_tools``)."""
+    return TextInspectorTool(
+        max_chars=50000,
+        model_provider=deps.provider_for("text_inspector"),
+        use_thinking=deps.use_subagent_thinking,
+    )

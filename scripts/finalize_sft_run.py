@@ -42,10 +42,8 @@ import json
 import logging
 import re
 import shutil
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from verl_ext.checkpoint_utils import reconstruct_full_tensors  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s",

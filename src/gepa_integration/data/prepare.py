@@ -37,12 +37,8 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import sys
 from pathlib import Path
 from typing import Any
-
-# Make fine_tuning importable when run as a script
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from fine_tuning.data.prepare import (
     _download_deepmath,
