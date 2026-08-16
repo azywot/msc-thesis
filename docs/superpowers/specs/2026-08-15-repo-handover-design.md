@@ -24,17 +24,30 @@ and the ugliness is documented instead of fixed.
 These are the observable behaviours held fixed. They are the acceptance criteria, and
 each is locked by a fixture in `tests/characterization/` (Phase 0) before any code moves.
 
-| # | Observable | Locked by |
-|---|---|---|
-| B1 | `generate_configs.py` output, byte-for-byte against a snapshot of its *own* output recorded at Phase 0 | `test_configs_unchanged.py` |
-| B2 | Exported prompt templates and tool schemas, byte-for-byte | `test_prompts_unchanged.py` |
-| B3 | Orchestrator tool-call sequence, committed message text, memory contents, per-state token usage, and log ordering, for a mixed batch | `test_orchestrator_trace.py` |
-| B4 | `_compute_metrics` output over existing `raw_results.json` | `test_metrics_replay.py` |
-| B5 | `classify_failure` output and `breakdown.json` over the same runs | `test_failure_modes_replay.py` |
-| B6 | The 496 currently-passing tests keep passing | existing suite |
+| # | Observable | Locked by | Lifetime |
+|---|---|---|---|
+| B1 | `generate_configs.py` output, byte-for-byte against a snapshot of its *own* output recorded at Phase 0 | `test_configs_unchanged.py` | scaffolding |
+| B2 | Exported prompt templates and tool schemas, byte-for-byte | `test_prompts_unchanged.py` | scaffolding |
+| B3 | Orchestrator tool-call sequence, committed message text, memory contents, per-state token usage, and log ordering, for a mixed batch | `test_orchestrator_trace.py` | permanent |
+| B4 | `_compute_metrics` output over existing `raw_results.json` | `test_metrics_replay.py` | permanent |
+| B5 | `classify_failure` output and `breakdown.json` over the same runs | `test_failure_modes_replay.py` | permanent |
+| B6 | The 496 currently-passing tests keep passing | existing suite | permanent |
 
 Fixtures are committed and regenerated only via an explicit `--update-fixtures` flag.
 Regenerating a fixture is a deliberate, reviewable act, never a side effect of a test run.
+
+**Scaffolding gates are deleted at Task 20.** B1 and B2 fail on every *intended* change:
+adding a benchmark changes the generated configs, editing a prompt changes the templates.
+Since the point of this handover is that a new researcher does exactly those things,
+leaving B1/B2 in place would fail on their first honest commit and teach them to run
+`--update-fixtures` reflexively — at which point the gates protect nothing. They are
+replaced by property tests (`tests/unit/test_wiring_invariants.py`) that assert every
+dataset resolves to a loadable template and every registered tool exposes a well-formed
+schema. Those catch the real failure modes and survive people adding things.
+
+B3/B4/B5 are permanent. B3 goes red only when orchestrator *behaviour* changes, not when
+the system grows. B4/B5 replay over frozen historical runs, so adding a benchmark cannot
+invalidate them — they are what protects the thesis numbers.
 
 **B1 compares the generator against itself, not against the committed configs.** The two
 have drifted (see Open decisions), so a generator-vs-committed diff would fail at Phase 0

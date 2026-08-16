@@ -1594,7 +1594,59 @@ git commit -m "docs: task-oriented README, contributing guide, reference and how
 
 ---
 
-### Task 20: Final verification
+### Task 20: Retire the scaffolding gates, then final verification
+
+**Why this step exists.** The B-gates are not all the same kind of test, and
+keeping them all would leave a maintenance tax on the person this refactor is
+for.
+
+*Scaffolding — delete here.* **B1** (`configs.manifest`) and **B2**
+(`prompts.json`, `prompt_templates.manifest`) fail on every *intended* change:
+adding a benchmark changes the generated configs, editing a prompt changes the
+templates. Since the whole point of the handover is that a new researcher adds
+benchmarks and edits prompts, these gates would fail on their first honest
+commit. Worse, a test that fails on intended changes trains people to run
+`--update-fixtures` reflexively, at which point it protects nothing. They did
+their job the moment Phases 1-7 landed green.
+
+*Keepers — leave in place.* **B3** (orchestrator trace) only goes red when
+orchestrator *behaviour* changes; adding a dataset or a tool leaves it green,
+so it is a genuine regression test. **B4/B5** replay metrics and failure
+classification over frozen historical `raw_results.json`; adding a benchmark
+cannot change what an old run scores, so they stay valid indefinitely and are
+what protects the thesis numbers.
+
+- [ ] **Step 0a: Delete B1 and B2**
+
+```bash
+git rm tests/characterization/test_configs_unchanged.py \
+       tests/characterization/fixtures/configs.manifest \
+       tests/characterization/test_prompts_unchanged.py \
+       tests/characterization/fixtures/prompts.json \
+       tests/characterization/fixtures/prompt_templates.manifest
+```
+
+Keep the `--output-root` flag added to `generate_configs.py` in Task 2: it is
+useful on its own (dry-run a suite into a temp directory before overwriting the
+committed tree) and removing it would be a behaviour change.
+
+- [ ] **Step 0b: Replace them with property tests**
+
+Create `tests/unit/test_wiring_invariants.py`. These assert *properties* rather
+than snapshots, so they survive people adding things and only fail on real
+breakage:
+
+1. `test_every_dataset_spec_resolves_to_a_template` — for every key in
+   `DATASET_SPECS` (Task 12), `PromptBuilder` loads a non-empty template in both
+   AgentFlow and baseline mode. Catches a dataset wired up with no prompt.
+2. `test_every_template_parses` — every `*.yaml` under `prompts/templates/`
+   parses as YAML and carries the required keys. Catches a malformed edit.
+3. `test_every_registered_tool_has_a_valid_schema` — for every tool in the
+   registry (Task 11), `get_schema()` returns a dict with `name`, `description`,
+   and `parameters`, and `name` matches its registry key. Catches schema drift
+   and copy-paste registration bugs.
+
+Run the suite; expect green.
 
 - [ ] **Step 1: Full suite from a clean shell**
 
@@ -1604,12 +1656,12 @@ Expected: at or above the Phase 0 baseline count, 0 failures.
 - [ ] **Step 2: Every fixture green without `--update-fixtures`**
 
 Run: `/home/xchen1/.conda/envs/agent_engine/bin/python -m pytest tests/characterization -q`
-Expected: all pass.
+Expected: all pass. After Step 0a only the B3/B4/B5 fixtures remain.
 
 - [ ] **Step 3: Confirm fixtures were never silently regenerated**
 
 Run: `git log --oneline -- tests/characterization/fixtures/`
-Expected: fixtures appear in their Phase 0 recording commits and nowhere else, except a deliberate `--update-fixtures` commit for the LoRA-config decision if that was resolved.
+Expected: each fixture appears in its Phase 0 recording commit, then nowhere else until the Step 0a deletion commit. Any *other* commit touching a fixture means a refactor changed behaviour and the baseline was moved to hide it — investigate before proceeding. The one legitimate exception is a deliberate `--update-fixtures` commit for the LoRA-config decision, if that was resolved.
 
 - [ ] **Step 4: Confirm `experiments/configs/` is untouched across the whole branch**
 
