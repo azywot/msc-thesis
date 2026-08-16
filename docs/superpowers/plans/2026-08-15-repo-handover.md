@@ -17,7 +17,7 @@
 | 0 — safety net | 1-7 | `3f8b206`..`b85c95e` | done |
 | 1 — packaging, dead path inserts | 8 | `4472f6a` | done |
 | 2 — promote runner into `src/` | 9-10 | `7625a9e` | done |
-| 3 — tool factory registry | 11 | `cbe2802` | done |
+| 3 — tool factory registry | 11 | `caf6ad8` | done |
 | 4 — `DatasetSpec` | 12 | | next |
 | 5 — orchestrator batching collapse | 13-15 | | |
 | 6 — analysis move + shims | 16 | | |
