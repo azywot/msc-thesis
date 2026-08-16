@@ -802,9 +802,9 @@ cache_dir: "./cache"
 """
 
 
-def generate_suite(suite_name: str) -> None:
+def generate_suite(suite_name: str, configs_root: Path = CONFIGS_ROOT) -> None:
     suite = SUITES[suite_name]
-    suite_dir = CONFIGS_ROOT / suite["config_subdir"]
+    suite_dir = configs_root / suite["config_subdir"]
 
     # Remove stale configs
     removed = sum(1 for p in suite_dir.glob("*/*.yaml") if p.unlink() or True)
@@ -826,7 +826,7 @@ def generate_suite(suite_name: str) -> None:
                 )
                 path = dataset_dir / f"{stem}.yaml"
                 path.write_text(content)
-                print(f"  wrote {path.relative_to(CONFIGS_ROOT.parent)}")
+                print(f"  wrote {path.relative_to(configs_root.parent)}")
                 created += 1
         elif variant_type == "lora_inference":
             for stem, orch_key, sub_key, thinking in suite["variants"]:
@@ -835,7 +835,7 @@ def generate_suite(suite_name: str) -> None:
                 )
                 path = dataset_dir / f"{stem}.yaml"
                 path.write_text(content)
-                print(f"  wrote {path.relative_to(CONFIGS_ROOT.parent)}")
+                print(f"  wrote {path.relative_to(configs_root.parent)}")
                 created += 1
         elif variant_type == "subagent_orch_ablation":
             ds = {**DATASETS[dataset], **suite["split_overrides"].get(dataset, {})}
@@ -860,7 +860,7 @@ def generate_suite(suite_name: str) -> None:
                     )
                     path = dataset_dir / f"{stem}.yaml"
                     path.write_text(content)
-                    print(f"  wrote {path.relative_to(CONFIGS_ROOT.parent)}")
+                    print(f"  wrote {path.relative_to(configs_root.parent)}")
                     created += 1
         else:
             variants = suite.get("variants_by_dataset", {}).get(dataset, suite["variants"])
@@ -868,7 +868,7 @@ def generate_suite(suite_name: str) -> None:
                 content = make_config(suite, dataset, stem, model_key, direct, tools_key, thinking)
                 path = dataset_dir / f"{stem}.yaml"
                 path.write_text(content)
-                print(f"  wrote {path.relative_to(CONFIGS_ROOT.parent)}")
+                print(f"  wrote {path.relative_to(configs_root.parent)}")
                 created += 1
 
     print(f"\n[{suite_name}] removed {removed} old, created {created} configs.")
@@ -882,12 +882,18 @@ def main():
         default=None,
         help="Suite to generate (default: all suites).",
     )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=CONFIGS_ROOT,
+        help="Directory to write configs into (default: experiments/configs).",
+    )
     args = parser.parse_args()
 
     suites_to_run = [args.suite] if args.suite else list(SUITES.keys())
     for suite_name in suites_to_run:
         print(f"\n=== Generating suite: {suite_name} ===")
-        generate_suite(suite_name)
+        generate_suite(suite_name, args.output_root)
 
     print("\nAll done.")
 
