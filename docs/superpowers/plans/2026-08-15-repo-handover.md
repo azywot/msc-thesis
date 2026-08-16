@@ -47,7 +47,7 @@ landed commits invites redoing finished work.
   on a fresh clone they skip and the suite reports 501. That is expected, not a
   regression -- but it means a run showing 501 has *not* verified the metrics or
   the failure classifier.
-- **Never run `scripts/generate_configs.py` against `experiments/configs/`.** It is not idempotent and rewrites 10 committed LoRA configs. All config tests write to a temp directory.
+- **Never run `scripts/generate_configs.py` against `experiments/configs/`.** It was not idempotent and rewrote 10 committed LoRA configs. *(Resolved after the phases landed - the generator now reproduces the committed tree exactly, guarded by a test. The constraint stood for the duration of the refactor.)* All config tests write to a temp directory.
 - **Never modify `src/fine_tuning/agentflow/`** except to add `VENDORED.md`. It is vendored third-party code.
 - **`classify_failure` is frozen.** Its logic is moved byte-identical, never edited.
 - **No new features, no dependency upgrades, no performance work, no reformatting commits.**
@@ -1907,15 +1907,43 @@ its code was often wrong**, because it was written from a reading of the
 codebase rather than from running it. Task 11, 12, 15, 16, 17, 18, 19 and 20
 each needed a mechanical correction found only by execution.
 
-The LoRA-config decision below is **still open**. It blocks nothing.
+The LoRA-config decision below was **resolved after the phases landed** - see the section at the end.
 
 ---
 
-## Open decision carried from the spec
+## Open decision carried from the spec - RESOLVED 2026-08-16
 
-`scripts/generate_configs.py` is not idempotent: it rewrites 10 committed
+`scripts/generate_configs.py` was not idempotent: it rewrote 10 committed
 `qwen3/lora_inference/*` configs, reverting a hand-edited `_v2` run
-(`global_step_40`) to `global_step_20`. **Blocked on Agata:** which is correct?
-Not a blocker for any task here — B1 compares the generator against itself.
-When answered, fix the generator and regenerate the B1 fixture with
-`--update-fixtures` in a single dedicated commit.
+(`global_step_40`) to `global_step_20`.
+
+**Answer: v2/`global_step_40` is correct.** The committed configs are what the
+reported v2 numbers came from, and
+`src/agent_engine/analysis/fine_tuning/base_vs_lora.py` reads *both*
+`lora_inference/<ds>/qwen8B_sub1_7b_<suf>` (v1) and `..._v2` - so the `_v2`
+suffix on `output_dir` is load-bearing, not cosmetic. Dropping it would orphan
+the v2 results and break that comparison.
+
+The hand-edit was three coordinated changes per file, not one: `name` and
+`output_dir` gained a `_v2` suffix and `lora_adapter_path` moved to the v2 run.
+So the fix is not simply bumping the path. `LORA_ADAPTER_PLACEHOLDER` now names
+the v2 adapter, and a new `run_suffix` suite key (`LORA_RUN_SUFFIX = "_v2"`) is
+applied to the experiment name and output dir but **not** to filenames - which
+is exactly how the hand-edit had it, keeping config paths stable for anything
+that references them.
+
+Verified: `generate_configs.py --output-root <tmp>` now reproduces every
+committed config byte-for-byte, and running it in place leaves `git status`
+clean. Guarded by
+`tests/unit/test_wiring_invariants.py::test_the_generator_reproduces_the_committed_configs`,
+mutation-tested against three regressions including the original bug.
+
+The B1 fixture this note anticipated no longer exists - it was retired in
+Task 20 - so no fixture regeneration was needed.
+
+**Left as-is:** the adapter path does not resolve. `/scratch-shared` is not
+durable and the `qwen3-8b-grpo-search-math{,-v2}` adapters were purged from it,
+which is why the LoRA evaluations cannot be re-run at all
+(`jobs/fine_tuning/007_train_sft_folded.job` now archives adapters to
+`data/adapters/` for that reason). The dead path is recorded rather than
+guessed at, because it is what the reported numbers were produced with.

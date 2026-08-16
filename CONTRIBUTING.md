@@ -127,8 +127,10 @@ python scripts/generate_configs.py                              # then for real
 ```
 
 Preview into a temp directory and diff before overwriting the committed tree.
-The generator is **not** idempotent against hand-edited files: it will revert
-them without saying so.
+Regenerating is a no-op against the committed tree, and
+`tests/unit/test_wiring_invariants.py` fails if that ever stops being true.
+What it will not tolerate is a hand-edit to a generated file: the next run
+reverts it without saying so.
 
 ## Commits
 

@@ -222,3 +222,57 @@ def test_an_unregistered_name_builds_nothing_rather_than_raising(tmp_path):
     """Preserved from the if/elif chain this registry replaced: an unknown name
     in `enabled_tools` is skipped silently."""
     assert build_tool("no_such_tool", _deps(tmp_path)) is None
+
+
+# --- config generator -----------------------------------------------------
+
+
+def test_the_generator_reproduces_the_committed_configs(tmp_path):
+    """Regenerating must not change a single committed file.
+
+    The generator deletes and rewrites every YAML in a suite, so any drift
+    between it and its own output is silently destructive: someone regenerates
+    for an unrelated reason and a hand-tuned value disappears without a word.
+    That happened -- the ten ``qwen3/lora_inference`` configs were edited to
+    point at the v2 adapter while the generator still produced v1, so any
+    regeneration reverted them and orphaned the v2 results that
+    ``analysis/fine_tuning/base_vs_lora.py`` reads.
+
+    This test is the guard: it generates into a temp root and compares against
+    the committed tree. If it fails, either the generator or the committed
+    configs changed without the other, and running the generator would discard
+    work.  Fix the generator rather than re-editing the output.
+    """
+    import filecmp
+    import subprocess
+    import sys
+
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    committed = repo / "experiments" / "configs"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "generate_configs.py"),
+            "--output-root",
+            str(tmp_path),
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+
+    mismatched, missing = [], []
+    for generated in sorted(tmp_path.rglob("*.yaml")):
+        relative = generated.relative_to(tmp_path)
+        counterpart = committed / relative
+        if not counterpart.exists():
+            missing.append(str(relative))
+        elif not filecmp.cmp(generated, counterpart, shallow=False):
+            mismatched.append(str(relative))
+
+    assert not missing, f"generator produces files that are not committed: {missing}"
+    assert not mismatched, "regenerating would overwrite these committed configs: " + ", ".join(
+        mismatched
+    )

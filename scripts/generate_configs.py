@@ -142,10 +142,30 @@ MODELS = {
 # Replace <run-tag> with the value printed by 005_train.job ("Run tag: ...") once
 # training is complete.  VERL writes the best-tracked adapter to:
 #   /scratch-shared/azywot/fine_tuning/lora_adapters/<experiment>/<run-tag>/best_checkpoint/actor/lora_adapter
+# The adapter the committed lora_inference configs evaluate: the *v2* GRPO run at
+# global_step_40.  It was v1/global_step_20 here while the generated configs were
+# hand-edited to v2, so regenerating silently reverted all ten of them -- the
+# generator and its own output disagreed.  Keep this in step with LORA_RUN_SUFFIX
+# below; the two describe the same run.
+#
+# NOTE: this path no longer resolves.  /scratch-shared is not durable and the
+# qwen3-8b-grpo-search-math{,-v2} adapters were purged from it, which is why the
+# LoRA evaluations cannot be re-run (see jobs/fine_tuning/007_train_sft_folded.job,
+# which now archives adapters to data/adapters/ for exactly this reason).  It is
+# recorded rather than corrected because it is what the reported v2 numbers were
+# produced with; point it at a durable copy when one exists.
 LORA_ADAPTER_PLACEHOLDER = (
     "/scratch-shared/azywot/fine_tuning/lora_adapters/"
-    "qwen3-8b-grpo-search-math/22-05-2026_00-01-23031012/global_step_20/actor/lora_adapter"
+    "qwen3-8b-grpo-search-math-v2/29-05-2026_11-36-23210365/global_step_40/actor/lora_adapter"
 )
+
+# Appended to the experiment *name* and *output_dir* of the lora_inference suite,
+# not to its filenames -- which is exactly how the hand-edit had it.  It keeps the
+# v2 results in their own directory alongside v1's, and
+# src/agent_engine/analysis/fine_tuning/base_vs_lora.py reads both paths to compare
+# the two runs, so the suffix is load-bearing: dropping it would orphan the v2
+# results and break that analysis.
+LORA_RUN_SUFFIX = "_v2"
 
 # SFT adapters are archived off scratch by 007_train_sft_folded.job, because scratch is not
 # durable: the GRPO adapter directories were purged from /scratch-shared while the configs above
@@ -449,6 +469,8 @@ SUITES = {
         "split_overrides": {},
         # Replace <run-tag> with the value from the training job log before running inference.
         "lora_adapter_path": LORA_ADAPTER_PLACEHOLDER,
+        # Names and output dirs carry the adapter version; filenames do not.
+        "run_suffix":        LORA_RUN_SUFFIX,
     },
     "sft_inference": {
         "description_tag": "[SFT inference]",
@@ -586,8 +608,12 @@ def make_config_lora_inference(
     models_block  = _model_block_lora_orchestrator(
         orch_key, sub_key, tools, lora_path, adapter_label
     )
-    exp_name      = f"{suite['name_prefix']}_{dataset}_{stem}"
-    output_dir    = f"{suite['output_dir_root']}/{dataset}/{stem}"
+    # Applied to the name and the output dir but deliberately not to the filename,
+    # so an adapter version gets its own results directory and its own W&B rows
+    # while the config keeps a stable path that job scripts can reference.
+    run_suffix    = suite.get("run_suffix", "")
+    exp_name      = f"{suite['name_prefix']}_{dataset}_{stem}{run_suffix}"
+    output_dir    = f"{suite['output_dir_root']}/{dataset}/{stem}{run_suffix}"
     wandb_project = suite["wandb_project"]
 
     comment_line = (

@@ -347,5 +347,7 @@ python scripts/generate_configs.py
 > configs in `local/`, `gepa/` or `fine_tuning/`, which the generator never
 > touches.
 >
-> It is also **not idempotent against hand-edits**: regenerating reverts any
-> manual change to a generated file without reporting it.
+> **Regeneration reverts hand-edits to generated files**, silently. It is
+> currently a no-op against the committed tree - `tests/unit/test_wiring_invariants.py`
+> asserts exactly that - so if you need a different value, put it in the
+> generator, not in the output.
