@@ -31,7 +31,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     the full ~33 GB FSDP state dict per checkpoint (no `lora_adapter/`, unlike the RL path); these
     reconstruct the sharded DTensor LoRA weights into ~350 MB PEFT adapters during training and
     keep only best/last.
-  - `jobs/fine_tuning/008_{train,test}_sft_folded.job`, `experiments/configs/qwen3/sft_inference/`
+  - `jobs/fine_tuning/007_train_sft_folded.job`, `jobs/fine_tuning/007_run_tests_for_sft_folded.job`, `experiments/configs/qwen3/sft_inference/`
     (5 eval configs) — full run + eval pipeline. The original job
     (`007_train_sft.job`) trained on a conversation format the orchestrator never uses at
     inference (see diagnosis above); it has been removed rather than kept as a comparison

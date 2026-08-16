@@ -112,9 +112,12 @@ def main() -> int:
         if prompt_ids != expected:
             failures["prompt_differs_from_inference"] += 1
 
-        supervised = tok.decode([t for t, m in zip(input_ids, loss_mask) if m == 1])
-        if supervised != msgs[2]["content"] + tok.eos_token:
+        supervised_ids = [t for t, m in zip(input_ids, loss_mask) if m == 1]
+        expected_supervised_ids = tok(msgs[2]["content"], add_special_tokens=False)["input_ids"]
+        expected_supervised_ids.append(tok.eos_token_id)
+        if supervised_ids != expected_supervised_ids:
             failures["supervised_span_is_not_the_target"] += 1
+        supervised = tok.decode(supervised_ids)
         if "<think>" in supervised or "</think>" in supervised:
             failures["thinking_in_supervised_span"] += 1
         for tr in tool_results.get(folded.iloc[k]["question"], []):
