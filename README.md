@@ -1,16 +1,16 @@
-# CoSMAS — Collaborative Small-Agent System
+# CoSMAS - Collaborative Small-Agent System
 
 MSc thesis research framework for evaluating **multi-agent collaboration with
 small LLMs**.
 
 CoSMAS asks one question: when a small model is given planning, structured
-memory and tool sub-agents, does it actually do better — or does the machinery
+memory and tool sub-agents, does it actually do better - or does the machinery
 just add cost? To answer that, it runs the same model, on the same benchmark,
 with the same tools, in two modes:
 
-- **AgentFlow** — a planning turn, structured memory rebuilt each turn, explicit
+- **AgentFlow** - a planning turn, structured memory rebuilt each turn, explicit
   sub-goals.
-- **Baseline** — vanilla LLM-with-tools, a growing conversation, no planning.
+- **Baseline** - vanilla LLM-with-tools, a growing conversation, no planning.
 
 One YAML key (`baseline: true`) switches between them. Everything else is held
 constant, which is what makes the comparison worth anything.
@@ -45,7 +45,7 @@ are stale by definition.
 
 ## Install
 
-**Cluster (conda + vLLM)** — one job builds the environment:
+**Cluster (conda + vLLM)** - one job builds the environment:
 
 ```bash
 sbatch jobs/001_setup.job     # creates the `agent_engine` conda env, installs the project
@@ -142,7 +142,7 @@ src/
     caching/           search + URL cache
     analysis/          failure-mode classifier and analyses over recorded runs
     utils/             tool-call parsing, logging, seeding
-  fine_tuning/         RL (GRPO) + SFT; agentflow/ is vendored — see its VENDORED.md
+  fine_tuning/         RL (GRPO) + SFT; agentflow/ is vendored - see its VENDORED.md
   gepa_integration/    prompt optimisation
   verl_ext/            local verl extensions (folded SFT dataset, checkpoint utils)
 
@@ -153,7 +153,7 @@ experiments/
   configs/             YAML configs by model family; most are generated
   scripts/             run_all_in_folder.sh
   results/             default output root
-jobs/                  SLURM scripts — 001-007 setup, fine_tuning/, gepa/, grpo_inference/
+jobs/                  SLURM scripts - 001-007 setup, fine_tuning/, gepa/, grpo_inference/
 tests/                 unit/ + characterization/ (behaviour-locking fixtures)
 examples/              one runnable script per tool
 docs/                  see the table above
@@ -169,8 +169,8 @@ question. Each turn is one `generate()` call across every unfinished question.
 
 **AgentFlow never shows the model its own past output.** The prompt is rebuilt
 each turn from a query analysis plus an action history. Baseline grows a
-conversation. They use *different prompt template files* — `*_dataset*.yaml` vs
-`*_baseline*.yaml` — so changing one does not change the other.
+conversation. They use *different prompt template files* - `*_dataset*.yaml` vs
+`*_baseline*.yaml` - so changing one does not change the other.
 
 **Most configs are generated.** Editing a generated YAML works until someone
 runs `python scripts/generate_configs.py`, which silently reverts it. Change the
@@ -180,7 +180,7 @@ generator.
 keys, so a misspelling means the default is used and nothing warns you.
 
 **The tool and dataset seams are registries, not if/elif chains.** Adding either
-means adding a decorated factory or a spec row — never editing the orchestrator.
+means adding a decorated factory or a spec row - never editing the orchestrator.
 
 ---
 
@@ -193,7 +193,7 @@ pytest tests/characterization -q
 ```
 
 `tests/characterization/` locks current behaviour against committed fixtures. If
-one fails, a refactor changed behaviour — investigate before regenerating the
+one fails, a refactor changed behaviour - investigate before regenerating the
 fixture. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
@@ -211,7 +211,7 @@ Working directory is `$HOME/azywot/msc-thesis/`.
 | `jobs/005_export_prompts.job` | Export prompt templates + tool schemas |
 | `jobs/006_create_configs.job` | Regenerate all experiment configs |
 | `jobs/007_add_bigcodebench_libs.job` | Extra libraries for BigCodeBench |
-| `jobs/fine_tuning/` | SFT and RL training — see the pipeline docs |
+| `jobs/fine_tuning/` | SFT and RL training - see the pipeline docs |
 | `jobs/gepa/` | GEPA data prep, smoke tests, optimisation |
 | `jobs/grpo_inference/` | Evaluation of base / SFT / GRPO checkpoints |
 
