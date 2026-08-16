@@ -18,7 +18,7 @@
 | 1 — packaging, dead path inserts | 8 | `4472f6a` | done |
 | 2 — promote runner into `src/` | 9-10 | `7625a9e` | done |
 | 3 — tool factory registry | 11 | `caf6ad8` | done |
-| 4 — `DatasetSpec` | 12 | `PENDING` | done |
+| 4 — `DatasetSpec` | 12 | `2cee5a2` | done |
 | 5 — orchestrator batching collapse | 13-15 | | next |
 | 6 — analysis move + shims | 16 | | |
 | 7 — tests for untested modules | 17 | | |
