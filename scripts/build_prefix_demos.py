@@ -18,7 +18,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import logging
 from pathlib import Path
@@ -27,21 +26,18 @@ import pandas as pd
 
 from build_sft_parquet import _classify_turns, _strip_thinking
 
+# Single source of truth: the runtime store must hash questions exactly as the
+# builder does, so both import the same function.
+#
+# Not ``extra_info.idx``: prepare.py assigns idx per data source, so it collides
+# across them (idx 669 is both a deepmath and a hotpotqa question in
+# combined_train.parquet), and keying on it would attach a maths demonstration to
+# a search question with nothing downstream to notice. Not ``question_id``
+# either: that is the row position in the shuffled parquet, which the rollout
+# worker never sees. The question text is unique and both sides hold it verbatim.
+from verl_ext.prefix_rft.demos import question_key
+
 logger = logging.getLogger(__name__)
-
-
-def question_key(question: str) -> str:
-    """Stable lookup key for a training question.
-
-    Not ``extra_info.idx``: prepare.py assigns idx per data source, so it
-    collides across them (idx 669 is both a deepmath and a hotpotqa question in
-    combined_train.parquet). Keying on idx would attach a maths demonstration to
-    a search question and nothing downstream would notice. Not ``question_id``
-    either: that is the row position in the shuffled parquet, which the rollout
-    worker never sees. The question text is unique and is the one field both
-    sides hold verbatim.
-    """
-    return hashlib.sha1(str(question).strip().encode("utf-8")).hexdigest()
 
 
 def record_to_steps(record: dict) -> list[dict]:

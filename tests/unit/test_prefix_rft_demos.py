@@ -143,3 +143,50 @@ def test_gate_rejects_surviving_thinking():
     row = _good_row()
     row["steps"][2]["response"] = "<think>oops</think>final answer"
     assert any("<think>" in p for p in check_row(row))
+
+
+import pandas as pd
+
+from verl_ext.prefix_rft.demos import DemoStore
+
+
+def _write_store(tmp_path):
+    path = tmp_path / "demos.parquet"
+    pd.DataFrame(
+        [
+            {
+                "question_key": question_key("q3"),
+                "question_id": 3,
+                "data_source": "deepmath",
+                "question": "q3",
+                "n_steps": 2,
+                "steps": [
+                    {"response": "a", "tool_name": "web_search", "tool_result": "r"},
+                    {"response": "b", "tool_name": None, "tool_result": None},
+                ],
+            }
+        ]
+    ).to_parquet(path, index=False)
+    return path
+
+
+def test_store_returns_steps_for_a_known_question(tmp_path):
+    store = DemoStore.from_parquet(_write_store(tmp_path))
+    assert store.n_steps("q3") == 2
+    assert store.steps("q3")[0]["tool_result"] == "r"
+
+
+def test_store_lookup_is_whitespace_insensitive(tmp_path):
+    store = DemoStore.from_parquet(_write_store(tmp_path))
+    assert store.n_steps("  q3 ") == 2
+
+
+def test_store_misses_return_zero_rather_than_raising(tmp_path):
+    store = DemoStore.from_parquet(_write_store(tmp_path))
+    assert store.n_steps("never seen") == 0
+    assert store.steps("never seen") == []
+
+
+def test_store_reports_coverage(tmp_path):
+    store = DemoStore.from_parquet(_write_store(tmp_path))
+    assert store.coverage() == (1, 2)
