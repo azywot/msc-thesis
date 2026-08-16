@@ -7,7 +7,6 @@ processing all examples from a dataset and saving results.
 import argparse
 import json
 import os
-import sys
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -15,9 +14,6 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from dotenv import load_dotenv
 load_dotenv()
-
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from agent_engine.config import load_experiment_config
 from agent_engine.models.base import ModelFamily, get_tool_call_format

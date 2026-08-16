@@ -56,7 +56,6 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from verl_ext.checkpoint_utils import find_model_shards  # noqa: E402
 
 

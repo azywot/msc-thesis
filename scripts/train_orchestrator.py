@@ -29,9 +29,6 @@ from pathlib import Path
 
 import yaml
 
-# Add src to path (matches run_experiment.py convention)
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 # Route INFO/DEBUG to stdout (→ SLURM .log); WARNING+ stay on stderr (→ SLURM .err).
 # force=True replaces any handlers that packages may have already installed.
 class _MaxLevelFilter(logging.Filter):

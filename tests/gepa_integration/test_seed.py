@@ -3,7 +3,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
 
 from agent_engine.core.orchestrator import _DEFAULT_PLANNING_SUFFIX_TOOLS

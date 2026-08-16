@@ -81,22 +81,22 @@ training = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/agent-engine"
-Repository = "https://github.com/yourusername/agent-engine"
+Homepage = "https://github.com/azywot/msc-thesis"
+Repository = "https://github.com/azywot/msc-thesis"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.black]
 line-length = 100
-target-version = ["py39", "py310", "py311"]
+target-version = ["py311"]
 
 [tool.isort]
 profile = "black"
 line_length = 100
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false

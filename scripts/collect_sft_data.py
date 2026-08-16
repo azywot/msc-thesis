@@ -27,7 +27,6 @@ import argparse
 import json
 import logging
 import os
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -36,8 +35,6 @@ import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv()
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from agent_engine.caching import CacheManager
 from agent_engine.config import load_experiment_config

@@ -10,12 +10,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Add src to path so examples can be run from anywhere inside msc-thesis/.
-import sys
-_SRC = Path(__file__).parent.parent / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
 from agent_engine.caching import CacheManager
 from agent_engine.config.schema import ModelConfig
 from agent_engine.core import AgenticOrchestrator, ToolRegistry

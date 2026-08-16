@@ -21,8 +21,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
-# Add src/ and scripts/ to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 import yaml
