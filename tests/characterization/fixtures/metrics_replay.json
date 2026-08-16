@@ -1,0 +1,156 @@
+{
+  "experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/aime/qwen8B_subagent_tools_orchestrator/train_2026-03-15-21-30-27_20752258/raw_results.json": {
+    "overall": {
+      "accuracy": 0.55,
+      "em": 0.4666666666666667,
+      "f1": 0.4666666666666667,
+      "num_correct": "33 of 60",
+      "token_usage": {
+        "completion_tokens": 530980,
+        "prompt_tokens": 298700,
+        "total_tokens": 829680
+      }
+    },
+    "per_level": {
+      "2024": {
+        "accuracy": 0.6333333333333333,
+        "em": 0.4666666666666667,
+        "f1": 0.4666666666666667,
+        "num_correct": "19 of 30",
+        "token_usage": {
+          "completion_tokens": 256808,
+          "prompt_tokens": 138751,
+          "total_tokens": 395559
+        },
+        "tool_usage": {
+          "code_generator": 0,
+          "image_inspector": 0,
+          "mind_map": 0,
+          "text_inspector": 0,
+          "web_search": 0
+        }
+      },
+      "2025": {
+        "accuracy": 0.4666666666666667,
+        "em": 0.4666666666666667,
+        "f1": 0.4666666666666667,
+        "num_correct": "14 of 30",
+        "token_usage": {
+          "completion_tokens": 274172,
+          "prompt_tokens": 159949,
+          "total_tokens": 434121
+        },
+        "tool_usage": {
+          "code_generator": 0,
+          "image_inspector": 0,
+          "mind_map": 0,
+          "text_inspector": 0,
+          "web_search": 0
+        }
+      }
+    },
+    "tool_usage": {
+      "code_generator": 0,
+      "image_inspector": 0,
+      "mind_map": 0,
+      "text_inspector": 0,
+      "web_search": 0
+    }
+  },
+  "experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/gaia/qwen8B_subagent_tools_orchestrator/all_validation_2026-03-15-20-55-53_20752049/raw_results.json": {
+    "overall": {
+      "accuracy": 0.23030303030303031,
+      "em": 0.21212121212121213,
+      "f1": 0.23909238909238906,
+      "num_correct": "38 of 165",
+      "token_usage": {
+        "completion_tokens": 603367,
+        "prompt_tokens": 1825134,
+        "total_tokens": 2428501
+      }
+    },
+    "per_level": {
+      "1": {
+        "accuracy": 0.32075471698113206,
+        "em": 0.2830188679245283,
+        "f1": 0.32438316400580547,
+        "num_correct": "17 of 53",
+        "token_usage": {
+          "completion_tokens": 192553,
+          "prompt_tokens": 492220,
+          "total_tokens": 684773
+        },
+        "tool_usage": {
+          "code_generator": 5,
+          "image_inspector": 0,
+          "mind_map": 0,
+          "text_inspector": 9,
+          "web_search": 39
+        }
+      },
+      "2": {
+        "accuracy": 0.22093023255813954,
+        "em": 0.20930232558139536,
+        "f1": 0.23555740125507574,
+        "num_correct": "19 of 86",
+        "token_usage": {
+          "completion_tokens": 309664,
+          "prompt_tokens": 1070934,
+          "total_tokens": 1380598
+        },
+        "tool_usage": {
+          "code_generator": 21,
+          "image_inspector": 0,
+          "mind_map": 0,
+          "text_inspector": 12,
+          "web_search": 72
+        }
+      },
+      "3": {
+        "accuracy": 0.07692307692307693,
+        "em": 0.07692307692307693,
+        "f1": 0.07692307692307693,
+        "num_correct": "2 of 26",
+        "token_usage": {
+          "completion_tokens": 101150,
+          "prompt_tokens": 261980,
+          "total_tokens": 363130
+        },
+        "tool_usage": {
+          "code_generator": 3,
+          "image_inspector": 0,
+          "mind_map": 0,
+          "text_inspector": 5,
+          "web_search": 18
+        }
+      }
+    },
+    "tool_usage": {
+      "code_generator": 29,
+      "image_inspector": 0,
+      "mind_map": 0,
+      "text_inspector": 26,
+      "web_search": 129
+    }
+  },
+  "experiments/results/1_milestone_no_img_no_mindmap_AgentFlow/gpqa/qwen8B_subagent_tools_orchestrator/diamond_2026-03-15-21-19-20_20752198/raw_results.json": {
+    "overall": {
+      "accuracy": 0.5858585858585859,
+      "em": 0.5858585858585859,
+      "f1": 0.5858585858585859,
+      "num_correct": "116 of 198",
+      "token_usage": {
+        "completion_tokens": 731099,
+        "prompt_tokens": 292227,
+        "total_tokens": 1023326
+      }
+    },
+    "tool_usage": {
+      "code_generator": 4,
+      "image_inspector": 0,
+      "mind_map": 0,
+      "text_inspector": 0,
+      "web_search": 1
+    }
+  }
+}
