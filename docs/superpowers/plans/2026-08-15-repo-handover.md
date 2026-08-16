@@ -18,8 +18,8 @@
 | 1 — packaging, dead path inserts | 8 | `4472f6a` | done |
 | 2 — promote runner into `src/` | 9-10 | `7625a9e` | done |
 | 3 — tool factory registry | 11 | `caf6ad8` | done |
-| 4 — `DatasetSpec` | 12 | | next |
-| 5 — orchestrator batching collapse | 13-15 | | |
+| 4 — `DatasetSpec` | 12 | `PENDING` | done |
+| 5 — orchestrator batching collapse | 13-15 | | next |
 | 6 — analysis move + shims | 16 | | |
 | 7 — tests for untested modules | 17 | | |
 | 8 — docs, archive, final verification | 18-20 | | |
@@ -1212,7 +1212,7 @@ git commit -m "refactor: tool construction moves to a factory registry"
 
 **Critical constraint:** `builder.py` maps `"deepmath"` and `"math"` to the math template, but **neither is a registered dataset** — they are RL-prep names with no loader. The spec table must therefore be keyed **independently of `DatasetRegistry`**, and `get_spec` must return a safe default for unknown names so the existing `FileNotFoundError` → base-template fallback still works.
 
-- [ ] **Step 1: Write the spec table**
+- [x] **Step 1: Write the spec table**
 
 ```python
 """Per-dataset facts that are not the loader's business.
@@ -1261,7 +1261,7 @@ def get_spec(name: str) -> DatasetSpec:
 
 **Verify this table against the source before trusting it.** Cross-check every row against `prompts/builder.py:82-91`, `_STRATIFIED` in `run_experiment.py:614`, and `_level_key` at `:580-592`. Note `hle` is stratified by `category`; `musique` uses the gaia template but is **not** stratified; `math500`/`amc` fall back from `difficulty` to `year`.
 
-- [ ] **Step 2: Rewrite the builder dispatch**
+- [x] **Step 2: Rewrite the builder dispatch**
 
 Replace `builder.py:82-91` with:
 
@@ -1274,7 +1274,7 @@ template = self.load_template(template_name)
 
 Confirm the `_baseline` suffix convention holds for every template in `src/agent_engine/prompts/templates/system/` before relying on it. Keep the surrounding `try/except FileNotFoundError` fallback untouched.
 
-- [ ] **Step 3: Rewrite `level_key` and `_STRATIFIED` in `runner/metrics.py`**
+- [x] **Step 3: Rewrite `level_key` and `_STRATIFIED` in `runner/metrics.py`**
 
 ```python
 def level_key(example, dataset_name: str) -> str:
@@ -1289,17 +1289,40 @@ def level_key(example, dataset_name: str) -> str:
 
 and replace `dataset_name in _STRATIFIED` with `get_spec(dataset_name).stratified`.
 
-- [ ] **Step 4: Run B2 and B4 first — they are the gate for this task**
+- [x] **Step 4: Run B2 and B4 first — they are the gate for this task**
 
 Run: `pytest tests/characterization/test_prompts_unchanged.py tests/characterization/test_metrics_replay.py -q`
 Expected: PASS with fixtures **unmodified**. If either fails, the spec table is wrong; fix the table, never the fixture.
 
-- [ ] **Step 5: Run ALL gates, then commit**
+- [x] **Step 5: Run ALL gates, then commit**
 
 ```bash
 git add -A
 git commit -m "refactor: consolidate per-dataset facts into DatasetSpec"
 ```
+
+**Corrected while executing (2026-08-16).** The mappings in this task's table
+were right; three of its *mechanics* were not, and each would have changed
+behaviour:
+
+1. **`get_spec` must not lowercase.** `level_key` and `_STRATIFIED` compared the
+   raw `dataset_name`, so `"GAIA"` was unstratified with no level field, while
+   `builder.py` lowercased before dispatching. Folding case inside `get_spec`
+   would have made `"GAIA"` stratified. The builder lowercases at its call site
+   instead, exactly as before.
+2. **`level_key` must keep `dict.get(key, default)`, not a `None` check.** The
+   planned `value = md.get(f); if value is None and fallback:` differs from the
+   original nested `.get` whenever a key is *present with value `None`*: the
+   original yields `"None"`, the rewrite yields the fallback or `"unknown"`.
+3. **`template` defaults to `None`, not `"base"`.** The old dispatch left
+   `template_name = dataset_name` for unrecognised names, so the lookup failed
+   and the `FileNotFoundError` handler logged `Template 'X' not found, using
+   base template`. Resolving straight to `"base"` reaches the same prompt but
+   skips that warning, which is a run artefact in `experiment.log`.
+
+Verified by differential test against the pre-change logic: 42 template-dispatch
+cases, 252 `level_key` cases (including present-but-`None` metadata), and 21
+stratification cases, all with 0 mismatches.
 
 ---
 

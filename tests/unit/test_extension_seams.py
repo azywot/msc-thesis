@@ -19,6 +19,8 @@ from agent_engine.models.base import (
     ToolCallFormat,
     get_tool_call_format,
 )
+from agent_engine.datasets.spec import DATASET_SPECS
+from agent_engine.prompts import PromptBuilder
 from agent_engine.tools.registry import registered_tools
 
 
@@ -62,3 +64,36 @@ def test_family_tables_contain_only_real_families(name, members):
     silently inert -- the lookup simply never matches."""
     stale = [m for m in members if not isinstance(m, ModelFamily)]
     assert not stale, f"{name} contains non-ModelFamily entries: {stale}"
+
+
+# --- dataset seam ---------------------------------------------------------
+#
+# Deliberately NOT asserting that every registered dataset has a DATASET_SPECS
+# row: unknown names fall back to a default spec on purpose, which is how the
+# hop/QA datasets (nq, triviaqa, ...) get the base template.  Requiring a row
+# each would fail on datasets that are correct as they stand -- the same mistake
+# the sparse model-family table invites.
+
+
+@pytest.mark.parametrize("name", sorted(DATASET_SPECS), ids=str)
+def test_every_dataset_spec_template_exists(name):
+    """A spec naming a template that isn't on disk would silently degrade to the
+    base prompt at runtime, via the FileNotFoundError fallback."""
+    spec = DATASET_SPECS[name]
+    if spec.template is None:
+        return
+    builder = PromptBuilder()
+    for stem in (spec.template, f"{spec.template}_baseline"):
+        template = builder.load_template(stem)
+        assert template, f"template '{stem}' (for dataset '{name}') is empty"
+
+
+@pytest.mark.parametrize("name", sorted(DATASET_SPECS), ids=str)
+def test_stratified_datasets_declare_a_level_field(name):
+    """`compute_metrics` emits per_level only for stratified datasets; one
+    without a level_field would bucket every example under 'all'."""
+    spec = DATASET_SPECS[name]
+    if spec.stratified:
+        assert spec.level_field, f"'{name}' is stratified but declares no level_field"
+    if spec.level_fallback_field:
+        assert spec.level_field, f"'{name}' has a fallback level field but no primary one"

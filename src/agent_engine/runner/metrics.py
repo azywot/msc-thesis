@@ -8,20 +8,24 @@ fixture replays them over recorded runs to prove the numbers did not move.
 
 from typing import Any, Dict, List
 
+from ..datasets.spec import get_spec
+
 
 def level_key(example, dataset_name: str) -> str:
-    if dataset_name == "gaia":
-        return str(example.metadata.get("level", "unknown"))
-    if dataset_name == "hle":
-        # HLE's "category" field is treated as its level.
-        return str(example.metadata.get("category", "unknown"))
-    if dataset_name in ("math500", "amc"):
-        # Math500's "difficulty" field is treated as its level.
-        return str(example.metadata.get("difficulty", example.metadata.get("year", "unknown")))
-    if dataset_name == "aime":
-        # AIME's "year" field is treated as its level.
-        return str(example.metadata.get("year", "unknown"))
-    return "all"
+    """Stratification bucket for one example, per its dataset's spec.
+
+    Uses ``dict.get(key, default)`` rather than a ``None`` check so that a key
+    present with value ``None`` still yields ``"None"``, and the fallback field
+    is consulted only when the primary key is *absent* -- matching the nested
+    ``.get`` this replaced.
+    """
+    spec = get_spec(dataset_name)
+    if not spec.level_field:
+        return "all"
+    metadata = example.metadata
+    if spec.level_fallback_field:
+        return str(metadata.get(spec.level_field, metadata.get(spec.level_fallback_field, "unknown")))
+    return str(metadata.get(spec.level_field, "unknown"))
 
 
 def compute_metrics(
@@ -36,8 +40,6 @@ def compute_metrics(
         tool_usage: per-tool total counts (overall)
         per_level:  (for stratified datasets) same scores + tool_usage + token_usage per level
     """
-    _STRATIFIED = {"gaia", "math500", "aime", "amc", "hle"}
-
     per_level_rows: Dict[str, List[Dict]] = {}
 
     all_gaia: List[float] = []
@@ -64,7 +66,7 @@ def compute_metrics(
         for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
             all_token_usage[key] = all_token_usage.get(key, 0) + int(tu.get(key, 0))
 
-        if dataset_name in _STRATIFIED:
+        if get_spec(dataset_name).stratified:
             lk = level_key(example, dataset_name)
             per_level_rows.setdefault(lk, []).append({"gs": gs, "em": em, "f1": f1, "tc": tc, "tu": tu})
 
@@ -107,7 +109,7 @@ def compute_metrics(
     metrics: Dict[str, Any] = {"overall": overall}
     if all_tools:
         metrics["tool_usage"] = all_tools
-    if dataset_name in _STRATIFIED and per_level_rows:
+    if get_spec(dataset_name).stratified and per_level_rows:
         metrics["per_level"] = {k: _agg(v) for k, v in sorted(per_level_rows.items())}
 
     return metrics
