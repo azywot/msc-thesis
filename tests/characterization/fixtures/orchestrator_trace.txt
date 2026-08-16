@@ -1,0 +1,74 @@
+=== state 0 ===
+finished=True turn=2 answer='zero'
+tool_counts={"code_generator": 0, "image_inspector": 0, "mind_map": 0, "text_inspector": 0, "web_search": 1}
+token_usage={"completion_tokens": 20, "prompt_tokens": 40, "total_tokens": 60}
+query_analysis='PLAN for state 0'
+action_history:
+  [0] {"command": "{\"name\": \"web_search\", \"arguments\": {\"query\": \"alpha\"}}", "result": "ANALYSIS OF ALPHA", "sub_goal": "", "tool_name": "web_search"}
+output_messages:
+  [0] assistant: <tool_call>{"name": "web_search", "arguments": {"query": "alpha"}}</tool_call>
+  [1] tool: ANALYSIS OF ALPHA
+  [2] assistant: Final Answer: zero
+=== state 1 ===
+finished=True turn=2 answer='one'
+tool_counts={"code_generator": 1, "image_inspector": 0, "mind_map": 0, "text_inspector": 0, "web_search": 0}
+token_usage={"completion_tokens": 20, "prompt_tokens": 40, "total_tokens": 60}
+query_analysis='PLAN for state 1'
+action_history:
+  [0] {"command": "{\"name\": \"code_generator\", \"arguments\": {\"task\": \"sum\"}}", "result": "RAN[print(1 + 1)]", "sub_goal": "", "tool_name": "code_generator"}
+output_messages:
+  [0] assistant: <tool_call>{"name": "code_generator", "arguments": {"task": "sum"}}</tool_call>
+  [1] tool: RAN[print(1 + 1)]
+  [2] assistant: Final Answer: one
+=== state 2 ===
+finished=True turn=3 answer='two'
+tool_counts={"code_generator": 0, "image_inspector": 0, "mind_map": 0, "text_inspector": 0, "web_search": 2}
+token_usage={"completion_tokens": 20, "prompt_tokens": 40, "total_tokens": 60}
+query_analysis='PLAN for state 2'
+action_history:
+  [0] {"command": "{\"name\": \"web_search\", \"arguments\": {\"query\": \"boom\"}}", "result": "", "sub_goal": "", "tool_name": "web_search"}
+  [1] {"command": "{\"name\": \"web_search\", \"arguments\": {\"query\": \"alpha\"}}", "result": "ANALYSIS OF ALPHA", "sub_goal": "", "tool_name": "web_search"}
+output_messages:
+  [0] assistant: <tool_call>{"name": "web_search", "arguments": {"query": "boom"}}</tool_call>
+  [1] tool: 
+  [2] assistant: <tool_call>{"name": "web_search", "arguments": {"query": "alpha"}}</tool_call>
+  [3] tool: ANALYSIS OF ALPHA
+  [4] assistant: Final Answer: two
+=== state 3 ===
+finished=True turn=3 answer='three'
+tool_counts={"code_generator": 0, "image_inspector": 0, "mind_map": 0, "text_inspector": 1, "web_search": 1}
+token_usage={"completion_tokens": 22, "prompt_tokens": 43, "total_tokens": 65}
+query_analysis='PLAN for state 3'
+action_history:
+  [0] {"command": "{\"name\": \"web_search\", \"arguments\": {}}", "result": "", "sub_goal": "", "tool_name": "web_search"}
+  [1] {"command": "{\"name\": \"text_inspector\", \"arguments\": {\"question\": \"what?\"}}", "result": "INSPECTED", "sub_goal": "", "tool_name": "text_inspector"}
+output_messages:
+  [0] assistant: <tool_call>{"name": "web_search", "arguments": {}}</tool_call>
+  [1] tool: 
+  [2] assistant: <tool_call>{"name": "text_inspector", "arguments": {"question": "what?"}}</tool_call>
+  [3] tool: INSPECTED
+  [4] assistant: Final Answer: three
+=== state 4 ===
+finished=True turn=1 answer='four'
+tool_counts={"code_generator": 0, "image_inspector": 0, "mind_map": 0, "text_inspector": 0, "web_search": 0}
+token_usage={"completion_tokens": 10, "prompt_tokens": 20, "total_tokens": 30}
+query_analysis='PLAN for state 4'
+action_history:
+output_messages:
+  [0] assistant: Final Answer: four
+=== events (global order) ===
+  [0] web.prepare(alpha)
+  [1] code.prepare(sum)
+  [2] web.prepare(boom)
+  [3] commit(q2, web_search)
+  [4] commit(q3, web_search)
+  [5] web.analyse(alpha)
+  [6] commit(q0, web_search)
+  [7] code.finalize('print(1 + 1)')
+  [8] commit(q1, code_generator)
+  [9] direct.execute(full_file_path='notes.txt')
+  [10] commit(q2, web_search)
+  [11] commit(q3, text_inspector)
+=== sub-agent batching ===
+  web call[0] n=1 prompts=["ANALYSE alpha :: RESULTS(alpha)"]
+  code call[0] n=1 prompts=["WRITE CODE FOR sum"]
