@@ -144,8 +144,13 @@ touched.
 Adding a sub-agent becomes: write the tool class, decorate a factory, name it in a config.
 
 **Model families.** `models/base.py` is already well-factored via the `_*_FAMILIES`
-frozensets. Mechanism unchanged. Add a test asserting every `ModelFamily` member appears
-in `_TOOL_CALL_FORMAT`, so a half-added family fails loudly instead of silently.
+frozensets. Mechanism unchanged. Add tests asserting every `ModelFamily` member *resolves*
+to a `ToolCallFormat` through `get_tool_call_format`, and that no family table holds a
+stale non-`ModelFamily` entry, so a half-added family fails loudly instead of silently.
+
+Note the tables are **sparse on purpose**: `_TOOL_CALL_FORMAT` lists only the exceptions
+and everything else defaults to JSON. A test requiring an entry per family would fail on
+seven correct families, which is why the check is on resolution rather than membership.
 
 **Datasets / benchmarks.** Per-dataset facts currently scattered as string literals move
 onto the `DatasetRegistry` entry: prompt-template name, stratified-or-not, level-key

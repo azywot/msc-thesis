@@ -1151,10 +1151,6 @@ model-family one covers the spec's "model families" seam, which has no other tas
 
 ```python
 # tests/unit/test_extension_seams.py
-from agent_engine.models.base import ModelFamily, _TOOL_CALL_FORMAT
-from agent_engine.tools.registry import registered_tools
-
-
 def test_every_default_tool_has_a_factory():
     assert set(registered_tools()) == {
         "web_search", "code_generator", "mind_map",
@@ -1162,16 +1158,36 @@ def test_every_default_tool_has_a_factory():
     }
 
 
-def test_every_model_family_has_a_tool_call_format():
-    """A family added to the enum but not to the format table would silently
-    fall back at runtime instead of failing at import."""
-    missing = [f.name for f in ModelFamily if f not in _TOOL_CALL_FORMAT]
-    assert not missing, f"ModelFamily members missing from _TOOL_CALL_FORMAT: {missing}"
+@pytest.mark.parametrize("family", list(ModelFamily), ids=lambda f: f.name)
+def test_every_model_family_resolves_to_a_tool_call_format(family):
+    assert isinstance(get_tool_call_format(family), ToolCallFormat)
+
+
+@pytest.mark.parametrize("name, members", [...])  # the six family tables
+def test_family_tables_contain_only_real_families(name, members):
+    stale = [m for m in members if not isinstance(m, ModelFamily)]
+    assert not stale, f"{name} contains non-ModelFamily entries: {stale}"
 ```
 
-**If `test_every_model_family_has_a_tool_call_format` fails on first run**, it has found a
-pre-existing gap. Per the global constraints: report it, mark it `xfail` with the reason,
-and do not change `_TOOL_CALL_FORMAT` — adding an entry would change behaviour.
+**Corrected while executing (2026-08-16).** This step originally specified
+`test_every_model_family_has_a_tool_call_format`, asserting that every
+`ModelFamily` appears in `_TOOL_CALL_FORMAT`, and instructed that a failure be
+`xfail`-ed as a pre-existing gap. That was wrong on both counts:
+`_TOOL_CALL_FORMAT` is **sparse by design** — `models/base.py` says "Unlisted
+families default to JSON" and `get_tool_call_format` resolves with
+`.get(family, ToolCallFormat.JSON)` — so seven perfectly correct families
+failed it. It was not a latent bug, so `xfail` would have parked a permanent
+false accusation in the suite.
+
+The replacement asserts what actually holds (every family *resolves* to a
+format) plus the failure a sparse table can genuinely have: a stale or
+misspelled entry left behind after a family is renamed, which is silently inert
+because the lookup simply never matches. The same check covers all six
+`_*_FAMILIES` tables.
+
+**General lesson for the remaining tasks:** a seam test must assert the
+invariant the code actually maintains. Before writing one from this plan, read
+the lookup's default path — several of these tables are intentionally sparse.
 
 - [x] **Step 6: Run ALL gates, then commit**
 
