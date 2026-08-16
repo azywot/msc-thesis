@@ -12,7 +12,9 @@ requiring ``raw_results.json`` skips crashed runs that never wrote results.
 
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
+from .. import REPO_ROOT
+
+ROOT = REPO_ROOT
 
 
 def latest_run(folder, root=ROOT):

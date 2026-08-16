@@ -20,8 +20,8 @@
 | 3 — tool factory registry | 11 | `caf6ad8` | done |
 | 4 — `DatasetSpec` | 12 | `2cee5a2` | done |
 | 5 — orchestrator batching collapse | 13-15 | `ccbafd9`,`1f5ab2f`,5ce62de | done |
-| 6 — analysis move + shims | 16 | | next |
-| 7 — tests for untested modules | 17 | | |
+| 6 — analysis move + shims | 16 | `PENDING` | done |
+| 7 — tests for untested modules | 17 | | next |
 | 8 — docs, archive, final verification | 18-20 | | |
 
 Keep this table current when a phase lands. Checkboxes alone proved too easy to
@@ -1527,7 +1527,7 @@ anticipate:
 - Modify: `scripts/failure_modes/*.py` → shims
 - Modify: `src/gepa_integration/seed.py`, 4 test modules
 
-- [ ] **Step 1: `git mv` the files, preserving history**
+- [x] **Step 1: `git mv` the files, preserving history**
 
 ```bash
 mkdir -p src/agent_engine/analysis
@@ -1538,7 +1538,7 @@ git mv scripts/failure_modes/fine_tuning src/agent_engine/analysis/fine_tuning
 
 Do **not** edit `classify_failure`'s body. Fix only the relative imports that the move breaks.
 
-- [ ] **Step 2: Recreate the script paths as shims**
+- [x] **Step 2: Recreate the script paths as shims**
 
 `scripts/failure_modes/analyze_failure_modes.py`:
 
@@ -1557,29 +1557,51 @@ if __name__ == "__main__":
 
 One shim per previously-invocable script. Same argv, same output paths.
 
-- [ ] **Step 3: Replace the `sys.path` hacks with real imports**
+- [x] **Step 3: Replace the `sys.path` hacks with real imports**
 
 In `src/gepa_integration/seed.py`, delete lines 20-22 and change line 98 to
 `from agent_engine.analysis.failure_modes import classify_failure`.
 In `tests/unit/test_analyze_failure_modes.py`, `test_rollout_groups.py`, `test_all_wrong_analysis.py`, `test_failure_modes_runs.py`: delete the inserts, import from `agent_engine.analysis.*`.
 
-- [ ] **Step 4: Update B5's import and re-run without regenerating**
+- [x] **Step 4: Update B5's import and re-run without regenerating**
 
 Expected: B5 PASS against the unmodified fixture.
 
-- [ ] **Step 5: Verify the shim produces identical output**
+- [x] **Step 5: Verify the shim produces identical output**
 
 ```bash
 /home/xchen1/.conda/envs/agent_engine/bin/python scripts/failure_modes/analyze_failure_modes.py --help
 ```
 Expected: same help text as before the move (compare against `git show HEAD~1`).
 
-- [ ] **Step 6: Confirm no `sys.path` hack survives**
+- [x] **Step 6: Confirm no `sys.path` hack survives**
 
 Run: `grep -rn 'sys.path.insert' src/ tests/ scripts/ --include='*.py'`
 Expected: no results referencing `scripts`.
 
-- [ ] **Step 7: Add the entry point, run ALL gates, commit**
+**Corrected while executing (2026-08-16).** Three things this task did not
+anticipate:
+
+1. **The move silently repointed every `__file__`-derived path.** Five modules
+   computed the repo root as `parents[N]` with a hardcoded N, so landing one
+   directory deeper made `--root` default to `<repo>/src` instead of `<repo>`.
+   `--help` output proved it. Fixed by defining `REPO_ROOT` once in
+   `analysis/__init__.py` and importing it in all five, so there is one place to
+   be wrong rather than five. Two of those modules also wrote their JSON output
+   under the wrong root when imported before the fix; those artefacts were
+   deleted.
+2. **`case_studies.py` had no `main()`** -- its `__main__` block was inline, so
+   the shim had nothing to call. The block was lifted verbatim into a `main()`
+   with `if __name__ == "__main__": main()` retained, so direct invocation is
+   unchanged.
+3. **Step 6's expectation is too broad.** `sys.path.insert` referencing
+   `scripts/` still appears in `test_gepa_data.py`, `test_sft_folded_format.py`,
+   `run_gepa.py`, `smoke_gepa.py` and `sft_checkpoint_janitor.py`. Those belong
+   to the GEPA and SFT scripts, which this task never touched. Only the hacks
+   that existed for the failure-mode imports were removed -- including a now-dead
+   one in `tests/gepa_integration/test_seed.py`.
+
+- [x] **Step 7: Add the entry point, run ALL gates, commit**
 
 ```toml
 cosmas-analyze = "agent_engine.analysis.failure_modes:main"

@@ -8,7 +8,6 @@ extending the system cannot invalidate it.
 """
 
 import json
-import sys
 from collections import Counter
 
 import pytest
@@ -16,17 +15,13 @@ import pytest
 from .conftest import assert_matches_fixture
 from .replay_corpus import REPLAY_RUNS, REPO, load_rows, missing_runs
 
-# Matches tests/unit/test_analyze_failure_modes.py.  Becomes a package import
-# when the analysis code moves into src/, without regenerating the fixture.
-sys.path.insert(0, str(REPO / "scripts"))
-
 
 def test_failure_modes_replay_unchanged(update_fixtures):
     missing = missing_runs()
     if missing:
         pytest.skip(f"replay corpus not present in this checkout: {missing}")
 
-    from failure_modes.analyze_failure_modes import classify_failure
+    from agent_engine.analysis.failure_modes import classify_failure
 
     payload = {}
     for run in REPLAY_RUNS:

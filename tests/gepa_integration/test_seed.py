@@ -1,9 +1,6 @@
 import json
-import sys
 import tempfile
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
 
 from agent_engine.core.orchestrator import _DEFAULT_PLANNING_SUFFIX_TOOLS
 from gepa_integration.seed import build_seed_candidate, build_splits

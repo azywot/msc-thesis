@@ -82,6 +82,7 @@ training = [
 
 [project.scripts]
 cosmas-run = "agent_engine.runner.experiment:main"
+cosmas-analyze = "agent_engine.analysis.failure_modes:main"
 
 [project.urls]
 Homepage = "https://github.com/azywot/msc-thesis"

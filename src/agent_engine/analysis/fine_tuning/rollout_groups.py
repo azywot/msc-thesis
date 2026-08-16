@@ -55,7 +55,9 @@ from dataclasses import dataclass
 from math import gcd
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
+from .. import REPO_ROOT
+
+ROOT = REPO_ROOT
 
 #: Training run whose rollouts back the reported reward-composition and
 #: AXPO-comparison numbers.
