@@ -19,7 +19,7 @@
 | 2 — promote runner into `src/` | 9-10 | `7625a9e` | done |
 | 3 — tool factory registry | 11 | `caf6ad8` | done |
 | 4 — `DatasetSpec` | 12 | `2cee5a2` | done |
-| 5 — orchestrator batching collapse | 13-15 | `ccbafd9`,`1f5ab2f`,PENDING | done |
+| 5 — orchestrator batching collapse | 13-15 | `ccbafd9`,`1f5ab2f`,5ce62de | done |
 | 6 — analysis move + shims | 16 | | next |
 | 7 — tests for untested modules | 17 | | |
 | 8 — docs, archive, final verification | 18-20 | | |
