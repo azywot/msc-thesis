@@ -263,11 +263,23 @@ tokens, porting `compute_grpo_prefix_outcome_advantage`
 
 - groups are `(question uid, prefix uid)`; the 7 unprefixed rollouts share one group and
   the hybrid rollout is alone in its own,
+- **grouping is per rollout, not per row.** Flow GRPO emits one row per turn, all
+  carrying the same `uid` and the same reward, so scores are deduplicated by
+  `rollout_id` before any group statistic is taken. A row-level port would place the
+  hybrid rollout's several turns in a group of their own, centre them against
+  themselves, and yield a prefix advantage of exactly zero on every step,
 - a singleton group takes mean 0 and std 1, so the hybrid rollout's score passes through
   uncentred,
 - prefix tokens then get `score_hybrid - mean(scores of the 7 unprefixed rollouts)`,
-  divided by the rollouts-per-prefix count, which is 1 here,
-- non-prefix tokens keep the advantage verl computed.
+  divided by the rollouts-per-prefix count, which is 1 here.
+
+For a question with no prefixed rollout, which covers the 1100 undemonstrated questions
+and every `k = 0` draw, the port reduces to plain GRPO and verl's output stands
+unchanged. For a question that does have one, the port replaces verl's advantage on all
+of that question's rows, because the reference excludes the hybrid rollout from the
+on-policy baseline and verl cannot. That exclusion matters: at 1 of 8 with a hybrid
+reward near 1.0, including it would lift the group mean and put a systematic negative
+bias on every on-policy rollout.
 
 This is the quantity Figure 4 plots as the gap between reward-with-prefix and overall
 training reward, and it is what makes the prefix's influence fade as the policy improves.
