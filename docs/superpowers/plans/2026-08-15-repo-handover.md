@@ -22,7 +22,7 @@
 | 5 — orchestrator batching collapse | 13-15 | `ccbafd9`,`1f5ab2f`,5ce62de | done |
 | 6 — analysis move + shims | 16 | `ea8a814` | done |
 | 7 — tests for untested modules | 17 | `7eac7d6` | done |
-| 8 — docs, archive, final verification | 18-20 | | next |
+| 8 — docs, archive, final verification | 18-20 | `d64c26c`,`be9ea07`,`86f4c3e`,`e8d3036` | done |
 
 Keep this table current when a phase lands. Checkboxes alone proved too easy to
 misread after a context handoff: an all-unticked plan sitting on top of ten
@@ -1744,23 +1744,23 @@ moved.  Three things the plan did not account for:
 - Rewrite: `README.md`
 - Create: `CONTRIBUTING.md`, `docs/architecture.md`, `docs/configuration.md`, `docs/guides/*.md` (4), `docs/pipelines/*.md` (4), `src/fine_tuning/agentflow/VENDORED.md`
 
-- [ ] **Step 1: Rewrite `README.md` to ~250 lines**
+- [x] **Step 1: Rewrite `README.md` to ~250 lines**
 
 What it is; install (both conda envs, and which is for what); run one experiment end to end; a repo map that is **verified against `git ls-files`**, not written from memory; pointers into `docs/`. Delete the stale tree referencing `train/`, `experiments/configs/generate_configs.py`, `1_milestone_no_img_no_mindmap_AgentFlow/`, `jobs/008_prepare_fine_tuning_data.job`.
 
-- [ ] **Step 2: Write the four guides against the seams built in Phases 3, 4 and 5**
+- [x] **Step 2: Write the four guides against the seams built in Phases 3, 4 and 5**
 
 `add-a-benchmark.md` (loader + `DatasetSpec` row + template), `add-a-tool-or-subagent.md` (tool class + `@register_tool` factory + `BatchedTool` if it needs batching), `add-a-model-family.md` (`ModelFamily` enum + the `_*_FAMILIES` frozensets + `_TOOL_CALL_FORMAT`), `add-an-adaptation-method.md` (where GEPA, RL and SFT each hook in).
 
-- [ ] **Step 3: Walk each guide end to end and fix what is wrong**
+- [x] **Step 3: Walk each guide end to end and fix what is wrong**
 
 Actually follow `add-a-tool-or-subagent.md`: add a throwaway `echo_tool`, run an experiment config that enables it, confirm it works, then delete it. A guide that has never been executed is a guess. Do the same for `add-a-benchmark.md` with a two-example toy dataset.
 
-- [ ] **Step 4: Write `VENDORED.md`**
+- [x] **Step 4: Write `VENDORED.md`**
 
 Record: upstream repository URL, the version/commit vendored, the date, the 8 fixed absolute imports, the removed `_agentflow_path.py`, and an explicit "do not restyle; re-vendor from upstream instead" instruction.
 
-- [ ] **Step 5: Run ALL gates, then commit**
+- [x] **Step 5: Run ALL gates, then commit**
 
 ```bash
 git add -A
@@ -1791,7 +1791,7 @@ classification over frozen historical `raw_results.json`; adding a benchmark
 cannot change what an old run scores, so they stay valid indefinitely and are
 what protects the thesis numbers.
 
-- [ ] **Step 0a: Delete B1 and B2**
+- [x] **Step 0a: Delete B1 and B2**
 
 ```bash
 git rm tests/characterization/test_configs_unchanged.py \
@@ -1805,7 +1805,7 @@ Keep the `--output-root` flag added to `generate_configs.py` in Task 2: it is
 useful on its own (dry-run a suite into a temp directory before overwriting the
 committed tree) and removing it would be a behaviour change.
 
-- [ ] **Step 0b: Replace them with property tests**
+- [x] **Step 0b: Replace them with property tests**
 
 Create `tests/unit/test_wiring_invariants.py`. These assert *properties* rather
 than snapshots, so they survive people adding things and only fail on real
@@ -1823,7 +1823,7 @@ breakage:
 
 Run the suite; expect green.
 
-- [ ] **Step 0c: Give B4/B5 a hermetic synthetic corpus**
+- [x] **Step 0c: Give B4/B5 a hermetic synthetic corpus**
 
 **The gap this closes.** B4 and B5 replay over `experiments/results/`, which is
 gitignored, multi-gigabyte, and full of ground-truth answers for gated datasets
@@ -1850,22 +1850,22 @@ corpus — a few dozen synthetic rows, no real questions or answers — assertin
 Keep B4/B5 as they are: replay guards the real numbers, these guard the logic.
 The two are complementary, and only these run on a fresh clone.
 
-- [ ] **Step 1: Full suite from a clean shell**
+- [x] **Step 1: Full suite from a clean shell**
 
 Run: `cd /gpfs/home3/xchen1/azywot/msc-thesis && /home/xchen1/.conda/envs/agent_engine/bin/python -m pytest -q`
 Expected: at or above the Phase 0 baseline count, 0 failures.
 
-- [ ] **Step 2: Every fixture green without `--update-fixtures`**
+- [x] **Step 2: Every fixture green without `--update-fixtures`**
 
 Run: `/home/xchen1/.conda/envs/agent_engine/bin/python -m pytest tests/characterization -q`
 Expected: all pass. After Step 0a only the B3/B4/B5 fixtures remain.
 
-- [ ] **Step 3: Confirm fixtures were never silently regenerated**
+- [x] **Step 3: Confirm fixtures were never silently regenerated**
 
 Run: `git log --oneline -- tests/characterization/fixtures/`
 Expected: each fixture appears in its Phase 0 recording commit, then nowhere else until the Step 0a deletion commit. Any *other* commit touching a fixture means a refactor changed behaviour and the baseline was moved to hide it — investigate before proceeding. The one legitimate exception is a deliberate `--update-fixtures` commit for the LoRA-config decision, if that was resolved.
 
-- [ ] **Step 4: Confirm `experiments/configs/` is untouched by this work**
+- [x] **Step 4: Confirm `experiments/configs/` is untouched by this work**
 
 Run: `git diff 6a4671b --stat -- experiments/configs/`
 Expected: empty. Diff against the branch point, **not** `main`: five
@@ -1873,7 +1873,7 @@ Expected: empty. Diff against the branch point, **not** `main`: five
 `0ba9338 rename 008 -> 007 jobs`, and a `main..HEAD` diff wrongly attributes
 them to this refactor.
 
-- [ ] **Step 5: Verify both CLIs and one real config load**
+- [x] **Step 5: Verify both CLIs and one real config load**
 
 ```bash
 /home/xchen1/.conda/envs/agent_engine/bin/cosmas-run --help
@@ -1887,9 +1887,27 @@ print('loaded', c.name)
 
 Confirm that config path exists first with `ls`; substitute a real one if not.
 
-- [ ] **Step 6: Report**
+- [x] **Step 6: Report**
 
 Summarise: phases landed, phases reverted (if any), pre-existing bugs found and left unfixed, and the open LoRA-config decision if still unresolved.
+
+**Outcome (2026-08-16).** All eight phases landed; none reverted. Suite 496 ->
+788 passed + 1 xfailed, with **zero fixture regenerations** across the whole
+refactor (`git log -- tests/characterization/fixtures/` shows four Phase 0
+recording commits and then only the Task 20 deletion).
+
+Five pre-existing bugs found and deliberately left unfixed, in
+`docs/known-issues.md`. The high-severity one: `_strip_markdown_fences` ends in
+`.strip()`, so BigCodeBench's `code_prompt` prepend path cannot produce valid
+Python for any bare function body -- pinned with `xfail(strict=True)`.
+
+Corrections made while executing are recorded under the task each belongs to.
+The recurring pattern, worth stating once: **the plan's intent was right and
+its code was often wrong**, because it was written from a reading of the
+codebase rather than from running it. Task 11, 12, 15, 16, 17, 18, 19 and 20
+each needed a mechanical correction found only by execution.
+
+The LoRA-config decision below is **still open**. It blocks nothing.
 
 ---
 
