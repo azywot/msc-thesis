@@ -90,7 +90,11 @@ def _build_sft_messages(state) -> List[Dict[str, str]]:
 
 def _setup_model_provider(model_cfg, api_keys: Dict[str, str], model_cache: Dict):
     """Instantiate a model provider, reusing cached instances for the same path."""
-    cache_key = model_cfg.path_or_id
+    # Include lora_adapter_path in the key so a LoRA instance and the base model
+    # don't collide when both appear in the same experiment. Keying on
+    # path_or_id alone silently hands the first-loaded provider to both roles.
+    # Matches agent_engine.runner.providers.setup_model_provider.
+    cache_key = f"{model_cfg.path_or_id}|lora:{getattr(model_cfg, 'lora_adapter_path', None) or ''}"
     if cache_key in model_cache:
         logger.info("Reusing cached model: %s (role: %s)", model_cfg.name, model_cfg.role)
         return model_cache[cache_key]
