@@ -30,6 +30,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `scripts/launch_verl.py --dry-run` — builds the real launch command and appends
     Hydra's `--cfg job`, so an unresolvable config fails in seconds rather than minutes
     into an allocation. Pre-flight gate in `010` and `011`.
+  - `jobs/fine_tuning/012_capped_prefix_rft.job` + `config_prefix_rft_capped.yaml` — the
+    production run stopped after 10 optimiser steps (~7 h on 4 GPUs). The only stage that
+    exercises the cosine curriculum (`low_t` 0.95 → 0.05) and the production batch shape
+    (`rollout.n: 8`, `train_batch_size: 32`, `TOOL_STEPS: 5`); 011 pins the schedule over
+    a single step and cannot. Checks that the curriculum moved, that `off_ratio` stayed
+    under the paper's 0.5 threshold, and that KL did not blow up the way the earlier
+    GRPO-FT runs did. A pass means the full run is worth starting, not that Prefix-RFT
+    beats the baseline.
   - `jobs/refactor_check/gaia_agentflow_smoke.job` — five-question GAIA regression check
     for the inference path (`VARIANT=none|orchestrator`), since Prefix-RFT adds seams to
     `OrchestratorRollout`.

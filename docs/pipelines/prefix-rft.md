@@ -77,7 +77,28 @@ sbatch jobs/fine_tuning/011_tiny_prefix_rft.job
 # 4. Smoke test: 8 questions, 8B on 2 GPUs, asserts the prefix machinery was
 #    actually active (not just that training completed).
 sbatch jobs/fine_tuning/010_smoke_prefix_rft.job
+
+# 5. The production run, stopped after 10 steps (~7 h on 4 GPUs). The only
+#    thing that exercises the CURRICULUM - low_t falling 0.95 -> 0.05 and mean
+#    prefix length falling with it - and the production batch shape
+#    (rollout.n: 8, train_batch_size: 32, TOOL_STEPS: 5).
+sbatch jobs/fine_tuning/012_capped_prefix_rft.job
 ```
+
+**Steps 3 and 4 answer "is the mechanism correct?". Step 5 answers "is the method
+usable?", and they are different questions.** 011 pins the schedule over a single step,
+so nothing before 012 has ever moved the cosine decay that is the method's central
+dynamic; and 011/010 run `rollout.n` of 4 and 2, where production gives the hybrid
+rollout seven on-policy peers. A pass on 012 says the 40-hour run is worth starting. It
+says nothing about whether Prefix-RFT beats the GRPO baseline - 10 steps carries no
+signal about final quality, and no check in 012 looks at reward level.
+
+012's own checks are `E` (the curriculum moved: `low_t` fell, mean `k` fell with it,
+`off_ratio` stayed under the paper's 0.5 concern threshold) and `F` (stability: KL,
+grad norm, entropy, clip ratio - recorded as warnings rather than failures, because ten
+steps cannot establish a trend, but this project's earlier GRPO-FT runs failed through
+KL blow-up rather than through crashing, so a run that trains and checkpoints is not
+automatically healthy).
 
 Step 2 is cheap and catches the pipeline's silent-failure modes: a demonstration attached
 to the wrong question, a `prefix_mask` misaligned with the responses it marks, or a copied

@@ -1,0 +1,139 @@
+# experiments/configs/fine_tuning/config_prefix_rft_capped.yaml
+# The production Prefix-RFT run, stopped after 10 optimiser steps.
+#
+# Why this exists
+# ---------------
+# 011 proves the mechanism is correct on two questions and one step. It cannot prove the
+# method is usable, because the two things it leaves untouched are the two that decide
+# whether a 40-hour run is worth starting:
+#
+#   1. The curriculum. 011 pins low_target at 0.9 over a single step, so the cosine decay
+#      from 0.95 to 0.05 never moves. That decay - heavy imitation early, mostly
+#      exploration later - is the method's central dynamic, and nothing has exercised it.
+#   2. The production batch shape. rollout.n: 8 gives the hybrid rollout seven on-policy
+#      peers rather than three; train_batch_size: 32 and TOOL_STEPS: 5 change the
+#      transition count per step by an order of magnitude, and with it the mini-batch
+#      flooring and seqlen balancing.
+#
+# This config is `config_prefix_rft.yaml` with ONE change - train_max_samples 1800 -> 320
+# and total_epochs 2 -> 1, giving 320/32 = 10 steps. Everything else, including the
+# paper's low_target: 0.05, the 4-GPU layout and rollout.n: 8, is inherited unchanged, so
+# what runs here is what would run in production.
+#
+# What the compression does, and does not, cost
+# ---------------------------------------------
+# The schedule spans total_training_steps, so over 10 steps the decay completes about 11x
+# faster than the ~112-step production run. The SHAPE is exercised (low_t falls 0.95 ->
+# 0.05, mean k falls with it); the PACING is not production pacing. That is the right
+# trade: pacing is a hyperparameter you can read off the paper, whereas "does the
+# curriculum move at all, and does off_ratio stay sane while it does" is only answerable
+# by running it.
+#
+# Cost: roughly 40 min/step extrapolated from the production run's 72 h for 112 steps, so
+# about 7 h plus startup and two validation passes. Halve train_max_samples to 192 for a
+# 6-step version if the queue is tight - the decay still moves visibly.
+#
+# Launch with: sbatch jobs/fine_tuning/012_capped_prefix_rft.job
+
+env:
+  BASE_MODEL: 'Qwen/Qwen3-8B'
+  SUBAGENT_MODEL: 'Qwen/Qwen3-1.7B'
+  SUBAGENT_ENDPOINT: 'http://localhost:9998/v1'
+  N_GPUS: 4
+  ROLLOUT_TP_SIZE: 1
+  EXPERIMENT_NAME: 'qwen3-8b-prefix-rft-capped'
+  PREFIX_RFT: "true"
+  PREFIX_DEMOS_PATH: 'data/training/prefix_rft/prefix_demos.parquet'
+  PROJECT_NAME: 'msc-thesis-fine-tuning'
+  BASE_DATA_DIR: 'data/training'
+  ENABLE_TOOLS: ["web_search", "code_generator"]
+  TOOL_STEPS: 5
+  THINKING_MODE: 'NO'
+  TRAIN_TEMPERATURE: 0.7
+  TEST_TEMPERATURE: 0.0
+  N_WORKERS: 4
+  VERBOSITY: 'INFO'
+  USE_LORA: "true"
+  # Checkpoints stay on scratch as in production; this run's adapters are diagnostic and
+  # are not intended to be resumed from.
+  USE_SCRATCH_CHECKPOINTS: "true"
+  SAVE_OPTIMIZER: "false"
+
+python_args:
+  # ---- Prefix-RFT: the paper's values, unchanged from production ----------
+  prefix_rft.enable: true
+  prefix_rft.demos_path: 'data/training/prefix_rft/prefix_demos.parquet'
+  prefix_rft.n_prefixed_rollouts: 1
+  prefix_rft.high: 0.95
+  prefix_rft.low_init: 0.95
+  # The paper's target. 011 deviates from this deliberately; this run does not, because
+  # watching low_t actually fall is the point of it.
+  prefix_rft.low_target: 0.05
+  prefix_rft.sampler_alpha: 1.0
+  prefix_rft.sampler_beta: 1.0
+  prefix_rft.entropy_keep_ratio: 0.2
+  prefix_rft.singleton_baseline: 'none'
+  prefix_rft.seed: 42
+  actor_rollout_ref.actor.calculate_entropy: true
+  # On actor_rollout_ref, NOT actor_rollout_ref.actor: verl converts the latter into an
+  # FSDPActorConfig dataclass that rejects undeclared keys (job 25751544).
+  +actor_rollout_ref.prefix_entropy_keep_ratio: 0.2
+  # ------------------------------------------------------------------------
+
+  agentflow.port: 9999
+  ray_init.num_cpus: 16
+  algorithm.adv_estimator: 'grpo'
+  data.train_files: '${BASE_DATA_DIR}/train/combined_train.parquet'
+  data.val_files:
+    - '${BASE_DATA_DIR}/val/val_combined.parquet'
+  data.train_batch_size: 32
+  # THE ONLY SUBSTANTIVE CHANGE: 320/32 = 10 optimiser steps.
+  data.train_max_samples: 320
+  data.dataloader_num_workers: 0
+  data.max_prompt_length: 16384
+  data.max_response_length: 2048
+  data.truncation: 'truncate'
+  actor_rollout_ref.rollout.n: 8
+  actor_rollout_ref.actor.ppo_mini_batch_size: 8
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 4
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu: 4
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu: 4
+  actor_rollout_ref.rollout.multi_turn.format: 'hermes'
+  actor_rollout_ref.model.path: '${BASE_MODEL}'
+  actor_rollout_ref.model.enable_gradient_checkpointing: true
+  actor_rollout_ref.model.use_remove_padding: true
+  actor_rollout_ref.actor.optim.lr: 1.0e-6
+  actor_rollout_ref.actor.use_kl_loss: true
+  actor_rollout_ref.actor.kl_loss_coef: 0.01
+  actor_rollout_ref.actor.clip_ratio_low: 0.2
+  actor_rollout_ref.actor.clip_ratio_high: 0.3
+  actor_rollout_ref.actor.fsdp_config.param_offload: true
+  actor_rollout_ref.actor.fsdp_config.optimizer_offload: true
+  actor_rollout_ref.ref.fsdp_config.param_offload: true
+  actor_rollout_ref.rollout.name: 'vllm'
+  actor_rollout_ref.rollout.free_cache_engine: true
+  actor_rollout_ref.rollout.gpu_memory_utilization: 0.45
+  actor_rollout_ref.rollout.max_model_len: 18432
+  actor_rollout_ref.rollout.max_num_batched_tokens: 18432
+  actor_rollout_ref.rollout.max_num_seqs: 128
+  actor_rollout_ref.rollout.tensor_model_parallel_size: '${ROLLOUT_TP_SIZE}'
+  trainer.n_gpus_per_node: '${N_GPUS}'
+  trainer.logger: ['console', 'wandb']
+  trainer.project_name: '${PROJECT_NAME}'
+  trainer.experiment_name: '${EXPERIMENT_NAME}'
+  trainer.save_freq: 5
+  trainer.test_freq: 5
+  trainer.save_every_epoch: false
+  trainer.val_every_epoch: false
+  # 1 epoch, so train_max_samples alone sets the step count.
+  trainer.total_epochs: 1
+  # Skipped: this run is read for its prefix dynamics, not for a before/after score, and
+  # a pre-training validation pass on the full val set is expensive.
+  trainer.val_before_train: false
+  trainer.critic_warmup: 0
+  algorithm.use_kl_in_reward: false
+
+lora:
+  rank: 64
+  alpha: 64
+  target_modules: "all-linear"
