@@ -15,18 +15,17 @@ For the RL machinery Prefix-RFT reuses (the orchestrator-inside-the-training-loo
 pattern, GPU layout, checkpoint handling), see [rl.md](rl.md) - Prefix-RFT does not
 duplicate any of it.
 
-> **Status (2026-08-17): awaiting first clean end-to-end run.** The pipeline launches,
-> trains and checkpoints, the CPU suite is green, and dispatch now sends the intended
-> `k` to the intended rollouts. The last blocker was that no prefix token reached the
-> loss: `ReplayToolRegistry` proxied attributes through `__getattr__`, which Python does
-> not consult for special methods, so `len(self.tools)` in the orchestrator raised and
-> every prefixed episode died before generating anything. The rollout's `except` clause
-> then recorded it as an ordinary failed episode, which is why four runs looked healthy
-> upstream while nothing was trained on. Fixed, plus a Check 0 that fails the job if any
-> episode raised, and a test asserting the proxies expose every special method their
-> target defines. **Until `011_tiny_prefix_rft.job` passes Checks 0 and A, do not spend
-> the production run.** See "Debugging" below for the four log lines that localise this
-> class of break.
+> **Status (2026-08-18): the mechanism is verified on GPU.** `011_tiny_prefix_rft.job`
+> passes all five checks (run 25755605): exactly one rollout per question replayed the
+> teacher verbatim and then continued on-policy, validation stayed on-policy, 849 prefix
+> tokens entered the loss, the entropy clip kept 20.3% of them against the paper's 20%,
+> `off_ratio` was 0.121, and a LoRA adapter was written. Both prefixed rollouts scored
+> reward 1.0.
+>
+> **This verifies the mechanism, not the method.** 011 pins the schedule over a single
+> step and runs `rollout.n: 4`, so the cosine curriculum has never moved and the
+> production batch shape is untested. Run `010` and then `012` before spending the full
+> run; `012` exists precisely to answer whether the curriculum works.
 
 ---
 

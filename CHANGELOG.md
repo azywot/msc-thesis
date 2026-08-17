@@ -16,11 +16,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   [`docs/superpowers/specs/2026-08-17-prefix-rft-design.md`](docs/superpowers/specs/2026-08-17-prefix-rft-design.md)
   for the full design and every departure found while building it, and
   [`docs/pipelines/prefix-rft.md`](docs/pipelines/prefix-rft.md) for how to run it.
-    **Awaiting the first clean end-to-end run.** Five launch- or replay-blocking bugs
-    were found by GPU runs and fixed (Hydra package path, Ray `@register`, verl config
-    dataclass, two missing imports in a copied method, and `__getattr__` not covering
-    special methods on the tool-registry proxy). Do not spend the production run until
-    `011` passes Checks 0 and A, then `012` passes Checks E and F.
+    **Mechanism verified on GPU** (run 25755605, 2026-08-18): `011` passes all five
+    checks — teacher text replayed verbatim in exactly one rollout per question, then
+    on-policy continuation; validation on-policy; 849 prefix tokens in the loss; entropy
+    clip kept 20.3% against the paper's 20%; `off_ratio` 0.121. Five launch- or
+    replay-blocking bugs were found by GPU runs and fixed along the way (Hydra package
+    path, Ray `@register`, verl config dataclass, two missing imports in a copied method,
+    and `__getattr__` not covering special methods on the tool-registry proxy). The
+    curriculum is still unexercised — run `010` then `012` before the production run.
   - `jobs/fine_tuning/011_tiny_prefix_rft.job` — two questions, one optimiser step,
     ~10 min. Verifies replay, masking, advantage correction and the entropy clip on real
     GPUs, and fails in minutes where the 8-question smoke test fails in hours.
