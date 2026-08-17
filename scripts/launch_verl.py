@@ -203,8 +203,15 @@ def main():
         if _key in python_args:
             python_args[f"+{_key}"] = python_args.pop(_key)
 
-    # Build: python -u -m fine_tuning.agentflow.verl key=value key=value ...  (-u: line-buffered logs under SLURM > redirect)
-    command = [sys.executable, "-u", "-m", "fine_tuning.agentflow.verl"]
+    # Prefix-RFT runs its own entrypoint, which substitutes the trainer, daemon, worker
+    # and actor. Everything else about the launch is identical.
+    prefix_rft = os.environ.get("PREFIX_RFT", "").strip().lower() in ("1", "true", "yes", "on")
+    module = "verl_ext.prefix_rft" if prefix_rft else "fine_tuning.agentflow.verl"
+    if prefix_rft:
+        print(f"  Prefix-RFT enabled: launching {module}")
+
+    # Build: python -u -m <module> key=value key=value ...  (-u: line-buffered logs under SLURM > redirect)
+    command = [sys.executable, "-u", "-m", module]
     for key, value in python_args.items():
         if isinstance(value, list):
             # Hydra list syntax: key=[elem1,elem2]  (each element env-expanded)
