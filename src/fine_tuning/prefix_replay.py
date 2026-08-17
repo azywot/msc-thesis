@@ -136,6 +136,22 @@ class ReplayToolRegistry:
     def __getattr__(self, item):
         return getattr(self._registry, item)
 
+    # Special methods must be declared explicitly. Python looks dunders up on the
+    # TYPE, not the instance, so __getattr__ never sees them: len(registry) on a
+    # proxy that only defines __getattr__ raises
+    #     TypeError: object of type 'ReplayToolRegistry' has no len()
+    # The orchestrator calls len(self.tools) while building the planning prompt
+    # (orchestrator.py:145 and :578), so every prefixed episode died there, was
+    # caught by the rollout's except clause, and completed as an empty on-policy
+    # trajectory - dispatch and replay both looked healthy and nothing reached the
+    # loss (job 25754114). Mirror ToolRegistry's dunders (tool.py:183-189).
+
+    def __len__(self) -> int:
+        return len(self._registry)
+
+    def __contains__(self, name) -> bool:
+        return name in self._registry
+
 
 class ReplayProvider:
     """Serves replayed turns, then delegates to the capturing provider."""

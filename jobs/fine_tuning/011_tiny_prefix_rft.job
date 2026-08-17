@@ -312,6 +312,24 @@ fi
 echo ""
 echo "Training finished at: $(date)"
 
+# ── Check 0: no episode may have failed ──────────────────────────────────────
+# OrchestratorRollout catches every episode exception and completes the rollout with
+# answer="None". That is right for a flaky tool call, but it also means a fatal bug in
+# the replay path produces a rollout that looks merely unlucky. Job 25754114 died this
+# way: len() on the tool-registry proxy raised, all six prefixed episodes were swallowed,
+# and dispatch plus replay both reported healthy while nothing reached the loss.
+echo ""
+echo "── Check 0: no episode raised ───────────────────────────────────────────"
+if grep -q "Episode failed" "$ORCH_LOG" 2>/dev/null; then
+    echo "FAIL — episodes raised and were swallowed by the rollout's except clause:"
+    grep -oE "\[OrchestratorRollout\] Episode failed: .{0,140}" "$ORCH_LOG" | sort | uniq -c
+    echo ""
+    echo "Every prefixed episode that raises completes as an empty on-policy trajectory,"
+    echo "so the prefix metrics below would be zero for a reason unrelated to Prefix-RFT."
+    exit 1
+fi
+echo "PASS — no episode raised."
+
 echo ""
 echo "── Rollout worker log (Prefix-RFT lines) ────────────────────────────────"
 grep -E "PrefixOrchestratorRollout|Prefix-RFT enabled|prefix_k" "$ORCH_LOG" | head -20 || \

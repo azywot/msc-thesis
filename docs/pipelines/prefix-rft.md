@@ -15,13 +15,18 @@ For the RL machinery Prefix-RFT reuses (the orchestrator-inside-the-training-loo
 pattern, GPU layout, checkpoint handling), see [rl.md](rl.md) - Prefix-RFT does not
 duplicate any of it.
 
-> **Status (2026-08-17): not yet verified end to end.** The pipeline launches, trains,
-> and checkpoints; the CPU suite is green; replay demonstrably reaches the generation
-> path on GPU. What is *not* yet confirmed is the last hop: `actor/num_prefix_tokens`
-> was 0 on the most recent run, meaning replayed turns did not reach `prefix_mask`, so no
-> prefix token entered the loss. Until `011_tiny_prefix_rft.job` passes its Check A, treat
-> this pipeline as GRPO-with-extra-machinery, and do **not** spend the production run. See
-> "Debugging" below for the four log lines that localise the break.
+> **Status (2026-08-17): awaiting first clean end-to-end run.** The pipeline launches,
+> trains and checkpoints, the CPU suite is green, and dispatch now sends the intended
+> `k` to the intended rollouts. The last blocker was that no prefix token reached the
+> loss: `ReplayToolRegistry` proxied attributes through `__getattr__`, which Python does
+> not consult for special methods, so `len(self.tools)` in the orchestrator raised and
+> every prefixed episode died before generating anything. The rollout's `except` clause
+> then recorded it as an ordinary failed episode, which is why four runs looked healthy
+> upstream while nothing was trained on. Fixed, plus a Check 0 that fails the job if any
+> episode raised, and a test asserting the proxies expose every special method their
+> target defines. **Until `011_tiny_prefix_rft.job` passes Checks 0 and A, do not spend
+> the production run.** See "Debugging" below for the four log lines that localise this
+> class of break.
 
 ---
 
@@ -158,6 +163,9 @@ the existing GRPO launch byte-for-byte.
 
 ## Metrics to watch
 
+Four print lines trace dispatch through to the loss (see "Debugging" below); these are
+the aggregate metrics on top of them.
+
 | Metric | Meaning |
 |---|---|
 | `actor/n_prefixed_rollouts` | How many rollouts in the step were seeded with a demonstration prefix. Zero here means the machinery never engaged - the run would be indistinguishable from plain GRPO in every other log line. |
@@ -211,27 +219,58 @@ precedes the tool call, so a refactor can break one and not the other. The job f
 every prediction is empty or no tool was called; accuracy is printed but not gated on,
 because five GAIA questions carry no signal at an 8B model's single-digit accuracy.
 
-## Divergences from the paper
+## Alignment with the paper and the reference implementation
 
-Recorded here so results can state them rather than have a reader discover them.
+Checked against `papers/PrefixRFT_2507.01679v3.md` (A.2, line 345, is the hyperparameter
+paragraph) and `repos/prefix_rft/recipe/prefix_rft/` (`core_algos.py`, `dp_actor.py`,
+`rl_dataset.py`).
 
-1. **Integer step prefix instead of a token fraction.** Deliberate - see "The step-prefix
-   adaptation" above.
-2. **GRPO with std normalisation instead of Dr.GRPO.** The paper uses Dr.GRPO (A.2).
-   Keeping GRPO means Prefix-RFT differs from the existing RL baseline in exactly one
-   respect, so a difference in results is attributable to the prefix, not to a
-   simultaneous algorithm change.
-3. **LoRA rank 64 instead of full fine-tune.** Inherited from the existing RL pipeline
+### What matches
+
+| Element | Paper / repo | Ours |
+|---|---|---|
+| Rollouts per prompt, one prefixed | 8 rollouts, "one of them starts with the sampled prefix" (A.2) | `rollout.n: 8`, `n_prefixed_rollouts: 1` |
+| Prefix length draw | `l ~ U[low_t, 0.95]`, prefix = `l x` demonstration length (A.2) | Same draw, via `Beta(1,1)` rescaled onto `[low_t, high]`, which is that uniform |
+| Schedule shape | `low_t` cosine-decays 0.95 -> 0.05 (A.2) | `CosineDecayController`, ported from the repo's `global_step.py` |
+| Entropy clip ratio | top 20% of prefix tokens by entropy (A.2, §6) | `entropy_keep_ratio: 0.2` |
+| Clip scope | "for each mini-batch" (A.2); repo flattens `entropy[prefix_mask]` across the micro-batch before sorting | Global ranking across the micro-batch, same flattening |
+| Clip mechanism | advantages of non-selected prefix tokens set to zero (§3) | Same: zero the advantage, do not mask the token |
+| Prefix tokens are trained on | Table 8: freezing the prefix scores 45.4 against 45.5 for plain RFT, so this is load-bearing | Prefix tokens enter the loss with `prefix_mask = 1` |
+| Prefix advantage | `p_score = score - mean(unprefixed group)`, then `/ num_rollouts_per_prefix`, applied only where `prefix_mask` (`core_algos.py:200-215`) | `apply_prefix_advantage` with `num_rollouts_per_prefix = 1`, reproducing the same expression |
+| Singleton group handling | mean 0, std 1 (`core_algos.py:189-191`) | Same, including dividing by `std + epsilon` when std is 1 |
+| Hybrid rollout excluded from the on-policy baseline | Grouped by `(question, prefix_index)`, unprefixed rollouts sharing a sentinel id | Same grouping by `(uid, is_prefix_rollout)` |
+
+Two parameterisation differences that are **not** behavioural: the repo configures the
+clip as a *mask* ratio (fraction zeroed, `ent_mask_ratio`) where we configure a *keep*
+ratio, so our `0.2` is the repo's `0.8`; and the repo drives that ratio through a
+controller so it can be scheduled, where the paper fixes it at 20% and so do we. Rounding
+at the split point can differ by a single token on small batches.
+
+### Where we diverge, and why
+
+1. **Integer step prefix instead of a token fraction.** We replay a whole number of
+   teacher *decisions*; the paper cuts at an arbitrary token. See "The step-prefix
+   adaptation" above. This is the one divergence that changes what a prefix *is*.
+2. **GRPO with std normalisation instead of Dr.GRPO.** The paper uses Dr.GRPO (A.2), and
+   the repo ships both (`compute_dr_grpo_outcome_advantage` alongside the GRPO variant).
+   We pair with GRPO so Prefix-RFT differs from this project's existing RL baseline in
+   exactly one respect, and a difference in results is attributable to the prefix rather
+   than to a simultaneous algorithm change.
+3. **LoRA rank 64 instead of a full fine-tune.** Inherited from the existing RL pipeline
    and its GPU budget.
 4. **Multi-turn agentic trajectories with an outcome reward**, against the paper's
-   single-turn math with a verifier.
-5. **1358 of 1800 questions carry demonstrations, of which 1085 are prefixable.** Above
-   the 10% and 1% regimes the paper's Table 2 validates.
+   single-turn mathematics with a verifier.
+5. **Demonstration coverage.** 1358 of 1800 questions carry demonstrations, 1085 of them
+   prefixable, against the 10% and 1% regimes the paper's Table 2 validates.
 6. **The schedule spans the actual run length** rather than the paper's fixed 500 steps.
-7. **Three copies are taken from code this project does not own** - verl's
-   `update_policy`, the vendored `_train_step`, and the vendored config keys - each
-   guarded by a drift check (`check_prefix_rft_trainer_sync.py`) rather than only a
-   comment.
+   A hardcoded 500 would truncate the curriculum at 22% of its decay on a ~112-step run.
+7. **Four copies are taken from code this project does not own** - verl's `update_policy`,
+   the vendored `_train_step` and `_async_set_up`, and the vendored config keys - each
+   generated from its source plus marked edits and guarded by
+   `check_prefix_rft_trainer_sync.py`, rather than hand-maintained with a comment.
+8. **`config_prefix_rft_tiny8b.yaml` sets `low_target: 0.9`**, not the paper's 0.05. Test
+   configuration only, for the reason given under "Configuration"; the smoke and
+   production configs use the paper's value.
 
 ## How it hooks into the framework
 

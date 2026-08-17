@@ -178,3 +178,42 @@ def test_a_live_tool_call_after_replay_is_not_served_a_stale_result():
     assert ctrl.next_response(_payload([{"role": "user", "content": "a"}])) is None
     assert registry.get("web_search").execute(query="q").output == "live"
     assert registry.get("web_search").execute(query="q").output == "live"
+
+
+def test_replay_registry_supports_the_special_methods_the_orchestrator_uses():
+    """Python looks dunders up on the TYPE, so __getattr__ never sees them.
+
+    The orchestrator calls len(self.tools) while building the planning prompt. A proxy
+    that only defines __getattr__ raises TypeError there, the rollout's except clause
+    swallows it, and the episode completes as an empty on-policy trajectory — dispatch
+    and replay both look healthy while nothing reaches the loss (job 25754114).
+    """
+    from agent_engine.core.tool import ToolRegistry
+
+    real = ToolRegistry()
+    ctrl = ReplayController(_steps(), k=2, tokenizer=_FakeTokenizer())
+    registry = ReplayToolRegistry(real, ctrl)
+
+    # Every special method the real registry defines must survive the proxy.
+    assert len(registry) == len(real)
+    assert ("web_search" in registry) == ("web_search" in real)
+
+
+def test_the_proxies_expose_every_dunder_their_target_defines():
+    """Generic guard: adding a dunder to ToolRegistry must not silently bypass the proxy."""
+    from agent_engine.core.tool import ToolRegistry
+
+    # Every class gets __dict__/__doc__/__module__/__weakref__ for free; only
+    # deliberately defined special methods are at risk from the proxy.
+    automatic = {"__dict__", "__doc__", "__module__", "__weakref__", "__init__"}
+    special = {
+        name
+        for name in vars(ToolRegistry)
+        if name.startswith("__") and name.endswith("__") and name not in automatic
+    }
+    assert special, "ToolRegistry defines no special methods; this test would be vacuous"
+    missing = {n for n in special if n not in vars(ReplayToolRegistry)}
+    assert not missing, (
+        f"ReplayToolRegistry does not define {sorted(missing)}; __getattr__ does not "
+        "cover special methods, so these would fail on the proxy."
+    )
