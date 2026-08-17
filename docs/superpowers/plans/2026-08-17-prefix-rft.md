@@ -10,6 +10,26 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-17-prefix-rft-design.md`
 
+## Status (revised 2026-08-17)
+
+**Tasks 1-8 are built, tested and committed.** Their steps below are kept as the record of
+what was planned; where the implementation departed from them, the code and the spec are
+the truth, not this file. Every departure is listed under "Implementation record" in
+`docs/superpowers/specs/2026-08-17-prefix-rft-design.md`. The headline ones:
+
+- demonstrations are keyed on the **question text**, not `extra_info.idx`, which collides
+  across data sources;
+- coverage is **1358 of 1800** questions (1085 prefixable), not 700;
+- logic lives in **verl-free modules** (`dispatch.py`, `masks.py`, `entropy.py`,
+  `prefix_replay.py`) because verl is absent from the CPU test env and pytest is absent
+  from the training env, so anything importing verl is untestable in both;
+- the three copied bodies are **generated and drift-checked**
+  (`scripts/check_prefix_rft_trainer_sync.py`), not hand-transcribed and commented.
+
+**Tasks 9 and 10 remain**, and have been updated below to match what was built.
+
+---
+
 ## Global Constraints
 
 - **Never edit anything under `src/fine_tuning/agentflow/`.** It is vendored; `src/fine_tuning/agentflow/VENDORED.md` forbids patching, restyling and bug-fixing it. Extend by subclassing from our own modules.
@@ -2340,10 +2360,17 @@ python_args:
   prefix_rft.high: 0.95
   prefix_rft.low_init: 0.95
   prefix_rft.low_target: 0.05
+  prefix_rft.sampler_alpha: 1.0
+  prefix_rft.sampler_beta: 1.0
   prefix_rft.entropy_keep_ratio: 0.2
   prefix_rft.singleton_baseline: none
+  prefix_rft.seed: 42
   actor_rollout_ref.actor.calculate_entropy: true
   +actor_rollout_ref.actor.prefix_entropy_keep_ratio: 0.2
+
+These keys already exist in `src/verl_ext/prefix_rft/config/prefix_rft_trainer.yaml`, so
+they need no `+` prefix. `prefix_entropy_keep_ratio` is the exception: it is read off the
+actor config, which is verl's schema, so it does need `+`.
 ```
 
 `EXPERIMENT_NAME` must differ from the GRPO run so checkpoints and W&B rows stay distinct.
@@ -2352,15 +2379,26 @@ python_args:
 
 Create `experiments/configs/fine_tuning/config_prefix_rft_smoke8b.yaml` as a copy of `config_smoke8b.yaml` with the same additions, plus `EXPERIMENT_NAME: qwen3-8b-prefix-rft-smoke`. With `rollout.n: 2` the hybrid rollout is 1 of 2, which exercises every path while distorting the imitation balance; the smoke test asserts machinery, not quality.
 
-Note that the smoke data lives in `data/training/smoke`, whose question indices will not match the demonstration store. Build a smoke store from the same eight questions:
+The store is keyed on question text, so no separate smoke store is needed: the same
+`prefix_demos.parquet` serves both, and a smoke question is covered if and only if its
+text appears in the store. **Check that before running the smoke job**, because if none of
+the eight smoke questions is covered then `k` is always 0 and the run proves nothing:
 
 ```bash
-python scripts/build_prefix_demos.py \
-    data/training/sft/collected_20260605_214650.jsonl \
-    --output data/training/prefix_rft/prefix_demos_smoke.parquet
+python - <<'PYCHECK'
+import pandas as pd
+from verl_ext.prefix_rft.demos import DemoStore
+store = DemoStore.from_parquet("data/training/prefix_rft/prefix_demos.parquet")
+smoke = pd.read_parquet("data/training/smoke/train/combined_train.parquet")
+covered = [(q, store.n_steps(q)) for q in smoke["question"]]
+print(f"{sum(1 for _, n in covered if n > 1)} of {len(covered)} smoke questions are prefixable")
+for q, n in covered:
+    print(f"  n_steps={n}  {q[:70]}")
+PYCHECK
 ```
 
-and point `PREFIX_DEMOS_PATH` at it. If none of the eight smoke questions is covered, `k` is always 0 and the smoke run proves nothing: in that case, regenerate `data/training/smoke` from questions the store covers, using the `idx` values printed by `check_prefix_demos.py`.
+If too few are covered, rebuild `data/training/smoke` from questions the store does cover
+rather than weakening the assertion in the smoke job.
 
 - [ ] **Step 3: Wire launch_verl.py**
 
@@ -2511,7 +2549,9 @@ source activate agent_engine
 python -m pytest tests/unit/test_prefix_rft_schedule.py \
                  tests/unit/test_prefix_rft_demos.py \
                  tests/unit/test_prefix_rft_rollout.py \
-                 tests/unit/test_prefix_rft_advantage.py -v --no-header
+                 tests/unit/test_prefix_rft_daemon.py \
+                 tests/unit/test_prefix_rft_advantage.py \
+                 tests/unit/test_prefix_rft_actor.py -v --no-header
 if [[ $? -eq 0 ]]; then note_pass "unit tests (agent_engine)"; else note_fail "unit tests (agent_engine)"; fi
 
 # ── Stage 2/4: the gate on the real store ────────────────────────────────────────
@@ -2549,9 +2589,22 @@ echo ""
 echo "── Stage 4/4: daemon and actor tests (env: cosmas-train) ────────────────────"
 conda deactivate 2>/dev/null || true
 source activate cosmas-train
-python -m pytest tests/unit/test_prefix_rft_daemon.py \
-                 tests/unit/test_prefix_rft_actor.py -v --no-header
-if [[ $? -eq 0 ]]; then note_pass "daemon and actor tests (cosmas-train)"; else note_fail "daemon and actor tests (cosmas-train)"; fi
+# pytest is not installed in cosmas-train, so the verl-dependent checks run as
+# scripts. These are the same assertions the skipped pytest cases make.
+python scripts/check_prefix_rft_trainer_sync.py
+if [[ $? -eq 0 ]]; then note_pass "copied methods and config in sync"; else note_fail "copied methods and config in sync"; fi
+
+python -c "
+import sys; sys.path.insert(0, 'src')
+from verl_ext.prefix_rft.daemon import PrefixRFTDaemon
+from verl_ext.prefix_rft.actor import PrefixRFTActor
+from verl_ext.prefix_rft.worker import PrefixRFTWorker
+from verl_ext.prefix_rft.trainer import PrefixRFTTrainer
+from verl_ext.prefix_rft import entrypoint
+from fine_tuning.prefix_rollout import PrefixOrchestratorRollout
+print('  all Prefix-RFT modules import under cosmas-train')
+"
+if [[ \$? -eq 0 ]]; then note_pass "modules import under cosmas-train"; else note_fail "modules import under cosmas-train"; fi
 ```
 
 Change the final summary line from `safe to submit 007_train_sft_folded.job` to
@@ -2609,7 +2662,21 @@ PY
 ```
 
 Then compare one replayed turn's `prompt_token_ids` against
-`tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=True)` for the same messages. They must be identical. If they are not, the replay provider's `_decode_messages` is not reproducing the provider's `tool -> user` remap, and every prefix triplet is misaligned.
+`tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=True)` for the
+same messages, after applying the `tool -> user` remap. They must be identical.
+
+This is the highest-risk unverified assumption in the whole implementation. The replay
+path tokenises locally, mirroring the proxy's two calls exactly
+(`daemon.py:216-225`: `apply_chat_template` with `add_generation_prompt=True` and no
+`enable_thinking` kwarg, then `encode` with `add_special_tokens=False` and no appended
+EOS), and `ReplayController._decode_messages` mirrors the provider's `tool -> user` remap
+(`api_provider.py:94-100`). All of that is unit-tested against a fake tokenizer, so the
+*shape* is right; what is untested is that the real tokenizer and the real proxy agree.
+
+If they do not, every prefix triplet is misaligned: the prefix_mask would mark tokens that
+are not the teacher's, the advantage would be applied to the wrong positions, and training
+would proceed normally and report success. No metric in the run would reveal it. Do not
+skip this step, and do not launch the production run until it has passed.
 
 - [ ] **Step 7: Write the pipeline documentation**
 

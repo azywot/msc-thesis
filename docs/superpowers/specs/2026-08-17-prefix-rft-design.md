@@ -2,7 +2,9 @@
 
 **Date:** 2026-08-17
 **Branch:** `feat/add-prefix-rft`
-**Status:** design approved in chat; awaiting spec review
+**Status:** approved; implemented through Task 8 of the plan. Revised 2026-08-17 to match
+what was built. Every change made during implementation is recorded under
+"Implementation record" at the end.
 **Paper:** `papers/PrefixRFT_2507.01679v3.md` (Huang et al., ICML 2026, arXiv:2507.01679v3)
 **Reference implementation:** `repos/prefix_rft`, recipe at `recipe/prefix_rft/`
 
@@ -77,10 +79,11 @@ decision, so there is always a continuation to score.
 
 **Consequences, accepted.** Two follow from choosing steps over tokens.
 
-1. `k` is a staircase, not a continuous ratio. Teacher trajectories have a median of 4
-   decisions, so a 500-step cosine decay is quantised into roughly 4 levels.
-2. 71 of the 700 demonstrated questions have a single decision. For them `k <= m-1 = 0`
-   always, so they never carry a prefix and behave as pure GRPO.
+1. `k` is a staircase, not a continuous ratio. Teacher trajectories average 2.98
+   decisions, so the cosine decay is quantised into roughly three levels.
+2. 273 of the 1358 demonstrated questions have a single decision. For them `k <= m-1 = 0`
+   always, so they never carry a prefix and behave as pure GRPO. 1085 questions are
+   prefixable.
 
 Both are recorded rather than fixed. The mitigation, if it later matters, is a
 token-level prefix on the boundary decision, which restores continuous control.
@@ -97,23 +100,39 @@ Nothing under `src/fine_tuning/agentflow/` is modified. That directory is vendor
 `VENDORED.md` forbids patching it; all extensions are subclasses living in our own
 trees.
 
+A split runs through the whole tree: **every piece of real logic lives in a module
+that imports no verl**, and the verl-touching classes are thin wrappers over it. This
+is not stylistic. verl is absent from the `agent_engine` env and pytest is absent from
+`cosmas-train`, so a module importing verl cannot be exercised by a test in either
+environment. The split is what keeps the logic under test.
+
 ```
-src/verl_ext/prefix_rft/
+src/verl_ext/prefix_rft/            verl-free logic          verl-touching wrapper
   schedule.py      CosineDecayController, BetaSampler, step discretisation
-  demos.py         demonstration store keyed by question idx
-  advantage.py     prefix-aware GRPO advantage correction
-  actor.py         PrefixRFTActor: entropy clipping on prefix tokens
-  worker.py        PrefixRFTWorker: installs the actor
-  daemon.py        PrefixRFTDaemon: per-rollout k dispatch, prefix_mask tensor
-  trainer.py       PrefixRFTTrainer: _train_step with the prefix hooks
-  entrypoint.py    mirrors the agentflow entrypoint with our classes substituted
+  demos.py         DemoStore, keyed on the question text
+  dispatch.py      prefix_k_for(): how many decisions this rollout replays
+  masks.py         build_prefix_mask(): marks replayed tokens in the batch
+  advantage.py     apply_prefix_advantage(): the prefix-aware GRPO advantage
+  entropy.py       clip_prefix_advantage_by_entropy(): the top-20% filter
+  actor_edits.py   the three edits to verl's update_policy, as data
+  trainer_edits.py the two edits to the vendored _train_step, as data
+                                            actor.py     PrefixRFTActor
+                                            worker.py    PrefixRFTWorker
+                                            daemon.py    PrefixRFTDaemon
+                                            trainer.py   PrefixRFTTrainer
+                                            entrypoint.py, __main__.py
+  config/prefix_rft_trainer.yaml   primary Hydra config
 
 src/fine_tuning/
+  prefix_replay.py    ReplayController, ReplayToolRegistry, ReplayProvider
+                      (imports only agent_engine, so it is CPU-testable)
   prefix_rollout.py   PrefixOrchestratorRollout(OrchestratorRollout)
 
 scripts/
-  build_prefix_demos.py    demonstration store builder
-  check_prefix_demos.py    preflight gate
+  build_prefix_demos.py             demonstration store builder
+  check_prefix_demos.py             preflight gate on the store
+  check_prefix_rft_actor_sync.py    guards the copied update_policy
+  check_prefix_rft_trainer_sync.py  guards all three copies
 
 experiments/configs/fine_tuning/
   config_prefix_rft.yaml, config_prefix_rft_smoke8b.yaml
@@ -169,33 +188,62 @@ Output `data/training/prefix_rft/prefix_demos.parquet`, one row per question:
 
 | Column | Content |
 |---|---|
-| `idx` | question index, joins to `combined_train.parquet` |
+| `question_key` | SHA-1 of the stripped question text. **The lookup key.** |
+| `question_id` | row position in the shuffled parquet, diagnostics only |
 | `data_source` | `hotpotqa`, `nq` or `deepmath` |
+| `question` | the question text, diagnostics only |
 | `n_steps` | number of teacher decisions, `m` |
 | `steps` | ordered list of `{response, tool_name, tool_result}` |
 
+**The key is the question text, not `extra_info.idx`.** `prepare.py` assigns `idx` per
+data source, so it collides across them: in `sft_train.parquet`, `idx` takes 700 distinct
+values across 968 rows, and `idx = 669` is both a deepmath question and a hotpotqa one.
+Keying on it would replay a maths demonstration into a search question. Training would
+run, rewards would be computed, and nothing downstream would flag it. `question_id` is
+also unusable: it is the row position in the shuffled parquet, which the rollout worker
+never sees. The question text is unique across all 968 rows and both sides hold it
+verbatim. `question_key` is defined once, in `demos.py`, and imported by the builder so
+the build-time and lookup-time hashes cannot drift.
+
 Only correct teacher trajectories are kept, matching the SFT builder's filter, so the
 reference repository's `demos_corr` flag is uniformly true and needs no representation.
-Thinking is stripped, matching `THINKING_MODE: NO` at RL time.
+Thinking is stripped, matching `THINKING_MODE: NO` at RL time. Trajectories with a
+surviving `<think>` opening tag are dropped: the strip matches `<think>...</think>`, so an
+unclosed tag means the teacher hit its token limit mid-thought. Both such trajectories in
+the 2026-06-05 collection are 26k-plus character repetition loops, and replaying one would
+teach the policy to loop.
 
-Coverage is 700 of the 1800 RL training questions. In the paper's terms that is a
-demonstration ratio of 0.39, well inside the range Table 2 validates, where 10% and even
-1% coverage still beat both SFT and RFT. The remaining 1100 questions train as ordinary
-GRPO, which is what the reference implementation's `demo_ratio` mechanism does
+**Coverage, as built: 1358 of the 1800 RL training questions, 4047 decisions, mean 2.98
+per question, of which 1085 are prefixable** (the other 273 have a single decision). In
+the paper's terms that is a demonstration ratio of 0.75, comfortably above the 10% and 1%
+regimes Table 2 validates. The remaining ~440 questions train as ordinary GRPO, which is
+what the reference implementation's `demo_ratio` mechanism does
 (`rl_dataset.py:194-203`).
+
+An earlier estimate of 700 questions came from counting `sft_train.parquet`, which had
+been thinned by a train/val split and a math:search rebalance that Prefix-RFT does not
+need. Building directly from the collection recovers the rest.
 
 `scripts/check_prefix_demos.py` is a CPU preflight gate, run the way
 `007_run_tests_for_sft_folded.job` runs the SFT gate. It asserts, on every row:
 
 - no empty step responses,
 - no surviving `<think>` blocks,
-- every non-final step has a parseable tool call and a stored tool result,
-- replaying the first `k` steps reproduces the prompt `AgenticOrchestrator._build_memory_prompt`
-  builds, for every `k` in `[0, m-1]`.
+- every step that *is* a tool call has a parseable call and a stored tool result,
+- no step in the middle is anything other than a tool call,
+- no trajectory ends on a tool call, which would mean it has no answer,
+- no duplicate `question_key`, which would shadow a demonstration.
 
-The last check is the same class of defect that made an early SFT run score below its own
-base model, as recorded in `docs/pipelines/sft.md`. The training job refuses to start if
-the gate fails.
+The middle-step rule is what the data actually looks like, and it took a correction to
+get right: the first decision is the *planning turn*, which is legitimately not a tool
+call, so an initial "every non-final step is a tool call" rule rejected 1087 of 1360 rows.
+Measured across the store, the shape is uniform: step 0 is the plan, the middle steps are
+all tool calls with stored results, the last is the answer, and no tool step is missing a
+result.
+
+The gate is the same class of guard that would have caught the defect that made an early
+SFT run score below its own base model, as recorded in `docs/pipelines/sft.md`. The
+training job refuses to start if it fails.
 
 ### 2. Schedule
 
@@ -223,19 +271,30 @@ Discretisation, ours: `k = clamp(floor(l * m), 0, m - 1)`.
 `PrefixOrchestratorRollout` subclasses `OrchestratorRollout` and changes only how the
 first `k` decisions are produced.
 
-- `_ReplayProvider` wraps `_CapturingProvider`. Its first `k` `generate()` calls return
+- `ReplayProvider` wraps `_CapturingProvider`. Its first `k` `generate()` calls return
   the teacher's stored response for that decision; subsequent calls delegate to the real
   provider. Both kinds of turn are captured, so both become triplets.
-- A replaying tool registry returns the teacher's stored tool result for the replayed
+- `ReplayToolRegistry` returns the teacher's stored tool result for the replayed
   decisions, then hands over to the real registry. This is where the efficiency gain
   comes from: no generation, no Serper call and no sub-agent call for replayed steps,
   against a baseline where generation was 1091s of a 1216s step
-  (`src/fine_tuning/README.md:222`).
+  (`src/fine_tuning/README.md:222`). **The stored result is single-use.** Serving it on
+  every lookup means the policy's first genuine tool call after replay ends is handed the
+  teacher's stale result instead of executing, and the trajectory silently stops
+  corresponding to anything the policy did.
 - `AgenticOrchestrator` is untouched, so replayed prompts are built by the same
   `_build_memory_prompt` used at inference. This follows the guide's rule: drive the real
   orchestrator, never a simplified loop.
 - Replayed turns carry `Triplet.metadata = {"prefix": True}`. That field already exists
   in the vendored `types.py:30`, so no vendored file changes.
+
+Two identity seams, `_wrap_provider` and `_wrap_tools`, are added to `OrchestratorRollout`
+so the shims have somewhere to attach. The base implementations return their argument
+unchanged, so ordinary GRPO is unaffected, and the existing rollout suite gates that.
+
+The shims live in `src/fine_tuning/prefix_replay.py`, importing only `agent_engine`.
+`fine_tuning.rollout` pulls in agentflow, which needs `agentops`, absent from the CPU test
+env; keeping the shims separate is what makes them testable.
 
 Rollout 0 of the 8 is the hybrid one; rollouts 1 to 7 are unchanged. Validation rollouts
 always get `k = 0`, so checkpoint selection measures unaided policy quality.
@@ -247,11 +306,13 @@ dict the vendored loop reuses.
 
 ### 4. prefix_mask
 
-`PrefixRFTDaemon.get_train_data_batch` extends the vendored method to emit a
+`PrefixRFTDaemon.get_train_data_batch` calls the vendored method, then attaches a
 `prefix_mask` tensor shaped like `responses`, set to 1 across every token of a triplet
-whose metadata marks it as prefix. It follows the same right-padding, truncation and
-drop-mask paths as the existing response tensors, so a prefix token that is truncated
-away is also dropped from the mask.
+whose metadata marks it as prefix, plus an `is_prefix_rollout_list` the advantage needs.
+`build_prefix_mask` applies the same truncation and skip rules as the base method (a turn
+is dropped only when prompt *and* response are empty), and a hard row-count assertion
+fails the step if the two ever disagree. Silent misalignment here would mark the wrong
+tokens as demonstrations.
 
 ### 5. Advantage
 
@@ -273,8 +334,8 @@ tokens, porting `compute_grpo_prefix_outcome_advantage`
 - prefix tokens then get `score_hybrid - mean(scores of the 7 unprefixed rollouts)`,
   divided by the rollouts-per-prefix count, which is 1 here.
 
-For a question with no prefixed rollout, which covers the 1100 undemonstrated questions
-and every `k = 0` draw, the port reduces to plain GRPO and verl's output stands
+For a question with no prefixed rollout, which covers the ~440 undemonstrated questions,
+the 273 single-decision ones and every `k = 0` draw, the port reduces to plain GRPO and verl's output stands
 unchanged. For a question that does have one, the port replaces verl's advantage on all
 of that question's rows, because the reference excludes the hybrid rollout from the
 on-policy baseline and verl cannot. That exclusion matters: at 1 of 8 with a hybrid
@@ -304,23 +365,22 @@ only if training destabilises, and record the flip.
 
 ### 6. Entropy clipping
 
-`PrefixRFTActor` subclasses `verl.workers.actor.DataParallelPPOActor` and overrides
-`update_policy` to:
+The filter itself is `entropy.py`'s `clip_prefix_advantage_by_entropy`, which sorts
+prefix tokens by entropy and zeroes the advantage of all but the top `keep_ratio`. Ranking
+is global across the micro-batch, not per row, as the reference does
+(`recipe/prefix_rft/dp_actor.py:138-139`): a row of uniformly low-entropy prefix tokens
+can be dropped entirely while another row keeps several.
 
-- add `prefix_mask` to verl's fixed `select_keys` list (`dp_actor.py:516`), which
-  otherwise drops it,
-- per micro-batch, sort prefix tokens by current-policy entropy and zero the advantage
-  of the bottom 80%, retaining the top 20%.
-
-This reproduces `dp_actor.reshape_func`'s `entropy` branch
-(`recipe/prefix_rft/dp_actor.py:132-158`), including that the ratio comes from a
-controller so it can later be scheduled; the default is `ConstController(0.8)`, which
-masks the bottom 80% and so keeps the top 20% the paper specifies.
+`PrefixRFTActor` subclasses `verl.workers.actor.DataParallelPPOActor` and carries three
+marked edits to `update_policy`: add `prefix_mask` to verl's fixed `select_keys` list
+(`dp_actor.py:516`) which otherwise drops it, force `calculate_entropy`, and apply the
+filter immediately before the policy loss.
 
 Entropy is the current policy's, recomputed per micro-batch, as in the reference. Doing
-the clip at the driver on old-policy entropy would be simpler but is not equivalent
-here: `ppo_mini_batch_size` is 8 against a `train_batch_size` of 32, so the policy moves
-between mini-batches. Requires `actor.calculate_entropy: true`.
+the clip at the driver on old-policy entropy would need no copied code but is not
+equivalent here: `ppo_mini_batch_size` is 8 against a batch of several hundred rows, so
+the policy takes many optimizer steps per training step and old-policy entropy is stale
+for most mini-batches.
 
 The actor is installed by `PrefixRFTWorker`, which subclasses verl's
 `AsyncActorRolloutRefWorker` and reassigns `self.actor.__class__` after
@@ -334,10 +394,28 @@ to insert the advantage correction between `compute_advantage` and `update_actor
 to instantiate our daemon.
 
 `_train_step` is a single ~200-line method in vendored code with no smaller seam, so the
-override is a copy with the hooks added. Its docstring records the vendored revision it
-was copied from, so a future re-vendor knows to re-sync it. The alternative, rebinding
-the vendored module's `compute_advantage` attribute, was rejected: it is invisible at the
-call site and `VENDORED.md` exists to prevent exactly that kind of hidden patch.
+override is a copy with two marked edits. The alternative, rebinding the vendored module's
+`compute_advantage` attribute, was rejected: it is invisible at the call site and
+`VENDORED.md` exists to prevent exactly that kind of hidden patch.
+
+The daemon is *not* constructed here. The vendored `fit()` builds a plain
+`AgentModeDaemon` at `trainer.py:427`, so `PrefixRFTTrainer._ensure_prefix_daemon`
+promotes that instance in place by reassigning `__class__` and setting the added
+attributes explicitly, the same trick the worker uses for the actor. Copying `fit()` as
+well would have doubled the copied surface for no gain.
+
+### 7a. Guarding the copies
+
+Three things are copied from sources this project does not own: verl's `update_policy`,
+the vendored `_train_step`, and the vendored Hydra config's keys. A docstring is not
+enough, because a stale copy keeps running: training would proceed on the old loss body
+and report success.
+
+The edits are therefore stored as *data*, in `actor_edits.py` and `trainer_edits.py`, and
+`scripts/check_prefix_rft_trainer_sync.py` re-derives each copy from the current source
+and diffs it against the file. A verl upgrade or a re-vendor surfaces as a failed check.
+The copies themselves were generated by applying those edits at asserted-unique anchors,
+not hand-transcribed.
 
 ### 8. Configuration
 
@@ -353,12 +431,18 @@ adds one block. Everything not listed is inherited unchanged, including LoRA ran
 | `prefix_rft.high` | `0.95` | paper A.2 |
 | `prefix_rft.low_init` | `0.95` | paper A.2 |
 | `prefix_rft.low_target` | `0.05` | paper A.2 |
-| `prefix_rft.low_ctrl_type` | `cosine_decay` | paper A.2 |
-| `prefix_rft.sampler` | `beta`, alpha 1, beta 1 | `BetaSampler` defaults |
+| `prefix_rft.sampler_alpha` / `sampler_beta` | `1.0` / `1.0` | `BetaSampler` defaults; Beta(1,1) is A.2's uniform draw |
 | `prefix_rft.entropy_keep_ratio` | `0.2` | paper A.2, §6 |
-| `prefix_rft.entropy_ctrl_type` | `const` | reference default |
 | `prefix_rft.singleton_baseline` | `none` | ours, see risk above |
-| `actor.calculate_entropy` | `true` | required by the clip |
+| `prefix_rft.seed` | `42` | ours |
+| `actor.calculate_entropy` | `true` | required by the clip; the entrypoint forces it on |
+
+These live in `src/verl_ext/prefix_rft/config/prefix_rft_trainer.yaml`, which is the
+**primary** Hydra config. It cannot compose the vendored AgentFlow config as a default:
+that file declares `hydra.searchpath`, which Hydra permits only in a primary config. Its
+keys are inlined under an `AGENTFLOW BASE` marker instead, and the sync check diffs that
+block against the vendored file so a re-vendor cannot change GRPO's setup while leaving
+Prefix-RFT on the old one.
 
 `config_prefix_rft_smoke8b.yaml` mirrors `config_smoke8b.yaml`'s reductions: 2 GPUs, 8
 samples, 2 rollouts, 1 epoch, `save_freq` and `test_freq` 1. With `rollout.n: 2` the
@@ -379,9 +463,12 @@ Recorded here so the write-up can state them rather than discover them.
    and its GPU budget.
 4. **Multi-turn agentic trajectories with an outcome reward** against the paper's
    single-turn math with a verifier.
-5. **700 of 1800 questions carry demonstrations**, inside the range Table 2 validates.
+5. **1358 of 1800 questions carry demonstrations**, of which 1085 are prefixable. Above
+   the 10% and 1% regimes Table 2 validates.
 6. **Schedule spans the actual run length** rather than the paper's fixed 500 steps.
-7. **One vendored method is copied** into a subclass, documented at the copy site.
+7. **Three copies** are taken from code this project does not own (verl's `update_policy`,
+   the vendored `_train_step`, the vendored config keys), each guarded by a sync check
+   rather than only a comment.
 
 ## Testing
 
@@ -391,14 +478,22 @@ Recorded here so the write-up can state them rather than discover them.
 |---|---|
 | `schedule.py` | `low_t` is 0.95 at step 0, decays monotonically, reaches 0.05 at the final step; `l` always lies in `[low_t, 0.95]` |
 | step discretisation | `k` in `[0, m-1]` for all `m >= 1`; `k = 0` whenever `m = 1`; `k` decreases in expectation as training advances |
-| `demos.py` | store loads, indexes by `idx`, and misses return `k = 0` rather than raising |
-| daemon `prefix_mask` | mask is 1 exactly on replayed-triplet response tokens, 0 on padding, and survives truncation consistently with `responses` |
-| `advantage.py` | on a hand-built group of 8 with known scores, prefix tokens equal `score_hybrid - mean(unprefixed)` and non-prefix tokens are untouched |
-| entropy clip | on a synthetic entropy tensor, exactly the top 20% of prefix tokens retain non-zero advantage and no non-prefix token is touched |
-| replay provider | first `k` calls return teacher text, call `k+1` delegates, and triplet metadata is marked correctly |
+| `build_prefix_demos.py` | one row per decision in order, thinking stripped, tool results attached to the calling step, incorrect trajectories dropped, and questions sharing an `idx` kept distinct |
+| `check_prefix_demos.py` | accepts the real shape (plan, tool calls, answer) and a single-decision row; rejects a missing tool result, an unparseable call, a non-tool middle step, a trajectory ending on a tool call, and surviving thinking |
+| `demos.py` | store loads, looks up by question text, is whitespace-insensitive, and misses return `0` rather than raising |
+| `dispatch.py` | only the first rollout is prefixed; validation never is; `m <= 1` and unknown questions give `k = 0`; the schedule is asked for the current step; lookup passes the question, not an index |
+| `masks.py` | mask is 1 exactly on replayed-triplet response tokens, truncates with the response, and drops exactly the rows the base daemon drops |
+| `advantage.py` | on a hand-built group of 8, prefix tokens equal `score_hybrid - mean(unprefixed)`; grouping is per rollout not per row; the hybrid is excluded from the on-policy baseline; a failing prefix gets a negative advantage |
+| `entropy.py` | exactly the top 20% survive, selection is global across the micro-batch, the highest-entropy tokens are the survivors, no non-prefix token is touched, input is not mutated |
+| `prefix_replay.py` | first `k` calls return teacher text and call `k+1` delegates; tokenisation matches the proxy's two calls; the `tool`→`user` remap is applied; a live tool call after replay is not served a stale result |
+| copy guards | the copied `update_policy` and `_train_step` still match their sources; edit anchors fail loudly if not unique |
 
-**Gate.** `check_prefix_demos.py` over the full store, wired into
-`009_run_tests_for_prefix_rft.job` alongside the unit tests, on the CPU partition.
+Tests needing verl are skipped on CPU via `importorskip`; the same checks run as scripts
+under `cosmas-train`, which has verl but no pytest.
+
+**Gate.** `check_prefix_demos.py` over the full store, plus
+`check_prefix_rft_trainer_sync.py` over the three copies, wired into
+`009_run_tests_for_prefix_rft.job` on the CPU partition.
 
 **Smoke.** `010_smoke_prefix_rft.job`, 8B on 2 GPUs, asserting that
 `actor/num_prefix_tokens` and `actor/off_ratio` are non-zero, that the run reaches a
@@ -416,3 +511,71 @@ and reward split by prefixed against unprefixed rollouts.
 The production 4xH100 run, the five-benchmark evaluation suite, and the Chapter 7
 write-up. Those follow only if the smoke path is clean and the compute is worth
 spending.
+
+## Implementation record
+
+Eight of the plan's ten tasks are built and committed. What follows is every place the
+implementation departed from the design above, and why. Each was found by running
+something, not by reading.
+
+### Corrections to the design
+
+1. **The lookup key was wrong.** The design keyed demonstrations on `extra_info.idx`.
+   That field is assigned per data source and collides across them, so a maths
+   demonstration would have been replayed into a search question, with no downstream
+   signal. Now keyed on the question text. Covered by
+   `test_questions_colliding_on_idx_stay_distinct`.
+
+2. **Coverage was understated at 700.** That figure came from `sft_train.parquet`, already
+   thinned by a train/val split and a math:search rebalance Prefix-RFT does not need.
+   Building from the collection gives 1358 questions and 4047 decisions.
+
+3. **The gate encoded the wrong rule.** "Every non-final step is a tool call" rejected
+   1087 of 1360 rows, because the first decision is the planning turn. Corrected, and the
+   real shape measured and documented.
+
+4. **Advantage grouping had to move from rows to rollouts.** Flow GRPO emits one row per
+   turn; a row-level port would have centred the hybrid rollout's turns against themselves
+   and produced exactly zero prefix advantage. Recorded in section 5 and tested.
+
+5. **A stale tool result could reach a live tool call.** The replay controller originally
+   returned the last stored result on every lookup, so the policy's first genuine tool call
+   after replay ended would have been served the teacher's result instead of executing.
+   Now single-use, with a regression test.
+
+6. **The vendored Hydra config cannot be composed.** It declares `hydra.searchpath`, which
+   Hydra permits only in a primary config. Its keys are inlined and drift-checked instead.
+
+7. **`torch.std` is NaN for a one-element group.** Falls back to 1.0, matching the
+   reference's singleton branch.
+
+### Structural decisions taken during implementation
+
+8. **Logic is separated from verl.** verl is absent from `agent_engine` and pytest is
+   absent from `cosmas-train`, so any module importing verl is untestable in both. Every
+   piece of real logic therefore lives in a verl-free module, with thin wrappers over it.
+   This is why `dispatch.py`, `masks.py`, `entropy.py` and `prefix_replay.py` exist and are
+   not folded into the classes that use them.
+
+9. **The copies are guarded, not just documented.** The edits live as data and are
+   re-derived from the current sources by `check_prefix_rft_trainer_sync.py`. The copied
+   bodies were generated by applying those edits at asserted-unique anchors rather than
+   hand-transcribed.
+
+10. **Two identity seams were added to `OrchestratorRollout`.** `_wrap_provider` and
+    `_wrap_tools` give the replay shims somewhere to attach. Both return their argument
+    unchanged in the base class, and the existing GRPO rollout suite gates that.
+
+11. **The entrypoint fails loudly on three configuration mistakes** rather than
+    misbehaving quietly: a non-FSDP strategy, `rollout.mode != async`, and an empty
+    demonstration store (which would make every rollout plain GRPO while the run still
+    reported success).
+
+### Still unverified
+
+12. **Replay tokenisation has not been checked against the live proxy.** The replay path
+    tokenises locally, mirroring the proxy's two calls (`daemon.py:216-225`) and the
+    provider's `tool`→`user` remap, and is unit-tested against a fake tokenizer. Nothing
+    has yet compared it to a real rollout. This is the highest-risk item outstanding: if it
+    is wrong, every prefix triplet is misaligned and no other signal would reveal it. Task
+    10 Step 6 is the check.
