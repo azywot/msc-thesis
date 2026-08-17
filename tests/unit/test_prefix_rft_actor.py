@@ -127,3 +127,22 @@ def test_the_edit_anchors_are_unique():
     doubled = (EDITS[0][0] * 2) + EDITS[1][0] + EDITS[2][0]
     with pytest.raises(ValueError, match="anchor appears 2 times"):
         apply_edits(doubled, EDITS)
+
+
+def test_the_copied_train_step_is_in_sync_with_the_vendored_agentflow():
+    """trainer.py copies the vendored AgentFlow _train_step. A re-vendor that
+    changes it must show up here rather than as silent divergence."""
+    pytest.importorskip("verl")
+    from verl_ext.prefix_rft.trainer_edits import (
+        actual_prefix_rft_train_step,
+        expected_prefix_rft_train_step,
+    )
+
+    assert actual_prefix_rft_train_step() == expected_prefix_rft_train_step()
+
+
+def test_trainer_edit_anchors_are_unique():
+    from verl_ext.prefix_rft.trainer_edits import EDITS, apply_edits
+
+    with pytest.raises(ValueError, match="anchor appears 0 times"):
+        apply_edits("nothing to anchor onto\n", EDITS)
