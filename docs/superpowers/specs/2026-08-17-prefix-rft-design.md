@@ -131,7 +131,7 @@ src/fine_tuning/
 scripts/
   build_prefix_demos.py             demonstration store builder
   check_prefix_demos.py             preflight gate on the store
-  check_prefix_rft_actor_sync.py    guards the copied update_policy
+  check_prefix_rft_trainer_sync.py  guards all three copied methods
   check_prefix_rft_trainer_sync.py  guards all three copies
 
 experiments/configs/fine_tuning/

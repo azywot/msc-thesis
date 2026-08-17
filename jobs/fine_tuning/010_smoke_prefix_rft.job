@@ -143,6 +143,18 @@ if not prefixable:
     )
 PYCOVER
 
+# The launch config must resolve before anything is started. Builds the exact command a
+# real run would issue and appends Hydra's --cfg job, so every override is validated
+# without Ray, GPUs or weights (job 25749264 burned an allocation on an unresolvable
+# config_path). Seconds here, versus minutes into an allocation there.
+echo ""
+echo "Dry-running the launch config..."
+if ! python scripts/launch_verl.py \
+        --config experiments/configs/fine_tuning/config_prefix_rft_smoke8b.yaml --dry-run; then
+    echo "FAIL — the launch config does not resolve. Nothing was started."
+    exit 1
+fi
+
 VERL_PID=""
 SUBAGENT_PID=""
 ORCHESTRATOR_PID=""
@@ -244,14 +256,14 @@ VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
     --tensor-parallel-size 1 \
     --gpu-memory-utilization 0.08 \
     --max-model-len 16384 \
-    > out/fine_tuning/smoke_test_8b/smoke8b_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
+    > out/fine_tuning/prefix_rft/smoke_${SLURM_JOB_ID:-local}_subagent.log 2>&1 &
 SUBAGENT_PID=$!
 export SUBAGENT_ENDPOINT="http://localhost:9998/v1"
 
 echo "Waiting 60s for sub-agent vLLM to be ready..."
 sleep 60
 if ! kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
-    echo "FAIL — sub-agent server exited during startup. See out/fine_tuning/smoke_test_8b/smoke8b_${SLURM_JOB_ID:-local}_subagent.log"
+    echo "FAIL — sub-agent server exited during startup. See out/fine_tuning/prefix_rft/smoke_${SLURM_JOB_ID:-local}_subagent.log"
     wait "$SUBAGENT_PID"
 fi
 
@@ -260,7 +272,7 @@ export CUDA_VISIBLE_DEVICES=1,2
 
 # ── 3. VERL server ───────────────────────────────────────────────────────────
 export PYTHONUNBUFFERED=1
-VERL_LOG="out/fine_tuning/smoke_test_8b/smoke8b_${SLURM_JOB_ID:-local}_verl.log"
+VERL_LOG="out/fine_tuning/prefix_rft/smoke_${SLURM_JOB_ID:-local}_verl.log"
 echo ""
 echo "Starting VERL server (config_smoke8b.yaml, N_GPUS=2)..."
 python scripts/launch_verl.py --config experiments/configs/fine_tuning/config_prefix_rft_smoke8b.yaml \
@@ -271,7 +283,7 @@ start_crash_monitor "$VERL_LOG" "VERL"
 echo "Waiting up to 3 min for Ray + worker bootstrap; N_GPUS=2 + FSDP + colocated vLLM can take 20–30 min before AgentFlow answers /task."
 sleep 180
 if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
-    echo "FAIL — VERL server exited during startup. See out/fine_tuning/smoke_test_8b/smoke8b_${SLURM_JOB_ID:-local}_verl.log"
+    echo "FAIL — VERL server exited during startup. See out/fine_tuning/prefix_rft/smoke_${SLURM_JOB_ID:-local}_verl.log"
     wait "$VERL_PID"
 fi
 
@@ -284,7 +296,7 @@ while (( SECONDS < _deadline )); do
         break
     fi
     if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
-        echo "FAIL — VERL exited before AgentFlow came up. See out/fine_tuning/smoke_test_8b/smoke8b_${SLURM_JOB_ID:-local}_verl.log"
+        echo "FAIL — VERL exited before AgentFlow came up. See out/fine_tuning/prefix_rft/smoke_${SLURM_JOB_ID:-local}_verl.log"
         wait "$VERL_PID" || true
         exit 1
     fi
@@ -303,7 +315,18 @@ ORCHESTRATOR_PID=$!
 # Wait for VERL (server) to finish training first.
 # The orchestrator is a client of VERL — waiting for it before VERL exits would deadlock.
 # After VERL exits the orchestrator loses its connection and is killed by the EXIT trap.
-wait $VERL_PID
+# `|| VERL_RC=$?` keeps `set -e` from ending the script on a non-zero exit, so a failed
+# run prints the tail of its own log instead of leaving only an exit code in the SLURM
+# output. The verification steps below are skipped in that case: they would report
+# "prefix machinery not active" for a run that never got far enough to have any.
+VERL_RC=0
+wait $VERL_PID || VERL_RC=$?
+if [[ $VERL_RC -ne 0 ]]; then
+    echo ""
+    echo "FAIL — VERL exited with status $VERL_RC. Last 80 lines of $VERL_LOG:"
+    tail -80 "$VERL_LOG"
+    exit 1
+fi
 
 # ── 5. Verify checkpoint was written ─────────────────────────────────────────
 # LoRA runs: launch_verl.py drops 'model' from save_contents → only lora_adapter/

@@ -82,6 +82,15 @@ FAILURES=()
 note_fail() { FAILURES+=("$1"); echo "  ✗ FAIL: $1"; }
 note_pass() { echo "  ✓ PASS: $1"; }
 
+# Switching conda envs mid-script needs the module's python back on PATH first.
+# `conda`'s shebang is `#!/usr/bin/env python`, so with an env already active it runs
+# that env's python, which has no conda package installed: `conda deactivate` errors,
+# `source activate <other>` then fails silently, and the next stage runs in the previous
+# env. That is what made stages 4 and 5 fail here — they were running under
+# agent_engine, which has no verl, while claiming to test cosmas-train.
+BASE_PATH="$PATH"
+use_env() { PATH="$BASE_PATH"; source activate "$1"; }
+
 for f in "$FOLDED_TRAIN" "$FOLDED_VAL" "$NATIVE_TRAIN" "$NATIVE_VAL"; do
     if [[ ! -f "$f" ]]; then
         echo "ERROR: missing $f"
@@ -98,11 +107,13 @@ done
 # Excluding it keeps a real failure visible instead of drowned in a known error.
 echo ""
 echo "── Stage 1/5: unit tests (env: agent_engine) ────────────────────────────────"
-source activate agent_engine
+use_env agent_engine
 # Explicit `tests/` path: a bare `pytest` from the repo root also walks data/training/,
-# where four directories carry the read bit but not the execute bit, so probing them for a
-# conftest.py raises PermissionError and collection aborts. pyproject.toml now sets
-# `testpaths = ["tests"]` as well, so both routes are safe.
+# where four directories used to carry the read bit but not the execute bit, so probing
+# them for a conftest.py raised PermissionError and collection aborted. The modes were
+# repaired (`chmod u+x data/training/{smoke,train,val,test}`) and pyproject.toml sets
+# `testpaths = ["tests"]`, so all three routes are safe; the explicit path stays because
+# it costs nothing and does not depend on either of the other two holding.
 python -m pytest tests/ -q --ignore=tests/unit/test_fine_tuning_rollout.py
 if [[ $? -eq 0 ]]; then note_pass "full unit-test suite"; else note_fail "full unit-test suite"; fi
 
@@ -139,8 +150,7 @@ fi
 # transformers version => potentially different chat-template rendering. Verify there.
 echo ""
 echo "── Stage 4/5: gate under cosmas-train (the env VERL actually uses) ──────────"
-conda deactivate 2>/dev/null || true
-source activate cosmas-train
+use_env cosmas-train
 python -c "
 import sys, transformers, torch
 sys.path.insert(0, 'src')

@@ -21,7 +21,7 @@ from __future__ import annotations
 import difflib
 import sys
 
-from verl_ext.prefix_rft import actor_edits, trainer_edits
+from verl_ext.prefix_rft import actor_edits, daemon_edits, trainer_edits
 
 
 def _check(name: str, expected_fn, actual_fn, guidance: str) -> bool:
@@ -108,6 +108,15 @@ def main() -> int:
         trainer_edits.actual_prefix_rft_train_step,
         "The vendored AgentFlow _train_step has changed, most likely a re-vendor. "
         "Regenerate trainer.py against the new vendored file.",
+    )
+    ok &= _check(
+        "daemon._async_set_up",
+        daemon_edits.expected_prefix_rft_async_set_up,
+        daemon_edits.actual_prefix_rft_async_set_up,
+        "The vendored AgentFlow _async_set_up has changed, most likely a re-vendor. "
+        "Regenerate daemon.py against the new vendored file. If it drifted the other "
+        "way (an edit made directly in daemon.py), fold that edit into daemon_edits.py "
+        "instead so the copy stays derivable.",
     )
     return 0 if ok else 1
 

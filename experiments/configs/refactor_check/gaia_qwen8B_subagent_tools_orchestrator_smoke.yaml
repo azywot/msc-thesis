@@ -1,0 +1,57 @@
+# GAIA — Qwen3-8B, sub-agent tools, orchestrator thinking — FIVE QUESTIONS ONLY.
+#
+# A copy of experiments/configs/qwen3/agentflow/gaia/qwen8B_subagent_tools_orchestrator.yaml
+# with three changes and nothing else:
+#   subset_num  -1 -> 5      the original is the full validation split, a 24 h run
+#   output_dir               writes here, so a real result set can never be overwritten
+#   use_wandb   true -> false  this is a regression check, not a benchmark number
+#
+# Pairs with gaia_qwen8B_subagent_tools_none_smoke.yaml. The two differ only in
+# thinking_mode, which is worth checking separately: ORCHESTRATOR_ONLY takes a different
+# path through the provider (Qwen3's enable_thinking kwarg) and through response parsing,
+# where a <think> block precedes the tool call. A refactor can break one and not the other.
+#
+# The five questions are drawn by get_subset(5) under seed 0, the same five as the
+# thinking-off variant, so the two runs are directly comparable.
+#
+# Accuracy on five GAIA questions means nothing. Read this run for "did it complete
+# without raising", not for its score.
+
+name: "refactor_check_gaia_qwen8B_subagent_tools_orchestrator"
+description: "[Regression check; 5 questions] GAIA validation with Qwen3-8B, sub-agent tools, orchestrator thinking"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "02:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "Qwen3-8B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-8B"
+    role: "orchestrator"
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+  direct_tool_call: false
+
+dataset:
+  name: "gaia"
+  split: "all_validation"
+  data_dir: "./data"
+  subset_num: 5
+
+seed: 0
+thinking_mode: "ORCHESTRATOR_ONLY"
+output_dir: "./experiments/results/refactor_check/gaia/qwen8B_subagent_tools_orchestrator"
+use_wandb: false
+wandb_project: "benchmarks"
+
+cache_dir: "./cache"

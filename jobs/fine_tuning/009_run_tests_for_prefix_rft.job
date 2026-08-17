@@ -80,6 +80,14 @@ FAILURES=()
 note_fail() { FAILURES+=("$1"); echo "  ✗ FAIL: $1"; }
 note_pass() { echo "  ✓ PASS: $1"; }
 
+# Switching conda envs mid-script needs the module's python back on PATH first.
+# `conda`'s shebang is `#!/usr/bin/env python`, so with an env already active it runs
+# that env's python, which has no conda package installed: `source activate <other>`
+# then fails silently and the next stage runs in the previous env. Stage 4 failed this
+# way on job 25749110 and reported three false failures.
+BASE_PATH="$PATH"
+use_env() { PATH="$BASE_PATH"; source activate "$1"; }
+
 if [[ ! -f "$DEMOS" ]]; then
     echo "ERROR: missing $DEMOS"
     echo "Build it first: sbatch jobs/fine_tuning/008_build_prefix_demos.job"
@@ -91,7 +99,7 @@ fi
 # covers them. This is why the logic lives in verl-free modules.
 echo ""
 echo "── Stage 1/4: Prefix-RFT unit tests (env: agent_engine) ─────────────────────"
-source activate agent_engine
+use_env agent_engine
 python -m pytest tests/unit/test_prefix_rft_schedule.py \
                  tests/unit/test_prefix_rft_demos.py \
                  tests/unit/test_prefix_rft_rollout.py \
@@ -172,8 +180,7 @@ rm -f "$CORRUPT"
 # skipped pytest cases make, run as scripts.
 echo ""
 echo "── Stage 4/4: copied methods and imports (env: cosmas-train) ────────────────"
-conda deactivate 2>/dev/null || true
-source activate cosmas-train
+use_env cosmas-train
 
 python scripts/check_prefix_rft_trainer_sync.py
 if [[ $? -eq 0 ]]; then note_pass "copied methods and config in sync"; else note_fail "copied methods and config in sync"; fi
@@ -197,21 +204,105 @@ print('  all Prefix-RFT modules import and subclass correctly under cosmas-train
 "
 if [[ $? -eq 0 ]]; then note_pass "modules import under cosmas-train"; else note_fail "modules import under cosmas-train"; fi
 
+# Subclassing verl's classes and copying its methods is not enough: verl's runtime
+# imposes contracts that no import error and no unit test reveals — Ray binds only
+# @register-marked methods, init_model converts config subtrees into dataclasses that
+# reject undeclared keys, and a copied body resolves its globals at call time. Each of
+# these cost a GPU allocation to discover (jobs 25751449, 25751544, 25752267).
+python scripts/check_prefix_rft_runtime_contracts.py
+if [[ $? -eq 0 ]]; then note_pass "verl runtime contracts hold"; else note_fail "verl runtime contracts hold"; fi
+
+# Trip-wires: each of the three checks must still detect its own failure mode.
 python -c "
-import os, sys
+import sys
+sys.path.insert(0, 'src'); sys.path.insert(0, 'scripts')
+from check_prefix_rft_runtime_contracts import bound_methods, global_names
+from hydra import compose, initialize_config_module
+from omegaconf import OmegaConf
+from verl.utils.config import omega_conf_to_dataclass
+from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker
+
+# (1) an override without @register disappears from the remote interface
+class Broken(AsyncActorRolloutRefWorker):
+    def init_model(self):
+        return super().init_model()
+
+missing = sorted(set(bound_methods(AsyncActorRolloutRefWorker)) - set(bound_methods(Broken)))
+assert missing == ['init_model'], f'binding trip-wire did not fire: {missing}'
+
+# (2) an undeclared key on actor_rollout_ref.actor is rejected, and for the right reason
+base = ['actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1']
+with initialize_config_module(config_module='verl_ext.prefix_rft.config', version_base=None):
+    good = compose(config_name='prefix_rft_trainer',
+                   overrides=base + ['+actor_rollout_ref.prefix_entropy_keep_ratio=0.2'])
+    bad = compose(config_name='prefix_rft_trainer',
+                  overrides=base + ['+actor_rollout_ref.actor.prefix_entropy_keep_ratio=0.2'])
+omega_conf_to_dataclass(OmegaConf.select(good, 'actor_rollout_ref.actor'))
+try:
+    omega_conf_to_dataclass(OmegaConf.select(bad, 'actor_rollout_ref.actor'))
+except Exception as exc:
+    assert 'prefix_entropy_keep_ratio' in str(exc), f'rejected for the wrong reason: {exc}'
+else:
+    sys.exit('dataclass trip-wire did not fire')
+
+# (3) free names are detected; locally bound ones are not, or the check cries wolf
+assert global_names('def f(self):\n    return compute_response_mask(self)\n') == {'compute_response_mask'}
+assert global_names('def f(self):\n    x = 1\n    return x\n') == set()
+print('  all three trip-wires fired')
+"
+if [[ $? -eq 0 ]]; then
+    note_pass "trip-wires — each runtime-contract check still discriminates"
+else
+    note_fail "trip-wires — a runtime-contract check no longer detects its failure mode"
+fi
+
+python -c "
+import sys
 sys.path.insert(0, 'src')
-from hydra import compose, initialize_config_dir
-import verl_ext.prefix_rft as p
-d = os.path.join(os.path.dirname(p.__file__), 'config')
-with initialize_config_dir(config_dir=d, version_base=None):
+from hydra import compose, initialize_config_module
+
+# initialize_config_MODULE, not initialize_config_dir. entrypoint.py declares
+# config_path='pkg://verl_ext.prefix_rft/config', which Hydra resolves as an importable
+# module, so the config directory must be a package. initialize_config_dir takes a
+# filesystem path and succeeds without __init__.py — it passed here while the real
+# launcher died at startup with \"Primary config module ... not found\" (job 25749264).
+# Resolving the same way the entrypoint does is the whole point of this check.
+with initialize_config_module(config_module='verl_ext.prefix_rft.config', version_base=None):
     cfg = compose(config_name='prefix_rft_trainer')
 assert cfg.prefix_rft.entropy_keep_ratio == 0.2, cfg.prefix_rft.entropy_keep_ratio
 assert cfg.prefix_rft.low_init == 0.95 and cfg.prefix_rft.low_target == 0.05
 assert cfg.prefix_rft.n_prefixed_rollouts == 1
 assert cfg.actor_rollout_ref.rollout.mode == 'async'
-print('  hydra config composes with the paper values')
+print('  hydra config composes from the package path the entrypoint uses')
 "
 if [[ $? -eq 0 ]]; then note_pass "hydra config composes"; else note_fail "hydra config composes"; fi
+
+# And the strongest form of the same check: run the actual launcher. `--cfg job` makes
+# Hydra resolve config_path, compose, print and exit without touching Ray or a GPU, so
+# it exercises the real @hydra.main decorator rather than our reconstruction of it.
+# This is what job 25749264 would have needed to catch the missing config/__init__.py
+# before spending a GPU allocation to discover it.
+python -m verl_ext.prefix_rft --cfg job > /dev/null 2>&1
+if [[ $? -eq 0 ]]; then
+    note_pass "the launcher entrypoint resolves its own config"
+else
+    note_fail "the launcher entrypoint cannot resolve its config (python -m verl_ext.prefix_rft)"
+    echo "    reproduce with: python -m verl_ext.prefix_rft --cfg job"
+fi
+
+# Same idea one level up: every config that will ever be launched, through the real
+# launcher, with its real override list. launch_verl.py --dry-run builds the command it
+# would run and appends --cfg job, so Hydra validates all ~75 overrides — including the
+# '+' prefixes that struct mode rejects when a key is not declared — without Ray or a GPU.
+for _cfg in config_prefix_rft_tiny8b config_prefix_rft_smoke8b config_prefix_rft; do
+    if python scripts/launch_verl.py \
+           --config "experiments/configs/fine_tuning/${_cfg}.yaml" --dry-run > /dev/null 2>&1; then
+        note_pass "launch config resolves: ${_cfg}"
+    else
+        note_fail "launch config does NOT resolve: ${_cfg}"
+        echo "    reproduce with: python scripts/launch_verl.py --config experiments/configs/fine_tuning/${_cfg}.yaml --dry-run"
+    fi
+done
 
 # ── Summary ──────────────────────────────────────────────────────────────────────
 echo ""

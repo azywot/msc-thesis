@@ -19,7 +19,13 @@ import numpy as np
 import torch
 from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
-from verl.trainer.ppo.ray_trainer import AdvantageEstimator, apply_kl_penalty, compute_advantage
+from verl.trainer.ppo.core_algos import agg_loss
+from verl.trainer.ppo.ray_trainer import (
+    AdvantageEstimator,
+    apply_kl_penalty,
+    compute_advantage,
+    compute_response_mask,
+)
 from verl.trainer.ppo.metric_utils import compute_data_metrics, compute_throughout_metrics, compute_timing_metrics
 from verl.utils.metric import reduce_metrics
 

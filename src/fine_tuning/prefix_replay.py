@@ -166,6 +166,14 @@ class ReplayProvider:
                     "is_prefix": True,
                 }
             )
+            # Proof that replay reached the generation path, not merely that a
+            # controller was constructed. _make_controller's print says only the
+            # latter, which is why job 25753400 looked like replay had happened.
+            print(
+                f"[ReplayProvider] served replayed turn "
+                f"{controller.replayed_turns}/{controller.k} "
+                f"({len(replayed['response_token_ids'])} response tokens)"
+            )
             n_prompt = len(replayed["prompt_token_ids"])
             n_response = len(replayed["response_token_ids"])
             results.append(

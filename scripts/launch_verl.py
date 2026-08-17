@@ -19,6 +19,17 @@ import yaml
 def main():
     parser = argparse.ArgumentParser(description="Launch VERL training server.")
     parser.add_argument("--config", type=str, default="experiments/configs/fine_tuning/config.yaml")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Build the launch command exactly as a real run would, then append Hydra's "
+            "--cfg job so it resolves config_path, composes every override and exits. "
+            "No Ray, no GPU, no weights. Catches the class of failure that otherwise "
+            "only appears minutes into an allocation: an unresolvable config_path, a "
+            "mistyped key, or a '+' prefix that Hydra's struct mode rejects."
+        ),
+    )
     args, unknown = parser.parse_known_args()
 
     # VERL workers forbid ROCR_VISIBLE_DEVICES alongside CUDA_VISIBLE_DEVICES (see
@@ -223,9 +234,26 @@ def main():
             command.append(f"{key}={value}")
     command.extend(unknown)
 
-    print("Launching VERL server:")
+    if args.dry_run:
+        # --cfg job makes Hydra compose and print the config instead of calling main(),
+        # so the whole override list is validated without starting anything.
+        command.append("--cfg")
+        command.append("job")
+        print("Dry run — resolving the config without launching:")
+    else:
+        print("Launching VERL server:")
     print(" ".join(str(x) for x in command))
     print("-" * 60)
+
+    if args.dry_run:
+        result = subprocess.run(command, env=os.environ, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(result.stdout[-4000:])
+            print(result.stderr[-4000:])
+            print(f"DRY RUN FAILED — the config does not resolve (exit {result.returncode}).")
+            sys.exit(result.returncode)
+        print(f"DRY RUN OK — {len(python_args)} overrides resolved against {module}.")
+        return
 
     try:
         subprocess.run(command, check=True, env=os.environ)

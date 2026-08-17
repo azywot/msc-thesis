@@ -105,7 +105,7 @@ def test_the_copied_update_policy_is_in_sync_with_verl():
     """actor.py copies verl's update_policy. A verl upgrade that changes the
     original must show up here, not as training silently running the old body.
 
-    Skipped where verl is absent; scripts/check_prefix_rft_actor_sync.py runs the
+    Skipped where verl is absent; scripts/check_prefix_rft_trainer_sync.py runs the
     same check under cosmas-train, which is where verl actually lives.
     """
     pytest.importorskip("verl")
@@ -146,3 +146,36 @@ def test_trainer_edit_anchors_are_unique():
 
     with pytest.raises(ValueError, match="anchor appears 0 times"):
         apply_edits("nothing to anchor onto\n", EDITS)
+
+
+def test_the_copied_async_set_up_is_in_sync_with_the_vendored_agentflow():
+    """daemon.py copies the vendored AgentFlow _async_set_up. A re-vendor that changes
+    it must show up here rather than as a prefix_k that is silently never dispatched.
+
+    Skipped where verl is absent; scripts/check_prefix_rft_trainer_sync.py runs the
+    same check under cosmas-train.
+    """
+    pytest.importorskip("verl")
+    from verl_ext.prefix_rft.daemon_edits import (
+        actual_prefix_rft_async_set_up,
+        expected_prefix_rft_async_set_up,
+    )
+
+    assert actual_prefix_rft_async_set_up() == expected_prefix_rft_async_set_up()
+
+
+def test_daemon_edit_anchors_are_unique():
+    """apply_edits must fail loudly rather than patch the wrong line twice.
+
+    The doubled case matters here specifically: 'original_sample' is a substring of
+    '_task_id_to_original_sample', so an edit anchored too loosely would corrupt the
+    attribute name instead of the variable.
+    """
+    from verl_ext.prefix_rft.daemon_edits import EDITS, apply_edits
+
+    with pytest.raises(ValueError, match="anchor appears 0 times"):
+        apply_edits("nothing to anchor onto\n", EDITS)
+
+    doubled = "".join(old * 2 for old, _ in EDITS)
+    with pytest.raises(ValueError, match="anchor appears 2 times"):
+        apply_edits(doubled, EDITS)

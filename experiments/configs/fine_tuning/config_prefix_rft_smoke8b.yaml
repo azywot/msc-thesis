@@ -78,8 +78,10 @@ python_args:
   # ---- Prefix-RFT --------------------------------------------------------
   # Every value traces to papers/PrefixRFT_2507.01679v3.md or repos/prefix_rft.
   # These keys are declared in src/verl_ext/prefix_rft/config/prefix_rft_trainer.yaml,
-  # so they take no "+" prefix; prefix_entropy_keep_ratio does, because it is read off
-  # verl's actor config rather than ours.
+  # so they take no "+" prefix. prefix_entropy_keep_ratio does, because it is added to
+  # verl's own tree. Note it sits on actor_rollout_ref, NOT actor_rollout_ref.actor:
+  # verl converts the latter into an FSDPActorConfig dataclass that rejects keys it
+  # does not declare, so putting it there kills worker startup (job 25751544).
   prefix_rft.enable: true
   prefix_rft.demos_path: 'data/training/prefix_rft/prefix_demos.parquet'
   # Paper A.2: 8 rollouts per prompt, one of them prefixed.
@@ -99,7 +101,7 @@ python_args:
   # The entropy clip ranks prefix tokens by current-policy entropy, so the actor must
   # compute it. The entrypoint also forces this on; set here so the config is honest.
   actor_rollout_ref.actor.calculate_entropy: true
-  +actor_rollout_ref.actor.prefix_entropy_keep_ratio: 0.2
+  +actor_rollout_ref.prefix_entropy_keep_ratio: 0.2
   # ------------------------------------------------------------------------
 
   agentflow.port: 9999

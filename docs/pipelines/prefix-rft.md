@@ -15,6 +15,14 @@ For the RL machinery Prefix-RFT reuses (the orchestrator-inside-the-training-loo
 pattern, GPU layout, checkpoint handling), see [rl.md](rl.md) - Prefix-RFT does not
 duplicate any of it.
 
+> **Status (2026-08-17): not yet verified end to end.** The pipeline launches, trains,
+> and checkpoints; the CPU suite is green; replay demonstrably reaches the generation
+> path on GPU. What is *not* yet confirmed is the last hop: `actor/num_prefix_tokens`
+> was 0 on the most recent run, meaning replayed turns did not reach `prefix_mask`, so no
+> prefix token entered the loss. Until `011_tiny_prefix_rft.job` passes its Check A, treat
+> this pipeline as GRPO-with-extra-machinery, and do **not** spend the production run. See
+> "Debugging" below for the four log lines that localise the break.
+
 ---
 
 ## The step-prefix adaptation - the thing to know before reading a metric
@@ -55,15 +63,38 @@ sbatch jobs/fine_tuning/008_build_prefix_demos.job
 #    cosmas-train sync/import checks. No GPU cost.
 sbatch jobs/fine_tuning/009_run_tests_for_prefix_rft.job
 
-# 3. Smoke test: 8B on 2 GPUs, asserts the prefix machinery was actually
-#    active (not just that training completed).
+# 3. Two questions, one optimiser step, 3 GPUs, ~10 min. Asks the narrow
+#    question "does a teacher prefix actually get replayed, masked,
+#    advantage-corrected and entropy-clipped on real hardware?" Run this
+#    before 010 - it fails in minutes where 010 fails in hours.
+sbatch jobs/fine_tuning/011_tiny_prefix_rft.job
+
+# 4. Smoke test: 8 questions, 8B on 2 GPUs, asserts the prefix machinery was
+#    actually active (not just that training completed).
 sbatch jobs/fine_tuning/010_smoke_prefix_rft.job
 ```
 
-Step 2 is cheap and catches the pipeline's three silent-failure modes: a demonstration
-attached to the wrong question, a `prefix_mask` misaligned with the responses it marks,
-or a copied verl method left stale by an upgrade. All three produce a run that trains,
-checkpoints and reports success while optimising the wrong thing - run the gate.
+Step 2 is cheap and catches the pipeline's silent-failure modes: a demonstration attached
+to the wrong question, a `prefix_mask` misaligned with the responses it marks, or a copied
+verl method left stale by an upgrade. All of these produce a run that trains, checkpoints
+and reports success while optimising the wrong thing - run the gate.
+
+It also enforces three **verl runtime contracts**, via
+`scripts/check_prefix_rft_runtime_contracts.py`. These are not theoretical: each was
+discovered by a failed GPU run, because subclassing verl's classes and copying its methods
+is not sufficient - verl's runtime imposes rules that no import error and no unit test
+reveals.
+
+| Contract | What breaks it | How it presents |
+|---|---|---|
+| Ray binds only `@register`-marked methods | Overriding a registered worker method without re-applying the decorator | `AttributeError: 'RayWorkerGroup' object has no attribute 'init_model'`. Note the override *removes* the method from the remote interface. A changed `dispatch_mode` is worse: it binds, runs on the wrong ranks, and never raises. |
+| `init_model` converts config subtrees into typed dataclasses that reject undeclared keys | Adding a custom key under `actor_rollout_ref.actor` | `TypeError: FSDPActorConfig.__init__() got an unexpected keyword argument ...`, after Ray has started and the GPUs have loaded the model. Extra keys directly on `actor_rollout_ref` are fine - verl never converts that level, which is why `prefix_entropy_keep_ratio` lives there. |
+| A copied body resolves its globals at call time | Copying a method without also copying its module's imports | `NameError` on the first training step, after everything else has succeeded. |
+
+`launch_verl.py --dry-run` is the companion: it builds the exact command a real run would
+issue and appends Hydra's `--cfg job`, proving the overrides *compose*. The contracts check
+proves verl will *accept* the result. Both are pre-flight gates in 010 and 011, so a config
+that cannot launch never consumes an allocation.
 
 The store is keyed on **question text**, not a dataset index (indices collide across
 data sources), so the same `prefix_demos.parquet` serves both the smoke split and the
@@ -104,6 +135,22 @@ samples, 2 rollouts, 1 epoch. With `rollout.n: 2` the hybrid rollout is 1 of 2 -
 exercises every code path while distorting the imitation/exploration balance, so the
 smoke test asserts *machinery*, not quality.
 
+`config_prefix_rft_tiny8b.yaml` goes further down: two chosen questions, `rollout.n: 4`,
+one optimiser step. Both questions have exactly three teacher decisions, one routed
+through `web_search` and one through `code_generator`, so the replay path is exercised
+both ways. `scripts/build_tiny_prefix_split.py` regenerates the split and re-derives the
+choice if the smoke split changes.
+
+It carries **one deliberate deviation**, and you need to know why before copying it. The
+cosine controller decays over `total_training_steps`, this run has exactly **one** step,
+and **verl's `global_steps` starts at 1, not 0** - so on the only step it ever takes, the
+schedule is already fully decayed to `low = 0.05`, making `k = floor(l * m)` a coin flip
+that can be 0. A curriculum needs many steps to mean anything; a machinery test needs a
+deterministic prefix. So the tiny config sets `low_target: 0.9`, giving `l` in
+`[0.9, 0.95]` and `k = 2` for every three-decision demonstration on any step. **The
+production and smoke configs keep the paper's 0.05.** The same off-by-one is why any
+tooling that predicts `k` must ask the schedule about step 1.
+
 `PREFIX_RFT=true` in a config's `env:` block is what switches `scripts/launch_verl.py`
 and `scripts/train_orchestrator.py` from the plain GRPO module/rollout class to the
 Prefix-RFT ones; the switch is additive, so an unset (or `false`) `PREFIX_RFT` reproduces
@@ -124,6 +171,45 @@ A misconfigured Prefix-RFT run looks exactly like a GRPO run in every metric *ex
 these - checkpoints save, loss falls, reward moves. These are what distinguish the two,
 which is why `010_smoke_prefix_rft.job` asserts on them directly rather than trusting
 that training "worked."
+
+## Debugging: following one prefix through the run
+
+A Prefix-RFT run that silently behaves like GRPO is the failure this pipeline is most
+exposed to, so the chain from dispatch to loss prints at every hop. All four lines use
+`print`, deliberately: `logger.info` from these modules does **not** reach the SLURM log,
+which is what made an early failure undiagnosable.
+
+Read them in this order, in `*_verl.log` and `*_orchestrator.log`:
+
+| Line | Where | Means |
+|---|---|---|
+| `Prefix dispatch: N of M rollouts prefixed (is_train=...); ks=[...]` | `*_verl.log` | The daemon computed a `k` per rollout. `ks` all zero means the schedule or the store lookup is the problem, not the replay. |
+| `[PrefixOrchestratorRollout] replaying k of m teacher decisions ...` | `*_orchestrator.log` | A replay controller was **constructed**. This does *not* prove replay happened. |
+| `[ReplayProvider] served replayed turn i/k (n response tokens)` | `*_orchestrator.log` | Replay actually reached the generation path. Absent while the line above is present means the orchestrator never called `generate` on the wrapped provider. |
+| `Prefix mask: N of M rollouts marked, T prefix tokens` | `*_verl.log` | Replayed turns survived into `prefix_mask`. Zero here with a non-zero dispatch means the marking was lost between the triplet metadata and the batch. |
+
+`_make_controller` also prints on each of its downgrade paths - missing `prefix_k` in the
+payload (with the keys it did receive), missing store or tokenizer, no demonstration for
+the question. Each of those was previously a silent `return None`, i.e. a silent
+downgrade to plain GRPO.
+
+## Regression checks for the inference path
+
+Prefix-RFT touches `src/fine_tuning/` and adds two seams to `OrchestratorRollout`. Those
+seams return their argument unchanged, so `agent_engine` inference should be unaffected -
+but that is a claim, and `jobs/refactor_check/gaia_agentflow_smoke.job` is the evidence.
+It runs vanilla AgentFlow on five GAIA questions in a few minutes:
+
+```bash
+sbatch jobs/refactor_check/gaia_agentflow_smoke.job                              # thinking off
+sbatch --export=ALL,VARIANT=orchestrator jobs/refactor_check/gaia_agentflow_smoke.job
+```
+
+Both variants are worth running: `ORCHESTRATOR_ONLY` takes a different path through the
+provider (Qwen3's `enable_thinking`) and through response parsing, where a `<think>` block
+precedes the tool call, so a refactor can break one and not the other. The job fails if
+every prediction is empty or no tool was called; accuracy is printed but not gated on,
+because five GAIA questions carry no signal at an 8B model's single-digit accuracy.
 
 ## Divergences from the paper
 

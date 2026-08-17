@@ -16,6 +16,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   [`docs/superpowers/specs/2026-08-17-prefix-rft-design.md`](docs/superpowers/specs/2026-08-17-prefix-rft-design.md)
   for the full design and every departure found while building it, and
   [`docs/pipelines/prefix-rft.md`](docs/pipelines/prefix-rft.md) for how to run it.
+    **Not yet verified end to end** — the pipeline launches, trains and checkpoints, but
+    `actor/num_prefix_tokens` is still 0, meaning replayed turns have not yet reached
+    `prefix_mask`. Do not spend the production run until `011` passes its Check A.
+  - `jobs/fine_tuning/011_tiny_prefix_rft.job` — two questions, one optimiser step,
+    ~10 min. Verifies replay, masking, advantage correction and the entropy clip on real
+    GPUs, and fails in minutes where the 8-question smoke test fails in hours.
+  - `scripts/check_prefix_rft_runtime_contracts.py` — three verl runtime contracts that
+    no import error or unit test reveals: Ray binds only `@register`-marked worker
+    methods, `init_model` converts config subtrees into dataclasses that reject
+    undeclared keys, and copied method bodies resolve their globals at call time. Each
+    was found by a failed GPU run.
+  - `scripts/launch_verl.py --dry-run` — builds the real launch command and appends
+    Hydra's `--cfg job`, so an unresolvable config fails in seconds rather than minutes
+    into an allocation. Pre-flight gate in `010` and `011`.
+  - `jobs/refactor_check/gaia_agentflow_smoke.job` — five-question GAIA regression check
+    for the inference path (`VARIANT=none|orchestrator`), since Prefix-RFT adds seams to
+    `OrchestratorRollout`.
   - `src/verl_ext/prefix_rft/` — the extension: schedule, demonstration store, advantage
     correction, entropy clip, and the trainer/daemon/actor subclasses, entirely in
     verl-free modules where possible so the logic is unit-testable without verl.

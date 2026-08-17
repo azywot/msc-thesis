@@ -38,13 +38,27 @@ from .entropy import clip_prefix_advantage_by_entropy
 logger = logging.getLogger(__file__)
 
 
-class PrefixRFTActor(DataParallelPPOActor):
-    """DataParallelPPOActor that entropy-clips prefix-token advantages."""
+#: Paper A.2 and section 6: keep the top 20% highest-entropy prefix tokens.
+PAPER_KEEP_RATIO = 0.2
 
-    @property
-    def prefix_keep_ratio(self) -> float:
-        """Paper A.2 and section 6: keep the top 20% highest-entropy prefix tokens."""
-        return float(self.config.get("prefix_entropy_keep_ratio", 0.2))
+
+class PrefixRFTActor(DataParallelPPOActor):
+    """DataParallelPPOActor that entropy-clips prefix-token advantages.
+
+    ``prefix_keep_ratio`` is a plain attribute, set per instance by
+    ``PrefixRFTWorker.init_model``, not read off ``self.config``. By the time the actor
+    exists, verl has converted the actor config into an ``FSDPActorConfig`` dataclass
+    (fsdp_workers.py:922), and that dataclass rejects any key it does not declare — so
+    carrying our own setting inside ``actor_rollout_ref.actor`` makes worker startup
+    fail outright with ``unexpected keyword argument 'prefix_entropy_keep_ratio'``
+    (job 25751544). The setting travels one level up instead, at
+    ``actor_rollout_ref.prefix_entropy_keep_ratio``, which verl never converts.
+
+    The class default is the paper's value, so an actor built without the worker (a
+    test, say) still clips the way the paper specifies rather than not at all.
+    """
+
+    prefix_keep_ratio: float = PAPER_KEEP_RATIO
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(self, data: DataProto):
