@@ -571,11 +571,21 @@ something, not by reading.
     demonstration store (which would make every rollout plain GRPO while the run still
     reported success).
 
-### Still unverified
+### Verification of the highest-risk assumption
 
-12. **Replay tokenisation has not been checked against the live proxy.** The replay path
-    tokenises locally, mirroring the proxy's two calls (`daemon.py:216-225`) and the
-    provider's `tool`→`user` remap, and is unit-tested against a fake tokenizer. Nothing
-    has yet compared it to a real rollout. This is the highest-risk item outstanding: if it
-    is wrong, every prefix triplet is misaligned and no other signal would reveal it. Task
-    10 Step 6 is the check.
+12. **Replay tokenisation is verified.** Replayed turns never reach vLLM, so their token
+    IDs are produced locally by `ReplayController`; the daemon's proxy produces them for
+    generated turns. A disagreement would misalign every prefix triplet, and training
+    would proceed normally and report success, so nothing in a run would reveal it.
+
+    `scripts/check_prefix_replay_tokenisation.py` compares the two directly on real
+    demonstrations with the real Qwen3-8B tokenizer, including the provider's
+    `tool`→`user` remap. It passes on 10 demonstrations, runs on CPU in seconds, and is
+    stage 2b of `009_run_tests_for_prefix_rft.job`. This did not need the GPU smoke run:
+    the check is against the proxy's code path (`daemon.py:216-225`), not against a live
+    server.
+
+    What remains outside its scope is whether the proxy's own tokenisation matches what
+    vLLM used to generate. That assumption is the vendored proxy's, is shared by every
+    on-policy triplet in the existing GRPO pipeline, and is not something Prefix-RFT
+    introduces.

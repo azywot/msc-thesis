@@ -26,7 +26,17 @@ the truth, not this file. Every departure is listed under "Implementation record
 - the three copied bodies are **generated and drift-checked**
   (`scripts/check_prefix_rft_trainer_sync.py`), not hand-transcribed and commented.
 
-**Tasks 9 and 10 remain**, and have been updated below to match what was built.
+**Task 9 is built and committed** (`5f4618b`): production and smoke configs, and the
+`PREFIX_RFT` env-var switch in `launch_verl.py` / `train_orchestrator.py`.
+
+**Task 10 is partially done, staged but not committed.** `008_build_prefix_demos.job`,
+`009_run_tests_for_prefix_rft.job`, `010_smoke_prefix_rft.job`, and
+`scripts/check_prefix_replay_tokenisation.py` exist and have been run: the demonstration
+store is built (1358 questions, 4047 decisions), the CPU gate and the replay-tokenisation
+check both pass against it, and the `cosmas-train` sync/import/hydra checks pass. The GPU
+smoke run (`010`, Steps 4-6 of Task 10 below) has not been executed — it needs a real
+SLURM allocation. Steps 7-9 (`docs/pipelines/prefix-rft.md`, the
+`add-an-adaptation-method.md` row, README/CHANGELOG) are not started.
 
 ---
 
@@ -2341,7 +2351,7 @@ git commit -m "feat(prefix-rft): trainer, entrypoint and hydra config"
 - Consumes: the `env:` block convention both scripts already read.
 - Produces: `PREFIX_RFT` env key selecting the Prefix-RFT module and rollout class.
 
-- [ ] **Step 1: Write the production config**
+- [x] **Step 1: Write the production config**
 
 Create `experiments/configs/fine_tuning/config_prefix_rft.yaml` as a copy of `experiments/configs/fine_tuning/config.yaml` with these changes only:
 
@@ -2375,7 +2385,7 @@ actor config, which is verl's schema, so it does need `+`.
 
 `EXPERIMENT_NAME` must differ from the GRPO run so checkpoints and W&B rows stay distinct.
 
-- [ ] **Step 2: Write the smoke config**
+- [x] **Step 2: Write the smoke config**
 
 Create `experiments/configs/fine_tuning/config_prefix_rft_smoke8b.yaml` as a copy of `config_smoke8b.yaml` with the same additions, plus `EXPERIMENT_NAME: qwen3-8b-prefix-rft-smoke`. With `rollout.n: 2` the hybrid rollout is 1 of 2, which exercises every path while distorting the imitation balance; the smoke test asserts machinery, not quality.
 
@@ -2400,7 +2410,7 @@ PYCHECK
 If too few are covered, rebuild `data/training/smoke` from questions the store does cover
 rather than weakening the assertion in the smoke job.
 
-- [ ] **Step 3: Wire launch_verl.py**
+- [x] **Step 3: Wire launch_verl.py**
 
 In `scripts/launch_verl.py`, replace line 206:
 
@@ -2420,7 +2430,7 @@ with:
     command = [sys.executable, "-u", "-m", module]
 ```
 
-- [ ] **Step 4: Wire train_orchestrator.py**
+- [x] **Step 4: Wire train_orchestrator.py**
 
 In `scripts/train_orchestrator.py`, replace the rollout construction at lines 140-154:
 
@@ -2456,7 +2466,7 @@ In `scripts/train_orchestrator.py`, replace the rollout construction at lines 14
         agent = OrchestratorRollout(**common)
 ```
 
-- [ ] **Step 5: Verify both launchers still build the base command**
+- [x] **Step 5: Verify both launchers still build the base command**
 
 Run:
 
@@ -2474,7 +2484,7 @@ PY
 
 Expected: exit 0, and no `verl_ext.prefix_rft` in the printed command. Then set `PREFIX_RFT=true` and confirm the module switches.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add experiments/configs/fine_tuning/config_prefix_rft.yaml experiments/configs/fine_tuning/config_prefix_rft_smoke8b.yaml scripts/launch_verl.py scripts/train_orchestrator.py
