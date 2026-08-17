@@ -96,7 +96,10 @@ class PrefixRFTTrainer(AgentFlowTrainer):
         daemon.n_prefixed_rollouts = int(self.config.prefix_rft.n_prefixed_rollouts)
         daemon._global_step = 0
         daemon.last_prefix_metrics = {}
-        logger.info("Promoted AgentModeDaemon to PrefixRFTDaemon")
+        # print, not logger.info: INFO from this package does not reach the SLURM
+        # log, so the promotion was invisible to job 25754573's Check B even though
+        # it had happened.
+        print("Promoted AgentModeDaemon to PrefixRFTDaemon")
 
     def _apply_prefix_advantage(self, batch, metrics):
         """Rewrite the advantage on replayed tokens and log the prefix metrics."""

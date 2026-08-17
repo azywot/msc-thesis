@@ -363,14 +363,23 @@ for path in paths:
     by_question[record["question"]].append((path, record))
 
 
-def leading_match(assistant, teacher):
-    """How many leading assistant turns are the teacher's, verbatim."""
-    n = 0
-    for got, want in zip(assistant, teacher):
-        if got != want:
-            break
-        n += 1
-    return n
+def best_run(assistant, teacher):
+    """Longest contiguous run of teacher decisions the conversation opens with.
+
+    The conversation does NOT start at teacher[0]. The orchestrator's planning decision
+    is not recorded in output_messages, so a rollout that replayed k decisions shows the
+    last k-1 of them, starting at teacher[1]. Rather than hardcode that offset - it would
+    silently become wrong if the orchestrator's recording changed - try every offset and
+    take the longest run. Returns (offset, length).
+    """
+    best = (0, 0)
+    for off in range(len(teacher)):
+        n = 0
+        while n < len(assistant) and off + n < len(teacher) and assistant[n] == teacher[off + n]:
+            n += 1
+        if n > best[1]:
+            best = (off, n)
+    return best
 
 
 failures = []
@@ -381,10 +390,9 @@ for question, records in by_question.items():
         continue
     teacher = [s["response"] for s in steps]
 
-    # k is NOT recomputed here. The schedule is stochastic and lives in the trainer;
-    # a verifier that predicts k tests its own copy of the schedule, and disagreeing
-    # with the run is exactly how job 25753400 reported a false failure. Read what
-    # actually happened instead, and assert the invariants that must hold for any k.
+    # k is NOT recomputed here. The schedule is stochastic and lives in the trainer; a
+    # verifier that predicts k tests its own copy of the schedule, and disagreeing with
+    # the run is how job 25753400 reported a false failure. Read what happened instead.
     matches = []
     for path, record in records:
         assistant = [
@@ -392,18 +400,19 @@ for question, records in by_question.items():
             for m in record.get("output_messages", [])
             if m.get("role") == "assistant"
         ]
-        matches.append((path, record, assistant, leading_match(assistant, teacher)))
+        off, n = best_run(assistant, teacher)
+        matches.append((path, record, assistant, off, n))
 
-    replayed = [m for m in matches if m[3] > 0]
+    replayed = [m for m in matches if m[4] > 0]
     print(f"\n  question: {question[:60]!r}")
     print(f"    demonstration has {len(steps)} decisions")
-    print(f"    {len(records)} rollouts saved, {len(replayed)} replayed a teacher prefix")
-    print(f"    leading-match counts: {sorted(m[3] for m in matches)}")
+    print(f"    {len(records)} rollouts saved, {len(replayed)} opened with teacher text")
+    print(f"    verbatim-run lengths: {sorted(m[4] for m in matches)}")
 
     if not replayed:
         failures.append(
-            f"{question[:50]!r}: no rollout replayed any teacher decision. Check the "
-            "'Prefix dispatch' line for the k values the daemon actually sent."
+            f"{question[:50]!r}: no rollout opened with any teacher decision. Check the "
+            "'Prefix dispatch' and '[ReplayProvider] served' lines."
         )
         continue
     if len(replayed) > 1:
@@ -413,27 +422,25 @@ for question, records in by_question.items():
         )
         continue
 
-    path, record, assistant, k = replayed[0]
-    print(f"    replayed rollout: {path.split('/')[-1]}  k={k}")
-    print(f"      turn 0 (replayed, {len(teacher[0])} chars): {teacher[0][:70]!r}")
+    path, record, assistant, off, n = replayed[0]
+    print(f"    replayed rollout: {path.split('/')[-1]}")
+    print(f"      {n} turn(s) verbatim from teacher[{off}:{off + n}]")
+    print(f"      first replayed turn ({len(teacher[off])} chars): {teacher[off][:70]!r}")
 
-    # The two invariants that must hold whatever k the schedule drew.
-    if k >= len(steps):
+    # The invariant that must hold whatever k the schedule drew: replay stops, and the
+    # policy generates at least one decision of its own.
+    if len(assistant) <= n:
         failures.append(
-            f"{question[:50]!r}: k={k} covers the whole demonstration, so nothing was "
+            f"{question[:50]!r}: every recorded turn is the teacher's; nothing was "
             "generated on-policy and the trajectory is pure imitation"
         )
-    if len(assistant) <= k:
-        failures.append(
-            f"{question[:50]!r}: the prefixed rollout has no turn past the prefix; "
-            "no on-policy continuation was generated"
-        )
     else:
-        print(f"      turn {k} (on-policy):  {assistant[k][:70]!r}")
-        if assistant[k] in teacher:
+        nxt = assistant[n]
+        print(f"      first on-policy turn:  {nxt[:70]!r}")
+        if nxt in teacher:
             failures.append(
-                f"{question[:50]!r}: turn {k} should be generated but matches a "
-                "demonstration step — replay did not stop at k"
+                f"{question[:50]!r}: the turn after the replayed run is also a "
+                "demonstration step - replay did not stop at k"
             )
     print(f"    reward: {record.get('reward')}")
 
@@ -502,13 +509,25 @@ def numbers(metric):
     pattern = rf"{re.escape(metric)}['\"]?\s*[:=]\s*(-?[0-9]*\.?[0-9]+)"
     return [float(m) for m in re.findall(pattern, text)]
 
-if "Promoted AgentModeDaemon to PrefixRFTDaemon" not in text:
-    failures.append("the daemon was never promoted: prefix_k was never dispatched")
-if "Installed PrefixRFTActor" not in text:
-    failures.append("PrefixRFTActor was never installed: no entropy clipping happened")
+# Assert on metrics, not on log strings. Only PrefixRFTDaemon emits
+# actor/n_prefixed_rollouts and only PrefixRFTActor emits actor/prefix_tokens_*, so their
+# presence IS the promotion and installation, and unlike a log line it cannot be lost to
+# a logging level. The banners are reported when present but never gate the check: job
+# 25754573 failed here on two absent logger.info lines while every metric showed the
+# machinery working.
+for banner, what in (
+    ("Promoted AgentModeDaemon to PrefixRFTDaemon", "daemon promotion"),
+    ("Installed PrefixRFTActor", "actor installation"),
+):
+    print(f"  {what}: {'banner found' if banner in text else 'no banner (metrics decide)'}")
 
 prefixed = numbers("actor/n_prefixed_rollouts")
-if not prefixed or max(prefixed) == 0:
+if not prefixed:
+    failures.append(
+        "actor/n_prefixed_rollouts was never logged: the daemon was not promoted, so "
+        "prefix_k was never dispatched"
+    )
+elif max(prefixed) == 0:
     failures.append("no rollout was ever prefixed (k was 0 everywhere)")
 
 tokens = numbers("actor/num_prefix_tokens")

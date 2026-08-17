@@ -40,10 +40,10 @@ class PrefixRFTWorker(AsyncActorRolloutRefWorker):
             actor.prefix_keep_ratio = float(
                 self.config.get("prefix_entropy_keep_ratio", PAPER_KEEP_RATIO)
             )
-            logger.info(
+            # print, not logger.info: see the note in trainer._ensure_prefix_daemon.
+            print(
                 "Installed PrefixRFTActor (entropy clipping on prefix tokens, "
-                "keep_ratio=%s)",
-                actor.prefix_keep_ratio,
+                f"keep_ratio={actor.prefix_keep_ratio})"
             )
         return out
 
