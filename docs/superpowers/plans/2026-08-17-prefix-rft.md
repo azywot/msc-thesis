@@ -2506,7 +2506,7 @@ git commit -m "feat(prefix-rft): configs and launcher wiring"
 **Interfaces:**
 - Consumes: everything above.
 
-- [ ] **Step 1: Write the build job**
+- [x] **Step 1: Write the build job**
 
 Copy the preamble of `jobs/fine_tuning/007_run_tests_for_sft_folded.job` (the `#SBATCH`
 block, `module load`, and the `_is_repo` checkout-location loop) into
@@ -2532,7 +2532,7 @@ python scripts/check_prefix_demos.py \
 `set -e` is correct here, unlike in the test job: there is nothing to summarise, and a
 failed gate must stop the pipeline.
 
-- [ ] **Step 2: Write the test job**
+- [x] **Step 2: Write the test job**
 
 Copy `jobs/fine_tuning/007_run_tests_for_sft_folded.job` to
 `jobs/fine_tuning/009_run_tests_for_prefix_rft.job`. Keep its whole preamble unchanged:
@@ -2620,7 +2620,7 @@ if [[ \$? -eq 0 ]]; then note_pass "modules import under cosmas-train"; else not
 Change the final summary line from `safe to submit 007_train_sft_folded.job` to
 `safe to submit 010_smoke_prefix_rft.job`.
 
-- [ ] **Step 3: Write the smoke job**
+- [x] **Step 3: Write the smoke job**
 
 Create `jobs/fine_tuning/010_smoke_prefix_rft.job` as a copy of `jobs/fine_tuning/004_smoke_8b.job` pointing at `config_prefix_rft_smoke8b.yaml`, with one addition: after the run, assert the prefix machinery was active.
 
@@ -2688,11 +2688,11 @@ are not the teacher's, the advantage would be applied to the wrong positions, an
 would proceed normally and report success. No metric in the run would reveal it. Do not
 skip this step, and do not launch the production run until it has passed.
 
-- [ ] **Step 7: Write the pipeline documentation**
+- [x] **Step 7: Write the pipeline documentation**
 
 Create `docs/pipelines/prefix-rft.md` covering, in the style of `docs/pipelines/sft.md`: what the method is in three sentences; the step-prefix adaptation and its two accepted consequences; the run sequence (008, 009, 010); the config keys and where each value comes from; the metrics to watch and what they mean; and the seven divergences from the paper. Link to the spec for the reasoning and to `docs/pipelines/rl.md` for the shared RL machinery.
 
-- [ ] **Step 8: Register the method in the guide**
+- [x] **Step 8: Register the method in the guide**
 
 In `docs/guides/add-an-adaptation-method.md`, add a row to the table at lines 8-13:
 
@@ -2702,16 +2702,18 @@ In `docs/guides/add-an-adaptation-method.md`, add a row to the table at lines 8-
 
 and a sentence in the Level 3 section noting that Prefix-RFT is the worked example of extending Level 3 without touching vendored code.
 
-- [ ] **Step 9: Update README and CHANGELOG**
+- [x] **Step 9: Update README and CHANGELOG**
 
 Add Prefix-RFT to the README's list of adaptation methods and a CHANGELOG entry describing the addition, the spec path, and the fact that only the smoke path has been run.
 
-- [ ] **Step 10: Run the full test suite**
+- [x] **Step 10: Run the full test suite**
 
 Run: `pytest`
 Expected: every previously passing test still passes, plus the new ones.
 
-- [ ] **Step 11: Commit**
+Outcome (2026-08-17): 858 passed, 2 skipped, 1 xfailed, 0 failures.
+
+- [x] **Step 11: Commit**
 
 ```bash
 git add jobs/fine_tuning/008_build_prefix_demos.job jobs/fine_tuning/009_run_tests_for_prefix_rft.job jobs/fine_tuning/010_smoke_prefix_rft.job docs/pipelines/prefix-rft.md docs/guides/add-an-adaptation-method.md README.md CHANGELOG.md

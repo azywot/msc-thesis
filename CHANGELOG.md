@@ -9,6 +9,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased] — feat/gepa-integration
 
 ### Added
+- **Prefix-RFT: fourth adaptation method** (`feat/add-prefix-rft`) — GRPO in which one
+  rollout per prompt is seeded with a prefix of a Qwen3-32B teacher demonstration and the
+  policy writes the continuation, entropy-clipped and advantage-weighted per
+  `papers/PrefixRFT_2507.01679v3.md`. See
+  [`docs/superpowers/specs/2026-08-17-prefix-rft-design.md`](docs/superpowers/specs/2026-08-17-prefix-rft-design.md)
+  for the full design and every departure found while building it, and
+  [`docs/pipelines/prefix-rft.md`](docs/pipelines/prefix-rft.md) for how to run it.
+  - `src/verl_ext/prefix_rft/` — the extension: schedule, demonstration store, advantage
+    correction, entropy clip, and the trainer/daemon/actor subclasses, entirely in
+    verl-free modules where possible so the logic is unit-testable without verl.
+  - `src/fine_tuning/prefix_rollout.py`, `src/fine_tuning/prefix_replay.py` —
+    `PrefixOrchestratorRollout` and the replay controller that stands in for the model on
+    replayed decisions, verified to tokenise identically to the training daemon's proxy
+    (`scripts/check_prefix_replay_tokenisation.py`).
+  - `jobs/fine_tuning/008_build_prefix_demos.job`, `009_run_tests_for_prefix_rft.job`,
+    `010_smoke_prefix_rft.job` — build the demonstration store (1358 of 1800 questions,
+    1085 prefixable), a CPU verification suite, and an 8B GPU smoke test.
+  - **Only the CPU verification path has been run.** The GPU smoke test
+    (`010_smoke_prefix_rft.job`) has not been executed, and the production 4xH100 run and
+    five-benchmark evaluation are explicitly out of scope until the smoke path is clean.
 - **Orchestrator SFT: memory-folded training format** (`feat/sft-folded-format`) — fixes the SFT
   adapter landing below the base model. Diagnosis: SFT rows were stored as the native multi-turn
   transcript the teacher produced, but the orchestrator never sees that at inference — every

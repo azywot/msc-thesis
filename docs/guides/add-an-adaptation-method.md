@@ -10,6 +10,7 @@ fourth one starts with recognising which level it belongs to.
 | **GEPA** | the system prompt | `gepa_prompt_path` in the config bypasses `PromptBuilder` |
 | **SFT** | the weights | a LoRA adapter or checkpoint loaded via `ModelConfig` |
 | **RL (GRPO)** | the weights, from its own rollouts | `OrchestratorRollout` drives the real orchestrator inside verl |
+| **Prefix-RFT** | the weights, from its own rollouts seeded by demonstrations | `PrefixOrchestratorRollout` replays teacher decisions inside verl |
 
 The shared principle: **the orchestrator is never modified.** Every method
 either changes what goes into it (prompt) or what it runs on (weights). If your
@@ -104,6 +105,12 @@ above already cost this project once.
 
 `src/fine_tuning/agentflow/` is vendored upstream code. Do not restyle it; see
 `src/fine_tuning/agentflow/VENDORED.md`.
+
+**Prefix-RFT is the worked example of extending Level 3 without touching vendored
+code.** It reuses `OrchestratorRollout` and adds two identity seams (`_wrap_provider`,
+`_wrap_tools`, both no-ops in the base class) rather than forking it, and every piece of
+verl-facing logic lives in its own module under `src/verl_ext/prefix_rft/` so it can be
+unit-tested without verl installed. See [pipelines/prefix-rft.md](../pipelines/prefix-rft.md).
 
 ---
 

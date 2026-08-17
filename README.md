@@ -31,7 +31,7 @@ Instruct). **Backends:** vLLM (cluster), MLX (Apple Silicon), OpenAI / Anthropic
 | Know what a config key does | [docs/configuration.md](docs/configuration.md) |
 | Run an evaluation | [docs/pipelines/evaluation.md](docs/pipelines/evaluation.md) |
 | Optimise prompts (GEPA) | [docs/pipelines/gepa.md](docs/pipelines/gepa.md) |
-| Fine-tune (SFT / RL) | [docs/pipelines/sft.md](docs/pipelines/sft.md), [docs/pipelines/rl.md](docs/pipelines/rl.md) |
+| Fine-tune (SFT / RL / Prefix-RFT) | [docs/pipelines/sft.md](docs/pipelines/sft.md), [docs/pipelines/rl.md](docs/pipelines/rl.md), [docs/pipelines/prefix-rft.md](docs/pipelines/prefix-rft.md) |
 | Add a benchmark | [docs/guides/add-a-benchmark.md](docs/guides/add-a-benchmark.md) |
 | Add a tool or sub-agent | [docs/guides/add-a-tool-or-subagent.md](docs/guides/add-a-tool-or-subagent.md) |
 | Add a model family | [docs/guides/add-a-model-family.md](docs/guides/add-a-model-family.md) |
