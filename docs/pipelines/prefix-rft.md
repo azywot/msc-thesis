@@ -15,17 +15,18 @@ For the RL machinery Prefix-RFT reuses (the orchestrator-inside-the-training-loo
 pattern, GPU layout, checkpoint handling), see [rl.md](rl.md) - Prefix-RFT does not
 duplicate any of it.
 
-> **Status (2026-08-18): the mechanism is verified on GPU.** `011_tiny_prefix_rft.job`
-> passes all five checks (run 25755605): exactly one rollout per question replayed the
-> teacher verbatim and then continued on-policy, validation stayed on-policy, 849 prefix
-> tokens entered the loss, the entropy clip kept 20.3% of them against the paper's 20%,
-> `off_ratio` was 0.121, and a LoRA adapter was written. Both prefixed rollouts scored
-> reward 1.0.
+> **Status (2026-08-18): the mechanism is verified on GPU at two scales.**
+> `011_tiny_prefix_rft.job` passes all five checks (run 25755605) and
+> `010_smoke_prefix_rft.job` passes on 8 questions (run 25756950): teacher text replayed
+> verbatim in exactly one rollout per question then continued on-policy, validation
+> on-policy, prefix tokens in the loss (849 and 816), the entropy clip keeping 20.3% and
+> 20.1% against the paper's 20%, replay tokenisation matching the proxy's, and LoRA
+> adapters written.
 >
-> **This verifies the mechanism, not the method.** 011 pins the schedule over a single
-> step and runs `rollout.n: 4`, so the cosine curriculum has never moved and the
-> production batch shape is untested. Run `010` and then `012` before spending the full
-> run; `012` exists precisely to answer whether the curriculum works.
+> **This verifies the mechanism, not the method.** Both runs pin or barely move the
+> schedule over one or two steps at `rollout.n` of 4 and 2, so the cosine curriculum has
+> never moved and the production batch shape is untested. `012_capped_prefix_rft.job`
+> exists to answer that, and should be run before the production run is started.
 
 ---
 
