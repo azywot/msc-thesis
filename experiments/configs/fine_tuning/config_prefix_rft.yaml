@@ -194,7 +194,7 @@ python_args:
   trainer.logger: ['console', 'wandb']
   trainer.project_name: '${PROJECT_NAME}'
   trainer.experiment_name: '${EXPERIMENT_NAME}'
-  # Step-based val + save: ~56 steps/epoch (1800/32) → ~6 evals + 6 saves per epoch, ~12 total.
+  # Step-based val + save: 56 steps (1800/32, one epoch) → ~11 evals + 11 saves.
   # save_freq == test_freq so every saved checkpoint has a fresh val/reward for best-tracking;
   # _rotate_checkpoints keeps only latest_checkpoint/ and best_checkpoint/ symlinks (older dirs
   # are deleted asynchronously in trainer.py).
@@ -203,7 +203,17 @@ python_args:
   # true: post-epoch val/checkpoint; false: every test_freq/save_freq steps.
   trainer.val_every_epoch: false
   trainer.save_every_epoch: false
-  trainer.total_epochs: 2
+  # 1, not 2. The cosine schedule spans total_training_steps = steps_per_epoch *
+  # total_epochs, so total_epochs sets how fast low_t decays, not just how long the run
+  # is. With 2 epochs the span is 112 steps, but 012 (job 25762046) measured 71 min/step
+  # at this batch shape, so the 72 h wall stops the run near step 58 - and low_t would
+  # still be ~0.47 there, i.e. the prefix is still half the demonstration and the run
+  # never reaches the near-on-policy phase the paper's schedule ends in (Appendix A.2).
+  # The GRPO reference run (ft_23210365) hit the same wall at 82 of 112 steps, which for
+  # plain GRPO costs only training time; for Prefix-RFT it truncates the curriculum.
+  # 1 epoch = 56 steps ~ 66 h, so the decay completes inside the wall. Even a stop at
+  # step 54 leaves low_t = 0.053, essentially the 0.05 target.
+  trainer.total_epochs: 1
   trainer.val_before_train: true
   trainer.critic_warmup: 0
   algorithm.use_kl_in_reward: false
