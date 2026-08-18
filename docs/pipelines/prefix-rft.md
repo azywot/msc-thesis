@@ -291,10 +291,11 @@ Compare against the GRPO baseline (`qwen3-8b-grpo-search-math-v2`) rather than a
 the paper's numbers: the paper's are single-turn mathematics with a verifier, and eight
 documented divergences separate that setting from this one.
 
-### 3. Write-up
+### 3. Reporting the results
 
-Chapter 7 needs the eight divergences below stated rather than left for a reader to
-find. Two deserve prominence because they change what is being measured:
+Whatever the results are written up in, the eight divergences below need stating rather
+than left for a reader to find. Two deserve prominence because they change what is being
+measured:
 
 - **The step-prefix adaptation** - `k` is an integer number of teacher decisions, not a
   token fraction, and with a mean of 2.98 decisions per demonstration the paper's

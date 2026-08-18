@@ -508,9 +508,9 @@ and reward split by prefixed against unprefixed rollouts.
 
 ## Out of scope
 
-The production 4xH100 run, the five-benchmark evaluation suite, and the Chapter 7
-write-up. Those follow only if the smoke path is clean and the compute is worth
-spending.
+The production 4xH100 run, the five-benchmark evaluation suite, and reporting the
+results. Those follow only if the staged verification path is clean and the compute is
+worth spending.
 
 ## Implementation record
 
