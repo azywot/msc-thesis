@@ -57,10 +57,53 @@ trains on it.
 
 ---
 
+## Before you start
+
+Prefix-RFT does not start from raw data. It needs a **teacher trajectory collection**,
+and that collection is not part of this pipeline - it is the same one the SFT pipeline
+uses, produced by `006_collect_sft_data.job` (Qwen3-32B running the orchestrator, 4 GPUs,
+up to 60 h). `008` reads the newest `data/training/sft/collected_*.jsonl` and will refuse
+to run without one:
+
+```
+ERROR: no data/training/sft/collected_*.jsonl found.
+```
+
+**If you have already run the SFT pipeline, you have this file and can start at 008.**
+If not, run `006` first; nothing else here will work.
+
+You also need:
+
+- **Two conda environments.** `agent_engine` (has pytest, no verl) and `cosmas-train`
+  (has verl and vLLM, no pytest). `009` uses both, which is why the logic lives in
+  verl-free modules - see "How it hooks into the framework".
+- **`.env` keys.** `SERPER_API_KEY` or `TAVILY_API_KEY` (the rollout workers call real
+  tools and every job refuses to start without one) and `WANDB_API_KEY` for the prefix
+  curves. `HF_TOKEN` if the models are not already cached.
+- **`data/training/{train,val}`** readable. If a job dies reading a parquet it can see,
+  check the directory has its execute bit (`chmod u+x`); read-without-execute makes a
+  directory untraversable even by its owner.
+
+What each stage costs:
+
+| Stage | Partition | GPUs | Wall clock |
+|---|---|---|---|
+| `006` collect teacher trajectories (prerequisite, shared with SFT) | gpu_h100 | 4 | up to 60 h |
+| `008` build the demonstration store | genoa | 0 | minutes |
+| `009` CPU verification suite | genoa | 0 | ~5 min |
+| `011` mechanism on 2 questions | gpu_h100 | 3 | ~10 min |
+| `010` smoke on 8 questions | gpu_h100 | 3 | ~25 min |
+| `012` capped production, 10 steps | gpu_h100 | 4 | ~7-8 h |
+| `013` production | gpu_h100 | 4 | ~72 h |
+
+Everything from `008` down is cheap until `012`. Run them in order; each one is designed
+to fail faster than the one after it.
+
 ## Running it
 
 ```bash
-# 1. Build the demonstration store from a teacher trajectory collection.
+# 1. Build the demonstration store from the teacher trajectory collection
+#    produced by 006_collect_sft_data.job (see "Before you start").
 sbatch jobs/fine_tuning/008_build_prefix_demos.job
 
 # 2. Verify on the CPU partition: unit tests, the store gate, replay
