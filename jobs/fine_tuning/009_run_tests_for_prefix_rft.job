@@ -1,0 +1,320 @@
+#!/bin/bash
+#SBATCH --job-name=PrefixRFTTests
+# CPU partition on purpose: nothing here needs a GPU (no model is loaded, only the
+# tokenizer), so running it on gpu_h100 would burn GPU SBUs to do string comparisons.
+#SBATCH --partition=genoa
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=01:00:00
+#SBATCH --output=out/fine_tuning/tests/prefix_rft_tests_%A.log
+#SBATCH --error=out/fine_tuning/tests/prefix_rft_tests_%A.err
+
+# Verification suite for the Prefix-RFT pipeline. Run after 008_build_prefix_demos.job
+# and before 010_smoke_prefix_rft.job, and after any change to the store builder, the
+# replay shims, or the copied methods.
+#
+# Why this job exists
+# -------------------
+# Three of the failures this pipeline can have are silent. A demonstration attached to
+# the wrong question, a prefix_mask misaligned with the responses it marks, or a copied
+# verl method left stale by an upgrade all produce a run that trains, logs, checkpoints
+# and reports success while optimising the wrong thing. Everything below is minutes of
+# CPU; the failures it guards against cost a multi-hour GPU run plus the time to work
+# out afterwards that the numbers meant nothing.
+#
+# Four stages, each independently fatal:
+#   1. Unit tests under agent_engine  — the logic, in the env that has pytest.
+#   2. Gate on the real store         — every demonstration is replayable, and
+#                                       replayed turns tokenise as the proxy does.
+#   3. Trip-wire                      — the gate must REJECT a corrupted store. A gate
+#                                       that passes everything proves nothing.
+#   4. cosmas-train checks            — the copied methods still match their sources, and
+#                                       every module imports in the env VERL actually
+#                                       uses. pytest is not installed there, so these run
+#                                       as scripts.
+#
+# No GPU, no network, no model weights.
+
+set -uo pipefail   # NOT -e: stages must all run so the summary is complete.
+
+echo "=========================================="
+echo "MSc Thesis — Prefix-RFT verification suite"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+
+# Locate the checkout. Under sbatch, SLURM copies this script to /var/spool/slurm on the
+# compute node, so BASH_SOURCE points at the spool copy, not the repo. Try each candidate
+# and accept only one that actually looks like the repo.
+_is_repo() { [[ -n "${1:-}" && -f "$1/scripts/build_prefix_demos.py" ]]; }
+_JOB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+for _cand in "${PROJECT_DIR:-}" \
+             "${SLURM_SUBMIT_DIR:-}" \
+             "$(cd "${_JOB_DIR}/../.." 2>/dev/null && pwd)" \
+             "$HOME/azywot/msc-thesis"; do
+    if _is_repo "$_cand"; then PROJECT_DIR="$_cand"; break; fi
+done
+if ! _is_repo "${PROJECT_DIR:-}"; then
+    echo "ERROR: could not locate the msc-thesis checkout."
+    echo "  Tried: \$PROJECT_DIR, \$SLURM_SUBMIT_DIR (${SLURM_SUBMIT_DIR:-unset}),"
+    echo "         script dir (${_JOB_DIR:-unset}), \$HOME/azywot/msc-thesis"
+    echo "  Fix: sbatch --export=ALL,PROJECT_DIR=/path/to/msc-thesis $0"
+    exit 1
+fi
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+export PYTHONUNBUFFERED=1
+export PYTHONNOUSERSITE=1
+
+
+mkdir -p out/fine_tuning/tests
+
+DEMOS=data/training/prefix_rft/prefix_demos.parquet
+
+FAILURES=()
+note_fail() { FAILURES+=("$1"); echo "  ✗ FAIL: $1"; }
+note_pass() { echo "  ✓ PASS: $1"; }
+
+# Switching conda envs mid-script needs the module's python back on PATH first.
+# `conda`'s shebang is `#!/usr/bin/env python`, so with an env already active it runs
+# that env's python, which has no conda package installed: `source activate <other>`
+# then fails silently and the next stage runs in the previous env. Stage 4 failed this
+# way on job 25749110 and reported three false failures.
+BASE_PATH="$PATH"
+use_env() { PATH="$BASE_PATH"; source activate "$1"; }
+
+if [[ ! -f "$DEMOS" ]]; then
+    echo "ERROR: missing $DEMOS"
+    echo "Build it first: sbatch jobs/fine_tuning/008_build_prefix_demos.job"
+    exit 1
+fi
+
+# ── Stage 1/4: unit tests under agent_engine ─────────────────────────────────────
+# verl is not installed here, so the verl-dependent cases skip themselves; stage 4
+# covers them. This is why the logic lives in verl-free modules.
+echo ""
+echo "── Stage 1/4: Prefix-RFT unit tests (env: agent_engine) ─────────────────────"
+use_env agent_engine
+python -m pytest tests/unit/test_prefix_rft_schedule.py \
+                 tests/unit/test_prefix_rft_demos.py \
+                 tests/unit/test_prefix_rft_rollout.py \
+                 tests/unit/test_prefix_rft_daemon.py \
+                 tests/unit/test_prefix_rft_advantage.py \
+                 tests/unit/test_prefix_rft_actor.py -v --no-header
+if [[ $? -eq 0 ]]; then note_pass "unit tests (agent_engine)"; else note_fail "unit tests (agent_engine)"; fi
+
+echo ""
+echo "── Stage 1b/4: the existing GRPO rollout suite must be unaffected ───────────"
+# Prefix-RFT added two seams to OrchestratorRollout. They return their argument
+# unchanged, and this is what says so.
+#
+# This module needs BOTH pytest (agent_engine only) AND agentops (cosmas-train
+# only), so it can never actually collect under either env — tests/conftest.py's
+# pytest_ignore_collect skips it during normal directory discovery, but that hook
+# does not fire for a file named explicitly on the command line the way 007 learned
+# the hard way. Naming it directly here would re-trigger the exact ModuleNotFoundError
+# conftest.py exists to prevent, and always fail this stage for a module that was
+# never broken. Guard with the same check conftest.py uses instead of trusting pytest
+# to skip an explicit path.
+if python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('agentops') else 1)" 2>/dev/null; then
+    python -m pytest tests/unit/test_fine_tuning_rollout.py -q --no-header
+    if [[ $? -eq 0 ]]; then note_pass "existing GRPO rollout suite"; else note_fail "existing GRPO rollout suite"; fi
+else
+    echo "  (skipped: agentops is not installed here, same guard tests/conftest.py uses)"
+    note_pass "existing GRPO rollout suite (skipped — agentops unavailable in this env)"
+fi
+
+# ── Stage 2/4: the gate, on the real store ───────────────────────────────────────
+echo ""
+echo "── Stage 2/4: pre-flight gate on the demonstration store ────────────────────"
+python scripts/check_prefix_demos.py --demos "$DEMOS"
+if [[ $? -eq 0 ]]; then note_pass "gate on the demonstration store"; else note_fail "gate on the demonstration store"; fi
+
+# ── Stage 2b/4: replay tokenisation ──────────────────────────────────────────────
+# Replayed turns never reach vLLM, so their token IDs are produced locally. If they
+# differ from what the daemon's proxy produces, every prefix triplet is misaligned and
+# training reports success while optimising the wrong tokens.
+echo ""
+echo "── Stage 2b/4: replay tokenisation matches the proxy's ──────────────────────"
+python scripts/check_prefix_replay_tokenisation.py --demos "$DEMOS"
+if [[ $? -eq 0 ]]; then note_pass "replay tokenisation"; else note_fail "replay tokenisation"; fi
+
+# ── Stage 3/4: trip-wire ─────────────────────────────────────────────────────────
+echo ""
+echo "── Stage 3/4: trip-wire — the gate must REJECT a corrupted store ────────────"
+CORRUPT="${TMPDIR:-/tmp}/prefix_demos_corrupt.parquet"
+python - "$DEMOS" "$CORRUPT" <<'PYCORRUPT'
+import sys
+import pandas as pd
+
+frame = pd.read_parquet(sys.argv[1]).head(50).copy()
+target = next(
+    (i for i in range(len(frame)) if any(s["tool_name"] for s in frame.iloc[i]["steps"])),
+    None,
+)
+if target is None:
+    sys.exit("no multi-step demonstration in the first 50 rows to corrupt")
+steps = [dict(s) for s in frame.iloc[target]["steps"]]
+for s in steps:
+    if s["tool_name"]:
+        s["tool_result"] = None      # a tool step replay cannot serve
+        break
+frame.at[frame.index[target], "steps"] = steps
+frame.to_parquet(sys.argv[2], index=False)
+print(f"  corrupted row {target}: dropped a stored tool_result")
+PYCORRUPT
+if python scripts/check_prefix_demos.py --demos "$CORRUPT" > /dev/null 2>&1; then
+    note_fail "trip-wire — gate ACCEPTED a store with a missing tool_result"
+else
+    note_pass "trip-wire — gate rejected the corrupted store"
+fi
+rm -f "$CORRUPT"
+
+# ── Stage 4/4: the training environment ──────────────────────────────────────────
+# verl lives in cosmas-train; pytest does not. These are the same assertions the
+# skipped pytest cases make, run as scripts.
+echo ""
+echo "── Stage 4/4: copied methods and imports (env: cosmas-train) ────────────────"
+use_env cosmas-train
+
+python scripts/check_prefix_rft_trainer_sync.py
+if [[ $? -eq 0 ]]; then note_pass "copied methods and config in sync"; else note_fail "copied methods and config in sync"; fi
+
+python -c "
+import sys
+sys.path.insert(0, 'src')
+from verl_ext.prefix_rft.daemon import PrefixRFTDaemon
+from verl_ext.prefix_rft.actor import PrefixRFTActor
+from verl_ext.prefix_rft.worker import PrefixRFTWorker
+from verl_ext.prefix_rft.trainer import PrefixRFTTrainer
+from verl_ext.prefix_rft import entrypoint
+from fine_tuning.prefix_rollout import PrefixOrchestratorRollout
+from verl.workers.actor.dp_actor import DataParallelPPOActor
+from fine_tuning.agentflow.verl.daemon import AgentModeDaemon
+from fine_tuning.agentflow.verl.trainer import AgentFlowTrainer
+assert issubclass(PrefixRFTActor, DataParallelPPOActor)
+assert issubclass(PrefixRFTDaemon, AgentModeDaemon)
+assert issubclass(PrefixRFTTrainer, AgentFlowTrainer)
+print('  all Prefix-RFT modules import and subclass correctly under cosmas-train')
+"
+if [[ $? -eq 0 ]]; then note_pass "modules import under cosmas-train"; else note_fail "modules import under cosmas-train"; fi
+
+# Subclassing verl's classes and copying its methods is not enough: verl's runtime
+# imposes contracts that no import error and no unit test reveals — Ray binds only
+# @register-marked methods, init_model converts config subtrees into dataclasses that
+# reject undeclared keys, and a copied body resolves its globals at call time. Each of
+# these cost a GPU allocation to discover (jobs 25751449, 25751544, 25752267).
+python scripts/check_prefix_rft_runtime_contracts.py
+if [[ $? -eq 0 ]]; then note_pass "verl runtime contracts hold"; else note_fail "verl runtime contracts hold"; fi
+
+# Trip-wires: each of the three checks must still detect its own failure mode.
+python -c "
+import sys
+sys.path.insert(0, 'src'); sys.path.insert(0, 'scripts')
+from check_prefix_rft_runtime_contracts import bound_methods, global_names
+from hydra import compose, initialize_config_module
+from omegaconf import OmegaConf
+from verl.utils.config import omega_conf_to_dataclass
+from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker
+
+# (1) an override without @register disappears from the remote interface
+class Broken(AsyncActorRolloutRefWorker):
+    def init_model(self):
+        return super().init_model()
+
+missing = sorted(set(bound_methods(AsyncActorRolloutRefWorker)) - set(bound_methods(Broken)))
+assert missing == ['init_model'], f'binding trip-wire did not fire: {missing}'
+
+# (2) an undeclared key on actor_rollout_ref.actor is rejected, and for the right reason
+base = ['actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1']
+with initialize_config_module(config_module='verl_ext.prefix_rft.config', version_base=None):
+    good = compose(config_name='prefix_rft_trainer',
+                   overrides=base + ['+actor_rollout_ref.prefix_entropy_keep_ratio=0.2'])
+    bad = compose(config_name='prefix_rft_trainer',
+                  overrides=base + ['+actor_rollout_ref.actor.prefix_entropy_keep_ratio=0.2'])
+omega_conf_to_dataclass(OmegaConf.select(good, 'actor_rollout_ref.actor'))
+try:
+    omega_conf_to_dataclass(OmegaConf.select(bad, 'actor_rollout_ref.actor'))
+except Exception as exc:
+    assert 'prefix_entropy_keep_ratio' in str(exc), f'rejected for the wrong reason: {exc}'
+else:
+    sys.exit('dataclass trip-wire did not fire')
+
+# (3) free names are detected; locally bound ones are not, or the check cries wolf
+assert global_names('def f(self):\n    return compute_response_mask(self)\n') == {'compute_response_mask'}
+assert global_names('def f(self):\n    x = 1\n    return x\n') == set()
+print('  all three trip-wires fired')
+"
+if [[ $? -eq 0 ]]; then
+    note_pass "trip-wires — each runtime-contract check still discriminates"
+else
+    note_fail "trip-wires — a runtime-contract check no longer detects its failure mode"
+fi
+
+python -c "
+import sys
+sys.path.insert(0, 'src')
+from hydra import compose, initialize_config_module
+
+# initialize_config_MODULE, not initialize_config_dir. entrypoint.py declares
+# config_path='pkg://verl_ext.prefix_rft/config', which Hydra resolves as an importable
+# module, so the config directory must be a package. initialize_config_dir takes a
+# filesystem path and succeeds without __init__.py — it passed here while the real
+# launcher died at startup with \"Primary config module ... not found\" (job 25749264).
+# Resolving the same way the entrypoint does is the whole point of this check.
+with initialize_config_module(config_module='verl_ext.prefix_rft.config', version_base=None):
+    cfg = compose(config_name='prefix_rft_trainer')
+assert cfg.prefix_rft.entropy_keep_ratio == 0.2, cfg.prefix_rft.entropy_keep_ratio
+assert cfg.prefix_rft.low_init == 0.95 and cfg.prefix_rft.low_target == 0.05
+assert cfg.prefix_rft.n_prefixed_rollouts == 1
+assert cfg.actor_rollout_ref.rollout.mode == 'async'
+print('  hydra config composes from the package path the entrypoint uses')
+"
+if [[ $? -eq 0 ]]; then note_pass "hydra config composes"; else note_fail "hydra config composes"; fi
+
+# And the strongest form of the same check: run the actual launcher. `--cfg job` makes
+# Hydra resolve config_path, compose, print and exit without touching Ray or a GPU, so
+# it exercises the real @hydra.main decorator rather than our reconstruction of it.
+# This is what job 25749264 would have needed to catch the missing config/__init__.py
+# before spending a GPU allocation to discover it.
+python -m verl_ext.prefix_rft --cfg job > /dev/null 2>&1
+if [[ $? -eq 0 ]]; then
+    note_pass "the launcher entrypoint resolves its own config"
+else
+    note_fail "the launcher entrypoint cannot resolve its config (python -m verl_ext.prefix_rft)"
+    echo "    reproduce with: python -m verl_ext.prefix_rft --cfg job"
+fi
+
+# Same idea one level up: every config that will ever be launched, through the real
+# launcher, with its real override list. launch_verl.py --dry-run builds the command it
+# would run and appends --cfg job, so Hydra validates all ~75 overrides — including the
+# '+' prefixes that struct mode rejects when a key is not declared — without Ray or a GPU.
+for _cfg in config_prefix_rft_tiny8b config_prefix_rft_smoke8b config_prefix_rft; do
+    if python scripts/launch_verl.py \
+           --config "experiments/configs/fine_tuning/${_cfg}.yaml" --dry-run > /dev/null 2>&1; then
+        note_pass "launch config resolves: ${_cfg}"
+    else
+        note_fail "launch config does NOT resolve: ${_cfg}"
+        echo "    reproduce with: python scripts/launch_verl.py --config experiments/configs/fine_tuning/${_cfg}.yaml --dry-run"
+    fi
+done
+
+# ── Summary ──────────────────────────────────────────────────────────────────────
+echo ""
+echo "=========================================="
+if [[ ${#FAILURES[@]} -eq 0 ]]; then
+    echo "ALL STAGES PASSED — safe to submit 010_smoke_prefix_rft.job"
+    echo "Finished at: $(date)"
+    echo "=========================================="
+    exit 0
+fi
+echo "${#FAILURES[@]} STAGE(S) FAILED — do NOT launch training:"
+for f in "${FAILURES[@]}"; do echo "  - $f"; done
+echo "Finished at: $(date)"
+echo "=========================================="
+exit 1

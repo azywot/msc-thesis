@@ -1,0 +1,81 @@
+#!/bin/bash
+#SBATCH --job-name=PrefixRFTDemos
+# CPU partition on purpose: nothing here needs a GPU (no model is loaded, only the
+# tokenizer), so running it on gpu_h100 would burn GPU SBUs to do string comparisons.
+#SBATCH --partition=genoa
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=00:30:00
+#SBATCH --output=out/fine_tuning/prefix_rft/build_%A.log
+#SBATCH --error=out/fine_tuning/prefix_rft/build_%A.err
+
+# Build the Prefix-RFT demonstration store from the collected teacher trajectories,
+# then gate it. CPU only: no model is loaded, only JSON and parquet are touched.
+#
+# Run this before 009_run_tests_for_prefix_rft.job and 010_smoke_prefix_rft.job.
+#
+# set -e is right here, unlike in 009: there is nothing to summarise, and a failed
+# gate must stop the pipeline rather than be reported at the end.
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSc Thesis — Prefix-RFT demonstration store"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+
+# Locate the checkout. Under sbatch, SLURM copies this script to /var/spool/slurm on the
+# compute node, so BASH_SOURCE points at the spool copy, not the repo. Try each candidate
+# and accept only one that actually looks like the repo.
+_is_repo() { [[ -n "${1:-}" && -f "$1/scripts/build_prefix_demos.py" ]]; }
+_JOB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+for _cand in "${PROJECT_DIR:-}" \
+             "${SLURM_SUBMIT_DIR:-}" \
+             "$(cd "${_JOB_DIR}/../.." 2>/dev/null && pwd)" \
+             "$HOME/azywot/msc-thesis"; do
+    if _is_repo "$_cand"; then PROJECT_DIR="$_cand"; break; fi
+done
+if ! _is_repo "${PROJECT_DIR:-}"; then
+    echo "ERROR: could not locate the msc-thesis checkout."
+    echo "  Tried: \$PROJECT_DIR, \$SLURM_SUBMIT_DIR (${SLURM_SUBMIT_DIR:-unset}),"
+    echo "         script dir (${_JOB_DIR:-unset}), \$HOME/azywot/msc-thesis"
+    echo "  Fix: sbatch --export=ALL,PROJECT_DIR=/path/to/msc-thesis $0"
+    exit 1
+fi
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+export PYTHONUNBUFFERED=1
+export PYTHONNOUSERSITE=1
+
+
+mkdir -p out/fine_tuning/prefix_rft data/training/prefix_rft
+
+source activate agent_engine
+
+JSONL=$(ls -t data/training/sft/collected_*.jsonl 2>/dev/null | head -1)
+if [[ -z "$JSONL" ]]; then
+    echo "ERROR: no data/training/sft/collected_*.jsonl found."
+    echo "Collect teacher trajectories first: sbatch jobs/fine_tuning/006_collect_sft_data.job"
+    exit 1
+fi
+echo "Using teacher collection: $JSONL"
+echo ""
+
+python scripts/build_prefix_demos.py "$JSONL" \
+    --output data/training/prefix_rft/prefix_demos.parquet
+
+echo ""
+python scripts/check_prefix_demos.py \
+    --demos data/training/prefix_rft/prefix_demos.parquet
+
+echo ""
+echo "=========================================="
+echo "Store built and gated. Next: sbatch jobs/fine_tuning/009_run_tests_for_prefix_rft.job"
+echo "Finished at: $(date)"
+echo "=========================================="

@@ -1,0 +1,147 @@
+#!/bin/bash
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=2
+#SBATCH --job-name=RefactorCheckGAIA
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=02:00:00
+#SBATCH --output=out/experiments/refactor_check/gaia_agentflow_%A.log
+#SBATCH --error=out/experiments/refactor_check/gaia_agentflow_%A.err
+
+# Vanilla AgentFlow inference on five GAIA questions, to confirm the inference path
+# still works after the Prefix-RFT work.
+#
+# Nothing in that work touched agent_engine: the changes were src/verl_ext/prefix_rft/,
+# two new modules under src/fine_tuning/, and two identity seams added to
+# OrchestratorRollout. But "should be unaffected" is a claim, and this is the run that
+# checks it against the actual orchestrator, the sub-agent tool path and the GAIA
+# scorer rather than against reasoning.
+#
+# Derived from jobs/generated/AF_no_img_no_mm_gaia_qwen8B_subagent_tools_all.job,
+# pointed at a five-question config so it finishes in minutes instead of a day.
+#
+# Two variants, selected with VARIANT (default: none):
+#   none          thinking_mode: NO
+#   orchestrator  thinking_mode: ORCHESTRATOR_ONLY
+# Both are worth running. ORCHESTRATOR_ONLY takes a different path through the provider
+# (Qwen3's enable_thinking kwarg) and through response parsing, where a <think> block
+# precedes the tool call, so a refactor can break one variant and not the other. Both
+# draw the same five questions under seed 0.
+#
+#   sbatch jobs/refactor_check/gaia_agentflow_smoke.job                              # none
+#   sbatch --export=ALL,VARIANT=orchestrator jobs/refactor_check/gaia_agentflow_smoke.job
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+
+echo "Job ID: ${SLURM_JOB_ID:-local}"
+echo "Node: ${SLURM_NODELIST:-$(hostname)}"
+echo "GPUs: ${SLURM_GPUS:-?}"
+echo "Start time: $(date)"
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+
+source activate agent_engine
+
+# Load API keys and env defaults first so config values can override them.
+if [ -f ".env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+fi
+
+# Reproducibility (must come AFTER .env so the config seed wins over any PYTHONHASHSEED).
+export PYTHONHASHSEED=0
+export PYTHONNOUSERSITE=1
+export TOKENIZERS_PARALLELISM=false
+
+python -c "import numpy, torch" 2>/dev/null || {
+    echo "ERROR: numpy/torch not in the conda env. Re-run jobs/001_setup.job."
+    exit 1
+}
+
+mkdir -p out/experiments/refactor_check
+
+VARIANT="${VARIANT:-none}"
+case "$VARIANT" in
+    none|orchestrator) ;;
+    *)
+        echo "ERROR: VARIANT must be 'none' or 'orchestrator' (got '$VARIANT')."
+        exit 1
+        ;;
+esac
+
+CONFIG="experiments/configs/refactor_check/gaia_qwen8B_subagent_tools_${VARIANT}_smoke.yaml"
+OUTPUT_DIR="experiments/results/refactor_check/gaia/qwen8B_subagent_tools_${VARIANT}"
+
+if [[ ! -f "$CONFIG" ]]; then
+    echo "ERROR: missing config: $CONFIG"
+    exit 1
+fi
+
+echo ""
+echo "Variant: $VARIANT"
+echo "Running: $CONFIG"
+python scripts/run_experiment.py --config "$CONFIG" --output-dir "$OUTPUT_DIR"
+EXIT_CODE=$?
+
+echo ""
+echo "Exit code: $EXIT_CODE"
+
+# A zero exit is necessary but not sufficient: a run that answered nothing at all
+# would also exit zero. Check that results were actually produced.
+if [[ $EXIT_CODE -eq 0 ]]; then
+    echo ""
+    echo "── Verifying the run produced results ───────────────────────────────"
+    python - "$OUTPUT_DIR" <<'PYCHECK'
+import json
+import sys
+from pathlib import Path
+
+# The runner writes into a timestamped subdirectory of output_dir
+# (all_validation_<date>_<jobid>/), so take the newest raw_results.json under it.
+out = Path(sys.argv[1])
+candidates = sorted(out.rglob("raw_results.json"), key=lambda p: p.stat().st_mtime)
+if not candidates:
+    sys.exit(f"FAIL: no raw_results.json anywhere under {out}")
+raw = candidates[-1]
+print(f"  results: {raw}")
+
+results = json.load(open(raw))
+if not results:
+    sys.exit("FAIL: raw_results.json is empty")
+
+answered = sum(1 for r in results if str(r.get("prediction") or "").strip())
+tool_calls = sum(sum((r.get("tool_counts") or {}).values()) for r in results)
+turns = sum(int(r.get("turns") or 0) for r in results)
+print(f"  {len(results)} questions, {answered} with a non-empty prediction")
+print(f"  {turns} orchestrator turns, {tool_calls} tool calls")
+
+# Liveness, not quality. Qwen3-8B scores single digits on GAIA, so wrong answers are
+# expected; silence is not. An empty prediction everywhere means the orchestrator loop
+# produced nothing, and zero tool calls across five tool-using questions means the
+# sub-agent path never ran — either would be a real regression.
+if answered == 0:
+    sys.exit("FAIL: every prediction is empty — the orchestrator ran but answered nothing")
+if tool_calls == 0:
+    sys.exit("FAIL: no tool was called — the sub-agent tool path did not run")
+
+metrics = raw.parent / "metrics.json"
+if metrics.exists():
+    overall = json.load(open(metrics)).get("overall", {})
+    print(f"  accuracy: {overall.get('accuracy')} ({overall.get('num_correct')})"
+          "  — not meaningful on five questions; completion is the point")
+else:
+    print("  note: metrics.json missing, but raw results are present")
+
+print("\nPASS — AgentFlow inference still runs end to end.")
+PYCHECK
+    EXIT_CODE=$?
+fi
+
+echo "End time: $(date)"
+exit $EXIT_CODE

@@ -9,6 +9,64 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased] — feat/gepa-integration
 
 ### Added
+- **Prefix-RFT: fourth adaptation method** (`feat/add-prefix-rft`) — GRPO in which one
+  rollout per prompt is seeded with a prefix of a Qwen3-32B teacher demonstration and the
+  policy writes the continuation, entropy-clipped and advantage-weighted per
+  `papers/PrefixRFT_2507.01679v3.md`. See
+  [`docs/superpowers/specs/2026-08-17-prefix-rft-design.md`](docs/superpowers/specs/2026-08-17-prefix-rft-design.md)
+  for the full design and every departure found while building it, and
+  [`docs/pipelines/prefix-rft.md`](docs/pipelines/prefix-rft.md) for how to run it.
+    **Mechanism verified on GPU** (run 25755605, 2026-08-18): `011` passes all five
+    checks — teacher text replayed verbatim in exactly one rollout per question, then
+    on-policy continuation; validation on-policy; 849 prefix tokens in the loss; entropy
+    clip kept 20.3% against the paper's 20%; `off_ratio` 0.121. Five launch- or
+    replay-blocking bugs were found by GPU runs and fixed along the way (Hydra package
+    path, Ray `@register`, verl config dataclass, two missing imports in a copied method,
+    and `__getattr__` not covering special methods on the tool-registry proxy). The
+    curriculum is still unexercised — `012` is what answers that, and `013` is the
+    production run it gates.
+  - `jobs/fine_tuning/011_tiny_prefix_rft.job` — two questions, one optimiser step,
+    ~10 min. Verifies replay, masking, advantage correction and the entropy clip on real
+    GPUs, and fails in minutes where the 8-question smoke test fails in hours.
+  - `scripts/check_prefix_rft_runtime_contracts.py` — three verl runtime contracts that
+    no import error or unit test reveals: Ray binds only `@register`-marked worker
+    methods, `init_model` converts config subtrees into dataclasses that reject
+    undeclared keys, and copied method bodies resolve their globals at call time. Each
+    was found by a failed GPU run.
+  - `scripts/launch_verl.py --dry-run` — builds the real launch command and appends
+    Hydra's `--cfg job`, so an unresolvable config fails in seconds rather than minutes
+    into an allocation. Pre-flight gate in `010` and `011`.
+  - `jobs/fine_tuning/012_capped_prefix_rft.job` + `config_prefix_rft_capped.yaml` — the
+    production run stopped after 10 optimiser steps (~7 h on 4 GPUs). The only stage that
+    exercises the cosine curriculum (`low_t` 0.95 → 0.05) and the production batch shape
+    (`rollout.n: 8`, `train_batch_size: 32`, `TOOL_STEPS: 5`); 011 pins the schedule over
+    a single step and cannot. Checks that the curriculum moved, that `off_ratio` stayed
+    under the paper's 0.5 threshold, and that KL did not blow up the way the earlier
+    GRPO-FT runs did. A pass means the full run is worth starting, not that Prefix-RFT
+    beats the baseline.
+  - `jobs/fine_tuning/013_train_prefix_rft.job` — the production run. `005_train.job`
+    with the config, job name and log paths changed and nothing else, so the GPU layout,
+    crash monitoring and checkpoint handling stay the production-tested ones. Gated on
+    `012` in its header; do not submit before that is green.
+  - `jobs/refactor_check/gaia_agentflow_smoke.job` — five-question GAIA regression check
+    for the inference path (`VARIANT=none|orchestrator`), since Prefix-RFT adds seams to
+    `OrchestratorRollout`.
+  - `src/verl_ext/prefix_rft/` — the extension: schedule, demonstration store, advantage
+    correction, entropy clip, and the trainer/daemon/actor subclasses, entirely in
+    verl-free modules where possible so the logic is unit-testable without verl.
+  - `src/fine_tuning/prefix_rollout.py`, `src/fine_tuning/prefix_replay.py` —
+    `PrefixOrchestratorRollout` and the replay controller that stands in for the model on
+    replayed decisions, verified to tokenise identically to the training daemon's proxy
+    (`scripts/check_prefix_replay_tokenisation.py`).
+  - `jobs/fine_tuning/008_build_prefix_demos.job`, `009_run_tests_for_prefix_rft.job`,
+    `010_smoke_prefix_rft.job` — build the demonstration store (1358 of 1800 questions,
+    1085 prefixable), a CPU verification suite, and an 8B GPU smoke test.
+  - **Run status (2026-08-18).** CPU suite green. `011` green (25755605, all five
+    checks). `010` green (25756950, clip 20.1%, 816 prefix tokens, replay tokenisation
+    matched on 3 demonstrations). `012` running — it is the first stage to move the
+    cosine curriculum or use the production batch shape. `013` (production) and the
+    five-benchmark evaluation have not been started; the evaluation configs are the one
+    piece of scaffolding still to write.
 - **Orchestrator SFT: memory-folded training format** (`feat/sft-folded-format`) — fixes the SFT
   adapter landing below the base model. Diagnosis: SFT rows were stored as the native multi-turn
   transcript the teacher produced, but the orchestrator never sees that at inference — every
