@@ -147,3 +147,96 @@ def test_a_failing_prefix_gets_a_negative_advantage():
     args = _batch([1.0, 1.0, 1.0, 1.0, 0.0], [False, False, False, False, True])
     out = apply_prefix_advantage(*args)
     assert out[4, 0].item() == pytest.approx(-1.0, rel=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Differential test against the reference implementation.
+#
+# Every other test here asserts a property we believe the reference has. This
+# one runs the reference itself and demands the same numbers, which is the only
+# check that catches a property we described wrongly. It found one: we applied
+# the reference's singleton rule to the prefixed group but not to the unprefixed
+# group, so a question with exactly one unprefixed rollout (rollout.n = 2, the
+# smoke config) got a different advantage from the reference's. Production
+# rollout.n is 8 and was never affected.
+# ---------------------------------------------------------------------------
+
+#: The reference marks unprefixed rollouts with this sentinel prefix id.
+_SENTINEL = "0000-0000-0000-0000"
+
+
+def _reference_advantage(
+    token_level_rewards,
+    response_mask,
+    prefix_mask,
+    index,
+    prefix_index,
+    num_rollouts_per_prefix,
+    epsilon=1e-6,
+):
+    """Transcribed from ``compute_grpo_prefix_outcome_advantage``.
+
+    Source: ``repos/prefix_rft/recipe/prefix_rft/core_algos.py:162-215``, kept
+    structurally identical to it (including mutating ``scores`` in place, which
+    is what makes the prefix advantage a function of the *normalised* score)
+    so that a reader can diff the two side by side.
+    """
+    from collections import defaultdict
+
+    scores = token_level_rewards.sum(dim=-1)
+    p_scores = torch.zeros_like(scores)
+    id2p2score = defaultdict(lambda: defaultdict(list))
+    id2p2mean, id2p2std = defaultdict(dict), defaultdict(dict)
+    with torch.no_grad():
+        bsz = scores.shape[0]
+        for i in range(bsz):
+            id2p2score[index[i]][prefix_index[i]].append(scores[i])
+        for idx in id2p2score:
+            for pid, lst in id2p2score[idx].items():
+                if len(lst) == 1:
+                    id2p2mean[idx][pid] = torch.tensor(0.0)
+                    id2p2std[idx][pid] = torch.tensor(1.0)
+                else:
+                    id2p2mean[idx][pid] = torch.mean(torch.tensor(lst))
+                    id2p2std[idx][pid] = torch.std(torch.tensor(lst))
+        for i in range(bsz):
+            scores[i] = (scores[i] - id2p2mean[index[i]][prefix_index[i]]) / (
+                id2p2std[index[i]][prefix_index[i]] + epsilon
+            )
+        for i in range(bsz):
+            if prefix_index[i] != _SENTINEL:
+                p_scores[i] = scores[i] - id2p2mean[index[i]][_SENTINEL]
+        scores = scores.unsqueeze(-1) * response_mask
+        p_scores = p_scores.unsqueeze(-1) / num_rollouts_per_prefix * prefix_mask
+        scores = torch.where(prefix_mask.bool(), p_scores, scores)
+    return scores
+
+
+@pytest.mark.parametrize("n_rollouts", [2, 3, 4, 8])
+@pytest.mark.parametrize(
+    "pattern", [(0.0,), (1.0,), (0.0, 1.0), (0.5, 1.0), (1.0, 0.5, 0.0)]
+)
+def test_matches_the_reference_implementation(n_rollouts, pattern):
+    """Same advantages as the reference, for one prefixed rollout of n.
+
+    One row per rollout, so the reference's row-per-rollout layout and Flow
+    GRPO's row-per-turn layout coincide and the two are directly comparable.
+    """
+    scores = [pattern[i % len(pattern)] for i in range(n_rollouts)]
+    is_prefix = [i == 0 for i in range(n_rollouts)]
+    adv, tlr, resp, pfx, uid, rollout_id, flags = _batch(scores, is_prefix)
+
+    prefix_index = np.array(
+        [f"p{i}" if flags[i] else _SENTINEL for i in range(n_rollouts)]
+    )
+    expected = _reference_advantage(
+        tlr.clone(), resp, pfx, uid, prefix_index, num_rollouts_per_prefix=1
+    )
+    actual = apply_prefix_advantage(
+        adv, tlr.clone(), resp, pfx, uid, rollout_id, flags,
+        num_rollouts_per_prefix=1,
+    )
+    assert torch.allclose(actual, expected, atol=1e-5), (
+        f"n_rollouts={n_rollouts} scores={scores}\n"
+        f"reference:\n{expected}\nours:\n{actual}"
+    )
