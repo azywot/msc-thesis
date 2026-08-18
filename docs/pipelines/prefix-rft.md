@@ -83,6 +83,10 @@ sbatch jobs/fine_tuning/010_smoke_prefix_rft.job
 #    prefix length falling with it - and the production batch shape
 #    (rollout.n: 8, train_batch_size: 32, TOOL_STEPS: 5).
 sbatch jobs/fine_tuning/012_capped_prefix_rft.job
+
+# 6. The production run: 1800 questions x 2 epochs, ~112 steps, 72 h on 4 GPUs.
+#    Only after 012 is green - see "After 012" below.
+sbatch jobs/fine_tuning/013_train_prefix_rft.job
 ```
 
 **Steps 3 and 4 answer "is the mechanism correct?". Step 5 answers "is the method
@@ -126,9 +130,9 @@ The store is keyed on **question text**, not a dataset index (indices collide ac
 data sources), so the same `prefix_demos.parquet` serves both the smoke split and the
 production run - a question is covered if and only if its text appears in the store.
 
-> **The production run, the five-benchmark evaluation, and the Chapter 7 write-up are
-> out of scope for this pipeline doc.** They follow only if the smoke path is clean and
-> the compute is worth spending - see "Out of scope" in the spec.
+> **The production run and what follows it are covered in "After 012" below.** They are
+> worth starting only once the staged path above is green; the spec's "Out of scope"
+> section predates those stages.
 
 ## Configuration
 
@@ -239,6 +243,68 @@ provider (Qwen3's `enable_thinking`) and through response parsing, where a `<thi
 precedes the tool call, so a refactor can break one and not the other. The job fails if
 every prediction is empty or no tool was called; accuracy is printed but not gated on,
 because five GAIA questions carry no signal at an 8B model's single-digit accuracy.
+
+## After 012: finishing the implementation
+
+A green 012 is the last verification gate. What remains is running the method and
+writing it up, in this order.
+
+### 1. The production run
+
+```bash
+sbatch jobs/fine_tuning/013_train_prefix_rft.job
+```
+
+1800 questions x 2 epochs at batch 32, about 112 steps, 72 h wall clock on 4 H100s.
+`013` is `005_train.job` with three things changed and nothing else - the config, the job
+name, and the log paths - so the GPU layout, crash monitoring, sub-agent placement and
+checkpoint handling are the production-tested ones.
+
+Checkpoints land on scratch:
+
+```
+/scratch-shared/$USER/fine_tuning/lora_adapters/qwen3-8b-prefix-rft-search-math/<run-tag>/
+    global_step_<N>/actor/lora_adapter/adapter_model.safetensors
+```
+
+Note the run tag printed at the start; the evaluation configs need it.
+
+**What to watch that a GRPO run would not have.** The four prefix metrics in "Metrics to
+watch" plus the two the paper gives predictions for:
+
+| Signal | What the paper says | What to do if it does not hold |
+|---|---|---|
+| `actor/prefix_low` falls 0.95 -> 0.05 | A.2's cosine decay | Stop the run. The curriculum is not moving and 012 should have caught it. |
+| `actor/prefix_steps` (mean `k`) falls with it | follows from the above | As above. |
+| `actor/off_ratio` | Table 4 warns above ~0.5 | Not fatal, but record it: the paper attributes instability to demonstration tokens dominating the batch. |
+| `reward_with_prefix` above `reward_without_prefix` early, narrowing later | Figure 4 | Record it. Its absence is a real finding about the multi-turn adaptation, not a bug to chase - and it is the honest thing to report either way. |
+
+### 2. Evaluation
+
+Follow the pattern of `experiments/configs/qwen3/lora_inference/` (the GRPO adapter) or
+`sft_inference/`: one config per benchmark, `lora_adapter_path` pointed at the chosen
+`global_step_<N>/actor/lora_adapter`, five benchmarks (GAIA, MuSiQue, HLE, GPQA, AIME),
+thinking on and off. These configs do not exist yet for Prefix-RFT and are the one piece
+of scaffolding still to write.
+
+Compare against the GRPO baseline (`qwen3-8b-grpo-search-math-v2`) rather than against
+the paper's numbers: the paper's are single-turn mathematics with a verifier, and eight
+documented divergences separate that setting from this one.
+
+### 3. Write-up
+
+Chapter 7 needs the eight divergences below stated rather than left for a reader to
+find. Two deserve prominence because they change what is being measured:
+
+- **The step-prefix adaptation** - `k` is an integer number of teacher decisions, not a
+  token fraction, and with a mean of 2.98 decisions per demonstration the paper's
+  continuous schedule is quantised into roughly three levels.
+- **GRPO rather than Dr.GRPO**, chosen so Prefix-RFT differs from this project's RL
+  baseline in exactly one respect.
+
+If the production run does not beat the GRPO baseline, the earlier GRPO-FT experience is
+the first place to look: those runs failed through KL blow-up rather than through
+crashing, and `012`'s Check F exists to catch the same shape early.
 
 ## Alignment with the paper and the reference implementation
 

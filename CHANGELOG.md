@@ -43,6 +43,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     under the paper's 0.5 threshold, and that KL did not blow up the way the earlier
     GRPO-FT runs did. A pass means the full run is worth starting, not that Prefix-RFT
     beats the baseline.
+  - `jobs/fine_tuning/013_train_prefix_rft.job` — the production run. `005_train.job`
+    with the config, job name and log paths changed and nothing else, so the GPU layout,
+    crash monitoring and checkpoint handling stay the production-tested ones. Gated on
+    `012` in its header; do not submit before that is green.
   - `jobs/refactor_check/gaia_agentflow_smoke.job` — five-question GAIA regression check
     for the inference path (`VARIANT=none|orchestrator`), since Prefix-RFT adds seams to
     `OrchestratorRollout`.
