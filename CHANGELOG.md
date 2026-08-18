@@ -23,7 +23,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     replay-blocking bugs were found by GPU runs and fixed along the way (Hydra package
     path, Ray `@register`, verl config dataclass, two missing imports in a copied method,
     and `__getattr__` not covering special methods on the tool-registry proxy). The
-    curriculum is still unexercised — run `010` then `012` before the production run.
+    curriculum is still unexercised — `012` is what answers that, and `013` is the
+    production run it gates.
   - `jobs/fine_tuning/011_tiny_prefix_rft.job` — two questions, one optimiser step,
     ~10 min. Verifies replay, masking, advantage correction and the entropy clip on real
     GPUs, and fails in minutes where the 8-question smoke test fails in hours.
@@ -60,10 +61,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `jobs/fine_tuning/008_build_prefix_demos.job`, `009_run_tests_for_prefix_rft.job`,
     `010_smoke_prefix_rft.job` — build the demonstration store (1358 of 1800 questions,
     1085 prefixable), a CPU verification suite, and an 8B GPU smoke test.
-  - **Run status.** The CPU suite passes. `011` has been run repeatedly and is what
-    surfaced the five bugs above; it has not yet reported a clean pass. `010`, `012` and
-    the production 4xH100 run have not been executed, and the five-benchmark evaluation
-    remains out of scope until the staged path is clean.
+  - **Run status (2026-08-18).** CPU suite green. `011` green (25755605, all five
+    checks). `010` green (25756950, clip 20.1%, 816 prefix tokens, replay tokenisation
+    matched on 3 demonstrations). `012` running — it is the first stage to move the
+    cosine curriculum or use the production batch shape. `013` (production) and the
+    five-benchmark evaluation have not been started; the evaluation configs are the one
+    piece of scaffolding still to write.
 - **Orchestrator SFT: memory-folded training format** (`feat/sft-folded-format`) — fixes the SFT
   adapter landing below the base model. Diagnosis: SFT rows were stored as the native multi-turn
   transcript the teacher produced, but the orchestrator never sees that at inference — every
