@@ -1,7 +1,20 @@
-# Prefix-RFT pipeline - blending demonstration and exploration into GRPO
+# Prefix-RFT pipeline - blending demonstration and exploration into Flow GRPO
 
-Prefix-RFT is GRPO in which one rollout per prompt does not start from scratch: it is
-seeded with a prefix of a Qwen3-32B teacher demonstration, and the policy writes the
+> **Prefix-RFT runs on Flow GRPO, not on plain single-turn GRPO.** It inherits the whole
+> RL pipeline this project already had: a trajectory becomes one batch row per *turn*,
+> every turn of a trajectory shares the question's `uid`, and the final sparse reward is
+> propagated to all of them (`src/fine_tuning/rollout.py:333`). Prefix-RFT changes what
+> one rollout in eight *starts from*; it does not change how credit is assigned across
+> turns. Read every metric on this page as a per-turn quantity.
+>
+> "GRPO" in `algorithm.adv_estimator: grpo` is the advantage estimator sitting on top of
+> that layout, which is exactly what the plain GRPO baseline uses too. Flow GRPO decides
+> which turns receive the reward; GRPO normalises it (`src/fine_tuning/README.md:275`).
+> The one place Prefix-RFT departs is group statistics on prefixed questions - see
+> divergence 9 below.
+
+Prefix-RFT is Flow GRPO in which one rollout per prompt does not start from scratch: it
+is seeded with a prefix of a Qwen3-32B teacher demonstration, and the policy writes the
 continuation. The composite trajectory is scored and trained on like any other rollout,
 so the demonstration is reinforced only in proportion to how much it actually helped -
 unlike SFT, there is no separate imitation loss. Entropy-based clipping keeps only the
@@ -37,10 +50,12 @@ duplicate any of it.
 
 ## The step-prefix adaptation - the thing to know before reading a metric
 
-The paper's test bed is single-turn math: one prompt, one response. CoSMAS trajectories
-are multi-turn - a planning decision, one or more tool calls, a synthesis decision - so
-"a prefix of the demonstration" cannot be a token fraction of one response. It is an
-integer number of teacher **decisions**: for a demonstration with `m` decisions, the
+The paper's test bed is single-turn math: one prompt, one response, one row in the batch.
+Ours is Flow GRPO, where a trajectory is many turns and each turn is its own row. That
+difference is what this whole section is about. CoSMAS trajectories are multi-turn - a
+planning decision, one or more tool calls, a synthesis decision - so "a prefix of the
+demonstration" cannot be a token fraction of one response. It is an integer number of
+teacher **decisions**: for a demonstration with `m` decisions, the
 first `k` are replayed verbatim and the model takes over from decision `k+1`.
 `k = floor(l * m)`, clamped to `[0, m-1]` so there is always at least one on-policy
 decision to score, with `l` drawn from the paper's schedule unchanged.
@@ -468,10 +483,10 @@ Prefix-RFT is a Level 3 adaptation method (see
 [guides/add-an-adaptation-method.md](../guides/add-an-adaptation-method.md#level-3--online-adaptation-like-rl))
 and reuses everything RL already built rather than duplicating it: the same
 `OrchestratorRollout`-drives-the-real-orchestrator pattern, the same frozen sub-agent
-server, the same reward function. Two identity seams were added to
-`OrchestratorRollout` (`_wrap_provider`, `_wrap_tools`) so the replay shims have
-somewhere to attach; both return their argument unchanged in the base class, so the
-existing GRPO rollout suite is the regression test for "did this touch plain GRPO."
+server, the same reward function, and the same **Flow GRPO** credit assignment. Two
+identity seams were added to `OrchestratorRollout` (`_wrap_provider`, `_wrap_tools`) so
+the replay shims have somewhere to attach; both return their argument unchanged in the
+base class, so the existing GRPO rollout suite is the regression test for "did this touch plain GRPO."
 
 | Piece | Role |
 |---|---|
