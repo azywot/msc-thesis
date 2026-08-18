@@ -22,9 +22,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     clip kept 20.3% against the paper's 20%; `off_ratio` 0.121. Five launch- or
     replay-blocking bugs were found by GPU runs and fixed along the way (Hydra package
     path, Ray `@register`, verl config dataclass, two missing imports in a copied method,
-    and `__getattr__` not covering special methods on the tool-registry proxy). The
-    curriculum is still unexercised — `012` is what answers that, and `013` is the
-    production run it gates.
+    and `__getattr__` not covering special methods on the tool-registry proxy).
+
+    **Curriculum verified on GPU** (run 25762046, 2026-08-18): `012` reached 9 of 10
+    steps at the production batch shape (`rollout.n` 8, batch 32, 4 GPUs) before its 12 h
+    wall. `low_t` decayed 0.928 → 0.072 on the closed-form cosine, mean prefix length `k`
+    fell 2.42 → 1.68 between the run's halves, `off_ratio` stayed at or below 0.067, and
+    the entropy clip kept 20.13–20.29% of prefix tokens on every step against the paper's
+    0.2. Gradients (0.078–0.154) and entropy (0.215–0.258) were flat; `kl_loss` rose
+    0.007 → 0.155, small at `kl_coef` 0.01 but the metric to watch in `013`.
+    `reward_with_prefix` beat `reward_without_prefix` on all nine steps (0.74 vs 0.41).
+    Checkpoint written at `global_step_5`. Nothing now blocks the production run.
+  - **Advantage fidelity fix** (`advantage.py`): the reference gives *any* singleton
+    group mean 0 and std 1 (`core_algos.py:188-191`), including the unprefixed group.
+    We applied that rule to the prefixed group only, so a question with exactly one
+    unprefixed rollout was centred on its own score rather than on zero — reachable at
+    `rollout.n: 2` (the smoke config) and never at the production `rollout.n: 8`. Found
+    by a new differential test that transcribes `compute_grpo_prefix_outcome_advantage`
+    and demands identical advantages across `rollout.n` in {2, 3, 4, 8}; the production
+    shape was already bit-exact.
+  - `config_prefix_rft.yaml`: `trainer.total_epochs` 2 → 1. The cosine schedule spans
+    `total_training_steps`, so this sets how fast `low_t` decays, not only how long the
+    run lasts. At the 71 min/step `012` measured, a 112-step span is cut off by the 72 h
+    wall near step 58 with `low_t` still ≈ 0.47, so the run would never reach the
+    near-on-policy phase Appendix A.2's schedule ends in. 56 steps ≈ 66 h and the decay
+    completes inside the wall.
   - `jobs/fine_tuning/011_tiny_prefix_rft.job` — two questions, one optimiser step,
     ~10 min. Verifies replay, masking, advantage correction and the entropy clip on real
     GPUs, and fails in minutes where the 8-question smoke test fails in hours.

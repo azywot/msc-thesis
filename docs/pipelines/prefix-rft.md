@@ -23,10 +23,15 @@ duplicate any of it.
 > 20.1% against the paper's 20%, replay tokenisation matching the proxy's, and LoRA
 > adapters written.
 >
-> **This verifies the mechanism, not the method.** Both runs pin or barely move the
-> schedule over one or two steps at `rollout.n` of 4 and 2, so the cosine curriculum has
-> never moved and the production batch shape is untested. `012_capped_prefix_rft.job`
-> exists to answer that, and should be run before the production run is started.
+> `012_capped_prefix_rft.job` closes the remaining gap (run 25762046): 9 of 10 steps at
+> the production batch shape (`rollout.n` 8, batch 32, 4 GPUs) before the 12 h wall, with
+> `low_t` decaying 0.928 -> 0.072 along the closed-form cosine, mean `k` falling 2.42 ->
+> 1.68 between the run's halves, `off_ratio` at most 0.067, and the entropy clip keeping
+> 20.13-20.29% of prefix tokens at every single step. Gradients (0.078-0.154) and entropy
+> (0.215-0.258) were flat; `kl_loss` rose 0.007 -> 0.155, small in absolute terms but the
+> one metric to watch in `013`. Checkpoint written at `global_step_5`.
+>
+> **The mechanism and the curriculum are both verified. Nothing blocks `013`.**
 
 ---
 
@@ -93,8 +98,8 @@ What each stage costs:
 | `009` CPU verification suite | genoa | 0 | ~5 min |
 | `011` mechanism on 2 questions | gpu_h100 | 3 | ~10 min |
 | `010` smoke on 8 questions | gpu_h100 | 3 | ~25 min |
-| `012` capped production, 10 steps | gpu_h100 | 4 | ~7-8 h |
-| `013` production | gpu_h100 | 4 | ~72 h |
+| `012` capped production, 10 steps | gpu_h100 | 4 | ~12 h (measured 71 min/step) |
+| `013` production | gpu_h100 | 4 | ~66 h of a 72 h wall |
 
 Everything from `008` down is cheap until `012`. Run them in order; each one is designed
 to fail faster than the one after it.
@@ -136,7 +141,7 @@ sbatch jobs/fine_tuning/013_train_prefix_rft.job
 usable?", and they are different questions.** 011 pins the schedule over a single step,
 so nothing before 012 has ever moved the cosine decay that is the method's central
 dynamic; and 011/010 run `rollout.n` of 4 and 2, where production gives the hybrid
-rollout seven on-policy peers. A pass on 012 says the 40-hour run is worth starting. It
+rollout seven on-policy peers. 012's pass says the production run is worth starting. It
 says nothing about whether Prefix-RFT beats the GRPO baseline - 10 steps carries no
 signal about final quality, and no check in 012 looks at reward level.
 
@@ -146,6 +151,21 @@ grad norm, entropy, clip ratio - recorded as warnings rather than failures, beca
 steps cannot establish a trend, but this project's earlier GRPO-FT runs failed through
 KL blow-up rather than through crashing, so a run that trains and checkpoints is not
 automatically healthy).
+
+Both passed on run 25762046, though not through the job's own check block: the 12 h wall
+landed mid-step-10 and killed the script before it ran, so `E` and `F` were read off the
+per-step metrics in `out/fine_tuning/prefix_rft/capped_25762046_verl.log` instead. `E`:
+`low_t` 0.928 -> 0.072 tracking the closed form, mean `k` 2.42 -> 1.68 across the halves,
+`off_ratio` never above 0.067. `F`: grad norm 0.078-0.154 and entropy 0.215-0.258 both
+flat, `kl_loss` 0.007 -> 0.155 - a rise, but at `kl_coef` 0.01 that is 0.0016 of the loss,
+and nine steps on 320 questions is early-training drift rather than the blow-up shape.
+Watch it in `013`.
+
+The run also settled a question none of the earlier checks could reach: the entropy clip
+kept 20.13-20.29% of prefix tokens on every one of the nine steps, against the paper's
+0.2, at the production batch shape. And `reward_with_prefix` beat `reward_without_prefix`
+on all nine (0.74 against 0.41 on average), which is the mechanism doing the thing it
+exists to do.
 
 Step 2 is cheap and catches the pipeline's silent-failure modes: a demonstration attached
 to the wrong question, a `prefix_mask` misaligned with the responses it marks, or a copied
@@ -298,7 +318,15 @@ writing it up, in this order.
 sbatch jobs/fine_tuning/013_train_prefix_rft.job
 ```
 
-1800 questions x 2 epochs at batch 32, about 112 steps, 72 h wall clock on 4 H100s.
+1800 questions x 1 epoch at batch 32, 56 steps, about 66 h of a 72 h wall on 4 H100s.
+
+> **One epoch, not two.** The cosine schedule spans `total_training_steps`, so
+> `total_epochs` sets how fast `low_t` decays and not merely how long the run lasts. At
+> the 71 min/step that `012` measured, a 112-step span would be cut off by the wall near
+> step 58 with `low_t` still around 0.47 - the prefix would still be half the
+> demonstration and the run would never reach the near-on-policy phase A.2's schedule
+> ends in. The GRPO reference run hit the same wall at 82 of 112 steps, which for plain
+> GRPO costs only training time. At 56 steps the decay completes inside the wall.
 `013` is `005_train.job` with three things changed and nothing else - the config, the job
 name, and the log paths - so the GPU layout, crash monitoring, sub-agent placement and
 checkpoint handling are the production-tested ones.
@@ -368,8 +396,18 @@ paragraph) and `repos/prefix_rft/recipe/prefix_rft/` (`core_algos.py`, `dp_actor
 | Clip mechanism | advantages of non-selected prefix tokens set to zero (§3) | Same: zero the advantage, do not mask the token |
 | Prefix tokens are trained on | Table 8: freezing the prefix scores 45.4 against 45.5 for plain RFT, so this is load-bearing | Prefix tokens enter the loss with `prefix_mask = 1` |
 | Prefix advantage | `p_score = score - mean(unprefixed group)`, then `/ num_rollouts_per_prefix`, applied only where `prefix_mask` (`core_algos.py:200-215`) | `apply_prefix_advantage` with `num_rollouts_per_prefix = 1`, reproducing the same expression |
-| Singleton group handling | mean 0, std 1 (`core_algos.py:189-191`) | Same, including dividing by `std + epsilon` when std is 1 |
+| Singleton group handling | any group of one takes mean 0 and std 1 (`core_algos.py:188-191`) | Same, for the prefixed *and* the unprefixed group |
 | Hybrid rollout excluded from the on-policy baseline | Grouped by `(question, prefix_index)`, unprefixed rollouts sharing a sentinel id | Same grouping by `(uid, is_prefix_rollout)` |
+
+The table above is a claim about the reference, so it is checked against the reference
+rather than asserted. `test_matches_the_reference_implementation` transcribes
+`compute_grpo_prefix_outcome_advantage` into the test file and demands the same
+advantages from ours across `rollout.n` in {2, 3, 4, 8} and five reward patterns. It is
+worth having: it found that the singleton row above was only half true. We applied the
+singleton rule to the prefixed group but not to the unprefixed one, so a question with
+exactly one unprefixed rollout was centred on its own score where the reference centres
+it on zero. Production `rollout.n` is 8, so this was unreachable there and only ever
+affected the `rollout.n: 2` smoke config; it is fixed, and the test fails if it returns.
 
 Two parameterisation differences that are **not** behavioural: the repo configures the
 clip as a *mask* ratio (fraction zeroed, `ent_mask_ratio`) where we configure a *keep*
@@ -387,19 +425,40 @@ at the split point can differ by a single token on small batches.
    We pair with GRPO so Prefix-RFT differs from this project's existing RL baseline in
    exactly one respect, and a difference in results is attributable to the prefix rather
    than to a simultaneous algorithm change.
-3. **LoRA rank 64 instead of a full fine-tune.** Inherited from the existing RL pipeline
+3. **PPO clip range and KL follow this project's GRPO baseline, not the reference's
+   defaults.** We run `clip_ratio_low: 0.2` / `clip_ratio_high: 0.3` (clip-higher) with
+   `use_kl_loss: true` and `kl_loss_coef: 0.01`, against the reference config's 0.2/0.2,
+   `use_kl_loss: False` and `0.001`. The paper does not state these directly - A.2 says
+   the shared hyperparameters follow Yan et al. (2025) - so the reference config is the
+   only evidence, and it is a default rather than a published run setting. Same reasoning
+   as the Dr.GRPO choice: matching our own RL baseline keeps the comparison controlled.
+   Both differences are in the conservative direction for this project's known failure
+   mode, since a larger KL coefficient penalises drift from the reference policy harder.
+4. **LoRA rank 64 instead of a full fine-tune.** Inherited from the existing RL pipeline
    and its GPU budget.
-4. **Multi-turn agentic trajectories with an outcome reward**, against the paper's
+5. **Multi-turn agentic trajectories with an outcome reward**, against the paper's
    single-turn mathematics with a verifier.
-5. **Demonstration coverage.** 1358 of 1800 questions carry demonstrations, 1085 of them
+6. **Demonstration coverage.** 1358 of 1800 questions carry demonstrations, 1085 of them
    prefixable, against the 10% and 1% regimes the paper's Table 2 validates.
-6. **The schedule spans the actual run length** rather than the paper's fixed 500 steps.
+7. **The schedule spans the actual run length** rather than the paper's fixed 500 steps.
    A hardcoded 500 would truncate the curriculum at 22% of its decay on a ~112-step run.
-7. **Four copies are taken from code this project does not own** - verl's `update_policy`,
+8. **Four copies are taken from code this project does not own** - verl's `update_policy`,
    the vendored `_train_step` and `_async_set_up`, and the vendored config keys - each
    generated from its source plus marked edits and guarded by
    `check_prefix_rft_trainer_sync.py`, rather than hand-maintained with a comment.
-8. **`config_prefix_rft_tiny8b.yaml` sets `low_target: 0.9`**, not the paper's 0.05. Test
+9. **Group statistics are per rollout for prefixed questions, per row for the rest.**
+   Flow GRPO emits one row per turn, all sharing a `uid` and a reward, so verl's GRPO
+   averages over rows and thereby weights each rollout by its turn count.
+   `apply_prefix_advantage` deduplicates by `rollout_id` first, matching the reference's
+   one-row-per-rollout layout - it has to, or the hybrid rollout's turns would be centred
+   against themselves and the prefix advantage would be exactly zero every step. It runs
+   after `compute_advantage` and only touches questions that have a prefixed rollout, so
+   within one batch those questions get unweighted group statistics and the rest keep
+   verl's turn-count-weighted ones. Making both per rollout would have changed the GRPO
+   baseline this method is being compared against, which is the larger distortion. The
+   gap is bounded by how much turn counts vary within a question; run 25762046 averaged
+   1.28 turns per rollout.
+10. **`config_prefix_rft_tiny8b.yaml` sets `low_target: 0.9`**, not the paper's 0.05. Test
    configuration only, for the reason given under "Configuration"; the smoke and
    production configs use the paper's value.
 

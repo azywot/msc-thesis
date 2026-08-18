@@ -79,12 +79,18 @@ def apply_prefix_advantage(
             prefixed_set = set(prefixed)
             unprefixed = [r for r in rids if r not in prefixed_set]
 
-            if unprefixed:
+            if len(unprefixed) > 1:
                 base = torch.stack([row_scores[rollout_rows[r][0]] for r in unprefixed])
                 mean_np, std_np = base.mean(), base.std()
-                if torch.isnan(std_np):  # a single unprefixed rollout
-                    std_np = torch.tensor(1.0, device=device)
             else:
+                # The reference keys groups on (question, prefix_index) and gives ANY
+                # singleton group mean 0 and std 1 (core_algos.py:188-191) - including
+                # the unprefixed one, which is a singleton whenever rollout.n is 2.
+                # Centring it on its own score instead would zero its advantage and
+                # shift every prefix advantage by that score. Unreachable at the
+                # production rollout.n of 8; a differential test against the reference
+                # covers both. The no-unprefixed case takes the same branch, where the
+                # reference would raise KeyError on its missing sentinel group.
                 mean_np = torch.tensor(0.0, device=device)
                 std_np = torch.tensor(1.0, device=device)
 
