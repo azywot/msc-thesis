@@ -20,7 +20,6 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_ROOT / "scripts"))
 
 from agent_engine.core.orchestrator import _DEFAULT_PLANNING_SUFFIX_TOOLS

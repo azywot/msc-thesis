@@ -7,10 +7,7 @@ wiring between config → orchestrator → evaluation is intact.
 
 import json
 import sys
-from pathlib import Path
 from typing import Dict, List, Optional
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 import pytest
 

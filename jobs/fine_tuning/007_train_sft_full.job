@@ -23,7 +23,7 @@
 # same format, same pre-flight gate as 007_train_sft_folded.job — the only difference is that
 # every weight is trained, not just a rank-64 adapter. Run this instead of
 # 007_train_sft_folded.job when the goal is a fully fine-tuned checkpoint rather than an
-# adapter; run both if you want to compare them (see docs/sft_status.md).
+# adapter; run both if you want to compare them (see docs/archive/sft_status.md).
 #
 # What differs from 007_train_sft_folded.job
 # --------------------------------------------

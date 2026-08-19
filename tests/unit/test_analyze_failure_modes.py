@@ -1,12 +1,7 @@
 """Unit tests for classify_failure cascade."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "scripts"))
-
 import pytest
-from failure_modes.analyze_failure_modes import classify_failure
+from agent_engine.analysis.failure_modes import classify_failure
 
 
 def _rec(action_history=None, prediction="wrong", turns=2, tool_counts=None, question=""):

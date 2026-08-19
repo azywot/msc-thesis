@@ -9,6 +9,86 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased] — feat/gepa-integration
 
 ### Added
+- **Prefix-RFT: fourth adaptation method** (`feat/add-prefix-rft`) — GRPO in which one
+  rollout per prompt is seeded with a prefix of a Qwen3-32B teacher demonstration and the
+  policy writes the continuation, entropy-clipped and advantage-weighted per
+  `papers/PrefixRFT_2507.01679v3.md`. See
+  [`docs/superpowers/specs/2026-08-17-prefix-rft-design.md`](docs/superpowers/specs/2026-08-17-prefix-rft-design.md)
+  for the full design and every departure found while building it, and
+  [`docs/pipelines/prefix-rft.md`](docs/pipelines/prefix-rft.md) for how to run it.
+    **Mechanism verified on GPU** (run 25755605, 2026-08-18): `011` passes all five
+    checks — teacher text replayed verbatim in exactly one rollout per question, then
+    on-policy continuation; validation on-policy; 849 prefix tokens in the loss; entropy
+    clip kept 20.3% against the paper's 20%; `off_ratio` 0.121. Five launch- or
+    replay-blocking bugs were found by GPU runs and fixed along the way (Hydra package
+    path, Ray `@register`, verl config dataclass, two missing imports in a copied method,
+    and `__getattr__` not covering special methods on the tool-registry proxy).
+
+    **Curriculum verified on GPU** (run 25762046, 2026-08-18): `012` reached 9 of 10
+    steps at the production batch shape (`rollout.n` 8, batch 32, 4 GPUs) before its 12 h
+    wall. `low_t` decayed 0.928 → 0.072 on the closed-form cosine, mean prefix length `k`
+    fell 2.42 → 1.68 between the run's halves, `off_ratio` stayed at or below 0.067, and
+    the entropy clip kept 20.13–20.29% of prefix tokens on every step against the paper's
+    0.2. Gradients (0.078–0.154) and entropy (0.215–0.258) were flat; `kl_loss` rose
+    0.007 → 0.155, small at `kl_coef` 0.01 but the metric to watch in `013`.
+    `reward_with_prefix` beat `reward_without_prefix` on all nine steps (0.74 vs 0.41).
+    Checkpoint written at `global_step_5`. Nothing now blocks the production run.
+  - **Advantage fidelity fix** (`advantage.py`): the reference gives *any* singleton
+    group mean 0 and std 1 (`core_algos.py:188-191`), including the unprefixed group.
+    We applied that rule to the prefixed group only, so a question with exactly one
+    unprefixed rollout was centred on its own score rather than on zero — reachable at
+    `rollout.n: 2` (the smoke config) and never at the production `rollout.n: 8`. Found
+    by a new differential test that transcribes `compute_grpo_prefix_outcome_advantage`
+    and demands identical advantages across `rollout.n` in {2, 3, 4, 8}; the production
+    shape was already bit-exact.
+  - `config_prefix_rft.yaml`: `trainer.total_epochs` 2 → 1. The cosine schedule spans
+    `total_training_steps`, so this sets how fast `low_t` decays, not only how long the
+    run lasts. At the 71 min/step `012` measured, a 112-step span is cut off by the 72 h
+    wall near step 58 with `low_t` still ≈ 0.47, so the run would never reach the
+    near-on-policy phase Appendix A.2's schedule ends in. 56 steps ≈ 66 h and the decay
+    completes inside the wall.
+  - `jobs/fine_tuning/011_tiny_prefix_rft.job` — two questions, one optimiser step,
+    ~10 min. Verifies replay, masking, advantage correction and the entropy clip on real
+    GPUs, and fails in minutes where the 8-question smoke test fails in hours.
+  - `scripts/check_prefix_rft_runtime_contracts.py` — three verl runtime contracts that
+    no import error or unit test reveals: Ray binds only `@register`-marked worker
+    methods, `init_model` converts config subtrees into dataclasses that reject
+    undeclared keys, and copied method bodies resolve their globals at call time. Each
+    was found by a failed GPU run.
+  - `scripts/launch_verl.py --dry-run` — builds the real launch command and appends
+    Hydra's `--cfg job`, so an unresolvable config fails in seconds rather than minutes
+    into an allocation. Pre-flight gate in `010` and `011`.
+  - `jobs/fine_tuning/012_capped_prefix_rft.job` + `config_prefix_rft_capped.yaml` — the
+    production run stopped after 10 optimiser steps (~7 h on 4 GPUs). The only stage that
+    exercises the cosine curriculum (`low_t` 0.95 → 0.05) and the production batch shape
+    (`rollout.n: 8`, `train_batch_size: 32`, `TOOL_STEPS: 5`); 011 pins the schedule over
+    a single step and cannot. Checks that the curriculum moved, that `off_ratio` stayed
+    under the paper's 0.5 threshold, and that KL did not blow up the way the earlier
+    GRPO-FT runs did. A pass means the full run is worth starting, not that Prefix-RFT
+    beats the baseline.
+  - `jobs/fine_tuning/013_train_prefix_rft.job` — the production run. `005_train.job`
+    with the config, job name and log paths changed and nothing else, so the GPU layout,
+    crash monitoring and checkpoint handling stay the production-tested ones. Gated on
+    `012` in its header; do not submit before that is green.
+  - `jobs/refactor_check/gaia_agentflow_smoke.job` — five-question GAIA regression check
+    for the inference path (`VARIANT=none|orchestrator`), since Prefix-RFT adds seams to
+    `OrchestratorRollout`.
+  - `src/verl_ext/prefix_rft/` — the extension: schedule, demonstration store, advantage
+    correction, entropy clip, and the trainer/daemon/actor subclasses, entirely in
+    verl-free modules where possible so the logic is unit-testable without verl.
+  - `src/fine_tuning/prefix_rollout.py`, `src/fine_tuning/prefix_replay.py` —
+    `PrefixOrchestratorRollout` and the replay controller that stands in for the model on
+    replayed decisions, verified to tokenise identically to the training daemon's proxy
+    (`scripts/check_prefix_replay_tokenisation.py`).
+  - `jobs/fine_tuning/008_build_prefix_demos.job`, `009_run_tests_for_prefix_rft.job`,
+    `010_smoke_prefix_rft.job` — build the demonstration store (1358 of 1800 questions,
+    1085 prefixable), a CPU verification suite, and an 8B GPU smoke test.
+  - **Run status (2026-08-18).** CPU suite green. `011` green (25755605, all five
+    checks). `010` green (25756950, clip 20.1%, 816 prefix tokens, replay tokenisation
+    matched on 3 demonstrations). `012` running — it is the first stage to move the
+    cosine curriculum or use the production batch shape. `013` (production) and the
+    five-benchmark evaluation have not been started; the evaluation configs are the one
+    piece of scaffolding still to write.
 - **Orchestrator SFT: memory-folded training format** (`feat/sft-folded-format`) — fixes the SFT
   adapter landing below the base model. Diagnosis: SFT rows were stored as the native multi-turn
   transcript the teacher produced, but the orchestrator never sees that at inference — every
@@ -38,7 +118,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     artifact, since it caused confusion about which pipeline is current.
   - Trained (run tag `06-08-2026_21-47-25300018`, val loss 0.5404→0.4234 over 186 steps) and
     evaluated on all five benchmarks; beats the pre-adaptation baseline on GAIA/MuSiQue/HLE, flat
-    on GPQA, regresses on AIME (open question — see `docs/sft_status.md` §8).
+    on GPQA, regresses on AIME (open question — see `docs/archive/sft_status.md` §8).
 - **GEPA inference pipeline** — run inference with GEPA-optimised prompts without any code changes
   - `gepa_prompt_path` config field added to `ExperimentConfig` (`src/agent_engine/config/schema.py`); when set, `run_experiment.py` loads `system_prompt` and `planning_suffix` from the JSON file, bypassing `PromptBuilder` entirely
   - `scripts/run_experiment.py` — checks `gepa_prompt_path`; if present, reads the two components and passes `planning_suffix` to `AgenticOrchestrator` (previously `planning_suffix` was never forwarded from the runner to the orchestrator, so GEPA-optimised suffixes had no effect)
@@ -96,7 +176,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - **Removed**: `src/fine_tuning/agentflow/verl/peft_vllm_weight_sync_patch.py` (the monkey-patch that worked around verl 0.5's two FSDP→vLLM LoRA sync bugs — re-added `.base_layer.` keys, and missing `llm_engine` on vLLM V1). verl 0.6.0 deprecated `ShardingManager` entirely, so the patched class no longer exists; the workaround targets dead code
   - **Removed**: `from . import peft_vllm_weight_sync_patch` and the three `apply_patch()` call sites (main process, Ray `worker_process_setup_hook`, and `TaskRunner.run`) in `src/fine_tuning/agentflow/verl/entrypoint.py`
   - `flash-attn==2.8.1` (installed separately after env creation) may need a newer wheel for torch 2.10 — verify on first smoke run before deciding
-  - Documented in `docs/fine_tuning_v2/verl_upgrade_0.7.1.md`
+  - Documented in `docs/archive/fine_tuning_v2/verl_upgrade_0.7.1.md`
   - **Not yet validated on Snellius** — needs `jobs/009_test_small_ft_example.job` smoke run to confirm rollout, FSDP→vLLM weight sync, and reward path. If the new rollout-server architecture surfaces a regression analogous to the old V1 issue, the patch file is recoverable from git history at this commit's parent
 - **GEPA reflective records iteration 2** (`src/gepa_integration/adapter.py`) — record-shape and sample-selection refinements layered on top of the Iteration 1 enriched feedback (see spec addendum 2026-05-18)
   - Unified `_THINKING_SNIPPET_LEN = 800` (was 1500); the same cap now applies to every thinking field across both record types so per-call budget is predictable. Truncation helper `_truncate_thinking` deduplicates the three call sites (first-turn, last-turn, plan thinking)
@@ -111,7 +191,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Correct-case feedback is now one line carrying tool counts and turn count, so successful trajectories give the reflector positive structural signal (not just `CORRECT`)
   - Token-budget impact: ~150 extra tokens per wrong record; at `_MAX_RECORDS = 8` the per-reflective-call overhead is ≤1.2 K tokens — well inside the existing 32 K reflector budget
   - Deliberately *not* an LLM judge: a same-family Qwen3-32B judge would duplicate the reflector's "implicit credit assignment" job and confabulate failure stories for hard questions. The deterministic path keeps the structured signal as a sanity floor; future open-ended benchmarks can *append* a judge paragraph to `_diagnose` without removing the lines
-  - Documented in `src/gepa_integration/README.md` (new "Feedback design (μ_f for CoSMAS)" section with the line-by-line failure-mode table) and as a dated addendum in `docs/superpowers/specs/2026-05-15-gepa-integration-design.md`
+  - Documented in `src/gepa_integration/README.md` (new "Feedback design (μ_f for CoSMAS)" section with the line-by-line failure-mode table) and as a dated addendum in `docs/archive/superpowers/specs/2026-05-15-gepa-integration-design.md`
 - **`tests/gepa_integration/test_adapter.py`** — +14 tests covering each `_diagnose` line plus an end-to-end check that the tool-error signal reaches both reflective record types; `test_make_reflective_dataset_correct_feedback` relaxed from exact `== "CORRECT"` to `.startswith("CORRECT")` for the new one-line correct format. Total test count in `tests/gepa_integration/` is now 58 (was 32)
 
 ### Added
@@ -185,8 +265,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `jobs/train_orchestrator.sh` — SLURM job script for Snellius
 - `jobs/environment_train.yml` — conda env pinned to AgentFlow stack (verl==0.5.0, vllm==0.9.2)
 - `OpenAIProvider`: optional `base_url` parameter for vLLM-compatible API endpoints
-- Design spec and implementation plan in `docs/superpowers/`
-- `docs/failure_modes_fine_tuning_alignment.md` — analysis linking thesis failure modes to fine-tuning design
+- Design spec and implementation plan in `docs/archive/superpowers/`
+- `docs/archive/failure_modes_fine_tuning_alignment.md` — analysis linking thesis failure modes to fine-tuning design
 - `pyproject.toml`: `[training]` optional extras group
 
 ### Changed

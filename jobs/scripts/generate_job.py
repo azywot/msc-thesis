@@ -11,7 +11,6 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from agent_engine.config import load_experiment_config
 

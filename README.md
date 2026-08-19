@@ -1,975 +1,221 @@
-# 🌌 Collaborative Small-Agent System (CoSMAS)
+# CoSMAS - Collaborative Small-Agent System
 
-CoSMAS is a configuration-driven multi-agent research framework for investigating how small, collaborative language models can be composed to solve complex tasks efficiently. Its primary focus is the design and evaluation of collaboration mechanisms, enabling systematic comparison between single-model baselines and cooperative multi-agent configurations under controlled experimental conditions.
+MSc thesis research framework for evaluating **multi-agent collaboration with
+small LLMs**.
+
+CoSMAS asks one question: when a small model is given planning, structured
+memory and tool sub-agents, does it actually do better - or does the machinery
+just add cost? To answer that, it runs the same model, on the same benchmark,
+with the same tools, in two modes:
+
+- **AgentFlow** - a planning turn, structured memory rebuilt each turn, explicit
+  sub-goals.
+- **Baseline** - vanilla LLM-with-tools, a growing conversation, no planning.
+
+One YAML key (`baseline: true`) switches between them. Everything else is held
+constant, which is what makes the comparison worth anything.
+
+**Benchmarks:** GAIA, HLE, GPQA, AIME, MATH500, AMC, MuSiQue, BigCodeBench.
+**Models:** Qwen3 (0.6B–32B), DeepSeek-R1-Distill (7B, 32B), OLMo 3 (Think /
+Instruct). **Backends:** vLLM (cluster), MLX (Apple Silicon), OpenAI / Anthropic.
 
 ![Framework diagram](data/static/FrameworkDiagram.jpg)
 
-
-
-## Table of contents
-
-1. [Project structure](#project-structure)
-2. [Installation](#installation)
-3. [HPC / Cluster setup](#hpc--cluster-setup)
-4. [Running experiments](#running-experiments)
-5. [Examples](#examples)
-6. [Configuration reference](#configuration-reference)
-7. [Baseline vs. AgentFlow](#baseline-vs-agentflow)
-8. [Tools](#tools)
-9. [Datasets](#datasets)
-10. [GEPA prompt optimisation](#gepa-prompt-optimisation-system-adaptation)
-11. [Orchestrator SFT](#orchestrator-sft-weight-adaptation)
-12. [Outputs](#outputs)
-13. [Failure-mode & rollout analysis](#failure-mode--rollout-analysis-scriptsfailure_modes)
-    - [All-wrong / all-correct (all-good) group analysis](#all-wrong--all-correct-all-good-group-analysis)
-
 ---
 
-## Project structure
+## Documentation
 
-```
-msc-thesis/
-├── src/
-│   ├── agent_engine/          # Inference + evaluation package
-│   │   ├── config/            # YAML schema + loader
-│   │   ├── core/              # Orchestrator + tool-calling loop
-│   │   ├── models/            # vLLM + MLX + API providers + locking/reuse
-│   │   ├── tools/             # web_search, code_generator, mind_map, inspectors
-│   │   ├── datasets/          # loaders + evaluators + metrics
-│   │   ├── prompts/           # prompt templates + builders
-│   │   ├── external/          # Serper, Tavily + URL fetching utilities
-│   │   ├── caching/           # cache manager(s)
-│   │   └── utils/             # parsing/logging helpers
-│   │
-│   ├── fine_tuning/           # RL fine-tuning pipeline (orchestrator only)
-│   │   ├── README.md          # Master fine-tuning reference (pipeline, reward, data, GPU, LoRA, hparams)
-│   │   ├── reward.py          # OrchestratorReward - binary via metrics.py
-│   │   ├── rollout.py         # OrchestratorRollout(LitAgent) - VERL rollout worker
-│   │   └── data/
-│   │       └── prepare.py     # Download Search-R1 + DeepMath → VERL parquet files
-│   │
-│   ├── gepa_integration/      # GEPA prompt optimisation (system adaptation chapter)
-│   │   ├── seed.py            # build_seed_candidate(), build_splits() (legacy split path)
-│   │   ├── adapter.py         # AgentGEPAAdapter - GEPAAdapter protocol implementation
-│   │   ├── reflection.py      # trim_prompt() - reflector context budget management
-│   │   └── data/
-│   │       ├── prepare.py     # Download Search-R1 + DeepMath → GEPA DatasetExamples
-│   │       └── loader.py      # load_gepa_examples() - JSON → DatasetExample
-│   │
-│   └── verl_ext/              # VERL extensions (orchestrator SFT)
-│       └── folded_sft_dataset.py  # FoldedSFTDataset - prompt identical to inference
-│
-├── scripts/
-│   ├── run_experiment.py      # Main runner (requires --config)
-│   ├── analyze_results.py     # Metrics + breakdowns
-│   ├── download_datasets.py   # Fetch/prepare datasets
-│   ├── export_prompts.py      # Dump prompt templates + tool schemas to JSON
-│   ├── generate_configs.py    # Programmatic experiment-config generator (all suites)
-│   ├── run_gepa.py            # GEPA prompt optimisation CLI (splits/optimize/evaluate/diff)
-│   ├── smoke_gepa.py          # Fast GEPA smoke test (no cluster needed)
-│   ├── launch_verl.py         # Start VERL training server
-│   ├── train_orchestrator.py  # Start rollout workers (connects to VERL)
-│   ├── test_ft_smoke.py       # Pre-flight checks for training pipeline (no GPU needed)
-│   ├── merge_lora.py          # Merge a trained LoRA adapter into base weights
-│   ├── count_lora_params.py   # Report trainable-parameter counts for a LoRA config
-│   ├── plots/                 # Figure generation
-│   │   ├── main.py            #   Run all figure generators
-│   │   ├── efficiency_plots.py            # Token / latency / tool-call figures
-│   │   ├── orchestrator_capabilities_figure.py
-│   │   ├── generate_results_table.py      # Main results table
-│   │   └── failure_mode_radar.py          # Failure-mode radar (run main.py first)
-│   ├── tables/                # LaTeX table generation
-│   │   ├── main.py            #   Run all table generators
-│   │   ├── generate_ablation_tables.py    # Tool + structured-memory ablations
-│   │   └── ds_table.py                    # DeepSeek GAIA results table
-│   └── failure_modes/         # Failure-mode classifier + analyses
-│       ├── analyze_failure_modes.py   # Frozen classifier (classify_failure) + breakdowns
-│       ├── eval_runs/         #   Analyses over eval raw_results.json
-│       └── fine_tuning/       #   Analyses of the RL/LoRA runs and training rollouts
-│
-├── train/
-│   ├── config.yaml            # Full training config (5 epochs, 4×A100)
-│   └── config_smoke.yaml      # Smoke-test config (1 epoch, 16 samples)
-│
-├── experiments/
-│   ├── configs/               # Experiment YAMLs organised by suite
-│   │   ├── generate_configs.py    # Programmatic config generator (all suites)
-│   │   ├── datasets/              # Hand-crafted per-dataset configs (test, dev)
-│   │   │   └── gaia/  gpqa/  hle/  aime/  musique/
-│   │   ├── baseline/              # Baseline suite (32B, no planning/structured memory)
-│   │   ├── 1_milestone_no_img_no_mindmap_AgentFlow/  # AgentFlow suite (8B + 32B)
-│   │   ├── qwen3/             # Qwen3 suite (baseline/, agentflow/, ablations, gepa_inference/)
-│   │   ├── deepseek/          # DeepSeek-R1-Distill-Qwen 7B/32B (baseline/, agentflow/)
-│   │   ├── olmo3/             # OLMo 3 think/instruct
-│   │   ├── gepa/              # GEPA prompt optimisation configs + pre-generated splits
-│   │   │   ├── gaia.yaml          # Qwen3-8B agent, Qwen3-32B reflector, 750 rollouts
-│   │   │   ├── math.yaml          # Same setup; targets AIME/math failure modes
-│   │   │   └── splits/            # train/val/test question-ID splits (gaia_gepa_splits.json, math_gepa_splits.json)
-│   │   ├── local/             # MacBook/MLX configs (Qwen3-0.6B, 4B)
-│   │   └── template.yml       # Annotated template for new configs
-│   └── results/               # Default output root
-│
-├── docs/                      # Design notes & walkthroughs (model integration, fine-tuning, failure modes)
-│
-├── jobs/                      # SLURM job scripts + HPC tooling
-│   ├── 008_prepare_fine_tuning_data.job   # Download + write training parquet files
-│   ├── 009_test_small_ft_example.job      # Smoke-test the training pipeline
-│   ├── 010_ft_orchestrator.job            # Full training run (24h, 4×H100)
-│   ├── gepa/                              # GEPA prompt optimisation job sequence
-│   │   ├── 000_prep_gepa_data.job         #   Generate train/val/test splits (no GPU)
-│   │   ├── 001_install_gepa_deps.job      #   Install gepa==0.0.22 into agent_engine env
-│   │   ├── 002_smoke_gepa.job             #   Import / splits / evaluator checks
-│   │   ├── 003_smoke_gepa_gpu.job         #   End-to-end GPU smoke (1 step, 2 dp, 3×H100)
-│   │   ├── 006_run_gepa_gaia.job         #   Full GAIA optimisation run (~24h, 3×H100)
-│   │   └── 007_run_gepa_math.job         #   Full MATH optimisation run (~24h, 3×H100)
-│   ├── environment_train.yml              # cosmas-train conda env (VERL + vLLM 0.9.2)
-│   └── environment.yml                    # agent_engine conda env (inference, vLLM 0.12.0)
-│
-├── data/training/             # Created by job 008
-│   ├── train/combined_train.parquet           (1800 rows, shuffled)
-│   ├── val/val_search.parquet                 (100 held-out Search-R1)
-│   │   val/val_deepmath.parquet               (100 held-out DeepMath, difficulty ≥ 5)
-│   │   val/val_combined.parquet               (200 merged - offline analysis)
-│   └── test/test_search.parquet               (100 held-out Search-R1)
-│        test/test_deepmath.parquet             (100 held-out DeepMath)
-│        test/test_combined.parquet             (200 merged - final reporting only)
-│
-├── examples/                  # Small runnable single-tool examples
-├── pyproject.toml
-├── requirements.txt
-└── environment.yml            # Conda env for inference/evaluation (agent_engine)
-```
-
-**Common navigation:**
-
-| Goal | Where to look |
+| I want to… | Read |
 |---|---|
-| Run or configure an experiment | `scripts/run_experiment.py` + `experiments/configs/` |
-| Change config schema / defaults | `src/agent_engine/config/schema.py` |
-| Model providers, batching, GPU reuse | `src/agent_engine/models/` |
-| Tool implementations | `src/agent_engine/tools/` |
-| Dataset loaders + metrics | `src/agent_engine/datasets/` |
-| SLURM job scripts | `jobs/` |
-| Single-tool sanity checks | `examples/` |
-| Failure-mode & rollout analysis | `scripts/failure_modes/` |
-| All-wrong / all-correct (all-good) rollout groups | [`scripts/failure_modes/fine_tuning/all_wrong.py`](#all-wrong--all-correct-all-good-group-analysis) |
-| Fine-tuning the orchestrator | `src/fine_tuning/README.md` |
-| Fine-tuning ↔ failure mode analysis | `docs/failure_modes_fine_tuning_alignment.md` |
-| GEPA prompt optimisation | `scripts/run_gepa.py` + `experiments/configs/gepa/` + `src/gepa_integration/` |
-| GEPA inference (using optimised prompts) | `experiments/configs/qwen3/gepa_inference/` + `jobs/generated/GEPA_eval_*.job` |
-| GEPA design spec | `docs/superpowers/specs/2026-05-15-gepa-integration-design.md` |
+| Understand how it works | [docs/architecture.md](docs/architecture.md) |
+| Know what a config key does | [docs/configuration.md](docs/configuration.md) |
+| Run an evaluation | [docs/pipelines/evaluation.md](docs/pipelines/evaluation.md) |
+| Optimise prompts (GEPA) | [docs/pipelines/gepa.md](docs/pipelines/gepa.md) |
+| Fine-tune (SFT / RL / Prefix-RFT) | [docs/pipelines/sft.md](docs/pipelines/sft.md), [docs/pipelines/rl.md](docs/pipelines/rl.md), [docs/pipelines/prefix-rft.md](docs/pipelines/prefix-rft.md) |
+| Add a benchmark | [docs/guides/add-a-benchmark.md](docs/guides/add-a-benchmark.md) |
+| Add a tool or sub-agent | [docs/guides/add-a-tool-or-subagent.md](docs/guides/add-a-tool-or-subagent.md) |
+| Add a model family | [docs/guides/add-a-model-family.md](docs/guides/add-a-model-family.md) |
+| Add an adaptation method | [docs/guides/add-an-adaptation-method.md](docs/guides/add-an-adaptation-method.md) |
+| Change the RL / GEPA training data | [docs/guides/change-training-data.md](docs/guides/change-training-data.md) |
+| Contribute code | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Know what is broken | [docs/known-issues.md](docs/known-issues.md) |
+
+`docs/archive/` holds superseded planning and status documents, each with a
+HISTORICAL banner. They record reasoning worth keeping; their paths and numbers
+are stale by definition.
 
 ---
 
-## Installation
+## Install
+
+**Cluster (conda + vLLM)** - one job builds the environment:
 
 ```bash
-cd msc-thesis
-pip install -e .
+sbatch jobs/001_setup.job     # creates the `agent_engine` conda env, installs the project
+squeue -u $USER
+# log: out/setup/msc_thesis_env_setup_<job_id>.log
 ```
 
-Optional dev extras:
+**Laptop (Apple Silicon, MLX):**
 
 ```bash
-pip install -e ".[dev]"
-```
-
-For HPC/Conda, follow the [cluster setup](#hpc--cluster-setup) section below.
-
----
-
-## HPC / Cluster setup
-
-Run these four steps once on Snellius (SURF) before launching any experiment. <br>
-All commands assume `$HOME/azywot/msc-thesis/` as the working directory.
-
-### 1. Build the conda environment
-
-```bash
-sbatch jobs/001_setup.job
-squeue -u $USER    # monitor progress
-```
-
-Creates the `agent_engine` conda environment and installs the project.  
-Log: `out/setup/msc_thesis_env_setup_<job_id>.log`
-
-### 2. Set API keys
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-Web search (one required based on `web_tool_provider` in config, default is Serper):
-
-```bash
-SERPER_API_KEY=your_serper_key_here  # For web_tool_provider: "serper"
-TAVILY_API_KEY=your_tavily_key_here  # For web_tool_provider: "tavily"
-```
-
-Optional:
-
-```bash
-OPENAI_API_KEY=...
-ANTHROPIC_API_KEY=...
-WANDB_API_KEY=...
-```
-
-### 3. Download datasets
-
-```bash
-sbatch jobs/002_download_datasets.job
-```
-
-Downloads all benchmark datasets to `/scratch-shared/$USER/data/`.  
-Log: `out/datasets/download_datasets_<job_id>.log`
-
-### 4. Verify the setup
-
-```bash
-sbatch jobs/003_run_examples.job
-```
-
-Runs a short single-example test using `experiments/configs/datasets/gaia/test_subagent.yaml`.  
-Log: `out/test/example_subagent_<job_id>.log`
-
-### Job files reference
-
-| File | Purpose | Log |
-|------|---------|-----|
-| `jobs/001_setup.job` | Create conda env + install project | `out/setup/msc_thesis_env_setup_<job_id>.log` |
-| `jobs/002_download_datasets.job` | Download benchmark datasets | `out/datasets/download_datasets_<job_id>.log` |
-| `jobs/003_run_examples.job` | Smoke-test a single example | `out/test/example_subagent_<job_id>.log` |
-| `jobs/004_export_env.job` | Export conda env YAMLs | `out/export_env/export_env_<job_id>.log` |
-| `jobs/005_export_prompts.job` | Export prompt templates + tool schemas | `out/export_prompts/export_prompts_<job_id>.log` |
-| `jobs/006_create_configs.job` | Regenerate all experiment configs | `out/create_configs/create_configs_<job_id>.log` |
-| `jobs/008_prepare_fine_tuning_data.job` | Download + write training parquet files | `out/fine_tuning/prepare_data_<job_id>.log` |
-| `jobs/009_test_small_ft_example.job` | Pre-flight checks + 1-epoch smoke test | `out/fine_tuning/smoke_<job_id>.log` |
-| `jobs/010_ft_orchestrator.job` | Full orchestrator training run (24h) | `out/fine_tuning/ft_<job_id>.log` |
-| `jobs/gepa/000_prep_gepa_data.job` | Prepare GEPA optimisation data (Search-R1 + DeepMath) for GAIA and MATH presets | `out/gepa/prep_gepa_data_<job_id>.log` |
-| `jobs/gepa/001_install_gepa_deps.job` | Install `gepa==0.0.22` into conda env | `out/gepa/install_gepa_deps_<job_id>.log` |
-| `jobs/gepa/002_smoke_gepa.job` | CPU smoke test (imports, splits, evaluator) | `out/gepa/smoke_gepa_<job_id>.log` |
-| `jobs/gepa/003_smoke_gepa_gpu.job` | GPU smoke test (1 step, 2 dp, 3×H100) | `out/gepa/smoke_gepa_gpu_<job_id>.log` |
-| `jobs/gepa/006_run_gepa_gaia.job` | Full GEPA optimisation - GAIA only (~24h, 3×H100) | `out/gepa/gepa_gaia_<job_id>.log` |
-| `jobs/gepa/007_run_gepa_math.job` | Full GEPA optimisation - MATH only (~24h, 3×H100) | `out/gepa/gepa_math_<job_id>.log` |
-
-Optional overrides (via `sbatch --export=ALL,...`): `ENV_NAME`, `PROJECT_DIR`, `DATA_DIR`.
-
----
-
-## Running experiments
-
-### Locally (Apple Silicon - MLX)
-
-Run small quantised models on a MacBook using the MLX backend. No GPU/CUDA required.
-
-#### 1. Install MLX dependencies
-
-```bash
-uv venv
-source .venv/bin/activate
+uv venv && source .venv/bin/activate
 uv pip install -e '.[mlx]'
 ```
 
-#### 2. Set API keys in `.env`
+**Plain:**
+
+```bash
+pip install -e .          # core
+pip install -e '.[vllm]'  # GPU backend
+pip install -e '.[dev]'   # tests, black, isort
+```
+
+Then set API keys:
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in at minimum:
-SERPER_API_KEY=...   # or TAVILY_API_KEY if using tavily
-WANDB_API_KEY=...    # optional, if use_wandb: true
-HF_TOKEN=...         # required for gated datasets (GAIA, GPQA, HLE)
 ```
 
-#### 3. Download datasets
+`SERPER_API_KEY` **or** `TAVILY_API_KEY` is required (whichever matches
+`web_tool_provider`; Serper is the default). `HF_TOKEN` is needed for gated
+datasets. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `WANDB_API_KEY` are optional.
+
+Datasets:
 
 ```bash
-HF_HUB_DISABLE_XET_TRANSFER=1 python scripts/download_datasets.py \
-    --dataset gaia --level all --split validation --output-dir ./data
+sbatch jobs/002_download_datasets.job          # all of them, on the cluster
+python scripts/download_datasets.py --dataset gaia     # or one at a time
 ```
 
-#### 4. Run
+---
+
+## Run one experiment
 
 ```bash
-# Qwen3-0.6B (fastest, least RAM)
-python scripts/run_experiment.py --config experiments/configs/local/qwen3_0.6b_gaia.yaml
+python scripts/run_experiment.py --config experiments/configs/qwen3/agentflow/gaia/qwen8B_subagent_tools_all.yaml
+```
 
-# Qwen3-4B (better quality)
+`--config` is required. Override the output location rather than overwriting a
+previous run:
+
+```bash
+python scripts/run_experiment.py --config <config>.yaml --output-dir ./experiments/results/my_run
+```
+
+On a laptop, the `local/` configs use small models and need no cluster:
+
+```bash
 python scripts/run_experiment.py --config experiments/configs/local/qwen3_4b_gaia.yaml
 ```
 
-Pre-built local configs are in `experiments/configs/local/`. Key differences from cluster configs:
+A whole suite:
 
-| Option | Local (MLX) | Cluster (vLLM) |
-|---|---|---|
-| `backend` | `mlx` | `vllm` (default) |
-| `batch_size` | `1`–`5` (RAM-limited) | `-1` (all at once) |
-| SLURM fields | ignored | used by job scripts |
+```bash
+./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/baseline
+./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/baseline --local
+```
 
-> **Batching:** set `batch_size: N` (e.g. `3`) to process N questions in parallel on Apple Silicon's integrated GPU. Higher values use more RAM - start small and increase as needed.
+Each run writes a timestamped directory containing `raw_results.json`,
+`metrics.json`, `config.json` and `experiment.log`. A surviving
+`raw_results.partial.json` means the run **did not finish**.
+
+```bash
+python scripts/analyze_results.py experiments/results/<run>/raw_results.json --by-level --tools
+```
+
+See [docs/pipelines/evaluation.md](docs/pipelines/evaluation.md) for what the
+numbers mean and how to read a bad one.
 
 ---
 
-### Locally (GPU - vLLM)
-
-```bash
-# Set required key (Serper or Tavily, depending on config)
-export SERPER_API_KEY="..."  # If using web_tool_provider: "serper"
-# OR
-export TAVILY_API_KEY="..."  # If using web_tool_provider: "tavily"
-
-# Run with a config file
-python scripts/run_experiment.py --config experiments/configs/datasets/gaia/baseline.yaml
-
-# Override output directory
-python scripts/run_experiment.py --config experiments/configs/datasets/gaia/baseline.yaml \
-    --output-dir ./experiments/results/my_run
-```
-
-### On SLURM
-
-```bash
-# Single config - generates a job file and submits it
-./jobs/submit_job.sh experiment experiments/configs/datasets/gaia/baseline.yaml
-
-# Or manually:
-python jobs/scripts/generate_job.py experiments/configs/datasets/gaia/baseline.yaml
-sbatch jobs/generated/gaia_qwen3_baseline.job
-```
-
-### Batch runs with `run_all_in_folder.sh`
-
-Run all YAML configs found recursively under any folder - submits each as a separate SLURM job by default, or runs them sequentially with `--local`.
-
-```bash
-# Run example
-
-# Run an entire suite
-./experiments/scripts/run_all_in_folder.sh experiments/configs/baseline
-./experiments/scripts/run_all_in_folder.sh experiments/configs/1_milestone_no_img_no_mindmap_AgentFlow
-
-# Run a single dataset within a suite
-./experiments/scripts/run_all_in_folder.sh experiments/configs/baseline/gaia
-
-# Run locally (sequential, no SLURM)
-./experiments/scripts/run_all_in_folder.sh experiments/configs/baseline/gaia --local
-```
-
-The script walks the folder recursively, so it works at any depth and picks up all `.yaml`/`.yml` files.
-
-
-### Available experiment configs
-
-Configs are organised into **suites** - self-contained families of experiments sharing the same naming scheme, output root, and model/dataset selection.
+## Repo map
 
 ```
-experiments/configs/
-├── generate_configs.py                         # Unified config generator
-├── datasets/                                   # Hand-crafted per-dataset configs
-│   ├── gaia/   gpqa/   hle/   aime/   musique/ # test_direct, test_subagent, etc.
-├── baseline/                                   # Baseline suite (vanilla LLM + tools)
-│   ├── gaia/   hle/   gpqa/   aime/   musique/ # 4 configs × 5 datasets = 20 files
-│   └── run_all.sh
-├── 1_milestone_no_img_no_mindmap_AgentFlow/    # AgentFlow suite (full system)
-│   ├── gaia/   hle/   gpqa/   aime/   musique/ # 12 configs × 5 datasets = 60 files
-│   └── run_all.sh
-├── local/                                      # MacBook/MLX configs
-└── template.yml                                # Annotated template
+src/
+  agent_engine/        the framework
+    config/            YAML schema + loader
+    core/              orchestrator, execution state, tool base, batching
+    models/            model families + vLLM / MLX / API providers
+    tools/             web_search, code_generator, mind_map, text/image inspector, registry
+    datasets/          loaders, DatasetSpec table, evaluators
+    prompts/           templates/ + builder
+    runner/            experiment loop, providers, tool wiring, metrics
+    external/          serper, tavily, url_fetcher
+    caching/           search + URL cache
+    analysis/          failure-mode classifier and analyses over recorded runs
+    utils/             tool-call parsing, logging, seeding
+  fine_tuning/         RL (GRPO) + SFT; agentflow/ is vendored - see its VENDORED.md
+  gepa_integration/    prompt optimisation
+  verl_ext/            local verl extensions (folded SFT dataset, checkpoint utils)
+
+scripts/               run_experiment, analyze_results, generate_configs,
+                       download_datasets, export_prompts, GEPA + SFT + RL tooling,
+                       plots/, tables/, failure_modes/ (CLI shims)
+experiments/
+  configs/             YAML configs by model family; most are generated
+  scripts/             run_all_in_folder.sh
+  results/             default output root
+jobs/                  SLURM scripts - 001-007 setup, fine_tuning/, gepa/, grpo_inference/
+tests/                 unit/ + characterization/ (behaviour-locking fixtures)
+examples/              one runnable script per tool
+docs/                  see the table above
 ```
-
-#### Generating configs
-
-```bash
-# Regenerate all suites (baseline + agentflow)
-python scripts/generate_configs.py
-
-# Regenerate a single suite
-python scripts/generate_configs.py --suite baseline
-python scripts/generate_configs.py --suite agentflow
-```
-
-Or via SLURM:
-
-```bash
-sbatch jobs/006_create_configs.job
-```
-
-#### Adding or customising a suite
-
-All suite parameters live in the `SUITES` dict at the top of `generate_configs.py`:
-
-```python
-SUITES = {
-    "my_suite": {
-        "description_tag": "[My Suite]",
-        "name_prefix":     "my_prefix",
-        "output_dir_root": "./experiments/results/my_suite",
-        "config_subdir":   "my_suite",       # → experiments/configs/my_suite/
-        "baseline":        False,            # true = skip planning turn
-        "variants":        VARIANTS_32B,     # or VARIANTS_ALL
-        "num_gpus":        2,
-        "wandb_project":   "my-wandb-project",
-        "split_overrides": {},               # per-dataset split overrides
-    },
-}
-```
-
-Re-run the generator after any change to rebuild all YAML files.
 
 ---
 
-## Examples
+## Concepts worth knowing before changing anything
 
-The `examples/` directory contains one script per tool. Each script runs a single
-question chosen to force the model to call the tool under test. They are the
-recommended sanity check before launching a full experiment.
+**Everything is batched.** The unit of execution is a batch of questions, not a
+question. Each turn is one `generate()` call across every unfinished question.
+`batch_size: 1` turns this off, which is the setting for debugging.
 
-Run from the `msc-thesis/` root:
+**AgentFlow never shows the model its own past output.** The prompt is rebuilt
+each turn from a query analysis plus an action history. Baseline grows a
+conversation. They use *different prompt template files* - `*_dataset*.yaml` vs
+`*_baseline*.yaml` - so changing one does not change the other.
+
+**Most configs are generated.** Editing a generated YAML works until someone
+runs `python scripts/generate_configs.py`, which silently reverts it. Change the
+generator.
+
+**A typo'd config key is silently ignored.** The schema does not forbid extra
+keys, so a misspelling means the default is used and nothing warns you.
+
+**The tool and dataset seams are registries, not if/elif chains.** Adding either
+means adding a decorated factory or a spec row - never editing the orchestrator.
+
+---
+
+## Tests
 
 ```bash
-python examples/example_web_search.py        # web_search
-python examples/example_code_generator.py    # code_generator
-python examples/example_text_inspector.py    # text_inspector (reads fixtures/sample_document.txt)
-python examples/example_image_inspector.py   # image_inspector (generates test PNG automatically)
-python examples/example_mind_map.py   # web_search + mind_map (GraphRAG)
+pytest -q                      # from the repo root
+pytest tests/unit -q
+pytest tests/characterization -q
 ```
 
-Prerequisites:
+`tests/characterization/` locks current behaviour against committed fixtures. If
+one fails, a refactor changed behaviour - investigate before regenerating the
+fixture. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-```bash
-export SERPER_API_KEY="<your-key>"  # Or TAVILY_API_KEY, depending on config
-export HF_HOME="/path/to/hf_cache"   # must contain Qwen/Qwen3-4B
-```
+---
 
-Each script writes its output to `experiments/results/examples/<tool_name>/`:
-- `result.json` - question, answer, turns used, tool call counts
-- `trace.json` - full message + tool call history for debugging
-- `example.log` - human-readable execution log
+## Cluster notes (Snellius / SURF)
 
-| Script | Tool tested |
+Working directory is `$HOME/azywot/msc-thesis/`.
+
+| Job | Purpose |
 |---|---|
-| `example_web_search.py` | `web_search` |
-| `example_code_generator.py` | `code_generator` |
-| `example_text_inspector.py` | `text_inspector` |
-| `example_image_inspector.py` | `image_inspector` |
-| `example_mind_map.py` | `web_search` + `mind_map` |
-
----
-
-## Configuration reference
-
-Experiments are defined in YAML. A minimal example:
-
-```yaml
-name: "gaia_qwen3_baseline"
-description: "GAIA validation - direct tool mode"
-
-models:
-  orchestrator:
-    family: "qwen3"
-    path_or_id: "Qwen/Qwen3-32B"
-    role: "orchestrator"
-    tensor_parallel_size: 2
-    gpu_ids: [0, 1]
-
-tools:
-  enabled_tools: ["web_search", "code_generator"]
-  direct_tool_call: true
-
-dataset:
-  name: "gaia"
-  split: "all_validation"
-
-max_turns: 15
-thinking_mode: "ORCHESTRATOR_ONLY"
-output_dir: "./experiments/results/gaia_baseline"
-cache_dir: "./cache"
-```
-
-See `experiments/configs/template.yml` for a fully annotated version. Schema and defaults live in:
-- `src/agent_engine/config/schema.py` - experiment / tools / dataset fields
-- `src/agent_engine/models/base.py` - model generation defaults
-
-### Key options
-
-| Option | Values | Description |
-|---|---|---|
-| `tools.direct_tool_call` | `true` / `false` | Direct mode returns raw tool output to the planner; sub-agent mode uses a second LLM to analyse it first |
-| `thinking_mode` | `NO` / `ORCHESTRATOR_ONLY` / `SUBAGENTS_ONLY` / `ALL` | Controls which roles emit extended reasoning (requires a thinking-capable model) |
-| `batch_size` (config) | integer | Questions per batch (-1 = all; 1 = no batching) |
-| `baseline` | `true` / `false` | When `true`, skips the planning turn and uses a growing conversation instead of structured AgentFlow memory. Used for the vanilla LLM-with-tools comparison. Defaults to `false`. |
-
-If multiple roles share the same `path_or_id`, the runner reuses the loaded vLLM instance and serialises access with per-model locks - no duplicate GPU memory.
-
-### Supported model families
-
-Set `models.orchestrator.family` to one of the values below (same applies to sub-agent models). Sampling defaults, thinking behaviour, and tool-call format are derived from the family - see `src/agent_engine/models/base.py`.
-
-| `family` | Examples | Thinking | Tool-call format | Notes |
-|---|---|---|---|---|
-| `qwen3` | `Qwen/Qwen3-{0.6B,4B,8B,14B,32B}` | toggleable (`enable_thinking` kwarg) | `<tool_call>JSON</tool_call>` | Default reference family |
-| `qwq` | `Qwen/QwQ-32B` | always | `<tool_call>JSON</tool_call>` | |
-| `deepseek` | `deepseek-ai/DeepSeek-R1-Distill-Qwen-{7B,32B}` | always (forced `<think>` prefix) | `{"tool_call": {...}}` (JSON_SINGLE) | No system-role in chat template - system prompt is merged into the first user turn. Stop token is `<tool_response>` to prevent hallucinated tool results. Force-tool-call prefix is applied in AgentFlow mode only. |
-| `olmo-think` / `olmo-instruct` | `allenai/Olmo-3-{7B,32B}-{Instruct,Think}` | think: always | `<function_calls>\ntool(arg=val)\n</function_calls>` (pythonic, newline-delimited for parallel calls; accepts both `True/False/None` and `true/false/null`) | Sampling defaults lock to the HF card: `T=0.6, top_p=0.95, max_tokens=32768, top_k=-1, repetition_penalty=1.0`. Two Think-template quirks handled in `vllm_provider._render_messages`: `role: tool` is rewritten to `role: environment` (template has no `tool` branch and would silently drop it), and `functions=""` is injected on the system message to suppress the hard-coded `"You do not currently have access to any functions."` suffix (our system prompt already documents every tool). Instruct aliases `tool`→`environment` natively. |
-| `qwen2.5`, `llama3`, `mistral` | generic HF models | off | `<tool_call>JSON</tool_call>` | |
-| `gpt4`, `claude` | OpenAI / Anthropic API | n/a | n/a | Served via API, no local GPU |
-
-For DeepSeek-R1-Distill, see `thorough_plan.md` for the full as-built integration record.
-
----
-
-## Baseline vs. AgentFlow
-
-The framework supports two execution modes that are compared in the experiments.
-
-### AgentFlow (default, `baseline: false`)
-
-The full system, inspired by the original [AgentFlow](https://github.com/lupantech/AgentFlow) architecture.
-
-**Turn 0 - Planning:** Before any tool use, the model receives the question and is asked to analyse it: identify objectives, list relevant tools, and sketch an approach. The output is stored as `query_analysis`.
-
-**Turns 1–N - Structured memory loop:** Each subsequent turn reconstructs a fresh `[system, user]` prompt from structured state rather than appending to a growing conversation:
-
-```
-<original question>
-
-**Query Analysis:**
-<planning turn output>
-
-**Previous Steps:**
-Action Step 1:
-  - Tool: web_search
-  - Sub-goal: <explicit intermediate goal the model stated>
-  - Command: <tool call JSON>
-  - Result: <tool output>
-...
-```
-
-The model is instructed to emit a `<sub_goal>` tag before every `<tool_call>`, making each intermediate intent explicit and trackable.
-
-**System prompt:** loaded from `*_dataset*.yaml` templates (e.g. `gaia.yaml`, `gpqa.yaml`), which include `reasoning` and `sub_goal` scaffolding in the few-shot examples.
-
----
-
-### Baseline (`baseline: true`)
-
-A vanilla LLM-with-tools agent - the same model and tools, but without structured memory or planning.
-
-**No planning turn:** `query_analysis` is never generated.
-
-**Growing conversation:** The raw `state.messages` list grows each turn exactly as in a standard chat API interaction - assistant message appended, then tool response appended. The model sees the full message history, not a reconstructed structured prompt.
-
-**No sub-goal bookkeeping:** `action_history` is not populated; the "Plan so far" and "Previous Steps" sections never appear.
-
-**System prompt:** loaded from `*_baseline*.yaml` templates (e.g. `gaia_baseline.yaml`), which omit the `reasoning` and `sub_goal` lines from few-shot examples while keeping the same answer-format instructions and tool usage examples.
-
----
-
-### What the comparison isolates
-
-| Component | Baseline | Our framework |
-|---|---|---|
-| Persona framing | "reasoning assistant" (same) | "reasoning assistant" (same) |
-| Planning turn (query analysis) | ✗ | ✓ |
-| Memory construction per turn | growing raw conversation | reconstructed structured memory |
-| Explicit sub-goal chain | ✗ | ✓ |
-| Few-shot reasoning scaffolding | tool call + result only | reasoning + sub_goal + tool call + result |
-| Extra LLM call per question | 0 | 1 (planning turn) |
-
-Both conditions use the same model weights, tools, answer format (`\boxed{}`), and `max_turns` budget. The only variables are the structural components listed above - they are the system being evaluated, not confounders.
-
----
-
-## Tools
-
-Enabled via `tools.enabled_tools` in the config:
-
-| Tool | Description |
-|---|---|
-| `web_search` | Serper (default) or Tavily API search; provider set via `web_tool_provider` config. **Serper**: fetches and caches full page content. **Tavily**: uses pre-cleaned, structured content directly (no URL fetching). Optional LLM-based result analysis in sub-agent mode. |
-| `code_generator` | Execute Python in a subprocess; LLM generates the code in sub-agent mode |
-| `mind_map` | Persistent per-question memory with optional GraphRAG indexing |
-| `text_inspector` | Read and optionally analyse text files (PDF, DOCX, XLSX, CSV, …) |
-| `image_inspector` | Vision-language analysis of images; requires a VLM in the config |
-
-### Web Search Providers
-
-The `web_search` tool supports two providers via `web_tool_provider` config:
-
-- **Serper** (default): Traditional search API that returns URLs. The tool fetches and caches full page content.
-  - Cache structure: `./cache/serper/<dataset_name>/search_cache.json` and `./cache/serper/<dataset_name>/url_cache.json`
-
-- **Tavily**: AI-native search engine designed for LLMs. Returns pre-cleaned, structured content with no URL fetching needed.
-  - Cache structure: `./cache/tavily/<dataset_name>/search_cache.json` (no URL cache needed)
-  - Faster and more efficient for AI agents, though cannot be used for comparison between direct tool calling vs. agentic setup due to proprietary LLM-based results formatting.
-
----
-
-## Datasets
-
-**Benchmarks used in experiments:**
-
-| Name | Key | Split used | Type |
-|---|---|---|---|
-| GAIA | `gaia` | `all_validation` | General QA (multi-step, tool-requiring) |
-| HLE (Humanity's Last Exam) | `hle` | `test_subset_200` | Expert-level single QA |
-| GPQA | `gpqa` | `diamond` | Graduate-level multiple-choice science |
-| AIME | `aime` | `train` | Competition mathematics |
-| MuSiQue | `musique` | `validation_subset_200` | Multi-hop reasoning |
-
-<!-- **Additional datasets - loaders available, not yet in experiment configs:**
-
-| Name | Key |
-|---|---|
-| MATH500 | `math500` |
-| AMC | `amc` |
-| Natural Questions | `nq` |
-| TriviaQA | `triviaqa` |
-| HotpotQA | `hotpotqa` |
-| Bamboogle | `bamboogle` |
-| 2WikiMultiHopQA | `2wiki` | -->
-
-**Download datasets before running:**
-
-```bash
-python scripts/download_datasets.py --dataset gaia --split validation
-```
-
-**Prompt templates:** GAIA, HLE, and MuSiQue share the `gaia.yaml` system prompt template; GPQA uses `gpqa.yaml`; AIME uses `math.yaml`. In baseline mode the corresponding `*_baseline.yaml` templates are loaded instead. The mapping lives in `src/agent_engine/prompts/builder.py` (`PromptBuilder.build_system_prompt`).
-
----
-
-## GEPA prompt optimisation (system adaptation)
-
-GEPA evolves the orchestrator's system prompt and planning-turn suffix using execution traces from the agent. It uses no weight updates - only prompt rewrites proposed by a Qwen3-32B reflector reading full `<think>` traces, action histories, and failure labels.
-
-**Setup:** Qwen3-8B agent + sub-agents (same model, shared vLLM instance), `ORCHESTRATOR_ONLY` thinking, sub-agent mode (`direct_tool_call: false`) - identical to the milestone-1 AgentFlow configuration.
-
-**Two optimised components per benchmark:**
-- `system_prompt` - full system prompt (preamble + few-shot example + final instructions; tool schemas inside `<tools>…</tools>` are protected and never modified)
-- `planning_suffix` - the instruction block appended to the user query on Turn 0 (planning turn)
-
-**Training data** is sourced from open, non-overlapping datasets - keeping the held-out test sets fully clean:
-- **GAIA preset** - 75 % Search-R1 (85/15 HotpotQA/NQ) + 25 % DeepMath (no difficulty filter). 300 examples total: 150 D_feedback / 50 D_pareto / 100 test.
-- **MATH preset** - 75 % DeepMath (difficulty ≥ 5) + 25 % Search-R1. Same split sizes.
-
-Generated by `src/gepa_integration/data/prepare.py`. Multi-answer Search-R1 examples include `answer_aliases` so all valid answer strings score correctly.
-
-**Evaluation** is on 100 held-out test examples per benchmark that are never seen during optimisation.
-
-See `src/gepa_integration/README.md` for full module documentation including how to apply optimised prompts to inference runs.
-
-### Quick start
-
-```bash
-# 1. Download Search-R1 + DeepMath and build GEPA data files
-sbatch jobs/gepa/000_prep_gepa_data.job
-
-# 2. Install gepa package into the conda env
-sbatch jobs/gepa/001_install_gepa_deps.job
-
-# 3. CPU smoke test (imports, splits integrity, evaluator)
-sbatch jobs/gepa/002_smoke_gepa.job
-
-# 4. GPU smoke test - 1 GEPA step on 2 real examples (3×H100, ~1h)
-sbatch jobs/gepa/003_smoke_gepa_gpu.job
-
-# 5. Full optimisation runs - submit independently (each ~24h, 3×H100)
-sbatch jobs/gepa/006_run_gepa_gaia.job
-sbatch jobs/gepa/007_run_gepa_math.job
-
-# Or step-by-step locally (requires Qwen3-32B reflector already running on port 8001):
-python scripts/run_gepa.py --mode optimize  --config experiments/configs/gepa/gaia.yaml
-python scripts/run_gepa.py --mode evaluate  --config experiments/configs/gepa/gaia.yaml
-python scripts/run_gepa.py --mode diff      --config experiments/configs/gepa/gaia.yaml
-```
-
-### Outputs (per benchmark, under `experiments/results/gepa/<benchmark>/<TIMESTAMP>_<JOB_ID>/`)
-
-| File | Contents |
-|---|---|
-| `best_candidate.json` | Optimised `{"system_prompt": ..., "planning_suffix": ...}` |
-| `seed_candidate.json` | Seed candidate used at optimisation start (for diff) |
-| `gepa_results.json` | Held-out test evaluation in `raw_results.json` format |
-| `gepa_state.bin` | Full GEPA optimisation state (pickled); written after each step. Auto-resumes if `run_dir` already contains it. |
-| `generated_best_outputs_valset/` | Per-task best rollout outputs on the validation set (written when `track_best_outputs=true`) |
-| `optimize.stderr` / `evaluate.stderr` | Per-step stderr logs (vLLM tqdm/INFO); replayed to stderr on failure |
-
-### Running inference with optimised prompts
-
-After GEPA optimisation completes, `best_candidate.json` holds two components: `system_prompt` and `planning_suffix`. These can be injected into a standard inference run via the `gepa_prompt_path` config key - no code changes required.
-
-```yaml
-# Add to any experiment YAML to use GEPA-optimised prompts:
-gepa_prompt_path: "experiments/results/gepa/gaia/2026-05-26-21-06-40_23128167/best_candidate.json"
-```
-
-When set, `run_experiment.py` loads the JSON and uses `system_prompt` verbatim (bypassing `PromptBuilder`) and passes `planning_suffix` to `AgenticOrchestrator`. The tool schemas embedded in the GEPA system prompt are used as-is.
-
-**Pre-built inference configs** (`experiments/configs/qwen3/gepa_inference/`) run the GAIA-optimised prompt on GAIA, MuSiQue, and HLE - both with and without orchestrator thinking - using an 8B orchestrator and 1.7B subagents:
-
-| Config | Dataset | Thinking | Job |
-|---|---|---|---|
-| `gaia/qwen8B_sub1_7b_orchestrator.yaml` | GAIA all_validation | ORCHESTRATOR_ONLY | `GEPA_eval_gaia_qwen8B_sub1_7b_orchestrator.job` |
-| `gaia/qwen8B_sub1_7b_none.yaml` | GAIA all_validation | NO | `GEPA_eval_gaia_qwen8B_sub1_7b_none.job` |
-| `musique/qwen8B_sub1_7b_orchestrator.yaml` | MuSiQue val_200 | ORCHESTRATOR_ONLY | `GEPA_eval_musique_qwen8B_sub1_7b_orchestrator.job` |
-| `musique/qwen8B_sub1_7b_none.yaml` | MuSiQue val_200 | NO | `GEPA_eval_musique_qwen8B_sub1_7b_none.job` |
-| `hle/qwen8B_sub1_7b_orchestrator.yaml` | HLE test_200 | ORCHESTRATOR_ONLY | `GEPA_eval_hle_qwen8B_sub1_7b_orchestrator.job` |
-| `hle/qwen8B_sub1_7b_none.yaml` | HLE test_200 | NO | `GEPA_eval_hle_qwen8B_sub1_7b_none.job` |
-
-Submit all six:
-
-```bash
-for f in jobs/generated/GEPA_eval_*.job; do sbatch "$f"; done
-```
-
-Results land under `experiments/results/gepa_inference/<dataset>/<variant>/` and are logged to the `benchmarks` W&B project.
-
-### Design
-
-See `docs/superpowers/specs/2026-05-15-gepa-integration-design.md` for the full design spec covering: candidate schema, data strategy, failure-stratified splits, reflective dataset construction, GEPA hyperparameters, and the thesis narrative.
-
----
-
-## Orchestrator SFT (weight adaptation)
-
-Supervised fine-tuning of the Qwen3-8B orchestrator with a rank-64 LoRA, on trajectories collected from a stronger teacher. Unlike GEPA, this updates weights; unlike the GRPO run, it needs no rollouts - training is static cross-entropy, so **no tools execute, no sub-agent server runs, and no `SERPER_API_KEY`/`TAVILY_API_KEY` is needed** (only `WANDB_API_KEY`, for logging).
-
-**Full status, evidence and handover: [`docs/sft_status.md`](docs/sft_status.md).** Read it before changing anything here.
-
-### The format rule (the thing to get right)
-
-The orchestrator never sees a growing conversation at inference. Every non-baseline turn rebuilds a fresh two-message prompt via `AgenticOrchestrator._build_memory_prompt`, with prior steps compressed into `Action Step N: Tool / Sub-goal / Command / Result` prose inside the user turn.
-
-Training on the stored multi-turn transcript therefore optimises a distribution the model is never evaluated on - loss falls while task performance drops, and val loss cannot detect it because the val split shares the defect. So SFT rows are **memory-folded**: one row per orchestrator decision, each reproducing exactly the prompt inference would have built at that step.
-
-| | Trajectories | Rows | Supervised tokens |
-|---|---|---|---|
-| Train | 968 | 2995 | 589,805 |
-| Val | 108 | 362 | 66,556 |
-
-A folded row (consistent with inference) is one decision, a multi-turn row was a whole trajectory, so the row count is just the assistant-turn count. The supervision is byte-for-byte identical to the multi-turn format; only the conditioning changes.
-
-Two components enforce this:
-
-- `scripts/build_sft_parquet.py --format folded` builds the rows, importing the orchestrator's own `_format_action_history` / `_extract_sub_goal` helpers so the folded prompt cannot drift from the real one.
-- `src/verl_ext/folded_sft_dataset.py` (`FoldedSFTDataset`, wired in via VERL's `data.custom_cls`) renders the prompt with `add_generation_prompt=True` so it matches inference token-for-token *including* Qwen3's empty `<think>\n\n</think>` block, and supervises only `target + <|im_end|>`.
-
-`scripts/check_sft_folded_format.py` is a pre-flight gate asserting prompt identity, span purity, no thinking, no tool output in the loss, and no truncation, on every row. The training job runs it and refuses to start if it fails.
-
-### Quick start
-
-```bash
-# 1. Collect teacher trajectories (only needed once; produces collected_*.jsonl,
-#    NOT sft_train.parquet)
-sbatch jobs/fine_tuning/006_collect_sft_data.job
-
-# 2. Build the multi-turn sft_train.parquet / sft_val.parquet from that jsonl.
-#    --reference-parquet must be passed explicitly: the script's own default points at
-#    an unreadable /projects/0/gusr0608 path.
-python scripts/build_sft_parquet.py data/training/sft/collected_<ts>.jsonl \
-    --output-dir data/training/sft \
-    --reference-parquet data/training/train/combined_train.parquet
-
-# 3. Fold those multi-turn parquets into the memory-folded rows — consistent with
-#    what inference actually builds — that training uses
-python scripts/build_sft_parquet.py \
-    --from-parquet data/training/sft/sft_train.parquet \
-    --output-dir data/training/sft --output-name sft_folded_train.parquet
-
-# 4. Verify everything on the CPU partition (tests, gate, gate trip-wire) - no GPU cost
-sbatch jobs/fine_tuning/007_run_tests_for_sft_folded.job
-
-# 5. Train — LoRA (~187 steps, 2xH100, ~40 min):
-sbatch jobs/fine_tuning/007_train_sft_folded.job
-#    or full parameter, every weight trained instead of a rank-64 adapter (4xH100):
-sbatch jobs/fine_tuning/007_train_sft_full.job
-
-# 6. Evaluate.
-#    LoRA: paste the run tag the job prints into SFT_ADAPTER_PLACEHOLDER
-#    in scripts/generate_configs.py, then regenerate and run
-python scripts/generate_configs.py --suite sft_inference
-./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/sft_inference
-#    Full parameter: point an inference config's path_or_id straight at the archived
-#    best_checkpoint/ directory the job prints (no lora_adapter_path, no merge step).
-```
-
-There is no manual post-training step for either: the job selects the best-val-loss and last checkpoints, extracts them (PEFT adapters for LoRA, complete HuggingFace model directories for full parameter), deletes the shards, and archives the result into `data/adapters/<experiment>/<run-tag>/` (LoRA) or `data/checkpoints/<experiment>/<run-tag>/` (full parameter).
-
-### Checkpoint handling
-
-`verl.trainer.sft_trainer` never writes a `lora_adapter/` directory (only the RL path does). It writes the full FSDP state dict: ~32 GB per checkpoint, of which ~350 MB is trained weight for a LoRA run (every byte, for a full-parameter one), and the shards are **sharded DTensors**, so rank 0 alone holds only its own slice of each tensor.
-
-- `scripts/sft_checkpoint_janitor.py` runs alongside training and collapses each checkpoint as soon as verl's atomic tracker file marks it complete, keeping the peak at ~32-64 GB instead of ~256 GB. `--mode lora` (default) or `--mode full` selects which.
-- `scripts/finalize_sft_run.py` selects best/last across whatever form each step is in and cleans up; same `--mode` flag.
-- `src/verl_ext/checkpoint_utils.py` holds the shared DTensor-gathering logic both of the above call.
-- **`scripts/merge_lora.py` must not be used on SFT checkpoints** (LoRA or full-parameter) — it expects the RL path's `actor/` layout and single consolidated shard, and exits with an error pointing at `finalize_sft_run.py --mode full` if it sees the SFT trainer's layout instead.
-
-### Job files
-
-| File | Purpose | Log |
-|------|---------|-----|
-| `jobs/fine_tuning/006_collect_sft_data.job` | Collect teacher trajectories | `out/fine_tuning/sft_collect/collect_<job_id>.log` |
-| `jobs/fine_tuning/007_run_tests_for_sft_folded.job` | CPU verification suite (tests + gate + trip-wire) | `out/fine_tuning/tests/sft_folded_tests_<job_id>.log` |
-| `jobs/fine_tuning/007_train_sft_folded.job` | Folded-format training run, LoRA rank 64 | `out/fine_tuning/sft_train/sft_folded_<job_id>.log` |
-| `jobs/fine_tuning/007_train_sft_full.job` | Same, full parameter (no LoRA) | `out/fine_tuning/sft_train/sft_full_<job_id>.log` |
-
-Eval configs live in `experiments/configs/qwen3/sft_inference/` (five benchmarks, `thinking_mode: NO`, orchestrator named `Qwen3-8B-SFT` so W&B keeps it distinct from the GRPO rows).
-
----
-
-## Outputs
-
-Each run creates a timestamped subdirectory under `output_dir/`
-(e.g. `all_validation_2026-02-22-22-25-02_<job_id>/`):
-
-| File | Contents |
-|---|---|
-| `raw_results.json` | Per-example results: question, prediction, ground truth, metrics, tool calls |
-| `raw_results.partial.json` | Rolling checkpoint written during the run; deleted on clean completion |
-| `metrics.json` | Aggregate accuracy, EM, F1 |
-| `config.json` | Serialised experiment config for reproducibility |
-| `experiment.log` | Full runner log |
-
-Analyse results:
-
-```bash
-python scripts/analyze_results.py experiments/results/<run_dir>/raw_results.json
-python scripts/analyze_results.py experiments/results/<run_dir>/raw_results.json --by-level
-python scripts/analyze_results.py experiments/results/<run_dir>/raw_results.json --tools
-```
-
-To log to W&B: set `use_wandb: true` + `wandb_project: <name>` in the YAML and provide `WANDB_API_KEY`.
-
----
-
-## Failure-mode & rollout analysis (`scripts/failure_modes/`)
-
-The analyses behind the thesis failure chapters. Every script prints a console
-report and writes a JSON file to `data/results/failure_modes/`; none of them
-mutate experiment results.
-
-```
-scripts/failure_modes/
-├── analyze_failure_modes.py   # Frozen classifier + failure-mode breakdowns
-├── eval_runs/                 # Analyses over eval runs (raw_results.json)
-│   ├── baseline_counterfactual.py   # MAS-vs-baseline overlap; no-action counterfactual
-│   └── retrieval_locus_split.py     # Retrieval failures: orchestrator vs sub-agent locus
-└── fine_tuning/               # Analyses of the RL/LoRA runs
-    ├── base_vs_lora.py        # Accuracy/tool-use/turn deltas + right↔wrong transitions
-    ├── case_studies.py        # Representative base-vs-LoRA trajectory excerpts
-    ├── runs.py                # Shared: canonical (latest) run-directory resolution
-    ├── rollout_groups.py      # Shared: rollout schema + group reconstruction
-    └── all_wrong.py           # All-wrong / all-correct group analysis
-```
-
-`analyze_failure_modes.py` stays at the top level because it is the shared
-dependency: `classify_failure()` is imported by the other analyses, by
-`tests/unit/test_analyze_failure_modes.py`, and by `src/gepa_integration/seed.py`
-for failure-stratified splits. Treat it as frozen — every per-mode count in the
-thesis is on its automatic-proxy basis, so changing the cascade invalidates
-published numbers.
-
-```bash
-# Failure-mode breakdowns (per benchmark, thinking mode, global)
-python scripts/failure_modes/analyze_failure_modes.py
-
-# Eval-run analyses
-python scripts/failure_modes/eval_runs/baseline_counterfactual.py
-python scripts/failure_modes/eval_runs/retrieval_locus_split.py
-
-# Fine-tuning analyses
-python scripts/failure_modes/fine_tuning/base_vs_lora.py
-python scripts/failure_modes/fine_tuning/case_studies.py
-```
-
-### All-wrong / all-correct (all-good) group analysis
-
-`fine_tuning/all_wrong.py` is the script for the all-wrong and all-correct
-(= "all-good") rollout samples. During Flow-GRPO training each question is
-sampled `G` times into a *group*; the binary reward makes a group informative
-only when its rollouts disagree. If every rollout in a group gets the same reward
-— **all-wrong** (none correct) or **all-correct/all-good** (every one correct) —
-the group-relative advantage is zero and the group contributes no gradient. Those
-two categories are the dead weight; the **mixed** share is what actually trains
-the policy.
-
-The script covers two *different* senses of "all-wrong", selectable with
-`--section`:
-
-| Section | Question |
-|---|---|
-| `composition` | Of the complete groups, what share are all-wrong / all-correct / mixed? Only mixed groups have non-zero group-relative advantage, so the rest are dead weight. |
-| `axpo` | Among groups that attempt a tool, how often is the *tool-using subgroup* all-wrong (AXPO, Kang et al.)? A group can be mixed overall yet have every tool-using rollout fail. Reported alongside the no-tool subgroup rate, which exposes the domain asymmetry. |
-
-```bash
-python scripts/failure_modes/fine_tuning/all_wrong.py                        # both sections
-python scripts/failure_modes/fine_tuning/all_wrong.py --section composition --latex
-python scripts/failure_modes/fine_tuning/all_wrong.py --rollout-dir <run_root_or_train_dir>
-python scripts/failure_modes/fine_tuning/all_wrong.py --group-size 8         # override inference
-```
-
-Output — a console report plus `data/results/failure_modes/all_wrong.json`:
-
-```
-Source: experiments/results/fine_tuning/qwen3-8b-grpo-search-math-v2/...
-Group size n=8 (gcd; gcd=8, most common count=8, over N question dirs / M rollouts)
-Complete groups only; partial trailing blocks dropped.
-
-== Whole-group reward composition (dead-group breakdown) ==
-domain              rollouts  groups  all-wrong  all-correct    mixed
-DeepMath                 ...     ...      20.0%        23.1%    56.9%
-HotpotQA                 ...     ...      37.8%        18.7%    43.5%
-Natural Questions        ...     ...      44.8%        23.3%    31.9%
-Overall                  ...     ...      29.3%        21.3%    49.4%
-
-Dead weight (all-wrong + all-correct) overall:  50.6% of 2106 groups; mixed (learning signal):  49.4%
-
-== All-wrong tool-using subgroup (AXPO-aligned) ==
-domain              tool-use rate  tool-subgrp all-wrong no-tool-subgrp all-wrong
-...
-```
-
-The JSON holds one entry per domain plus `ALL`, each carrying the raw counters
-(`all_wrong`, `all_correct`, `mixed`, `n_groups`, `groups_with_tool_subgroup`,
-`tool_subgroup_all_wrong`, `notool_subgroup_all_wrong`, …) **and** the derived
-percentages (`all_wrong_pct`, `all_correct_pct`, `mixed_pct`, `dead_pct`,
-`tool_use_rate_pct`, `tool_subgroup_all_wrong_pct`, …), so figures and tables can
-be rebuilt without re-deriving rates by hand. `group_size_evidence` records how
-the group size was determined.
-
-`--rollout-dir` accepts either a training-run root (the timestamped
-`rollout_data/train` sub-directory is resolved automatically) or that directory
-directly; it defaults to the `qwen3-8b-grpo-search-math-v2` run. Rollout data
-lives on the cluster, not in the repo.
-
-**Group size is not fixed at 8.** It is the training hyperparameter
-`actor_rollout_ref.rollout.n` — 8 in `config.yaml`, but 2 in the smoke configs,
-and free to change in any future run. `--group-size` therefore defaults to `auto`:
-each `idx_*` directory holds `s × G` rollouts for `s` optimizer-step visits, so
-the GCD of the per-question counts recovers `G`, falling back to the most common
-count when a truncated directory collapses the GCD. Every run prints the chosen
-value, the competing estimates, and a warning naming how many directories are not
-an exact multiple of it — pass `--group-size` explicitly if that report looks
-wrong. Inference cannot identify `G` when *no* question was visited a number of
-times coprime with the others (e.g. every question visited exactly twice yields
-`2G`), which is the case the override exists for.
-
-Reconstruction — sorting each directory by rollout index and chunking into
-consecutive blocks of `G`, dropping trailing partial blocks — is defined once in
-`rollout_groups.py`; a correct run over the thesis rollouts infers `G=8` and
-reproduces the reported 2,106 complete groups. Note that the index encodes write
-order, not the optimizer step (see the `rollout_groups.py` docstring), so group
-boundaries are only as reliable as that ordering.
-
----
-
-
-### SLURM quick reference
-
-```bash
-scontrol show job <job_id>   # full job details
-sacct -j <job_id>            # accounting info
-scancel <job_id>             # cancel one job
-scancel -u $USER             # cancel all your jobs
-```
+| `jobs/001_setup.job` | Create the conda env, install the project |
+| `jobs/002_download_datasets.job` | Download benchmark datasets |
+| `jobs/003_run_examples.job` | Smoke-test a single example |
+| `jobs/004_export_env.job` | Export conda env YAMLs |
+| `jobs/005_export_prompts.job` | Export prompt templates + tool schemas |
+| `jobs/006_create_configs.job` | Regenerate all experiment configs |
+| `jobs/007_add_bigcodebench_libs.job` | Extra libraries for BigCodeBench |
+| `jobs/fine_tuning/` | SFT and RL training - see the pipeline docs |
+| `jobs/gepa/` | GEPA data prep, smoke tests, optimisation |
+| `jobs/grpo_inference/` | Evaluation of base / SFT / GRPO checkpoints |
+
+Overrides via `sbatch --export=ALL,...`: `ENV_NAME`, `PROJECT_DIR`, `DATA_DIR`.

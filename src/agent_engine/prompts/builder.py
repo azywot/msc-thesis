@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from ..datasets.spec import get_spec
 from ..models.base import ToolCallFormat
 from ..utils.logging import get_logger
 
@@ -78,17 +79,16 @@ class PromptBuilder:
         :attr:`ToolCallFormat.PYTHONIC` (OLMo 3-style).
         """
         try:
-            # GAIA, HLE, and MuSiQue share the same single‑QA prompt template.
-            # AIME, MATH500, AMC, DeepMath (RL prep) share the math template.
-            template_name = dataset_name
-            if dataset_name.lower() in ("gaia", "hle", "musique"):
-                template_name = "gaia_baseline" if baseline else "gaia"
-            elif dataset_name.lower() in ("aime", "math500", "amc", "deepmath", "math"):
-                template_name = "math_baseline" if baseline else "math"
-            elif dataset_name.lower() == "gpqa":
-                template_name = "gpqa_baseline" if baseline else "gpqa"
-            elif dataset_name.lower() == "bigcodebench":
-                template_name = "bigcodebench_baseline" if baseline else "bigcodebench"
+            # Which template a dataset uses lives in datasets/spec.py.
+            # GAIA, HLE and MuSiQue share the single-QA template; AIME, MATH500,
+            # AMC, DeepMath and MATH (RL prep) share the math template.
+            spec = get_spec(dataset_name.lower())
+            if spec.template is None:
+                # No mapping: try the raw name, so an unknown dataset still hits
+                # the FileNotFoundError fallback below (and logs its warning).
+                template_name = dataset_name
+            else:
+                template_name = f"{spec.template}_baseline" if baseline else spec.template
 
             template = self.load_template(template_name)
         except FileNotFoundError:

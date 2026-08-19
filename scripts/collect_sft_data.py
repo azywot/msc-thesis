@@ -27,7 +27,6 @@ import argparse
 import json
 import logging
 import os
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -36,8 +35,6 @@ import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv()
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from agent_engine.caching import CacheManager
 from agent_engine.config import load_experiment_config
@@ -93,7 +90,11 @@ def _build_sft_messages(state) -> List[Dict[str, str]]:
 
 def _setup_model_provider(model_cfg, api_keys: Dict[str, str], model_cache: Dict):
     """Instantiate a model provider, reusing cached instances for the same path."""
-    cache_key = model_cfg.path_or_id
+    # Include lora_adapter_path in the key so a LoRA instance and the base model
+    # don't collide when both appear in the same experiment. Keying on
+    # path_or_id alone silently hands the first-loaded provider to both roles.
+    # Matches agent_engine.runner.providers.setup_model_provider.
+    cache_key = f"{model_cfg.path_or_id}|lora:{getattr(model_cfg, 'lora_adapter_path', None) or ''}"
     if cache_key in model_cache:
         logger.info("Reusing cached model: %s (role: %s)", model_cfg.name, model_cfg.role)
         return model_cache[cache_key]

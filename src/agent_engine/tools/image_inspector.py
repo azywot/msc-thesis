@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 from PIL import Image
 
 from ..core.tool import BaseTool, ToolResult
+from .registry import register_tool
 from ..utils.logging import get_logger
 from ..utils.parsing import strip_thinking_tags
 
@@ -239,3 +240,25 @@ class ImageInspectorTool(BaseTool):
         question = kwargs['question']
 
         return isinstance(question, str) and len(question.strip()) > 0
+
+
+@register_tool("image_inspector")
+def build_image_inspector(deps):
+    """Construct the image inspector, or decline in direct mode.
+
+    Returns ``None`` in direct mode -- the tool needs a VLM, so the original
+    code registered nothing and warned.  Both warnings are reproduced verbatim.
+    """
+    if deps.direct_mode:
+        logger.warning("image_inspector is disabled in direct mode (requires VLM)")
+        return None
+
+    vlm_model = deps.model_providers.get("image_inspector") if deps.model_providers else None
+    if vlm_model is None:
+        logger.warning(
+            "image_inspector enabled but no VLM model provider configured - tool will fail at runtime"
+        )
+    return ImageInspectorTool(
+        model_provider=vlm_model,
+        use_thinking=deps.use_subagent_thinking,
+    )

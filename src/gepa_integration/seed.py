@@ -16,11 +16,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
-# Ensure scripts/ is on path for classify_failure import
-_SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-
 from agent_engine.core.orchestrator import _DEFAULT_PLANNING_SUFFIX_TOOLS
 from agent_engine.models.base import ToolCallFormat
 from agent_engine.prompts import PromptBuilder
@@ -95,7 +90,7 @@ def build_splits(
     Returns:
         {"train": [qid, ...], "val": [qid, ...], "test": [qid, ...]}
     """
-    from failure_modes.analyze_failure_modes import classify_failure
+    from agent_engine.analysis.failure_modes import classify_failure
 
     rng = random.Random(seed)
 

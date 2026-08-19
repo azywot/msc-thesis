@@ -6,13 +6,10 @@ several G rather than pinning the historical 8.
 """
 
 import json
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "scripts/failure_modes/fine_tuning"))
-
 import pytest
-from rollout_groups import (
+from agent_engine.analysis.fine_tuning.rollout_groups import (
     domain_order,
     fmt_pct,
     infer_group_size,

@@ -5,7 +5,7 @@ description: >
   Uses DeepMath-103K (difficulty >= 5, 75%) + Search-R1 (25%, 85/15 HotpotQA/NQ) as
   clean, non-overlapping optimization data. Targets the dominant AIME failure mode:
   direct reasoning without Coder delegation (55.8% of failures).
-  See docs/superpowers/plans/2026-05-18-gepa-data-plan.md.
+  See docs/archive/superpowers/plans/2026-05-18-gepa-data-plan.md.
 
 benchmark: "math"
 thinking_mode: "NO"

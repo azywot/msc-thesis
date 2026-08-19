@@ -1,0 +1,410 @@
+#!/bin/bash
+#SBATCH --job-name=PrefixRFTCapped
+#SBATCH --partition=gpu_h100
+# Production layout exactly (005_train.job): 4 H100s, VERL on all four
+# (CUDA_VISIBLE_DEVICES=0,1,2,3, N_GPUS=4), the frozen Qwen3-1.7B sub-agent colocated on
+# GPU 0 at util=0.08. Nothing about the hardware differs from the real run.
+#SBATCH --gpus=4
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+# ~40 min/step extrapolated from production (72 h / 112 steps), so 10 steps is ~7 h plus
+# startup and two validation passes. 12 h leaves room for a slow queue on the sub-agent.
+#SBATCH --time=12:00:00
+#SBATCH --output=out/fine_tuning/prefix_rft/capped_%A.log
+#SBATCH --error=out/fine_tuning/prefix_rft/capped_%A.err
+
+# The production Prefix-RFT run, stopped after 10 optimiser steps.
+#
+# What this answers that 011 cannot
+# ---------------------------------
+# 011 proves the mechanism is CORRECT: a teacher prefix is replayed verbatim, masked,
+# advantage-corrected and entropy-clipped. It cannot prove the method is USABLE, because
+# it pins the schedule (low_target 0.9) over a single step and runs a toy batch shape.
+# The two things it leaves untested are the two that decide whether a 40-hour run is
+# worth starting:
+#
+#   1. Does the curriculum actually move? low_t must fall 0.95 -> 0.05 and the mean
+#      prefix length must fall with it. This is the method's central dynamic and no run
+#      has exercised it.
+#   2. Does it stay stable at production batch shape? rollout.n: 8 gives the hybrid
+#      rollout seven on-policy peers instead of three; train_batch_size: 32 and
+#      TOOL_STEPS: 5 change the transition count per step by an order of magnitude.
+#
+# Run AFTER 011 passes. If 011 has not passed, the mechanism is not known to work and
+# this run would be measuring dynamics that do not exist.
+#
+# What a pass here means: the production run is worth starting. It does NOT mean
+# Prefix-RFT beats the GRPO baseline - 10 steps carries no signal about final quality,
+# and no check below looks at reward level.
+#
+# Optional: SKIP_PIP_SETUP=1 in .env skips editable installs when cosmas-train is warm.
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSc Thesis — Prefix-RFT capped production run (10 steps)"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+
+if [[ -f ".env" ]]; then
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${SERPER_API_KEY:-}" && -z "${TAVILY_API_KEY:-}" ]]; then
+    echo "ERROR: SERPER_API_KEY or TAVILY_API_KEY must be set for rollout workers."
+    exit 1
+fi
+if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    echo "Warning: WANDB_API_KEY is not set; the prefix curves will only be in the log."
+fi
+
+source activate cosmas-train
+export PYTHONNOUSERSITE=1
+
+case "${SKIP_PIP_SETUP:-}" in
+    1|true|TRUE|yes|YES) echo "SKIP_PIP_SETUP is set — reusing the current cosmas-train." ;;
+    *)
+        python -m pip install -e .
+        bash jobs/cosmas_train_pip_reconcile.sh
+        ;;
+esac
+python -c "import agent_engine, fine_tuning, verl, vllm; from fine_tuning.agentflow import LitAgent, Trainer, reward; print('Training imports OK')"
+
+CONFIG=experiments/configs/fine_tuning/config_prefix_rft_capped.yaml
+DEMOS="${PREFIX_DEMOS_PATH:-data/training/prefix_rft/prefix_demos.parquet}"
+
+mkdir -p out/fine_tuning/prefix_rft
+
+for required_file in "$CONFIG" "$DEMOS" \
+    data/training/train/combined_train.parquet \
+    data/training/val/val_combined.parquet
+do
+    if [[ ! -f "$required_file" ]]; then
+        echo "ERROR: missing required file: $required_file"
+        exit 1
+    fi
+done
+
+# ── Pre-flight: the schedule must actually move over these 10 steps ──────────
+# The whole point of this run. If low_t does not fall, there is no curriculum to observe
+# and the run measures nothing 011 did not already cover.
+echo ""
+echo "Checking the schedule over the capped run..."
+python - <<'PYSCHED'
+import sys
+
+from verl_ext.prefix_rft.schedule import PrefixStepSchedule
+
+TOTAL = 10
+sched = PrefixStepSchedule(low_init=0.95, low_target=0.05, high=0.95, n_steps=TOTAL, seed=42)
+
+lows = []
+# verl's global_steps starts at 1, so that is the range the run will actually see.
+for step in range(1, TOTAL + 1):
+    _, low, high = sched.sample_l(step)
+    lows.append(low)
+    print(f"  step {step:2d}: low_t={low:.3f} high={high:.3f}")
+
+if lows[0] - lows[-1] < 0.5:
+    sys.exit(
+        f"FAIL: low_t moves only {lows[0] - lows[-1]:.2f} over {TOTAL} steps. The "
+        "curriculum would be flat and this run would measure nothing."
+    )
+print(f"  low_t falls {lows[0]:.2f} -> {lows[-1]:.2f}; the curriculum moves.")
+PYSCHED
+
+# ── Pre-flight: the launch config must resolve ───────────────────────────────
+echo ""
+echo "Dry-running the launch config..."
+if ! python scripts/launch_verl.py --config "$CONFIG" --dry-run; then
+    echo "FAIL — the launch config does not resolve. Nothing was started."
+    exit 1
+fi
+
+VERL_PID=""; SUBAGENT_PID=""; ORCHESTRATOR_PID=""; CRASH_MONITOR_PID=""; GPU_MONITOR_PID=""
+cleanup() {
+    [[ -n "${CRASH_MONITOR_PID:-}" ]] && kill "$CRASH_MONITOR_PID" 2>/dev/null || true
+    [[ -n "${GPU_MONITOR_PID:-}" ]] && kill "$GPU_MONITOR_PID" 2>/dev/null || true
+    if [[ -n "${ORCHESTRATOR_PID:-}" ]] && kill -0 "$ORCHESTRATOR_PID" >/dev/null 2>&1; then
+        kill "$ORCHESTRATOR_PID" || true; wait "$ORCHESTRATOR_PID" || true
+    fi
+    if [[ -n "${VERL_PID:-}" ]] && kill -0 "$VERL_PID" >/dev/null 2>&1; then
+        kill "$VERL_PID" || true; wait "$VERL_PID" || true
+    fi
+    ray stop --force 2>/dev/null || true
+    if [[ -n "${SUBAGENT_PID:-}" ]] && kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+        kill "$SUBAGENT_PID" || true; wait "$SUBAGENT_PID" || true
+    fi
+}
+trap cleanup EXIT
+
+start_crash_monitor() {
+    local logfile="$1" label="$2"
+    (
+        while [[ ! -f "$logfile" ]]; do sleep 2; done
+        tail -n 0 -F "$logfile" 2>/dev/null \
+        | grep --line-buffered -E \
+            "CUDA (Error|out of memory)|RuntimeError: CUDA|\
+NCCL (error|failure)|ncclSystemError|ncclInternalError|ncclCommAbort|\
+RayActorError|ActorDiedError|WorkerDied|The actor died unexpectedly|\
+Segmentation fault|Aborted \(core dumped\)|^Killed\$|\
+FATAL ERROR|Fatal Python error" \
+        | { IFS= read -r line
+            printf '\n=== FATAL CRASH [%s] ===\n%s\nKilling job...\n' "$label" "$line" >&2
+            kill -TERM $$ ; }
+    ) &
+    CRASH_MONITOR_PID=$!
+}
+
+JOB="${SLURM_JOB_ID:-local}"
+LOGDIR=out/fine_tuning/prefix_rft
+VERL_LOG="$LOGDIR/capped_${JOB}_verl.log"
+SUBAGENT_LOG="$LOGDIR/capped_${JOB}_subagent.log"
+ORCH_LOG="$LOGDIR/capped_${JOB}_orchestrator.log"
+
+VERL_RUN_TAG="$(date +%d-%m-%Y_%H-%M)-${JOB}"
+export VERL_RUN_TAG
+RUN_DIR="experiments/results/fine_tuning/qwen3-8b-prefix-rft-capped/${VERL_RUN_TAG}"
+CKPT_DIR="/scratch-shared/${USER}/fine_tuning/lora_adapters/qwen3-8b-prefix-rft-capped"
+echo ""
+echo "Run tag:     $VERL_RUN_TAG"
+echo "Run dir:     $RUN_DIR"
+echo "Checkpoints: $CKPT_DIR"
+
+nvidia-smi --query-gpu=timestamp,index,utilization.gpu,memory.used,memory.total,power.draw \
+    --format=csv -l 60 > "$LOGDIR/capped_${JOB}_gpu.csv" 2>&1 &
+GPU_MONITOR_PID=$!
+
+# ── 1. Frozen sub-agent, colocated on GPU 0 (production layout) ──────────────
+echo ""
+echo "Starting frozen sub-agent (Qwen/Qwen3-1.7B, port 9998, GPU 0)..."
+VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
+    --port 9998 --tensor-parallel-size 1 --gpu-memory-utilization 0.08 \
+    --max-model-len 16384 > "$SUBAGENT_LOG" 2>&1 &
+SUBAGENT_PID=$!
+export SUBAGENT_ENDPOINT="http://localhost:9998/v1"
+
+echo "Waiting for the sub-agent (up to 10 min)..."
+_deadline=$((SECONDS + 600))
+while (( SECONDS < _deadline )); do
+    curl -fsS --max-time 5 http://127.0.0.1:9998/v1/models >/dev/null 2>&1 && { echo "Sub-agent is up."; break; }
+    kill -0 "$SUBAGENT_PID" >/dev/null 2>&1 || { echo "FAIL — sub-agent exited. See $SUBAGENT_LOG"; tail -40 "$SUBAGENT_LOG"; exit 1; }
+    sleep 10
+done
+(( SECONDS < _deadline )) || { echo "FAIL — sub-agent not ready after 10 min."; exit 1; }
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export PYTHONUNBUFFERED=1
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600
+
+# ── 2. VERL server ───────────────────────────────────────────────────────────
+echo ""
+echo "Starting VERL (N_GPUS=4)..."
+python scripts/launch_verl.py --config "$CONFIG" > "$VERL_LOG" 2>&1 &
+VERL_PID=$!
+start_crash_monitor "$VERL_LOG" "VERL"
+
+AGENTFLOW_PORT="${AGENTFLOW_PORT:-9999}"
+echo "Polling http://localhost:${AGENTFLOW_PORT}/task (up to 45 min; 4 colocated vLLM instances are slow to bootstrap)..."
+_deadline=$((SECONDS + 2700))
+while (( SECONDS < _deadline )); do
+    curl -fsS --max-time 5 "http://127.0.0.1:${AGENTFLOW_PORT}/task" >/dev/null 2>&1 && { echo "AgentFlow is responding."; break; }
+    kill -0 "$VERL_PID" >/dev/null 2>&1 || { echo "FAIL — VERL exited before AgentFlow came up."; tail -60 "$VERL_LOG"; exit 1; }
+    sleep 10
+done
+(( SECONDS < _deadline )) || { echo "FAIL — AgentFlow not ready after 45 min."; exit 1; }
+
+# ── 3. Rollout workers ───────────────────────────────────────────────────────
+echo ""
+echo "Starting rollout workers (N_WORKERS=4)..."
+python scripts/train_orchestrator.py --config "$CONFIG" > "$ORCH_LOG" 2>&1 &
+ORCHESTRATOR_PID=$!
+VERL_RC=0
+wait $VERL_PID || VERL_RC=$?
+if [[ $VERL_RC -ne 0 ]]; then
+    echo ""
+    echo "FAIL — VERL exited with status $VERL_RC. Last 80 lines of $VERL_LOG:"
+    tail -80 "$VERL_LOG"
+    exit 1
+fi
+echo ""
+echo "Training finished at: $(date)"
+
+# ── Check 0: no episode raised ───────────────────────────────────────────────
+echo ""
+echo "── Check 0: no episode raised ───────────────────────────────────────────"
+if grep -q "Episode failed" "$ORCH_LOG" 2>/dev/null; then
+    echo "Episodes raised during the run:"
+    grep -oE "\[OrchestratorRollout\] Episode failed: .{0,140}" "$ORCH_LOG" | sort | uniq -c
+    # Not fatal at this scale: over 320 questions x 8 rollouts, a timed-out web search is
+    # expected. Fatal only if it is most of them, which means a code fault, not flakiness.
+    TOTAL_EPISODES=$(grep -c "answer=" "$ORCH_LOG" 2>/dev/null || echo 1)
+    FAILED_EPISODES=$(grep -c "Episode failed" "$ORCH_LOG" 2>/dev/null || echo 0)
+    if (( FAILED_EPISODES * 4 > TOTAL_EPISODES )); then
+        echo "FAIL — $FAILED_EPISODES of $TOTAL_EPISODES episodes raised (>25%). That is a"
+        echo "code fault, not tool flakiness."
+        exit 1
+    fi
+    echo "PASS — $FAILED_EPISODES of $TOTAL_EPISODES episodes raised, within tool-flakiness range."
+else
+    echo "PASS — no episode raised."
+fi
+
+# ── Check E: the curriculum actually moved ───────────────────────────────────
+# The reason this job exists. Everything else here is also checked by 011.
+echo ""
+echo "── Check E: the curriculum moved over the run ───────────────────────────"
+python - "$VERL_LOG" <<'PYCURRICULUM'
+import re
+import sys
+
+text = open(sys.argv[1], errors="replace").read()
+
+
+def series(metric):
+    pattern = rf"{re.escape(metric)}['\"]?\s*[:=]\s*(-?[0-9]*\.?[0-9]+)"
+    return [float(m) for m in re.findall(pattern, text)]
+
+
+lows = series("actor/prefix_low")
+ks = series("actor/prefix_steps")
+prefixed = series("actor/n_prefixed_rollouts")
+off = series("actor/off_ratio")
+
+print(f"  low_t series      ({len(lows)} points): {[round(v, 3) for v in lows]}")
+print(f"  mean k series     ({len(ks)} points): {[round(v, 2) for v in ks]}")
+print(f"  prefixed rollouts ({len(prefixed)} points): {[int(v) for v in prefixed]}")
+print(f"  off_ratio         ({len(off)} points): {[round(v, 3) for v in off]}")
+
+failures = []
+if len(lows) < 3:
+    failures.append(f"only {len(lows)} low_t points logged; cannot judge the curriculum")
+elif lows[0] - lows[-1] < 0.4:
+    failures.append(
+        f"low_t moved only {lows[0] - lows[-1]:.2f} ({lows[0]:.2f} -> {lows[-1]:.2f}); "
+        "the schedule is not decaying as configured"
+    )
+else:
+    print(f"  low_t fell {lows[0]:.2f} -> {lows[-1]:.2f}")
+
+# k should trend down with low_t. Compare halves rather than endpoints: k is a small
+# integer average over a stochastic draw, so a single step proves nothing either way.
+if len(ks) >= 4:
+    half = len(ks) // 2
+    early, late = sum(ks[:half]) / half, sum(ks[half:]) / len(ks[half:])
+    print(f"  mean k: {early:.2f} early -> {late:.2f} late")
+    if late > early:
+        failures.append(
+            f"mean prefix length rose ({early:.2f} -> {late:.2f}) while low_t fell. "
+            "Dispatch is not following the schedule."
+        )
+
+if prefixed and min(prefixed) == 0:
+    zero_steps = [i for i, v in enumerate(prefixed) if v == 0]
+    print(f"  NOTE: {len(zero_steps)} step(s) prefixed no rollout at all: {zero_steps}")
+    print("  Expected late in the schedule, when low_t is small and k can round to 0.")
+
+if off and max(off) > 0.5:
+    failures.append(
+        f"off_ratio peaked at {max(off):.2f}. The paper's Table 4 warns demonstration "
+        "tokens dominating the batch destabilises training."
+    )
+elif off:
+    print(f"  off_ratio stayed at or below {max(off):.3f} (paper's concern threshold: 0.5)")
+
+if failures:
+    print("\nFAIL — the curriculum did not behave as configured:")
+    for f in failures:
+        print(f"  - {f}")
+    sys.exit(1)
+print("\nPASS — the curriculum moved and off_ratio stayed in range.")
+PYCURRICULUM
+
+# ── Check F: training stayed stable ──────────────────────────────────────────
+# Not a quality check. This project's GRPO-FT runs failed through KL blow-up rather than
+# through crashing, so a run that trains and checkpoints is not automatically healthy.
+echo ""
+echo "── Check F: training stayed stable ──────────────────────────────────────"
+python - "$VERL_LOG" <<'PYSTABILITY'
+import re
+import sys
+
+text = open(sys.argv[1], errors="replace").read()
+
+
+def series(metric):
+    pattern = rf"{re.escape(metric)}['\"]?\s*[:=]\s*(-?[0-9]*\.?[0-9]+)"
+    return [float(m) for m in re.findall(pattern, text)]
+
+
+kl = series("actor/kl_loss") or series("actor/kl")
+grad = series("actor/grad_norm")
+entropy = series("actor/entropy_loss") or series("actor/entropy")
+kept_z, kept_t = series("actor/prefix_tokens_zeroed"), series("actor/prefix_tokens_total")
+
+if kl:
+    print(f"  kl: first={kl[0]:.5f} last={kl[-1]:.5f} max={max(kl):.5f}")
+if grad:
+    print(f"  grad_norm: max={max(grad):.3f}")
+if entropy:
+    print(f"  entropy: first={entropy[0]:.4f} last={entropy[-1]:.4f}")
+if kept_z and kept_t:
+    kept = 1 - sum(kept_z) / max(1.0, sum(kept_t))
+    print(f"  entropy clip kept {kept:.1%} of prefix tokens (paper: 20%)")
+
+warnings = []
+# Thresholds are deliberately loose: 10 steps is too few to judge a trend, so these fire
+# only on the kind of blow-up that makes the rest of the run pointless.
+if kl and max(kl) > 1.0:
+    warnings.append(f"kl peaked at {max(kl):.3f}; the earlier GRPO-FT runs failed this way")
+if grad and max(grad) > 100:
+    warnings.append(f"grad_norm peaked at {max(grad):.1f}")
+if kept_z and kept_t:
+    kept = 1 - sum(kept_z) / max(1.0, sum(kept_t))
+    if not 0.10 <= kept <= 0.35:
+        warnings.append(f"entropy clip kept {kept:.1%}, expected about 20%")
+
+if warnings:
+    print("\nWARNINGS (recorded, not fatal — 10 steps cannot establish a trend):")
+    for w in warnings:
+        print(f"  - {w}")
+    print("\nRead these before committing to the full run.")
+else:
+    print("\nPASS — nothing anomalous in the stability metrics.")
+PYSTABILITY
+
+# ── Check G: a checkpoint was written ────────────────────────────────────────
+echo ""
+echo "── Check G: a LoRA adapter was saved ────────────────────────────────────"
+if find "$CKPT_DIR" -maxdepth 5 -name "adapter_model.safetensors" -path "*/actor/lora_adapter/*" 2>/dev/null | grep -q .; then
+    find "$CKPT_DIR" -maxdepth 5 -name "adapter_model.safetensors" -path "*/actor/lora_adapter/*" | head -5
+    echo "PASS — checkpoint found."
+else
+    echo "FAIL — no LoRA adapter under $CKPT_DIR"
+    exit 1
+fi
+
+echo ""
+echo "=========================================="
+echo "Capped Prefix-RFT run complete at: $(date)"
+echo ""
+echo "This says the production run is worth starting. It says NOTHING about whether"
+echo "Prefix-RFT beats the GRPO baseline: 10 steps carries no signal about final"
+echo "quality, and no check above looks at reward level."
+echo ""
+echo "Before submitting 005-style production: compare val/reward here against the GRPO"
+echo "baseline's first 10 steps only as a sanity check, never as a result."
+echo "=========================================="

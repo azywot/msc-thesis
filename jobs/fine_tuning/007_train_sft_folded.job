@@ -14,7 +14,7 @@
 
 # SFT on Qwen3-8B orchestrator, memory-FOLDED format. Supersedes the original job
 # (007_train_sft.job, since removed from the repo), whose training format did not match
-# inference — see docs/sft_status.md.
+# inference — see docs/archive/sft_status.md.
 #
 # Why this job exists
 # -------------------

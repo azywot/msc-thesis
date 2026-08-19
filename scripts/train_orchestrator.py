@@ -29,9 +29,6 @@ from pathlib import Path
 
 import yaml
 
-# Add src to path (matches run_experiment.py convention)
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 # Route INFO/DEBUG to stdout (→ SLURM .log); WARNING+ stay on stderr (→ SLURM .err).
 # force=True replaces any handlers that packages may have already installed.
 class _MaxLevelFilter(logging.Filter):
@@ -145,7 +142,7 @@ def main():
     from fine_tuning.agentflow import Trainer
 
     rollout_dir = str(output_dir / "rollout_data")
-    agent = OrchestratorRollout(
+    common = dict(
         rollout_dir=rollout_dir,
         rollout_n=rollout_n,
         train_temperature=train_temperature,
@@ -156,6 +153,30 @@ def main():
         subagent_endpoint=subagent_endpoint,
         subagent_model=subagent_model,
     )
+
+    # Prefix-RFT replaces the rollout agent so the first k decisions of a hybrid rollout
+    # are replayed from a teacher demonstration instead of generated. k arrives per
+    # rollout in the task payload; k = 0 behaves exactly like OrchestratorRollout.
+    prefix_rft = os.environ.get("PREFIX_RFT", "").strip().lower() in ("1", "true", "yes", "on")
+    if prefix_rft:
+        from fine_tuning.prefix_rollout import PrefixOrchestratorRollout
+
+        demos_path = os.environ.get(
+            "PREFIX_DEMOS_PATH", "data/training/prefix_rft/prefix_demos.parquet"
+        )
+        if not Path(demos_path).exists():
+            raise FileNotFoundError(
+                f"PREFIX_RFT is on but the demonstration store is missing: {demos_path}\n"
+                "Build it with: sbatch jobs/fine_tuning/008_build_prefix_demos.job"
+            )
+        agent = PrefixOrchestratorRollout(
+            demos_path=demos_path,
+            base_model=str(env.get("BASE_MODEL", "Qwen/Qwen3-8B")),
+            **common,
+        )
+        print(f"  Prefix-RFT enabled: PrefixOrchestratorRollout, demos={demos_path}")
+    else:
+        agent = OrchestratorRollout(**common)
 
     # ── 8. Start trainer ────────────────────────────────────────────────────
     trainer = Trainer(n_workers=n_workers, tracer=NullTracer())

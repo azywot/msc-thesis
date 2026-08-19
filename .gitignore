@@ -99,3 +99,8 @@ experiments/configs/archive/*/
 out/fine_tuning/*/*.csv
 .slurm-watch/*
 archive/
+# ...but docs/archive/ holds superseded design documents we keep on purpose.
+# The rule above is unanchored, so it matches a directory named `archive` at
+# any depth; without this negation `git mv docs/x.md docs/archive/` deletes
+# the original and leaves the copy untracked.
+!docs/archive/
