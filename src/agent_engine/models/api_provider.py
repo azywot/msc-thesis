@@ -82,11 +82,13 @@ class OpenAIProvider(BaseModelProvider):
         """
         raw_messages = None
         use_thinking = False
+        continue_final = False
         try:
             payload = json.loads(prompt)
             if isinstance(payload, dict) and "messages" in payload:
                 raw_messages = payload["messages"]
                 use_thinking = bool(payload.get("use_thinking", False))
+                continue_final = bool(payload.get("continue_final_message", False))
             elif isinstance(payload, list):
                 raw_messages = payload
         except (json.JSONDecodeError, TypeError):
@@ -106,6 +108,14 @@ class OpenAIProvider(BaseModelProvider):
         extra_body = {}
         if self.config.family in _ENABLE_THINKING_KWARG_FAMILIES:
             extra_body["chat_template_kwargs"] = {"enable_thinking": use_thinking}
+        if continue_final:
+            # Prefill: the final assistant message is left open-ended and the model
+            # continues it rather than starting a new turn. Prefix-RFT token mode uses
+            # this to have the model finish a half-replayed teacher turn. vLLM rejects
+            # this together with add_generation_prompt
+            # (vllm/entrypoints/openai/protocol.py:918-928), so that is turned off here.
+            extra_body["continue_final_message"] = True
+            extra_body["add_generation_prompt"] = False
 
         response = self.client.chat.completions.create(
             model=self.config.path_or_id,

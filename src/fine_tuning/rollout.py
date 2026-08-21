@@ -346,7 +346,13 @@ class OrchestratorRollout(LitAgent):
                         reward=reward_value,
                         # Prefix-RFT marks replayed teacher turns here; absent for
                         # ordinary GRPO rollouts, where it is always False.
-                        metadata={"prefix": bool(t.get("is_prefix", False))},
+                        # prefix_len is how many leading response tokens were the
+                        # teacher's: the whole turn in step mode, a head of it when
+                        # token mode split the turn.
+                        metadata={
+                            "prefix": bool(t.get("is_prefix", False)),
+                            "prefix_len": int(t.get("prefix_len", 0) or 0),
+                        },
                     )
                     for t in turns
                 ]

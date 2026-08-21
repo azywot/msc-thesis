@@ -40,6 +40,17 @@ prefix_rft:
   # Paper A.2: "we sample 8 rollouts per prompt, and one of them starts with the
   # sampled prefix."
   n_prefixed_rollouts: 1
+  # How prefix length is measured. "steps" replays whole teacher decisions,
+  # k = clamp(floor(l * m), 0, m - 1), which is this project's adaptation.
+  # "tokens" is the paper's own measure (A.2): a token fraction of the whole
+  # demonstration, which can split a decision in half. Default "steps" so every
+  # existing config keeps its meaning.
+  mode: steps
+  # Fewest teacher decisions a question needs before it can carry a prefix. Step mode
+  # is structurally limited to 2 by its k <= m-1 clamp; token mode needs no second
+  # decision, so at the default of 1 the two modes prefix different question sets
+  # (1085 against 1358). Set to 2 in token mode to make the comparison controlled.
+  min_demo_decisions: 1
   # Paper A.2: l ~ U(low_t, 0.95), low_t cosine-decaying 0.95 -> 0.05.
   high: 0.95
   low_init: 0.95

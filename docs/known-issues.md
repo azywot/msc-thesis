@@ -102,3 +102,52 @@ to the system Python 3.9, several minor versions behind the project's 3.11, so a
 prediction using newer syntax (`match`, `X | Y` unions) is scored wrong for
 reasons unrelated to the model. Check `which python` before trusting a
 BigCodeBench number, or change the call to `sys.executable`.
+
+---
+
+## 6. RL training records a prompt 4 tokens shorter than the one that generated it
+
+**Severity:** low but pervasive. Affects every RL run in the repo: the GRPO
+baseline, Prefix-RFT in both modes, and run 012.
+**Status:** open, deliberately unfixed. Found 2026-08-19 while auditing
+Prefix-RFT token mode.
+
+`AgentModeDaemon`'s proxy builds the token IDs it injects into each response
+with (`src/fine_tuning/agentflow/verl/daemon.py:216-225`):
+
+```python
+prompt_ids = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=True)
+```
+
+It does not read the request's `chat_template_kwargs`. `OpenAIProvider` sends
+`{"enable_thinking": use_thinking}` for every Qwen call
+(`src/agent_engine/models/api_provider.py`), and the runs use `THINKING_MODE: NO`,
+so vLLM renders with `enable_thinking=False`. Qwen3's template emits an empty
+think block in that case and not otherwise:
+
+| rendering | tokens | ends with |
+|---|---|---|
+| what the proxy records | 15 | `<\|im_start\|>assistant\n` |
+| what vLLM conditioned on | 19 | `...assistant\n<think>\n\n</think>\n\n` |
+
+So the recorded prompt is missing `<think>\n\n</think>\n\n`, four tokens, on
+every turn.
+
+**Why it is not a broken gradient.** verl recomputes both `old_log_prob` and the
+current log-prob from the *recorded* prompt, so the PPO ratio stays
+self-consistent. What is wrong is fidelity: training conditions on a context
+four tokens shorter than the one that produced the text, and shorter than the
+one used at inference, where the same provider sends `enable_thinking=False`
+again. It is a fixed constant suffix on every prompt, which is why it has not
+shown up as instability.
+
+**Why it is not fixed.** Correcting it changes what the GRPO baseline trains on
+and would break comparability with run 012 and every completed run the thesis
+reports. Fixing it means re-running the baselines.
+
+**Relevance to Prefix-RFT.** Both prefix modes inherit exactly this gap, in the
+same place, and add no new one. `scripts/check_prefix_replay_tokenisation.py`
+asserts the property that *does* matter for the prefix, namely that what vLLM
+conditions on under `continue_final_message` is the rendered prompt followed by
+precisely the teacher's tokens, so `prefix_mask` marks the right positions. The
+comment there explains why the four-token gap is deliberately not asserted.

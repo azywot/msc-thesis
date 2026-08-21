@@ -1,0 +1,256 @@
+# experiments/configs/fine_tuning/config_prefix_rft_tokens.yaml
+#
+# config_prefix_rft.yaml with ONE change: prefix_rft.mode steps -> tokens.
+# The prefix becomes a token fraction of the whole demonstration (the paper's own
+# measure, A.2) instead of a count of whole teacher decisions, so a decision can be
+# split in half and the model finishes the turn the teacher started.
+#
+# Two consequences to read the results against:
+#   - the 273 single-decision demonstrations become prefixable, so prefixed coverage
+#     rises from 1085 questions to all 1358;
+#   - a tool call split mid-JSON may come back malformed, which depresses
+#     actor/reward_with_prefix early when l is near 0.95.
+#
+# Compare against config_prefix_rft.yaml. Everything else is identical by design.
+# Design: docs/superpowers/specs/2026-08-19-prefix-rft-token-mode-design.md
+# Pipeline: docs/pipelines/prefix-rft.md
+#
+# PREFIX_RFT: "true" switches both launchers onto the Prefix-RFT path:
+#   launch_verl.py        -> python -m verl_ext.prefix_rft   (not fine_tuning.agentflow.verl)
+#   train_orchestrator.py -> PrefixOrchestratorRollout       (not OrchestratorRollout)
+#
+# Launch with:
+#   python scripts/launch_verl.py --config experiments/configs/fine_tuning/config_prefix_rft_tokens.yaml      (VERL server)
+#   python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config_prefix_rft_tokens.yaml  (rollout workers)
+#
+# IMPORTANT: Before starting rollout workers, launch a separate frozen sub-agent
+# vLLM server and export SUBAGENT_ENDPOINT, or set it in this file (VLLM_USE_V1=0 avoids V1 KV OOM):
+#   VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B --port 9998 --tensor-parallel-size 1 \
+#       --gpu-memory-utilization 0.08 --max-model-len 8192
+#   export SUBAGENT_ENDPOINT=http://localhost:9998/v1
+#
+# SLURM: jobs/fine_tuning/005_train.job requests 4 H100 NVL GPUs (~94 GB each).
+#   GPU 0: frozen sub-agent at util=0.08 (~7.5 GB) — low enough to share with VERL on the same card.
+#   GPUs 0–3: VERL (N_GPUS: 4, CUDA_VISIBLE_DEVICES=0,1,2,3).
+#
+# Memory per VERL GPU — FULL FINE-TUNING (USE_LORA=false), util=0.45:
+#   actor shard 4 GB + optimizer 24 GB + ref shard 4 GB + vLLM 42.3 GB (16 GB model + 26.3 GB KV) + misc 3 GB = 77.3 GB.
+#   GPU 0 also hosts sub-agent at util=0.08 (~7.5 GB) → 84.8 GB / 94 GB (9.2 GB headroom).
+#   During actor update (vLLM sleep frees KV, model stays at 16 GB): 16+4+24+4+4+4+3 = 55 GB per GPU.
+#
+# Memory per VERL GPU — LoRA (USE_LORA=true), util=0.70 (set by launch_verl.py for LoRA):
+#   With rank=64 all-linear on Qwen3-8B: ~250 MB trainable params per rank.
+#   Key saving vs full FT: optimizer state is over LoRA-only params (~10s of MB AdamW vs 24 GB).
+#   Note: ref_in_actor is NOT in effect — a separate ref worker is spawned (~4 GB/GPU).
+#   KL divergence is computed correctly via disable_adapter() in the ref worker.
+#   Budget: base shard 4 GB + LoRA adapter <1 GB + opt <1 GB + ref shard 4 GB + activations 8 GB
+#           + vLLM 66 GB (16 GB model + 50 GB KV at max_model_len=18432) + misc 3 GB ≈ 86 GB on GPUs 1-3.
+#   GPU 0 also hosts the sub-agent at util=0.08 (~7.5 GB) → ≈ 93.5 GB / 94 GB (0.5 GB headroom).
+#   Watch ft_*_gpu.csv (nvidia-smi sidecar in 005_train.job) during the first 10 min to
+#   confirm no OOM on GPU 0; if it's tight, drop sub-agent util to 0.06.
+#
+# ROLLOUT_TP_SIZE is 1; N_GPUS=4 is valid (TP=2 also works with 4 GPUs but adds overhead).
+
+env:
+  BASE_MODEL: 'Qwen/Qwen3-8B'
+  SUBAGENT_MODEL: 'Qwen/Qwen3-1.7B'
+  SUBAGENT_ENDPOINT: 'http://localhost:9998/v1'
+  N_GPUS: 4
+  ROLLOUT_TP_SIZE: 1
+  # Distinct from the GRPO run so checkpoints and W&B rows do not collide.
+  EXPERIMENT_NAME: 'qwen3-8b-prefix-rft-tokens'
+  # Prefix-RFT switches
+  PREFIX_RFT: "true"
+  PREFIX_DEMOS_PATH: 'data/training/prefix_rft/prefix_demos.parquet'
+  PROJECT_NAME: 'msc-thesis-fine-tuning'
+  BASE_DATA_DIR: 'data/training'
+  ENABLE_TOOLS: ["web_search", "code_generator"]
+  TOOL_STEPS: 5
+  THINKING_MODE: 'NO'
+  TRAIN_TEMPERATURE: 0.7
+  TEST_TEMPERATURE: 0.0
+  # Rollout-loop is IO-bound (HTTP → VERL vLLM, HTTP → sub-agent vLLM, Serper).
+  # Multiple workers fill vLLM's continuous batcher and shorten timing_s/gen.
+  N_WORKERS: 4
+  VERBOSITY: 'INFO'
+  USE_LORA: "true"
+  USE_SCRATCH_CHECKPOINTS: "true"
+  # Save optimizer + extras (scheduler/RNG) so training can be resumed from latest_checkpoint.
+  # For LoRA, optimizer state is over LoRA-only params (~10s of MB), so disk cost is negligible
+  # — rotation keeps only latest + best, so we never accumulate more than 2 checkpoints.
+  SAVE_OPTIMIZER: "true"
+
+python_args:
+  # ---- Prefix-RFT --------------------------------------------------------
+  # Every value traces to papers/PrefixRFT_2507.01679v3.md or repos/prefix_rft.
+  # These keys are declared in src/verl_ext/prefix_rft/config/prefix_rft_trainer.yaml,
+  # so they take no "+" prefix. prefix_entropy_keep_ratio does, because it is added to
+  # verl's own tree. Note it sits on actor_rollout_ref, NOT actor_rollout_ref.actor:
+  # verl converts the latter into an FSDPActorConfig dataclass that rejects keys it
+  # does not declare, so putting it there kills worker startup (job 25751544).
+  prefix_rft.enable: true
+  prefix_rft.demos_path: 'data/training/prefix_rft/prefix_demos.parquet'
+  # Paper A.2: 8 rollouts per prompt, one of them prefixed.
+  prefix_rft.n_prefixed_rollouts: 1
+  # Paper A.2 measures the prefix in tokens, not in whole decisions.
+  prefix_rft.mode: 'tokens'
+  # Controlled comparison against config_prefix_rft.yaml. Step mode cannot prefix a
+  # single-decision demonstration (k <= m-1 = 0), so without this token mode would
+  # prefix 1358 questions against step mode's 1085 and any difference between the two
+  # runs would have coverage as a rival explanation. Setting 2 gives both modes the
+  # same eligible set. It gives up a genuine capability of token mode; a run that wants
+  # the paper's full coverage sets this to 1 and reports the confound.
+  prefix_rft.min_demo_decisions: 2
+  # Paper A.2: l ~ U(low_t, 0.95), low_t cosine-decaying 0.95 -> 0.05.
+  prefix_rft.high: 0.95
+  prefix_rft.low_init: 0.95
+  prefix_rft.low_target: 0.05
+  # BetaSampler defaults; Beta(1,1) is A.2's uniform draw.
+  prefix_rft.sampler_alpha: 1.0
+  prefix_rft.sampler_beta: 1.0
+  # Paper A.2 and section 6: keep the top 20% highest-entropy prefix tokens.
+  prefix_rft.entropy_keep_ratio: 0.2
+  # "none" reproduces the reference. See the spec's risk note before changing.
+  prefix_rft.singleton_baseline: 'none'
+  prefix_rft.seed: 42
+  # The entropy clip ranks prefix tokens by current-policy entropy, so the actor must
+  # compute it. The entrypoint also forces this on; set here so the config is honest.
+  actor_rollout_ref.actor.calculate_entropy: true
+  +actor_rollout_ref.prefix_entropy_keep_ratio: 0.2
+  # ------------------------------------------------------------------------
+  agentflow.port: 9999
+  # Ray must not auto-detect all cores on the node under SLURM — see jobs/fine_tuning/005_train.job (cpus-per-task).
+  ray_init.num_cpus: 16
+  algorithm.adv_estimator: 'grpo'
+  data.train_files: '${BASE_DATA_DIR}/train/combined_train.parquet'
+  data.val_files:                                           # single combined val set (search + math + aime) → one val/* series in W&B
+    - '${BASE_DATA_DIR}/val/val_combined.parquet'
+  data.train_batch_size: 32
+  data.train_max_samples: 1800
+  data.dataloader_num_workers: 0
+  # Token analysis of smoke rollouts (43 episodes, 2-3 turns max):
+  #   system prompt = 735 (gaia) / 740 (deepmath) tokens
+  #   assistant turn: mean 272 / p95 992 / max 1131 tokens
+  #   tool response (non-empty): mean 456 / p95 4502 / max 4502 tokens (one big web hit)
+  #   prompt_max already observed: aime_2024=6368 (2 turns), aime_2025=2882, deepmath=2597
+  # Prod uses TOOL_STEPS=5: extrapolated p95-case 5-turn rollout ≈ 28k tokens; common case
+  # ≈ 4-8k. 16384 covers typical multi-hop + 2-3 large web responses; if first-epoch logs
+  # show prompt_length/clip_ratio > 0 or n_dropped_sample_because_of_prompt > 0, bump to
+  # 20480. Don't keep the original 18432 silently — data.truncation='truncate' zeros the
+  # reward and pushes the model away from long evidence chains. (Was 18432.)
+  data.max_prompt_length: 16384
+  # Smoke max response per turn was 1131 tokens (THINKING_MODE=NO). 2048 = ~1.8× safety;
+  # if THINKING_MODE is switched to ORCHESTRATOR_ONLY, bump to 3072 (thinking adds ~500-1500).
+  data.max_response_length: 2048
+  data.truncation: 'truncate'
+  actor_rollout_ref.rollout.n: 8
+  actor_rollout_ref.actor.ppo_mini_batch_size: 8
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 4
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu: 4
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu: 4
+  # actor.use_dynamic_bsz is forced False by launch_verl.py (Bug 8 fix: without dp_group
+  # VERL's prepare_dynamic_batch doesn't sync num_micro_batches across ranks, causing FSDP
+  # AllGather/AllReduce collective mismatch → NCCL 1-hour watchdog deadlock).
+  # These two lines keep log_prob paths on fixed micro-batching as extra defence.
+  actor_rollout_ref.rollout.log_prob_use_dynamic_bsz: false
+  actor_rollout_ref.ref.log_prob_use_dynamic_bsz: false
+  # Bump VERL's NCCL collective timeout from 600 s (10 min) to 1 h. This is the timeout that
+  # fsdp_workers.py:162 passes to torch.distributed.init_process_group(timeout=...) and is the
+  # one that actually fired in ft_23022789 ("Timeout(ms)=600000"). Independent from
+  # TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC (env var bumped in 005_train.job — that monitors the
+  # watchdog itself). Both are now 3600 s so an imbalance burst can't abort the run.
+  actor_rollout_ref.nccl_timeout: 3600
+  actor_rollout_ref.rollout.multi_turn.format: 'hermes'
+  actor_rollout_ref.model.path: '${BASE_MODEL}'
+  actor_rollout_ref.model.enable_gradient_checkpointing: true
+  actor_rollout_ref.model.use_remove_padding: true
+  actor_rollout_ref.actor.optim.lr: 1.0e-6
+  actor_rollout_ref.actor.use_kl_loss: true
+  actor_rollout_ref.actor.kl_loss_coef: 0.01
+  actor_rollout_ref.actor.clip_ratio_low: 0.2
+  actor_rollout_ref.actor.clip_ratio_high: 0.3
+  actor_rollout_ref.actor.fsdp_config.param_offload: false
+  actor_rollout_ref.actor.fsdp_config.optimizer_offload: false
+  # H100 94 GB has enough headroom for ref weights on-GPU (saves PCIe transfer overhead vs offload).
+  actor_rollout_ref.ref.fsdp_config.param_offload: false
+  actor_rollout_ref.rollout.name: 'vllm'
+  # N_GPUS=4 shards the actor to ~2 GB/GPU so post-rollout GPU memory fragmentation is not
+  # a problem (unlike the smoke test where N_GPUS=1 keeps the full 8 GB actor on-GPU alongside
+  # the 42 GB vLLM allocation). Explicitly set false so the intent is clear.
+  actor_rollout_ref.rollout.free_cache_engine: false
+  # util=0.45 on H100 94 GB = 42.3 GB vLLM budget per GPU (16 GB model + 26.3 GB KV cache).
+  # Full budget breakdown is in the file header comment above.
+  actor_rollout_ref.rollout.gpu_memory_utilization: 0.45
+  # Disable vLLM prefix caching to avoid stale-block CUDA errors in vLLM v0.10.1.1's V1
+  # engine after a LoRA adapter swap. Manifested three times:
+  #   ft_23028433 (step 2):  "CUDA error: an illegal memory access" at sampled_token_ids.tolist().
+  #   ft_23031012 (step 21): "CUDA error: invalid argument" at flash_attn.py:330.
+  #   ft_23060623 (step 30): identical flash_attn.py:330 crash (patch was dead code, see below).
+  #
+  # WARNING: this line is a SILENT NO-OP. VERL's build_cli_args_from_config
+  # (verl/.../vllm_rollout/utils.py) silently drops bool False values, and vLLM's V1
+  # default is True (BooleanOptionalAction). The monkey-patch in async_server.py was the
+  # intended fix, but verl 0.7.1 hardcodes vLLMHttpServer and ignores the
+  # custom_async_server config → PatchedvLLMServer is never instantiated → patch never runs.
+  #
+  # The ACTUAL fix is in scripts/launch_verl.py: it injects
+  # no_enable_prefix_caching=True via engine_kwargs.vllm (Bug 5 workaround — True bools
+  # DO pass through build_cli_args_from_config, unlike False). See CHANGELOG_ft_debugging.md.
+  actor_rollout_ref.rollout.enable_prefix_caching: false
+  # Cap vLLM context to actual training sequence length (max_prompt + max_response = 18432).
+  # Without this, vLLM defaults to Qwen3-8B's native 40960-token context, consuming far more
+  # KV memory than needed and risking "no available memory for cache blocks" at init time.
+  actor_rollout_ref.rollout.max_model_len: 18432
+  actor_rollout_ref.rollout.max_num_batched_tokens: 18432
+  # Decode parallelism scales with max_num_seqs (vLLM uses paged KV, so per-sequence
+  # consumption is per-actual-length, not max_model_len). Raised from 64 to feed
+  # N_WORKERS=4 worth of concurrent rollouts (batch=32 × n=8 = 256 episodes in flight;
+  # the scheduler will only ever instantiate what fits in the KV pool).
+  actor_rollout_ref.rollout.max_num_seqs: 128
+  actor_rollout_ref.rollout.tensor_model_parallel_size: '${ROLLOUT_TP_SIZE}'
+  trainer.n_gpus_per_node: '${N_GPUS}'
+  trainer.logger: ['console', 'wandb']
+  trainer.project_name: '${PROJECT_NAME}'
+  trainer.experiment_name: '${EXPERIMENT_NAME}'
+  # Step-based val + save: 56 steps (1800/32, one epoch) → ~11 evals + 11 saves.
+  # save_freq == test_freq so every saved checkpoint has a fresh val/reward for best-tracking;
+  # _rotate_checkpoints keeps only latest_checkpoint/ and best_checkpoint/ symlinks (older dirs
+  # are deleted asynchronously in trainer.py).
+  trainer.save_freq: 5
+  trainer.test_freq: 5
+  # true: post-epoch val/checkpoint; false: every test_freq/save_freq steps.
+  trainer.val_every_epoch: false
+  trainer.save_every_epoch: false
+  # 1, not 2. The cosine schedule spans total_training_steps = steps_per_epoch *
+  # total_epochs, so total_epochs sets how fast low_t decays, not just how long the run
+  # is. With 2 epochs the span is 112 steps, but 012 (job 25762046) measured 71 min/step
+  # at this batch shape, so the 72 h wall stops the run near step 58 - and low_t would
+  # still be ~0.47 there, i.e. the prefix is still half the demonstration and the run
+  # never reaches the near-on-policy phase the paper's schedule ends in (Appendix A.2).
+  # The GRPO reference run (ft_23210365) hit the same wall at 82 of 112 steps, which for
+  # plain GRPO costs only training time; for Prefix-RFT it truncates the curriculum.
+  # 1 epoch = 56 steps ~ 66 h, so the decay completes inside the wall. Even a stop at
+  # step 54 leaves low_t = 0.053, essentially the 0.05 target.
+  trainer.total_epochs: 1
+  trainer.val_before_train: true
+  trainer.critic_warmup: 0
+  algorithm.use_kl_in_reward: false
+  # ── Resume from ft_23153423 global_step_25 ──
+  # ft_23153423 completed steps 21-27 (rolled over from ft_23031012's step 20 checkpoint),
+  # then crashed at step 28 training with a NCCL collective mismatch (Bug 8, now fixed by
+  # use_dynamic_bsz=False in launch_verl.py). Last saved checkpoint: global_step_25
+  # (save_freq=5; steps 26-27 trained but step 28 crashed before next save).
+  # global_step_25/actor/ has lora_adapter/, optim_world_size_4_rank_{0-3}.pt,
+  # extra_state_world_size_4_rank_{0-3}.pt. No model_world_size_*.pt needed (LoRA: only
+  # optimizer+extra loaded; base weights come from HF cache, adapter from lora.resume_adapter_path).
+  # trainer.resume_mode: 'resume_path'
+  # trainer.resume_from_path: '/scratch-shared/azywot/fine_tuning/lora_adapters/qwen3-8b-grpo-search-math/28-05-2026_06-22-23153423/global_step_25'
+
+lora:                     # applied only when USE_LORA=true
+  rank: 64
+  alpha: 64               # alpha=rank → scaling factor 1.0 (neutral LoRA initialisation)
+  target_modules: "all-linear"
+  # Warm-start the PEFT adapter BEFORE the optimizer state is loaded on top.
+  # Must point at the same global_step_N/actor/lora_adapter as trainer.resume_from_path above.
+  # resume_adapter_path: '/scratch-shared/azywot/fine_tuning/lora_adapters/qwen3-8b-grpo-search-math/28-05-2026_06-22-23153423/global_step_25/actor/lora_adapter'
+  # merge: false           # Set true only when using the SGLang rollout backend; vLLM uses false (default).

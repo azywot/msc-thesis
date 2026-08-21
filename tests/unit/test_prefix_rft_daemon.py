@@ -9,8 +9,14 @@ covered by the import check in 009_run_tests_for_prefix_rft.job.
 
 import pytest
 
-from verl_ext.prefix_rft.dispatch import prefix_k_for
+from verl_ext.prefix_rft.dispatch import (
+    prefix_k_for,
+    prefix_l_for,
+    prefix_spec_for,
+    read_prefix_spec,
+)
 from verl_ext.prefix_rft.masks import build_prefix_mask
+from verl_ext.prefix_rft.schedule import PrefixStepSchedule
 
 
 # --------------------------------------------------------------------------- #
@@ -53,6 +59,38 @@ def test_turns_empty_on_both_sides_are_skipped_like_the_base_daemon_does():
 def test_a_turn_with_a_prompt_but_no_response_is_kept():
     traces = [{"prompt_ids": [9], "response_ids": [], "is_prefix": True}]
     assert build_prefix_mask(traces, max_response_length=2) == [[0, 0]]
+
+
+def test_mask_marks_only_the_replayed_head_of_a_split_turn():
+    """Token mode hands the model the first r tokens of a turn and it writes the
+    rest, so the row is 1 up to r and 0 after."""
+    traces = [{"prompt_ids": [9], "response_ids": [1, 2, 3, 4], "is_prefix": True, "prefix_len": 2}]
+    assert build_prefix_mask(traces, max_response_length=6) == [[1, 1, 0, 0, 0, 0]]
+
+
+def test_prefix_len_is_clamped_to_the_truncated_response():
+    traces = [
+        {"prompt_ids": [9], "response_ids": [1, 2, 3, 4, 5], "is_prefix": True, "prefix_len": 5}
+    ]
+    assert build_prefix_mask(traces, max_response_length=3) == [[1, 1, 1]]
+
+
+def test_a_fully_replayed_turn_needs_no_prefix_len():
+    """Step mode writes is_prefix only. It must keep meaning 'the whole turn'."""
+    traces = [{"prompt_ids": [9], "response_ids": [1, 2, 3], "is_prefix": True}]
+    assert build_prefix_mask(traces, max_response_length=4) == [[1, 1, 1, 0]]
+
+
+def test_prefix_len_without_is_prefix_still_marks_tokens():
+    traces = [{"prompt_ids": [9], "response_ids": [1, 2, 3], "prefix_len": 1}]
+    assert build_prefix_mask(traces, max_response_length=3) == [[1, 0, 0]]
+
+
+def test_a_zero_prefix_len_on_a_prefixed_turn_is_read_as_the_whole_turn():
+    """0 is the absent-value default, so it cannot also mean 'no tokens'. A turn
+    that genuinely replayed nothing carries is_prefix=False."""
+    traces = [{"prompt_ids": [9], "response_ids": [1, 2], "is_prefix": True, "prefix_len": 0}]
+    assert build_prefix_mask(traces, max_response_length=2) == [[1, 1]]
 
 
 # --------------------------------------------------------------------------- #
@@ -194,3 +232,265 @@ def test_lookup_uses_the_question_not_an_index():
         global_step=0,
     )
     assert seen == ["what is 2+2"]
+
+
+# --------------------------------------------------------------------------- #
+# token-mode dispatch                                                          #
+# --------------------------------------------------------------------------- #
+
+
+class _LSchedule(_Schedule):
+    def __init__(self, l=0.6):
+        super().__init__()
+        self._l = l
+        self.l_calls = []
+
+    def sample_l(self, global_step):
+        self.l_calls.append(global_step)
+        return self._l, 0.1, 0.95
+
+
+def test_token_mode_dispatches_the_raw_fraction():
+    sched = _LSchedule(l=0.6)
+    l = prefix_l_for(
+        sample={"question": "q"},
+        rollout_index=0,
+        is_train=True,
+        schedule=sched,
+        demo_store=_Store(3),
+        n_prefixed_rollouts=1,
+        global_step=7,
+    )
+    assert l == pytest.approx(0.6)
+    assert sched.l_calls == [7]
+
+
+def test_token_mode_prefixes_a_single_decision_demonstration():
+    """Step mode cannot: k <= m - 1 = 0. The token guard is applied to the token
+    total instead, so these 273 questions become prefixable."""
+    l = prefix_l_for(
+        sample={"question": "q"},
+        rollout_index=0,
+        is_train=True,
+        schedule=_LSchedule(l=0.6),
+        demo_store=_Store(1),
+        n_prefixed_rollouts=1,
+        global_step=0,
+    )
+    assert l == pytest.approx(0.6)
+
+
+def test_token_mode_skips_questions_with_no_demonstration():
+    assert (
+        prefix_l_for(
+            sample={"question": "q"},
+            rollout_index=0,
+            is_train=True,
+            schedule=_LSchedule(),
+            demo_store=_Store(0),
+            n_prefixed_rollouts=1,
+            global_step=0,
+        )
+        == 0.0
+    )
+
+
+def test_token_mode_never_prefixes_validation_or_extra_rollouts():
+    kwargs = dict(
+        sample={"question": "q"},
+        schedule=_LSchedule(),
+        demo_store=_Store(3),
+        n_prefixed_rollouts=1,
+        global_step=0,
+    )
+    assert prefix_l_for(rollout_index=0, is_train=False, **kwargs) == 0.0
+    assert prefix_l_for(rollout_index=1, is_train=True, **kwargs) == 0.0
+
+
+def test_the_spec_carries_exactly_one_key_per_mode():
+    kwargs = dict(
+        sample={"question": "q"},
+        rollout_index=0,
+        is_train=True,
+        demo_store=_Store(3),
+        n_prefixed_rollouts=1,
+        global_step=0,
+    )
+    assert prefix_spec_for(schedule=_Schedule(k=2), mode="steps", **kwargs) == {"prefix_k": 2}
+    assert prefix_spec_for(schedule=_LSchedule(l=0.6), mode="tokens", **kwargs) == pytest.approx(
+        {"prefix_l": 0.6}
+    )
+
+
+def test_the_spec_still_carries_its_key_when_nothing_is_prefixed():
+    """The worker warns when its key is missing entirely, because that means dispatch
+    broke. A non-prefixed rollout must carry the key with a zero, not drop it."""
+    kwargs = dict(
+        sample={"question": "q"},
+        rollout_index=5,
+        is_train=True,
+        demo_store=_Store(3),
+        n_prefixed_rollouts=1,
+        global_step=0,
+    )
+    assert prefix_spec_for(schedule=_Schedule(), mode="steps", **kwargs) == {"prefix_k": 0}
+    assert prefix_spec_for(schedule=_LSchedule(), mode="tokens", **kwargs) == {"prefix_l": 0.0}
+
+
+def test_an_unknown_mode_is_refused():
+    with pytest.raises(ValueError, match="unknown prefix mode"):
+        prefix_spec_for(
+            sample={"question": "q"},
+            rollout_index=0,
+            is_train=True,
+            schedule=_Schedule(),
+            demo_store=_Store(3),
+            n_prefixed_rollouts=1,
+            global_step=0,
+            mode="fractions",
+        )
+
+
+# --------------------------------------------------------------------------- #
+# reading the dispatched prefix back out in the worker                          #
+# --------------------------------------------------------------------------- #
+
+
+def test_a_prefix_l_payload_reads_as_token_mode():
+    assert read_prefix_spec({"question": "q", "prefix_l": 0.8}) == ("tokens", 0.8)
+
+
+def test_a_prefix_k_payload_reads_as_step_mode():
+    assert read_prefix_spec({"question": "q", "prefix_k": 2}) == ("steps", 2)
+
+
+def test_both_keys_at_once_is_refused():
+    """One key per mode is the whole reason the worker cannot disagree with the
+    driver. Both arriving means that invariant is already broken."""
+    with pytest.raises(RuntimeError, match="disagree about prefix_rft.mode"):
+        read_prefix_spec({"prefix_k": 1, "prefix_l": 0.5})
+
+
+def test_neither_key_reads_as_no_dispatch():
+    assert read_prefix_spec({"question": "q"}) == (None, 0)
+    assert read_prefix_spec(None) == (None, 0)
+
+
+def test_a_null_value_reads_as_a_zero_of_the_right_type():
+    assert read_prefix_spec({"prefix_l": None}) == ("tokens", 0.0)
+    assert read_prefix_spec({"prefix_k": None}) == ("steps", 0)
+
+
+# --------------------------------------------------------------------------- #
+# min_demo_decisions: making the two modes eligible on the same questions       #
+# --------------------------------------------------------------------------- #
+
+
+def _spec_kwargs(n_steps, **over):
+    kwargs = dict(
+        sample={"question": "q"},
+        rollout_index=0,
+        is_train=True,
+        demo_store=_Store(n_steps),
+        n_prefixed_rollouts=1,
+        global_step=0,
+    )
+    kwargs.update(over)
+    return kwargs
+
+
+def test_token_mode_can_prefix_a_single_decision_question_by_default():
+    """The default is the mode's natural behaviour: a token budget needs no second
+    decision, so all 1358 demonstrated questions are eligible."""
+    spec = prefix_spec_for(schedule=_LSchedule(l=0.6), mode="tokens", **_spec_kwargs(1))
+    assert spec["prefix_l"] == pytest.approx(0.6)
+
+
+def test_min_demo_decisions_makes_token_mode_skip_what_step_mode_cannot_reach():
+    """Step mode's k <= m-1 guard leaves single-decision questions unprefixable. Set
+    min_demo_decisions to 2 and token mode skips exactly the same ones, so a
+    steps-vs-tokens comparison is not confounded by which questions carry a prefix."""
+    spec = prefix_spec_for(
+        schedule=_LSchedule(l=0.6), mode="tokens", min_demo_decisions=2, **_spec_kwargs(1)
+    )
+    assert spec == {"prefix_l": 0.0}
+
+
+def test_min_demo_decisions_leaves_multi_decision_questions_alone():
+    spec = prefix_spec_for(
+        schedule=_LSchedule(l=0.6), mode="tokens", min_demo_decisions=2, **_spec_kwargs(2)
+    )
+    assert spec["prefix_l"] == pytest.approx(0.6)
+
+
+def test_min_demo_decisions_applies_to_step_mode_too():
+    """It gates eligibility, not a mode. A value above 2 must bind in both modes or
+    the two configs would silently mean different things."""
+    assert prefix_spec_for(
+        schedule=_Schedule(k=1), mode="steps", min_demo_decisions=4, **_spec_kwargs(3)
+    ) == {"prefix_k": 0}
+    assert prefix_spec_for(
+        schedule=_Schedule(k=1), mode="steps", min_demo_decisions=4, **_spec_kwargs(4)
+    ) == {"prefix_k": 1}
+
+
+def test_min_demo_decisions_of_two_is_a_no_op_for_step_mode():
+    """Step mode already cannot prefix m=1, so matching the modes must not change it."""
+    for n in (1, 2, 3):
+        default = prefix_spec_for(schedule=_Schedule(k=1), mode="steps", **_spec_kwargs(n))
+        gated = prefix_spec_for(
+            schedule=_Schedule(k=1), mode="steps", min_demo_decisions=2, **_spec_kwargs(n)
+        )
+        assert default == gated, f"m={n}"
+
+
+def test_both_modes_draw_the_same_l_sequence_from_the_same_seed():
+    """The steps-vs-tokens comparison is paired, and quietly depends on this.
+
+    Both modes take exactly one draw per prefixed rollout and skip the draw for the
+    same ineligible questions, so with one seed the same question at the same step
+    gets the same l. The only difference between the runs is how l becomes a prefix.
+    Add a second draw to either mode and the runs silently stop being paired, with
+    nothing to show it; hence this test.
+    """
+    questions = [("q%d" % i, 1 if i % 5 == 0 else 3) for i in range(40)]
+
+    def draws(mode, min_dec):
+        # The real schedule, not _Schedule: sample_k calls sample_l internally, and a
+        # fake that does not model that would make this test pass without testing
+        # anything. PrefixStepSchedule imports no verl, so it is usable here.
+        sched = PrefixStepSchedule(
+            low_init=0.95, low_target=0.05, high=0.95, n_steps=56, seed=42
+        )
+        seen = []
+        real = sched.sample_l
+
+        def spy(global_step):
+            out = real(global_step=global_step)
+            seen.append(round(out[0], 10))
+            return out
+
+        sched.sample_l = spy
+        for step in range(4):
+            for q, m in questions:
+                for j in range(8):
+                    prefix_spec_for(
+                        sample={"question": q},
+                        rollout_index=j,
+                        is_train=True,
+                        schedule=sched,
+                        demo_store=_Store(m),
+                        n_prefixed_rollouts=1,
+                        global_step=step,
+                        mode=mode,
+                        min_demo_decisions=min_dec,
+                    )
+        return seen
+
+    steps_draws = draws("steps", 1)
+    token_draws = draws("tokens", 2)
+    assert len(steps_draws) > 0, "the simulation took no draws; the test proves nothing"
+    assert steps_draws == token_draws, (
+        f"the modes consumed the schedule differently: {len(steps_draws)} draws against "
+        f"{len(token_draws)}. The two runs are no longer paired."
+    )

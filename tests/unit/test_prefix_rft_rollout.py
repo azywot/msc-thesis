@@ -10,7 +10,11 @@ import json
 
 import pytest
 
-from fine_tuning.prefix_replay import ReplayController, ReplayToolRegistry
+from fine_tuning.prefix_replay import (
+    ReplayController,
+    ReplayProvider,
+    ReplayToolRegistry,
+)
 
 
 class _FakeTokenizer:
@@ -24,6 +28,29 @@ class _FakeTokenizer:
     def encode(self, text, add_special_tokens=False):
         assert add_special_tokens is False
         return [ord(c) for c in text]
+
+
+class _RoundTripTokenizer(_FakeTokenizer):
+    """_FakeTokenizer plus a decode that round-trips, since ord/chr is a bijection."""
+
+    def decode(self, ids):
+        return "".join(chr(i) for i in ids)
+
+
+class _LossyTokenizer(_RoundTripTokenizer):
+    """A prefix ending on "n" does not survive the round trip.
+
+    Stands in for a real tokenizer splitting a mergeable pair: the decoded text
+    re-encodes to more ids than it came from, which would shift every position in the
+    mask. Only ``decode`` lies, so the decision token lengths ``from_token_fraction``
+    measures are unaffected and the budget arithmetic stays readable.
+    """
+
+    def decode(self, ids):
+        text = super().decode(ids)
+        if text.endswith("n"):
+            return text + "?"
+        return text
 
 
 def _steps():
@@ -217,3 +244,203 @@ def test_the_proxies_expose_every_dunder_their_target_defines():
         f"ReplayToolRegistry does not define {sorted(missing)}; __getattr__ does not "
         "cover special methods, so these would fail on the proxy."
     )
+
+
+# --------------------------------------------------------------------------- #
+# token mode: a prefix measured in tokens, which can split a decision           #
+# --------------------------------------------------------------------------- #
+
+
+def test_token_fraction_replays_whole_decisions_then_splits_one():
+    # responses are "plan" (4), "call" (4), "final" (5); total 13.
+    # l = 0.8 -> budget 10: two whole decisions (8) then 2 tokens of "final".
+    ctrl = ReplayController.from_token_fraction(_steps(), l=0.8, tokenizer=_RoundTripTokenizer())
+    assert ctrl.k == 2
+    assert ctrl.split_index == 2
+    assert ctrl.split_tokens == 2
+
+
+def test_the_split_turn_is_served_after_the_whole_ones():
+    ctrl = ReplayController.from_token_fraction(_steps(), l=0.8, tokenizer=_RoundTripTokenizer())
+    payload = _payload([{"role": "user", "content": "ab"}])
+    assert ctrl.next_response(payload)["text"] == "plan"
+    assert ctrl.next_response(payload)["text"] == "call"
+    assert ctrl.next_response(payload) is None
+    partial = ctrl.next_partial(payload)
+    assert partial["prefix_text"] == "fi"
+    assert partial["prefix_ids"] == [ord("f"), ord("i")]
+    assert partial["prompt_token_ids"] == [2]
+
+
+def test_the_split_is_served_only_once():
+    ctrl = ReplayController.from_token_fraction(_steps(), l=0.8, tokenizer=_RoundTripTokenizer())
+    payload = _payload([{"role": "user", "content": "ab"}])
+    ctrl.next_response(payload)
+    ctrl.next_response(payload)
+    assert ctrl.next_partial(payload) is not None
+    assert ctrl.next_partial(payload) is None
+
+
+def test_no_partial_is_offered_before_the_whole_decisions_are_done():
+    ctrl = ReplayController.from_token_fraction(_steps(), l=0.8, tokenizer=_RoundTripTokenizer())
+    assert ctrl.next_partial(_payload([{"role": "user", "content": "ab"}])) is None
+
+
+def test_a_boundary_landing_on_a_decision_edge_offers_no_partial():
+    # budget 8 is exactly "plan" + "call".
+    ctrl = ReplayController.from_token_fraction(
+        _steps(), l=8 / 13, tokenizer=_RoundTripTokenizer()
+    )
+    payload = _payload([{"role": "user", "content": "ab"}])
+    assert ctrl.split_index is None
+    ctrl.next_response(payload)
+    ctrl.next_response(payload)
+    assert ctrl.next_partial(payload) is None
+
+
+def test_a_split_decision_does_not_arm_the_teacher_tool_result():
+    """The model writes its own tool call after the prefill, so the teacher's stored
+    result must not be served for it."""
+    steps = [
+        {"response": "plan", "tool_name": None, "tool_result": None},
+        {"response": "call", "tool_name": "web_search", "tool_result": "hits"},
+    ]
+    # total 8, l = 0.75 -> budget 6: "plan" whole, then 2 tokens of "call".
+    ctrl = ReplayController.from_token_fraction(steps, l=0.75, tokenizer=_RoundTripTokenizer())
+    payload = _payload([{"role": "user", "content": "ab"}])
+    ctrl.next_response(payload)
+    assert ctrl.next_tool_result() is None
+    ctrl.next_partial(payload)
+    assert ctrl.next_tool_result() is None
+
+
+def test_a_fully_replayed_decision_still_arms_its_tool_result():
+    steps = [
+        {"response": "call", "tool_name": "web_search", "tool_result": "hits"},
+        {"response": "final", "tool_name": None, "tool_result": None},
+    ]
+    # total 9, l = 0.7 -> budget 6: "call" whole, then 2 tokens of "final".
+    ctrl = ReplayController.from_token_fraction(steps, l=0.7, tokenizer=_RoundTripTokenizer())
+    ctrl.next_response(_payload([{"role": "user", "content": "ab"}]))
+    assert ctrl.next_tool_result() == "hits"
+
+
+def test_the_boundary_backs_off_until_the_text_round_trips():
+    """A prefix whose text does not re-encode to itself is shortened, not sent.
+
+    l = 0.85 over 13 tokens gives a budget of 11: "plan" and "call" whole, then 3
+    tokens of "final". "fin" does not round-trip, so the boundary drops to "fi".
+    """
+    ctrl = ReplayController.from_token_fraction(_steps(), l=0.85, tokenizer=_LossyTokenizer())
+    payload = _payload([{"role": "user", "content": "ab"}])
+    ctrl.next_response(payload)
+    ctrl.next_response(payload)
+    assert ctrl.split_tokens == 3
+    partial = ctrl.next_partial(payload)
+    assert partial["prefix_ids"] == [ord("f"), ord("i")]
+    assert partial["prefix_text"] == "fi"
+
+
+def test_a_single_decision_demonstration_can_be_split():
+    steps = [{"response": "final", "tool_name": None, "tool_result": None}]
+    ctrl = ReplayController.from_token_fraction(steps, l=0.5, tokenizer=_RoundTripTokenizer())
+    assert ctrl.k == 0
+    assert ctrl.split_index == 0
+    partial = ctrl.next_partial(_payload([{"role": "user", "content": "ab"}]))
+    assert partial["prefix_text"] == "fi"
+
+
+def test_step_mode_controllers_have_no_split():
+    ctrl = ReplayController(_steps(), k=2, tokenizer=_FakeTokenizer())
+    assert ctrl.split_index is None
+    assert ctrl.split_tokens == 0
+    assert ctrl.next_partial(_payload([{"role": "user", "content": "ab"}])) is None
+
+
+# --------------------------------------------------------------------------- #
+# serving a split turn                                                          #
+# --------------------------------------------------------------------------- #
+
+
+class _FakeCapturing:
+    """Stands in for _CapturingProvider: records one turn per generated result."""
+
+    def __init__(self, reply="nal"):
+        self.captured_turns = []
+        self.calls = []
+        self._reply = reply
+
+    def generate(self, prompts):
+        from agent_engine.models.base import GenerationResult
+
+        self.calls.append(prompts[0])
+        self.captured_turns.append(
+            {"prompt_ids": [0], "response_ids": [1], "response_text": self._reply}
+        )
+        return [
+            GenerationResult(
+                text=self._reply,
+                finish_reason="stop",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                metadata={},
+                prompt_token_ids=[0],
+                response_token_ids=[1],
+            )
+        ]
+
+
+def test_provider_stitches_a_split_turn_back_into_one_turn():
+    ctrl = ReplayController.from_token_fraction(_steps(), l=0.8, tokenizer=_RoundTripTokenizer())
+    capturing = _FakeCapturing(reply="nal")
+    provider = ReplayProvider(capturing, ctrl)
+    payload = _payload([{"role": "user", "content": "ab"}])
+
+    provider.generate([payload])  # "plan"
+    provider.generate([payload])  # "call"
+    out = provider.generate([payload])  # split: "fi" + "nal"
+
+    turn = capturing.captured_turns[-1]
+    assert turn["response_text"] == "final"
+    assert turn["response_ids"] == [ord(c) for c in "final"]
+    assert turn["prefix_len"] == 2
+    assert turn["is_prefix"] is True
+    assert turn["prompt_ids"] == [2]
+    assert out[0].text == "final"
+
+
+def test_the_split_request_asks_vllm_to_continue_the_assistant_message():
+    ctrl = ReplayController.from_token_fraction(_steps(), l=0.8, tokenizer=_RoundTripTokenizer())
+    capturing = _FakeCapturing()
+    provider = ReplayProvider(capturing, ctrl)
+    payload = _payload([{"role": "user", "content": "ab"}])
+
+    provider.generate([payload])
+    provider.generate([payload])
+    provider.generate([payload])
+
+    sent = json.loads(capturing.calls[-1])
+    assert sent["continue_final_message"] is True
+    assert sent["messages"][-1] == {"role": "assistant", "content": "fi"}
+
+
+def test_whole_replays_record_their_full_length_as_the_prefix():
+    ctrl = ReplayController(_steps(), k=1, tokenizer=_RoundTripTokenizer())
+    capturing = _FakeCapturing()
+    provider = ReplayProvider(capturing, ctrl)
+    provider.generate([_payload([{"role": "user", "content": "ab"}])])
+    turn = capturing.captured_turns[-1]
+    assert turn["is_prefix"] is True
+    assert turn["prefix_len"] == len("plan")
+    assert capturing.calls == []  # never reached vLLM
+
+
+def test_after_the_split_the_provider_delegates_normally():
+    ctrl = ReplayController.from_token_fraction(_steps(), l=0.8, tokenizer=_RoundTripTokenizer())
+    capturing = _FakeCapturing()
+    provider = ReplayProvider(capturing, ctrl)
+    payload = _payload([{"role": "user", "content": "ab"}])
+    for _ in range(4):
+        provider.generate([payload])
+    last = capturing.captured_turns[-1]
+    assert "prefix_len" not in last
+    assert json.loads(capturing.calls[-1]).get("continue_final_message") is None

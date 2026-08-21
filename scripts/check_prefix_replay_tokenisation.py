@@ -42,14 +42,32 @@ def main() -> int:
     )
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     parser.add_argument("--n", type=int, default=10, help="demonstrations to check")
+    parser.add_argument(
+        "--mode",
+        choices=["steps", "tokens", "both"],
+        default="both",
+        help="which replay mode's tokenisation to check",
+    )
     args = parser.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     frame = pd.read_parquet(args.demos)
     store = DemoStore.from_parquet(args.demos)
 
+    # _fail returns 1, so OR-ing accumulates a non-zero exit from either half while
+    # still running both: one failing mode should not hide the other's result.
+    rc = 0
+    if args.mode in ("steps", "both"):
+        rc |= _check_steps_mode(store, frame, tokenizer, args.n, args.model)
+    if args.mode in ("tokens", "both"):
+        rc |= _check_token_mode(store, frame, tokenizer, args.n)
+    return rc
+
+
+def _check_steps_mode(store, frame, tokenizer, n, model):
+    """The existing check, unchanged: whole replayed turns tokenise as the proxy would."""
     checked = 0
-    for i in range(min(args.n, len(frame))):
+    for i in range(min(n, len(frame))):
         row = frame.iloc[i]
         steps = store.steps(row["question"])
         if not steps:
@@ -101,7 +119,107 @@ def main() -> int:
         return _fail("the tool -> user remap is not applied before templating")
 
     print(f"PASSED: replay tokenisation matches the proxy's on {checked} demonstrations,")
-    print(f"        and the tool -> user remap is applied ({args.model}).")
+    print(f"        and the tool -> user remap is applied ({model}).")
+    return 0
+
+
+def _check_token_mode(store, frame, tokenizer, n):
+    """Check the split turn the way the training batch will see it.
+
+    Two properties, both of which fail silently in a real run:
+
+    1. The teacher tokens sent as a prefill must survive the round trip through text.
+       ``_safe_prefix`` backs the boundary off until they do, so what it returns must
+       re-encode to itself exactly.
+    2. The response row the batch sees is ``prefix_ids + encode(continuation)``, and
+       ``prefix_mask`` marks its first ``len(prefix_ids)`` positions. Those ids must be
+       a true prefix of the teacher's own encoding of that decision, or the mask marks
+       tokens the teacher never wrote.
+    """
+    checked = 0
+    for i in range(min(n, len(frame))):
+        row = frame.iloc[i]
+        steps = store.steps(row["question"])
+        if not steps:
+            return _fail(f"row {i}: the store does not resolve its own question text")
+
+        messages = [
+            {"role": "system", "content": "sys prompt"},
+            {"role": "user", "content": row["question"]},
+        ]
+        payload = json.dumps({"messages": messages, "use_thinking": False})
+
+        ctrl = ReplayController.from_token_fraction(steps, l=0.8, tokenizer=tokenizer)
+        for _ in range(ctrl.k):
+            ctrl.next_response(payload)
+        partial = ctrl.next_partial(payload)
+        if partial is None:
+            # A budget that landed on a decision boundary. Legal, nothing to check.
+            continue
+
+        prefix_ids = partial["prefix_ids"]
+        if list(tokenizer.encode(partial["prefix_text"], add_special_tokens=False)) != list(
+            prefix_ids
+        ):
+            return _fail(
+                f"row {i}: the prefill text does not re-encode to the ids it came from; "
+                "_safe_prefix should have backed the boundary off further"
+            )
+
+        full = tokenizer.encode(
+            str(steps[ctrl.split_index]["response"]), add_special_tokens=False
+        )
+        if list(full[: len(prefix_ids)]) != list(prefix_ids):
+            return _fail(
+                f"row {i}: the prefill ids are not a prefix of the teacher's own encoding "
+                "of that decision; prefix_mask would mark tokens the teacher never wrote"
+            )
+
+        proxy_prompt = list(
+            tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=True)
+        )
+        if partial["prompt_token_ids"] != proxy_prompt:
+            return _fail(f"row {i}: the split turn's prompt ids differ from the proxy's")
+
+        # 3. The load-bearing one. The training row is prompt + prefix_ids + continuation,
+        # so prefix_ids must be exactly the tokens vLLM sees between the generation
+        # prompt and whatever the model writes next. Checking prompt_token_ids against
+        # the proxy above does NOT establish this: both sides are the same call, so it
+        # is true by construction and proves nothing about the prefill.
+        #
+        # Note the enable_thinking=False on the right-hand side. With thinking off,
+        # Qwen3's template emits "<think>\n\n</think>\n\n" after the generation prompt,
+        # and continue_final_message emits it too. The proxy omits it for every turn in
+        # this pipeline, prefixed or not, so the recorded prompt is 4 tokens shorter than
+        # what vLLM conditioned on. That gap is pre-existing and identical for whole
+        # replays, generated turns and split turns; it is deliberately not asserted here.
+        # What must hold is that nothing extra appears *between* those 4 tokens and the
+        # teacher's, which is what this comparison pins down.
+        continued = list(
+            tokenizer.apply_chat_template(
+                messages + [{"role": "assistant", "content": partial["prefix_text"]}],
+                continue_final_message=True,
+                add_generation_prompt=False,
+                tokenize=True,
+            )
+        )
+        rendered = list(
+            tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=True, enable_thinking=False
+            )
+        )
+        if continued != rendered + list(prefix_ids):
+            return _fail(
+                f"row {i}: the prefill does not concatenate. What vLLM conditions on under "
+                f"continue_final_message ({len(continued)} tokens) is not the rendered "
+                f"prompt ({len(rendered)}) followed by the teacher's {len(prefix_ids)} "
+                "tokens, so response_ids would not be the tokens the model actually saw "
+                "and prefix_mask would mark the wrong positions."
+            )
+
+        checked += 1
+
+    print(f"PASSED (token mode): {checked} split turns tokenise as the batch will see them")
     return 0
 
 

@@ -27,6 +27,7 @@ from typing import Optional
 
 from agent_engine.core.tool import ToolResult
 from agent_engine.models.base import GenerationResult
+from verl_ext.prefix_rft.budget import split_for_budget
 
 
 class ReplayController:
@@ -39,6 +40,11 @@ class ReplayController:
         self._served = 0
         # Armed by a replayed tool-call decision, consumed by the next tool lookup.
         self._pending_tool_result: Optional[str] = None
+        # Token mode only: the decision that straddles the budget, and how much of
+        # it the teacher supplies. None in step mode, where turns are never split.
+        self.split_index: Optional[int] = None
+        self.split_tokens = 0
+        self._split_served = False
 
     @property
     def exhausted(self) -> bool:
@@ -79,6 +85,82 @@ class ReplayController:
         out = self._pending_tool_result
         self._pending_tool_result = None
         return out
+
+    @classmethod
+    def from_token_fraction(cls, steps: list[dict], l: float, tokenizer) -> "ReplayController":
+        """Build a controller whose prefix is a token fraction of the whole demonstration.
+
+        The paper measures the prefix in tokens (A.2). Whole decisions are replayed
+        while they fit the budget, and the decision that straddles it is split, so the
+        model finishes a turn the teacher started.
+        """
+        lengths = [
+            len(tokenizer.encode(str(s["response"]), add_special_tokens=False)) for s in steps
+        ]
+        n_full, r = split_for_budget(lengths, l)
+        ctrl = cls(steps, k=n_full, tokenizer=tokenizer)
+        if r > 0:
+            # split_for_budget guarantees n_full < len(steps) whenever r > 0.
+            ctrl.split_index = n_full
+            ctrl.split_tokens = r
+        return ctrl
+
+    def next_partial(self, prompt_payload: str) -> Optional[dict]:
+        """Return the prefill for the split decision, or None.
+
+        Offered once, and only after every whole decision has been served. Unlike
+        ``next_response`` this deliberately does not arm ``_pending_tool_result``:
+        the model writes its own tool call after the prefill, so the teacher's stored
+        result does not apply to it.
+        """
+        if self.split_index is None or self._split_served:
+            return None
+        if self._served != self.split_index:
+            return None
+        self._split_served = True
+
+        step = self.steps[self.split_index]
+        ids = self.tokenizer.encode(str(step["response"]), add_special_tokens=False)
+        prefix_ids, prefix_text = self._safe_prefix(ids[: self.split_tokens])
+        if not prefix_ids:
+            # No head of the budget round-trips, so there is nothing safe to prefill and
+            # this turn runs on-policy. Vanishingly rare (a single token essentially
+            # always round-trips) but it is a silent downgrade, and an unlogged silent
+            # downgrade is the failure this whole pipeline is built to avoid.
+            print(
+                f"[ReplayController] split of decision {self.split_index} abandoned: no "
+                f"prefix of its first {self.split_tokens} tokens survives the text round "
+                "trip. This turn is on-policy and the rollout carries less prefix than "
+                "the schedule asked for."
+            )
+            return None
+
+        messages = self._decode_messages(prompt_payload)
+        prompt_ids = self.tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True
+        )
+        return {
+            "messages": messages,
+            "prefix_text": prefix_text,
+            "prefix_ids": list(prefix_ids),
+            "prompt_token_ids": list(prompt_ids),
+        }
+
+    def _safe_prefix(self, ids) -> tuple[list, str]:
+        """Longest head of ``ids`` whose decoded text re-encodes to itself.
+
+        The prefill travels to vLLM as text, so a boundary inside a mergeable token
+        pair comes back as different ids and shifts every prefix position in the mask.
+        Nothing downstream would notice: the run would train and report success. So
+        the boundary is backed off a token at a time until the round trip holds.
+        """
+        candidate = list(ids)
+        while candidate:
+            text = self.tokenizer.decode(candidate)
+            if list(self.tokenizer.encode(text, add_special_tokens=False)) == candidate:
+                return candidate, text
+            candidate = candidate[:-1]
+        return [], ""
 
     @staticmethod
     def _decode_messages(prompt_payload: str) -> list[dict]:
@@ -170,7 +252,11 @@ class ReplayProvider:
         for prompt in prompts:
             replayed = controller.next_response(prompt)
             if replayed is None:
-                results.extend(capturing.generate([prompt]))
+                partial = controller.next_partial(prompt)
+                if partial is not None:
+                    results.extend(self._generate_from_prefill(capturing, controller, partial))
+                else:
+                    results.extend(capturing.generate([prompt]))
                 continue
             # Record the replayed turn where the capturing provider records its
             # own, so the rollout builds one triplet per decision in order.
@@ -180,6 +266,7 @@ class ReplayProvider:
                     "response_ids": replayed["response_token_ids"],
                     "response_text": replayed["text"],
                     "is_prefix": True,
+                    "prefix_len": len(replayed["response_token_ids"]),
                 }
             )
             # Proof that replay reached the generation path, not merely that a
@@ -206,4 +293,62 @@ class ReplayProvider:
                     response_token_ids=replayed["response_token_ids"],
                 )
             )
+        return results
+
+    def _generate_from_prefill(self, capturing, controller, partial) -> list:
+        """Have the model finish a teacher turn, then record it as one whole turn.
+
+        vLLM formats the final assistant message open-ended under
+        ``continue_final_message`` and returns only the continuation. The daemon's proxy
+        will inject token IDs for the request it saw, whose prompt contains the partial
+        assistant message; those are wrong for training, so the captured turn is
+        overwritten here with the prompt the turn would have had and a response that is
+        teacher tokens followed by generated ones. This is what keeps the vendored daemon
+        out of the change.
+        """
+        payload = json.dumps(
+            {
+                "messages": partial["messages"]
+                + [{"role": "assistant", "content": partial["prefix_text"]}],
+                "use_thinking": False,
+                "continue_final_message": True,
+            }
+        )
+        before = len(capturing.captured_turns)
+        results = capturing.generate([payload])
+        if len(capturing.captured_turns) != before + 1:
+            raise RuntimeError(
+                "ReplayProvider expected exactly one captured turn for a split prefill, "
+                f"got {len(capturing.captured_turns) - before}. The turn cannot be "
+                "corrected, so prefix_mask would mark tokens that are not the teacher's."
+            )
+
+        continuation = results[0].text or ""
+        prefix_ids = list(partial["prefix_ids"])
+        cont_ids = list(controller.tokenizer.encode(continuation, add_special_tokens=False))
+
+        turn = capturing.captured_turns[-1]
+        turn["prompt_ids"] = list(partial["prompt_token_ids"])
+        turn["response_ids"] = prefix_ids + cont_ids
+        turn["response_text"] = partial["prefix_text"] + continuation
+        turn["is_prefix"] = True
+        turn["prefix_len"] = len(prefix_ids)
+
+        # Same reason as the whole-replay print: a run where the split never happened
+        # is otherwise indistinguishable from one where it did.
+        print(
+            f"[ReplayProvider] served split turn: {len(prefix_ids)} teacher tokens + "
+            f"{len(cont_ids)} generated"
+        )
+
+        # Return the whole turn, not just the continuation, so the orchestrator parses
+        # the complete decision.
+        results[0] = GenerationResult(
+            text=turn["response_text"],
+            finish_reason=results[0].finish_reason,
+            usage=results[0].usage,
+            metadata={"replayed": "partial"},
+            prompt_token_ids=turn["prompt_ids"],
+            response_token_ids=turn["response_ids"],
+        )
         return results

@@ -169,6 +169,22 @@ def main():
                 f"PREFIX_RFT is on but the demonstration store is missing: {demos_path}\n"
                 "Build it with: sbatch jobs/fine_tuning/008_build_prefix_demos.job"
             )
+        # The store is named twice in every config: PREFIX_DEMOS_PATH under env: for
+        # these workers, and prefix_rft.demos_path under python_args: for the driver.
+        # The worker ignores the Hydra key entirely, so setting only that one leaves the
+        # worker on the default path. If the default happens to exist, the driver
+        # dispatches prefixes against one store while the worker replays from another
+        # and nothing says so. Compare them here rather than let that run.
+        configured = str(python_args.get("prefix_rft.demos_path", "") or "")
+        if configured and os.path.abspath(configured) != os.path.abspath(demos_path):
+            raise ValueError(
+                "The demonstration store is configured twice and the two disagree:\n"
+                f"  env.PREFIX_DEMOS_PATH        = {demos_path}\n"
+                f"  python_args.prefix_rft.demos_path = {configured}\n"
+                "The rollout workers use the first and the driver uses the second, so "
+                "this run would dispatch prefixes for one store and replay from another. "
+                "Set both to the same path."
+            )
         agent = PrefixOrchestratorRollout(
             demos_path=demos_path,
             base_model=str(env.get("BASE_MODEL", "Qwen/Qwen3-8B")),
