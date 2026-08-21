@@ -227,7 +227,25 @@ entropy filter, never a separate imitation loss.
 
 ### Prefix-RFT config keys
 
-All under `prefix_rft.` in an experiment config's `python_args`, or as Hydra overrides.
+**Start by copying `experiments/configs/fine_tuning/config_prefix_rft.yaml`** (step
+mode) or `config_prefix_rft_tokens.yaml` (token mode) rather than assembling one from
+this table. Both are complete and every value cites the paper.
+
+**Prerequisite:** the demonstration store must exist before any of this runs. Build it
+with `sbatch jobs/fine_tuning/008_build_prefix_demos.job`.
+
+Prefix-RFT is configured in **two blocks of the same file**, and this catches people
+out. `env:` is read by both launcher scripts as environment variables; `python_args:`
+becomes Hydra overrides and reaches the training driver only. Three settings live in
+`env:`:
+
+| `env:` key | Accepted values | Read by | Meaning |
+|---|---|---|---|
+| `PREFIX_RFT` | `"true"` / `"false"` | both launchers | The real master switch. Sends `launch_verl.py` to `verl_ext.prefix_rft` and `train_orchestrator.py` to `PrefixOrchestratorRollout`. Without it the `prefix_rft.*` keys below are inert and you get a plain GRPO run. |
+| `PREFIX_DEMOS_PATH` | path to a parquet | rollout workers | Where the workers load the demonstration store. **Must match `prefix_rft.demos_path` below.** The workers ignore the Hydra key, so setting only that one leaves them on the default path and the driver dispatches prefixes for a store the workers never opened. `train_orchestrator.py` refuses to start if the two disagree. |
+| `BASE_MODEL` | HF model id | rollout workers | Tokenizer used to build replayed and split turns. Must be the model being trained. |
+
+Everything else is under `prefix_rft.` in `python_args:`, or passed as a Hydra override.
 
 | Key | Accepted values | Default | Meaning |
 |---|---|---|---|
@@ -244,8 +262,15 @@ All under `prefix_rft.` in an experiment config's `python_args`, or as Hydra ove
 | `singleton_baseline` | `none` / `group` | `none` | Baseline for a single-rollout group. `none` reproduces the reference implementation. |
 | `seed` | int | `42` | Seeds the schedule's sampler only. |
 
+One more key sits outside the `prefix_rft.` block:
+`+actor_rollout_ref.prefix_entropy_keep_ratio`, which must equal `entropy_keep_ratio`.
+The actor reads it from there because verl turns `actor_rollout_ref.actor` into a
+dataclass that rejects undeclared keys. The leading `+` is required: it tells Hydra to
+append a key that is not in verl's schema, and without it the run fails at composition.
+
 Flags on `scripts/launch_verl.py`: `--prefix-mode {steps,tokens}` overrides `mode`;
-`--dry-run` composes every override and exits without touching a GPU.
+`--dry-run` composes every override and exits without touching a GPU, which is the
+cheapest way to check a config you have edited.
 
 ---
 
