@@ -1,0 +1,156 @@
+# experiments/configs/fine_tuning/config_prefix_rft_tiny_tokens8b.yaml
+# Prefix-RFT on two questions: the smallest run that still exercises every part of
+# the mechanism on real GPUs.
+#
+# This is not a smoke test of the *training* pipeline (config_prefix_rft_smoke8b.yaml
+# is that, on 8 questions). It is a test of Prefix-RFT specifically: it answers
+# "does a teacher prefix actually get replayed, masked, advantage-corrected and
+# entropy-clipped on a real H100 run?" in one training step, so the answer costs
+# minutes of GPU rather than hours.
+#
+# The two training questions are chosen, not sampled — see
+# data/training/prefix_rft/tiny/train/tiny_train.parquet, built from smoke rows 62
+# and 17. Both have exactly three teacher decisions (plan, tool call, final answer),
+# one going through web_search and one through code_generator. At global_step 0 the
+# schedule gives l = 0.95, so k = floor(0.95 x 3) = 2: plan and tool call are
+# replayed, and the final answer is generated on-policy. That is the shape the whole
+# method rests on — prefix tokens and continuation tokens in the same trajectory,
+# with a real reward at the end of it.
+#
+# rollout.n is 4 rather than the paper's 8, so the hybrid rollout is 1 of 4 and has
+# three on-policy peers to be centred against. That is enough for the advantage
+# correction to be doing arithmetic rather than falling back to a singleton group,
+# which is what this run needs to observe. It is NOT the paper's imitation/exploration
+# balance and no conclusion about whether Prefix-RFT helps should be drawn here.
+#
+# GPU layout is identical to 004_smoke_8b.job / 010_smoke_prefix_rft.job:
+#   GPU 0 (exclusive): frozen Qwen3-1.7B sub-agent at util=0.08 (~7.5 GB)
+#   GPU 1, GPU 2 (VERL, N_GPUS=2): Qwen3-8B, LoRA rank 64, param_offload during rollout
+# THINKING_MODE is NO, matching the production Prefix-RFT config and the run that
+# produced the demonstrations.
+#
+# Launch with: sbatch jobs/fine_tuning/014_tiny_prefix_rft_tokens.job
+
+env:
+  BASE_MODEL: 'Qwen/Qwen3-8B'
+  SUBAGENT_MODEL: 'Qwen/Qwen3-1.7B'
+  SUBAGENT_ENDPOINT: 'http://localhost:9998/v1'
+  N_GPUS: 2
+  ROLLOUT_TP_SIZE: 1
+  EXPERIMENT_NAME: 'qwen3-8b-prefix-rft-tiny-tokens'
+  PREFIX_RFT: "true"
+  PREFIX_DEMOS_PATH: 'data/training/prefix_rft/prefix_demos.parquet'
+  PROJECT_NAME: 'msc-thesis-fine-tuning'
+  BASE_DATA_DIR: 'data/training/prefix_rft/tiny'
+  ENABLE_TOOLS: ["web_search", "code_generator"]
+  # Two live tool turns is one more than the demonstrations use, so the policy can
+  # take a step of its own after the replay ends rather than being forced to answer.
+  TOOL_STEPS: 2
+  THINKING_MODE: 'NO'
+  TRAIN_TEMPERATURE: 0.7
+  TEST_TEMPERATURE: 0.0
+  N_WORKERS: 1
+  VERBOSITY: 'INFO'
+  USE_LORA: "true"
+  USE_SCRATCH_CHECKPOINTS: "false"
+  SAVE_OPTIMIZER: "false"   # nothing here is resumed from
+
+python_args:
+  # ---- Prefix-RFT --------------------------------------------------------
+  # Identical to config_prefix_rft.yaml. Every value traces to
+  # papers/PrefixRFT_2507.01679v3.md or repos/prefix_rft; this run changes the data
+  # and the batch shape, never the method's parameters.
+  prefix_rft.enable: true
+  prefix_rft.demos_path: 'data/training/prefix_rft/prefix_demos.parquet'
+  prefix_rft.n_prefixed_rollouts: 1
+  # THE ONE CHANGE from config_prefix_rft_tiny8b.yaml. The prefix is measured in
+  # tokens over the concatenated demonstration (paper A.2) instead of in whole
+  # decisions, so the decision that straddles the budget is split and the model
+  # finishes the turn the teacher started.
+  prefix_rft.mode: 'tokens'
+  prefix_rft.high: 0.95
+  prefix_rft.low_init: 0.95
+  # TEST-ONLY DEVIATION. The paper's target is 0.05 and the production config uses it.
+  # Here it is 0.9, because the cosine controller decays over total_training_steps, this
+  # run has exactly ONE step, and verl's global_steps starts at 1 — so on the only step
+  # it takes, the schedule is already fully decayed: low=0.05, l ~ U(0.05,0.95), and
+  # k = floor(l*3) is a coin flip that came up 0 for one question and 1 for the other
+  # (job 25753400). A curriculum needs many steps to mean anything; this run needs a
+  # deterministic prefix. At low_target=0.9, l in [0.9,0.95] puts the token budget at
+  # roughly 0.9 x T, which on a three-decision demonstration lands inside the final
+  # decision rather than on a boundary - so this run reliably exercises a SPLIT turn,
+  # which is the thing token mode exists to test.
+  prefix_rft.low_target: 0.9
+  prefix_rft.sampler_alpha: 1.0
+  prefix_rft.sampler_beta: 1.0
+  prefix_rft.entropy_keep_ratio: 0.2
+  prefix_rft.singleton_baseline: 'none'
+  prefix_rft.seed: 42
+  actor_rollout_ref.actor.calculate_entropy: true
+  # On actor_rollout_ref, NOT actor_rollout_ref.actor: verl converts the latter into
+  # an FSDPActorConfig dataclass that rejects undeclared keys (job 25751544).
+  +actor_rollout_ref.prefix_entropy_keep_ratio: 0.2
+  # ------------------------------------------------------------------------
+
+  agentflow.port: 9999
+  ray_init.num_cpus: 16
+  algorithm.adv_estimator: 'grpo'
+  data.train_files: '${BASE_DATA_DIR}/train/tiny_train.parquet'
+  data.val_files:
+    - '${BASE_DATA_DIR}/val/tiny_val.parquet'
+  # 2 questions, one batch, one optimiser step. Both questions are prefixable, so
+  # the step cannot pass by accident with k = 0 everywhere.
+  data.train_batch_size: 2
+  data.train_max_samples: 2
+  data.dataloader_num_workers: 0
+  data.max_prompt_length: 4096
+  data.max_response_length: 2048
+  data.truncation: 'truncate'
+  actor_rollout_ref.rollout.n: 4
+  # 2 questions x 4 rollouts x ~3 turns is ~24 transitions; a mini-batch of 2 keeps
+  # the floor-to-mini-batch step in _train_step from discarding any of them.
+  actor_rollout_ref.actor.ppo_mini_batch_size: 2
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu: 1
+  actor_rollout_ref.rollout.multi_turn.format: 'hermes'
+  actor_rollout_ref.model.path: '${BASE_MODEL}'
+  actor_rollout_ref.model.enable_gradient_checkpointing: true
+  actor_rollout_ref.model.use_remove_padding: true
+  actor_rollout_ref.actor.optim.lr: 1.0e-6
+  actor_rollout_ref.actor.use_kl_loss: true
+  actor_rollout_ref.actor.kl_loss_coef: 0.01
+  actor_rollout_ref.actor.clip_ratio_low: 0.2
+  actor_rollout_ref.actor.clip_ratio_high: 0.3
+  actor_rollout_ref.actor.fsdp_config.param_offload: true
+  actor_rollout_ref.actor.fsdp_config.optimizer_offload: true
+  actor_rollout_ref.ref.fsdp_config.param_offload: true
+  actor_rollout_ref.rollout.name: 'vllm'
+  actor_rollout_ref.rollout.free_cache_engine: true
+  actor_rollout_ref.rollout.gpu_memory_utilization: 0.45
+  actor_rollout_ref.rollout.max_model_len: 6144
+  actor_rollout_ref.rollout.max_num_batched_tokens: 6144
+  actor_rollout_ref.rollout.max_num_seqs: 64
+  actor_rollout_ref.rollout.tensor_model_parallel_size: '${ROLLOUT_TP_SIZE}'
+  trainer.n_gpus_per_node: '${N_GPUS}'
+  trainer.logger: ['console', 'wandb']
+  trainer.project_name: '${PROJECT_NAME}'
+  trainer.experiment_name: '${EXPERIMENT_NAME}'
+  trainer.save_freq: 1
+  # One validation pass, after the single training step. It is not here to measure
+  # anything; it is here because validation rollouts must never be prefixed, and a
+  # run with no validation would not show that.
+  trainer.test_freq: 1
+  trainer.save_every_epoch: false
+  trainer.val_every_epoch: false
+  trainer.total_epochs: 1
+  # Skipped: a pre-training validation pass would double the wall clock and this run
+  # is not measuring a before/after difference.
+  trainer.val_before_train: false
+  trainer.critic_warmup: 0
+  algorithm.use_kl_in_reward: false
+
+lora:
+  rank: 64
+  alpha: 64
+  target_modules: "all-linear"

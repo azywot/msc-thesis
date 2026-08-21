@@ -40,6 +40,12 @@ prefix_rft:
   # Paper A.2: "we sample 8 rollouts per prompt, and one of them starts with the
   # sampled prefix."
   n_prefixed_rollouts: 1
+  # How prefix length is measured. "steps" replays whole teacher decisions,
+  # k = clamp(floor(l * m), 0, m - 1), which is this project's adaptation.
+  # "tokens" is the paper's own measure (A.2): a token fraction of the whole
+  # demonstration, which can split a decision in half. Default "steps" so every
+  # existing config keeps its meaning.
+  mode: steps
   # Paper A.2: l ~ U(low_t, 0.95), low_t cosine-decaying 0.95 -> 0.05.
   high: 0.95
   low_init: 0.95

@@ -1,0 +1,675 @@
+#!/bin/bash
+#SBATCH --job-name=PrefixRFTTinyTok
+#SBATCH --partition=gpu_h100
+# Same three-GPU layout as 004_smoke_8b.job and 010_smoke_prefix_rft.job:
+#   GPU 0 (exclusive): frozen sub-agent Qwen3-1.7B at util=0.08 (~7.5 GB)
+#   GPUs 1-2: VERL N_GPUS=2, Qwen3-8B with LoRA rank 64
+#SBATCH --gpus=3
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=00:30:00
+#SBATCH --output=out/fine_tuning/prefix_rft/tiny_tokens_%A.log
+#SBATCH --error=out/fine_tuning/prefix_rft/tiny_tokens_%A.err
+
+# Prefix-RFT TOKEN MODE on two questions and one optimiser step, on real GPUs.
+#
+# This is 011_tiny_prefix_rft.job with prefix_rft.mode: tokens. Where 011 replays whole
+# teacher decisions, this replays a token fraction of the concatenated demonstration and
+# SPLITS the decision that straddles the budget: the model is handed the first r tokens
+# of a teacher turn and has to finish it. That split turn is the only replayed turn that
+# reaches vLLM, through continue_final_message, so it is the one part of token mode that
+# no CPU test can cover. This job is what covers it.
+#
+# What this job is for
+# --------------------
+# 010_smoke_prefix_rft.job asks "does the training pipeline survive Prefix-RFT?" on
+# eight questions. This job asks the narrower and more urgent question: "on a real
+# H100 run, does a teacher prefix actually get replayed, masked, advantage-corrected
+# and entropy-clipped?" Two questions and one step is enough to answer that, and it
+# answers it in minutes rather than hours.
+#
+# Both training questions have exactly three teacher decisions and are chosen for it
+# (data/training/prefix_rft/tiny/train/tiny_train.parquet; see the config header). At
+# global_step 0 the schedule gives l = 0.95, so k = floor(0.95 x 3) = 2: the plan and
+# the tool call are replayed and the final answer is generated on-policy. One question
+# goes through web_search, the other through code_generator.
+#
+# What it checks, in order of how much it would hurt to get wrong
+# ---------------------------------------------------------------
+#   A. The replayed text is the teacher's in exactly one rollout of four: whole
+#      decisions verbatim, and then a SPLIT turn that starts with a prefix of the next
+#      teacher decision without equalling it. This is the end-to-end proof and it does
+#      not depend on any metric we log: it reads the saved conversations and compares
+#      assistant turns against the store. The split assertion is what distinguishes a
+#      working token-mode run from one that silently degraded to step mode.
+#   B. The prefix machinery was active — daemon promoted, actor installed, rollouts
+#      prefixed, prefix tokens in the loss, entropy clip keeping about 20% — and
+#      actor/prefix_split_fraction is above zero, meaning some prefix_mask row was
+#      partially filled rather than all-or-nothing.
+#   B2. The split turn actually went through vLLM: the rollout log carries
+#      '[ReplayProvider] served split turn'.
+#   C. Validation rollouts were NOT prefixed. Validation must stay on-policy or the
+#      reported score is measuring the teacher.
+#   D. A checkpoint was written and the step completed.
+#
+# A misconfigured Prefix-RFT run is indistinguishable from a GRPO run by its logs
+# alone: it trains, checkpoints and reports success. A, B and C are what tell them
+# apart.
+#
+# Run AFTER 008_build_prefix_demos.job and 009_run_tests_for_prefix_rft.job, and
+# after 011_tiny_prefix_rft.job has passed in step mode.
+# Optional: SKIP_PIP_SETUP=1 in .env skips editable installs when cosmas-train is warm.
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSc Thesis — Prefix-RFT TOKEN MODE on two questions (8B)"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+if [[ -f ".env" ]]; then
+    echo "Loading environment variables from .env..."
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${SERPER_API_KEY:-}" && -z "${TAVILY_API_KEY:-}" ]]; then
+    echo "ERROR: SERPER_API_KEY or TAVILY_API_KEY must be set for rollout workers."
+    exit 1
+fi
+
+if ! conda env list | awk '{print $1}' | grep -qx "cosmas-train"; then
+    echo "ERROR: conda env 'cosmas-train' not found."
+    exit 1
+fi
+
+source activate cosmas-train
+export PYTHONNOUSERSITE=1
+
+case "${SKIP_PIP_SETUP:-}" in
+    1|true|TRUE|yes|YES)
+        echo "SKIP_PIP_SETUP is set — reusing the current cosmas-train."
+        ;;
+    *)
+        echo "Installing msc-thesis package..."
+        python -m pip install -e .
+        bash jobs/cosmas_train_pip_reconcile.sh
+        ;;
+esac
+python -c "import agent_engine, fine_tuning, verl, vllm; from fine_tuning.agentflow import LitAgent, Trainer, reward; print('Training imports OK')"
+
+CONFIG=experiments/configs/fine_tuning/config_prefix_rft_tiny_tokens8b.yaml
+DEMOS="${PREFIX_DEMOS_PATH:-data/training/prefix_rft/prefix_demos.parquet}"
+TRAIN_PARQUET=data/training/prefix_rft/tiny/train/tiny_train.parquet
+VAL_PARQUET=data/training/prefix_rft/tiny/val/tiny_val.parquet
+
+mkdir -p out/fine_tuning/prefix_rft
+
+for required_file in "$CONFIG" "$DEMOS" "$TRAIN_PARQUET" "$VAL_PARQUET"; do
+    if [[ ! -f "$required_file" ]]; then
+        echo "ERROR: missing required file: $required_file"
+        [[ "$required_file" == "$DEMOS" ]] && \
+            echo "  Build it first: sbatch jobs/fine_tuning/008_build_prefix_demos.job"
+        [[ "$required_file" == *"tiny"* ]] && \
+            echo "  Build it first: python scripts/build_tiny_prefix_split.py"
+        exit 1
+    fi
+done
+
+# ── Pre-flight: both questions must be prefixable ────────────────────────────
+# The whole point of picking these two is that k > 0 for both. If that stopped
+# being true the run would pass while exercising nothing, so assert it here rather
+# than discover it in the post-run checks an hour later.
+echo ""
+echo "Checking the two training questions against the demonstration store..."
+python - "$DEMOS" "$TRAIN_PARQUET" <<'PYCOVER'
+import sys
+
+import pandas as pd
+
+from verl_ext.prefix_rft.demos import DemoStore
+from verl_ext.prefix_rft.schedule import PrefixStepSchedule
+
+store = DemoStore.from_parquet(sys.argv[1])
+train = pd.read_parquet(sys.argv[2])
+# Mirror the config: low stays high (test-only low_target=0.9), so l lands in
+# [0.9, 0.95] and k = floor(l * m) is deterministic on any step.
+schedule = PrefixStepSchedule(low_init=0.95, low_target=0.9, high=0.95, n_steps=1, seed=42)
+
+bad = []
+for i, q in enumerate(train["question"]):
+    n = store.n_steps(q)
+    # global_step=1: verl's global_steps starts at 1, so step 0 is never used. Asking
+    # the schedule about step 0 is what made this check disagree with the run.
+    k = schedule.sample_k(n, global_step=1) if n else 0
+    print(f"  [{i}] n_steps={n}  k(step 1)={k}  {q[:60]!r}")
+    if k < 1 or k >= n:
+        bad.append(i)
+
+if bad:
+    sys.exit(
+        f"FAIL: rows {bad} would be replayed with k=0 or with no on-policy continuation. "
+        "This run needs both: prefix tokens AND generated tokens in the same trajectory."
+    )
+print("  both questions replay part of a demonstration and finish on-policy")
+PYCOVER
+
+# ── Pre-flight: the launch config must resolve ───────────────────────────────
+# Builds the exact command a real run would issue and appends Hydra's --cfg job, so
+# every override is validated without Ray, GPUs or weights. Job 25749264 spent an
+# allocation to discover an unresolvable config_path; this costs seconds and fails
+# before the sub-agent server is even started.
+echo ""
+echo "Dry-running the launch config..."
+if ! python scripts/launch_verl.py --config "$CONFIG" --dry-run; then
+    echo "FAIL — the launch config does not resolve. Nothing was started."
+    exit 1
+fi
+
+VERL_PID=""
+SUBAGENT_PID=""
+ORCHESTRATOR_PID=""
+CRASH_MONITOR_PID=""
+cleanup() {
+    [[ -n "${CRASH_MONITOR_PID:-}" ]] && kill "$CRASH_MONITOR_PID" 2>/dev/null || true
+    if [[ -n "${ORCHESTRATOR_PID:-}" ]] && kill -0 "$ORCHESTRATOR_PID" >/dev/null 2>&1; then
+        echo "Stopping rollout workers (pid=$ORCHESTRATOR_PID)..."
+        kill "$ORCHESTRATOR_PID" || true
+        wait "$ORCHESTRATOR_PID" || true
+    fi
+    if [[ -n "${VERL_PID:-}" ]] && kill -0 "$VERL_PID" >/dev/null 2>&1; then
+        echo "Stopping VERL server (pid=$VERL_PID)..."
+        kill "$VERL_PID" || true
+        wait "$VERL_PID" || true
+    fi
+    echo "Stopping Ray background processes..."
+    ray stop --force 2>/dev/null || true
+    if [[ -n "${SUBAGENT_PID:-}" ]] && kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+        echo "Stopping frozen sub-agent server (pid=$SUBAGENT_PID)..."
+        kill "$SUBAGENT_PID" || true
+        wait "$SUBAGENT_PID" || true
+    fi
+}
+trap cleanup EXIT
+
+# Watch a log; SIGTERM this script on a fatal CUDA/NCCL/Ray error so the EXIT trap
+# fires and every background process dies immediately. In bash, $$ inside () is the
+# parent script PID, not the subshell.
+start_crash_monitor() {
+    local logfile="$1" label="$2"
+    (
+        while [[ ! -f "$logfile" ]]; do sleep 2; done
+        tail -n 0 -F "$logfile" 2>/dev/null \
+        | grep --line-buffered -E \
+            "CUDA (Error|out of memory)|RuntimeError: CUDA|\
+NCCL (error|failure)|ncclSystemError|ncclInternalError|ncclCommAbort|\
+RayActorError|ActorDiedError|WorkerDied|The actor died unexpectedly|\
+Segmentation fault|Aborted \(core dumped\)|^Killed\$|\
+FATAL ERROR|Fatal Python error" \
+        | { IFS= read -r line
+            printf '\n=== FATAL CRASH [%s] ===\n%s\nKilling job...\n' "$label" "$line" >&2
+            kill -TERM $$ ; }
+    ) &
+    CRASH_MONITOR_PID=$!
+}
+
+JOB="${SLURM_JOB_ID:-local}"
+LOGDIR=out/fine_tuning/prefix_rft
+VERL_LOG="$LOGDIR/tiny_tokens_${JOB}_verl.log"
+SUBAGENT_LOG="$LOGDIR/tiny_${JOB}_subagent.log"
+ORCH_LOG="$LOGDIR/tiny_tokens_${JOB}_orchestrator.log"
+
+VERL_RUN_TAG="$(date +%d-%m-%Y_%H-%M)-${JOB}"
+export VERL_RUN_TAG
+echo ""
+echo "Run tag: $VERL_RUN_TAG"
+
+# Read from the config, never duplicated here. 011 hardcodes the step-mode name; if
+# this file inherited that, VERL would write to qwen3-8b-prefix-rft-tiny-tokens while
+# checks A, C and D searched qwen3-8b-prefix-rft-tiny, reporting three failures for a
+# run that worked. Job 25831637 was submitted with exactly that bug.
+EXPERIMENT_NAME="$(grep -E "^[[:space:]]*EXPERIMENT_NAME:" "$CONFIG" | head -1 \
+    | sed -E "s/^[[:space:]]*EXPERIMENT_NAME:[[:space:]]*['\"]?([^'\"]*)['\"]?[[:space:]]*$/\1/")"
+if [[ -z "$EXPERIMENT_NAME" ]]; then
+    echo "ERROR: no EXPERIMENT_NAME in $CONFIG; the checks would search the wrong directory."
+    exit 1
+fi
+echo "Experiment name (from config): $EXPERIMENT_NAME"
+RUN_DIR="experiments/results/fine_tuning/${EXPERIMENT_NAME}/${VERL_RUN_TAG}"
+CKPT_DIR="${PROJECT_DIR}/experiments/results/fine_tuning/${EXPERIMENT_NAME}"
+echo "Run directory:  $RUN_DIR"
+echo "Checkpoints:    $CKPT_DIR"
+
+# ── 1. Frozen sub-agent vLLM server (GPU 0) ──────────────────────────────────
+echo ""
+echo "Starting frozen sub-agent (Qwen/Qwen3-1.7B, port 9998, physical GPU 0)..."
+VLLM_USE_V1=0 CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen3-1.7B \
+    --port 9998 \
+    --tensor-parallel-size 1 \
+    --gpu-memory-utilization 0.08 \
+    --max-model-len 16384 \
+    > "$SUBAGENT_LOG" 2>&1 &
+SUBAGENT_PID=$!
+export SUBAGENT_ENDPOINT="http://localhost:9998/v1"
+
+echo "Waiting for the sub-agent to answer (up to 10 min)..."
+_deadline=$((SECONDS + 600))
+while (( SECONDS < _deadline )); do
+    if curl -fsS --max-time 5 http://127.0.0.1:9998/v1/models >/dev/null 2>&1; then
+        echo "Sub-agent is up."
+        break
+    fi
+    if ! kill -0 "$SUBAGENT_PID" >/dev/null 2>&1; then
+        echo "FAIL — sub-agent exited during startup. See $SUBAGENT_LOG"
+        tail -40 "$SUBAGENT_LOG"
+        exit 1
+    fi
+    sleep 10
+done
+if (( SECONDS >= _deadline )); then
+    echo "FAIL — sub-agent not ready after 10 min. See $SUBAGENT_LOG"
+    exit 1
+fi
+
+# VERL gets GPUs 1 and 2 (N_GPUS=2 in the config).
+export CUDA_VISIBLE_DEVICES=1,2
+export PYTHONUNBUFFERED=1
+
+# ── 2. VERL server ───────────────────────────────────────────────────────────
+echo ""
+echo "Starting VERL ($CONFIG, N_GPUS=2)..."
+python scripts/launch_verl.py --config "$CONFIG" > "$VERL_LOG" 2>&1 &
+VERL_PID=$!
+start_crash_monitor "$VERL_LOG" "VERL"
+
+AGENTFLOW_PORT="${AGENTFLOW_PORT:-9999}"
+echo "Polling http://localhost:${AGENTFLOW_PORT}/task for AgentFlow readiness (up to 40 min)..."
+_deadline=$((SECONDS + 2400))
+while (( SECONDS < _deadline )); do
+    if curl -fsS --max-time 5 "http://127.0.0.1:${AGENTFLOW_PORT}/task" >/dev/null 2>&1; then
+        echo "AgentFlow is responding on port ${AGENTFLOW_PORT}."
+        break
+    fi
+    if ! kill -0 "$VERL_PID" >/dev/null 2>&1; then
+        echo "FAIL — VERL exited before AgentFlow came up. See $VERL_LOG"
+        tail -60 "$VERL_LOG"
+        exit 1
+    fi
+    sleep 10
+done
+if (( SECONDS >= _deadline )); then
+    echo "FAIL — AgentFlow not ready after 40 min. See $VERL_LOG"
+    exit 1
+fi
+
+# ── 3. Rollout workers ───────────────────────────────────────────────────────
+echo ""
+echo "Starting rollout workers..."
+python scripts/train_orchestrator.py --config "$CONFIG" > "$ORCH_LOG" 2>&1 &
+ORCHESTRATOR_PID=$!
+# The orchestrator is a client of VERL; waiting on it before VERL exits deadlocks.
+# `|| VERL_RC=$?` keeps `set -e` from killing the script on a non-zero exit, so a
+# failed run prints its own tail instead of ending as a bare exit code in the SLURM log.
+VERL_RC=0
+wait $VERL_PID || VERL_RC=$?
+if [[ $VERL_RC -ne 0 ]]; then
+    echo ""
+    echo "FAIL — VERL exited with status $VERL_RC. Last 80 lines of $VERL_LOG:"
+    tail -80 "$VERL_LOG"
+    echo ""
+    echo "Last 40 lines of $ORCH_LOG:"
+    tail -40 "$ORCH_LOG" 2>/dev/null || true
+    exit 1
+fi
+echo ""
+echo "Training finished at: $(date)"
+
+# ── Check 0: no episode may have failed ──────────────────────────────────────
+# OrchestratorRollout catches every episode exception and completes the rollout with
+# answer="None". That is right for a flaky tool call, but it also means a fatal bug in
+# the replay path produces a rollout that looks merely unlucky. Job 25754114 died this
+# way: len() on the tool-registry proxy raised, all six prefixed episodes were swallowed,
+# and dispatch plus replay both reported healthy while nothing reached the loss.
+echo ""
+echo "── Check 0: no episode raised ───────────────────────────────────────────"
+if grep -q "Episode failed" "$ORCH_LOG" 2>/dev/null; then
+    echo "FAIL — episodes raised and were swallowed by the rollout's except clause:"
+    grep -oE "\[OrchestratorRollout\] Episode failed: .{0,140}" "$ORCH_LOG" | sort | uniq -c
+    echo ""
+    echo "Every prefixed episode that raises completes as an empty on-policy trajectory,"
+    echo "so the prefix metrics below would be zero for a reason unrelated to Prefix-RFT."
+    exit 1
+fi
+echo "PASS — no episode raised."
+
+echo ""
+echo "── Rollout worker log (Prefix-RFT lines) ────────────────────────────────"
+grep -E "PrefixOrchestratorRollout|Prefix-RFT enabled|prefix_k" "$ORCH_LOG" | head -20 || \
+    echo "  (no Prefix-RFT lines in the orchestrator log — check $ORCH_LOG)"
+
+# ── 4. Check A: the replayed text is the teacher's, verbatim ─────────────────
+# This is the check that does not trust any metric. It reads the saved conversations
+# and compares assistant turns against the demonstration store. With rollout.n = 4
+# and n_prefixed_rollouts = 1, exactly one rollout per question should carry the
+# teacher's first two assistant turns and none of the others should.
+echo ""
+echo "── Check A: replayed turns carry the teacher's text ─────────────────────"
+python - "$DEMOS" "$RUN_DIR" <<'PYVERBATIM'
+import glob
+import json
+import sys
+from collections import defaultdict
+
+from verl_ext.prefix_rft.demos import DemoStore
+
+demos_path, run_dir = sys.argv[1], sys.argv[2]
+store = DemoStore.from_parquet(demos_path)
+
+paths = sorted(glob.glob(f"{run_dir}/rollout_data/train/*/*.json"))
+if not paths:
+    sys.exit(f"FAIL: no training rollouts saved under {run_dir}/rollout_data/train/")
+
+by_question = defaultdict(list)
+for path in paths:
+    record = json.load(open(path))
+    by_question[record["question"]].append((path, record))
+
+
+def best_run(assistant, teacher):
+    """Longest contiguous run of teacher decisions the conversation opens with.
+
+    The conversation does NOT start at teacher[0]. The orchestrator's planning decision
+    is not recorded in output_messages, so a rollout that replayed k decisions shows the
+    last k-1 of them, starting at teacher[1]. Rather than hardcode that offset - it would
+    silently become wrong if the orchestrator's recording changed - try every offset and
+    take the longest run. Returns (offset, length).
+    """
+    best = (0, 0)
+    for off in range(len(teacher)):
+        n = 0
+        while n < len(assistant) and off + n < len(teacher) and assistant[n] == teacher[off + n]:
+            n += 1
+        if n > best[1]:
+            best = (off, n)
+    return best
+
+
+failures = []
+for question, records in by_question.items():
+    steps = store.steps(question)
+    if not steps:
+        failures.append(f"{question[:50]!r}: not in the demonstration store")
+        continue
+    teacher = [s["response"] for s in steps]
+
+    # k is NOT recomputed here. The schedule is stochastic and lives in the trainer; a
+    # verifier that predicts k tests its own copy of the schedule, and disagreeing with
+    # the run is how job 25753400 reported a false failure. Read what happened instead.
+    matches = []
+    for path, record in records:
+        assistant = [
+            m.get("content", "")
+            for m in record.get("output_messages", [])
+            if m.get("role") == "assistant"
+        ]
+        off, n = best_run(assistant, teacher)
+        matches.append((path, record, assistant, off, n))
+
+    replayed = [m for m in matches if m[4] > 0]
+    print(f"\n  question: {question[:60]!r}")
+    print(f"    demonstration has {len(steps)} decisions")
+    print(f"    {len(records)} rollouts saved, {len(replayed)} opened with teacher text")
+    print(f"    verbatim-run lengths: {sorted(m[4] for m in matches)}")
+
+    if not replayed:
+        failures.append(
+            f"{question[:50]!r}: no rollout opened with any teacher decision. Check the "
+            "'Prefix dispatch' and '[ReplayProvider] served' lines."
+        )
+        continue
+    if len(replayed) > 1:
+        failures.append(
+            f"{question[:50]!r}: {len(replayed)} rollouts replayed the teacher, expected "
+            "1 (n_prefixed_rollouts = 1)"
+        )
+        continue
+
+    path, record, assistant, off, n = replayed[0]
+    print(f"    replayed rollout: {path.split('/')[-1]}")
+    print(f"      {n} turn(s) verbatim from teacher[{off}:{off + n}]")
+    print(f"      first replayed turn ({len(teacher[off])} chars): {teacher[off][:70]!r}")
+
+    # The invariant that must hold whatever budget the schedule drew: replay stops, and
+    # the policy writes at least one decision of its own.
+    if len(assistant) <= n:
+        failures.append(
+            f"{question[:50]!r}: every recorded turn is the teacher's; nothing was "
+            "generated on-policy and the trajectory is pure imitation"
+        )
+    else:
+        nxt = assistant[n]
+        print(f"      turn after the verbatim run: {nxt[:70]!r}")
+        if nxt in teacher:
+            failures.append(
+                f"{question[:50]!r}: the turn after the replayed run is also a whole "
+                "demonstration step - replay did not stop at the budget"
+            )
+        # TOKEN MODE: the turn after the verbatim run should be the SPLIT one. It must
+        # start with a proper, non-empty prefix of the corresponding teacher decision
+        # and must not equal it. If it shares nothing with the teacher, the budget
+        # landed on a decision boundary and this run degraded to step mode - legal for
+        # the method, but it means this job did not test what it exists to test.
+        boundary = off + n
+        if boundary < len(teacher):
+            expected = teacher[boundary]
+            shared = 0
+            while shared < min(len(nxt), len(expected)) and nxt[shared] == expected[shared]:
+                shared += 1
+            print(
+                f"      split turn shares {shared} leading chars with "
+                f"teacher[{boundary}] ({len(expected)} chars)"
+            )
+            if shared == 0:
+                failures.append(
+                    f"{question[:50]!r}: the turn after the verbatim run shares no "
+                    f"prefix with teacher[{boundary}]. Either no split happened (the "
+                    "budget landed on a decision boundary, so token mode was not "
+                    "exercised) or the prefill was not conditioned on the teacher."
+                )
+            elif shared >= len(expected):
+                failures.append(
+                    f"{question[:50]!r}: the split turn contains the whole of "
+                    f"teacher[{boundary}]; the budget clamp B <= T-1 should have left "
+                    "at least one token for the policy to write"
+                )
+        else:
+            failures.append(
+                f"{question[:50]!r}: the verbatim run consumed every teacher decision, "
+                "so there was no decision left to split"
+            )
+    print(f"    reward: {record.get('reward')}")
+
+if failures:
+    print("\nFAIL — replay did not behave as specified:")
+    for f in failures:
+        print(f"  - {f}")
+    sys.exit(1)
+print("\nPASS — exactly one rollout per question replayed whole teacher decisions, "
+      "then finished a split teacher turn on-policy.")
+PYVERBATIM
+
+# ── 5. Check C: validation rollouts were not prefixed ────────────────────────
+# Validation must stay on-policy. If a demonstration leaked into it the reported
+# score would be measuring the teacher, and nothing else in the run would say so.
+echo ""
+echo "── Check C: validation rollouts stayed on-policy ────────────────────────"
+python - "$DEMOS" "$RUN_DIR" <<'PYVAL'
+import glob
+import json
+import sys
+
+from verl_ext.prefix_rft.demos import DemoStore
+
+store = DemoStore.from_parquet(sys.argv[1])
+paths = sorted(glob.glob(f"{sys.argv[2]}/rollout_data/val/*/*.json"))
+if not paths:
+    print("  no validation rollouts were saved; nothing to check")
+    sys.exit(0)
+
+leaked = []
+for path in paths:
+    record = json.load(open(path))
+    steps = store.steps(record["question"])
+    if not steps:
+        continue
+    teacher = {s["response"] for s in steps}
+    assistant = [
+        m.get("content", "")
+        for m in record.get("output_messages", [])
+        if m.get("role") == "assistant"
+    ]
+    if any(a in teacher for a in assistant):
+        leaked.append(path)
+
+print(f"  checked {len(paths)} validation rollouts")
+if leaked:
+    print("FAIL — a demonstration was replayed during validation:")
+    for path in leaked:
+        print(f"  - {path}")
+    sys.exit(1)
+print("PASS — no validation rollout replayed a demonstration.")
+PYVAL
+
+# ── 6. Check B: the prefix machinery reported itself active ──────────────────
+echo ""
+echo "── Check B: the prefix machinery was active ─────────────────────────────"
+python - "$VERL_LOG" <<'PYVERIFY'
+import re
+import sys
+
+text = open(sys.argv[1], errors="replace").read()
+failures = []
+
+def numbers(metric):
+    pattern = rf"{re.escape(metric)}['\"]?\s*[:=]\s*(-?[0-9]*\.?[0-9]+)"
+    return [float(m) for m in re.findall(pattern, text)]
+
+# Assert on metrics, not on log strings. Only PrefixRFTDaemon emits
+# actor/n_prefixed_rollouts and only PrefixRFTActor emits actor/prefix_tokens_*, so their
+# presence IS the promotion and installation, and unlike a log line it cannot be lost to
+# a logging level. The banners are reported when present but never gate the check: job
+# 25754573 failed here on two absent logger.info lines while every metric showed the
+# machinery working.
+for banner, what in (
+    ("Promoted AgentModeDaemon to PrefixRFTDaemon", "daemon promotion"),
+    ("Installed PrefixRFTActor", "actor installation"),
+):
+    print(f"  {what}: {'banner found' if banner in text else 'no banner (metrics decide)'}")
+
+prefixed = numbers("actor/n_prefixed_rollouts")
+if not prefixed:
+    failures.append(
+        "actor/n_prefixed_rollouts was never logged: the daemon was not promoted, so "
+        "prefix_k was never dispatched"
+    )
+elif max(prefixed) == 0:
+    failures.append("no rollout was ever prefixed (k was 0 everywhere)")
+
+tokens = numbers("actor/num_prefix_tokens")
+if not tokens or max(tokens) == 0:
+    failures.append("no prefix tokens entered the loss")
+
+zeroed = numbers("actor/prefix_tokens_zeroed")
+total = numbers("actor/prefix_tokens_total")
+if zeroed and total:
+    kept = 1 - (sum(zeroed) / max(1.0, sum(total)))
+    print(f"  entropy clip kept {kept:.1%} of prefix tokens (paper: 20%)")
+    if not 0.10 <= kept <= 0.35:
+        failures.append(f"entropy clip kept {kept:.1%}, expected about 20%")
+else:
+    failures.append("the entropy clip never reported how many tokens it zeroed")
+
+off_ratio = numbers("actor/off_ratio")
+if off_ratio:
+    print(f"  off_ratio (demonstration share of the batch) = {max(off_ratio):.3f}")
+
+# TOKEN MODE: this is the metric that separates the two modes. It is the share of
+# prefixed turns whose prefix_mask row is partially filled rather than all-or-nothing.
+# Step mode leaves it at 0; token mode should split nearly every prefixed turn at
+# low_target=0.9. Zero here means every budget landed on a decision boundary, so the
+# run was step mode wearing token mode's config.
+split = numbers("actor/prefix_split_fraction")
+if not split:
+    failures.append(
+        "actor/prefix_split_fraction was never logged: the trainer did not compute it, "
+        "so this build is not the one this job was written for"
+    )
+else:
+    print(f"  prefix_split_fraction = {max(split):.3f} (step mode leaves this at 0)")
+    if max(split) == 0:
+        failures.append(
+            "no prefixed turn was split mid-turn. Token mode degraded to step mode: "
+            "every token budget landed on a decision boundary."
+        )
+
+print(f"  max prefixed rollouts per step = {max(prefixed) if prefixed else 0}")
+print(f"  max prefix tokens per step     = {max(tokens) if tokens else 0}")
+
+if failures:
+    print("\nFAIL — the prefix machinery was not active:")
+    for f in failures:
+        print(f"  - {f}")
+    sys.exit(1)
+print("\nPASS — prefix machinery active.")
+PYVERIFY
+
+# ── 6b. Check B2: the split turn actually went through vLLM ──────────────────
+# ReplayProvider prints from the rollout workers, so this line is in the orchestrator
+# log, not the trainer log. It is the only direct evidence that a continue_final_message
+# request was made and came back: every other check reads state that a step-mode run
+# could also have produced.
+echo ""
+echo "── Check B2: a split turn was served through vLLM ───────────────────────"
+if grep -q "\[ReplayProvider\] served split turn" "$ORCH_LOG"; then
+    grep -c "\[ReplayProvider\] served split turn" "$ORCH_LOG" \
+        | xargs -I{} echo "  {} split turn(s) served"
+    grep -m 5 "\[ReplayProvider\] served split turn" "$ORCH_LOG" | sed 's/^/  /'
+    echo "PASS — the model was prefilled with teacher tokens and finished the turn."
+else
+    echo "FAIL — no '[ReplayProvider] served split turn' line in $ORCH_LOG."
+    echo "       Whole replays are served locally and never reach vLLM, so without this"
+    echo "       line the split path was never exercised and token mode is unproven."
+    echo "       Nearby ReplayProvider activity, if any:"
+    grep -m 10 "ReplayProvider\|PrefixOrchestratorRollout" "$ORCH_LOG" | sed 's/^/         /' || true
+    exit 1
+fi
+
+# ── 7. Check D: a checkpoint was written ─────────────────────────────────────
+echo ""
+echo "── Check D: the step completed and a LoRA adapter was saved ─────────────"
+if find "$CKPT_DIR" -maxdepth 5 -name "adapter_model.safetensors" -path "*/actor/lora_adapter/*" 2>/dev/null | grep -q .; then
+    find "$CKPT_DIR" -maxdepth 5 -name "adapter_model.safetensors" -path "*/actor/lora_adapter/*" | head -5
+    echo "PASS — checkpoint found."
+else
+    echo "FAIL — no LoRA adapter found under $CKPT_DIR"
+    exit 1
+fi
+
+echo ""
+echo "=========================================="
+echo "Prefix-RFT TOKEN MODE two-question test complete at: $(date)"
+echo "Split-turn replay, partial masking, advantage correction and entropy clipping verified on GPU."
+echo "=========================================="

@@ -101,6 +101,7 @@ echo ""
 echo "── Stage 1/4: Prefix-RFT unit tests (env: agent_engine) ─────────────────────"
 use_env agent_engine
 python -m pytest tests/unit/test_prefix_rft_schedule.py \
+                 tests/unit/test_prefix_rft_budget.py \
                  tests/unit/test_prefix_rft_demos.py \
                  tests/unit/test_prefix_rft_rollout.py \
                  tests/unit/test_prefix_rft_daemon.py \
@@ -141,7 +142,7 @@ if [[ $? -eq 0 ]]; then note_pass "gate on the demonstration store"; else note_f
 # training reports success while optimising the wrong tokens.
 echo ""
 echo "── Stage 2b/4: replay tokenisation matches the proxy's ──────────────────────"
-python scripts/check_prefix_replay_tokenisation.py --demos "$DEMOS"
+python scripts/check_prefix_replay_tokenisation.py --demos "$DEMOS" --mode both
 if [[ $? -eq 0 ]]; then note_pass "replay tokenisation"; else note_fail "replay tokenisation"; fi
 
 # ── Stage 3/4: trip-wire ─────────────────────────────────────────────────────────

@@ -30,6 +30,18 @@ def main():
             "mistyped key, or a '+' prefix that Hydra's struct mode rejects."
         ),
     )
+    parser.add_argument(
+        "--prefix-mode",
+        choices=["steps", "tokens"],
+        default=None,
+        help=(
+            "Prefix-RFT only: how prefix length is measured. 'steps' replays whole "
+            "teacher decisions; 'tokens' is the paper's token fraction, which can split "
+            "a decision in half. Overrides prefix_rft.mode in the config. This flag is "
+            "on the driver alone: the rollout workers read the mode off the key the "
+            "driver dispatches, so they cannot get out of step with it."
+        ),
+    )
     args, unknown = parser.parse_known_args()
 
     # VERL workers forbid ROCR_VISIBLE_DEVICES alongside CUDA_VISIBLE_DEVICES (see
@@ -220,6 +232,16 @@ def main():
     module = "verl_ext.prefix_rft" if prefix_rft else "fine_tuning.agentflow.verl"
     if prefix_rft:
         print(f"  Prefix-RFT enabled: launching {module}")
+
+    if args.prefix_mode is not None:
+        if not prefix_rft:
+            print(
+                "  WARNING: --prefix-mode was given but PREFIX_RFT is not set; "
+                "the flag has no effect on a plain GRPO launch."
+            )
+        else:
+            python_args["prefix_rft.mode"] = args.prefix_mode
+            print(f"  prefix_rft.mode={args.prefix_mode} (from --prefix-mode)")
 
     # Build: python -u -m <module> key=value key=value ...  (-u: line-buffered logs under SLURM > redirect)
     command = [sys.executable, "-u", "-m", module]

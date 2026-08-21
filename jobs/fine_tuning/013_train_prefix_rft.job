@@ -117,7 +117,19 @@ esac
 python -c "import agent_engine, fine_tuning, verl, vllm; from fine_tuning.agentflow import LitAgent, Trainer, reward; print('Training imports OK')"
 
 # Print LoRA trainable param count (no weight load — meta-init from arch config).
-python scripts/count_lora_params.py --config experiments/configs/fine_tuning/config_prefix_rft.yaml || true
+# Which Prefix-RFT config to run. Defaults to the step-mode production config, so
+# submitting this job with no environment set behaves exactly as it always has.
+# Token mode (the paper's token-fraction prefix) is the same run with one line changed:
+#   PREFIX_CONFIG=experiments/configs/fine_tuning/config_prefix_rft_tokens.yaml \
+#     sbatch jobs/fine_tuning/013_train_prefix_rft.job
+PREFIX_CONFIG="${PREFIX_CONFIG:-experiments/configs/fine_tuning/config_prefix_rft.yaml}"
+if [[ ! -f "$PREFIX_CONFIG" ]]; then
+    echo "ERROR: PREFIX_CONFIG=$PREFIX_CONFIG does not exist."
+    exit 1
+fi
+echo "Prefix-RFT config: $PREFIX_CONFIG"
+
+python scripts/count_lora_params.py --config "$PREFIX_CONFIG" || true
 
 mkdir -p out/fine_tuning/prefix_rft
 
@@ -234,10 +246,10 @@ export PYTHONUNBUFFERED=1
 # use_dynamic_bsz is now False (Bug 8 fix) so micro-batch counts are deterministic, but keeping
 # a generous timeout costs nothing and protects against any future imbalance.
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600
-VERL_LOG="out/fine_tuning/prefix_rft/train_${SLURM_JOB_ID:-local}_verl.log"
+VERL_LOG="out/fine_tuning/prefix_rft/train_${SLURM_JOB_ID:-local}_verl.log"  # config recorded in the log header
 echo ""
 echo "Starting VERL server..."
-python scripts/launch_verl.py --config experiments/configs/fine_tuning/config_prefix_rft.yaml \
+python scripts/launch_verl.py --config "$PREFIX_CONFIG" \
     > "$VERL_LOG" 2>&1 &
 VERL_PID=$!
 start_crash_monitor "$VERL_LOG" "VERL"
@@ -272,7 +284,7 @@ fi
 # ── 3. Rollout workers ───────────────────────────────────────────────────────
 echo ""
 echo "Starting rollout workers..."
-python scripts/train_orchestrator.py --config experiments/configs/fine_tuning/config_prefix_rft.yaml &
+python scripts/train_orchestrator.py --config "$PREFIX_CONFIG" &
 ORCHESTRATOR_PID=$!
 # Wait for VERL (server) to finish training first.
 # The orchestrator is a client of VERL — waiting for it before VERL exits would deadlock.
@@ -281,10 +293,17 @@ wait $VERL_PID
 
 # ── 4. Verify checkpoint ─────────────────────────────────────────────────────
 echo ""
-# Must match EXPERIMENT_NAME in config_prefix_rft.yaml, or the checkpoint
-# verification below searches the GRPO run's directory and reports a missing
-# checkpoint for a run that saved one correctly.
-EXPERIMENT_NAME="qwen3-8b-prefix-rft-search-math"
+# Read from the config rather than duplicated here. This used to be a hardcoded
+# "qwen3-8b-prefix-rft-search-math" with a comment warning it must match the config;
+# now that the config is selectable, a stale copy would send the checkpoint check to
+# the wrong directory and report a missing checkpoint for a run that saved one.
+EXPERIMENT_NAME="$(grep -E "^[[:space:]]*EXPERIMENT_NAME:" "$PREFIX_CONFIG" | head -1 \
+    | sed -E "s/^[[:space:]]*EXPERIMENT_NAME:[[:space:]]*['\"]?([^'\"]*)['\"]?[[:space:]]*$/\1/")"
+if [[ -z "$EXPERIMENT_NAME" ]]; then
+    echo "ERROR: no EXPERIMENT_NAME in $PREFIX_CONFIG; cannot locate the checkpoint."
+    exit 1
+fi
+echo "Experiment name (from config): $EXPERIMENT_NAME"
 # Checkpoints land in scratch-shared (USE_SCRATCH_CHECKPOINTS=true). Path depends on USE_LORA:
 #   LoRA (launch_verl.py drops 'model' from save_contents → adapter-only checkpoints):
 #     /scratch-shared/$USER/fine_tuning/lora_adapters/<exp>/<run-tag>/global_step_<N>/actor/
@@ -293,7 +312,7 @@ EXPERIMENT_NAME="qwen3-8b-prefix-rft-search-math"
 #       └── extra_state_world_size_*.pt     (RNG / scheduler, ~tiny)
 #   Full FT: /scratch-shared/$USER/msc-thesis/fine_tuning/<exp>/<run-tag>/global_step_<N>/actor/
 #              └── model_world_size_*_rank_*.pt  (~47 GB FSDP shard)
-USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/experiments/configs/fine_tuning/config_prefix_rft.yaml" | awk -F'"' '{print tolower($2)}')"
+USE_LORA_LOWER="$(grep -E '^[[:space:]]*USE_LORA:' "$PROJECT_DIR/$PREFIX_CONFIG" | awk -F'"' '{print tolower($2)}')"
 if [[ "$USE_LORA_LOWER" == "true" ]]; then
     CKPT_DIR="/scratch-shared/${USER}/fine_tuning/lora_adapters/${EXPERIMENT_NAME}"
     CKPT_GLOB_NAME="adapter_model.safetensors"
