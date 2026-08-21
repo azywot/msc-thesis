@@ -10,6 +10,11 @@
 # DO NOT SUBMIT THIS until the staged path is green, in order:
 #   009 (CPU suite)  -> 011 (mechanism, ~10 min) -> 010 (8 questions, ~25 min)
 #   -> 012 (curriculum + production batch shape, ~7 h)
+#
+# For TOKEN MODE (PREFIX_CONFIG=...config_prefix_rft_tokens.yaml), the staged path
+# is 009 -> 014 (mechanism, the counterpart of 011). There is no token counterpart
+# of 010 or 012, so the curriculum has not been exercised in token mode; run 012's
+# config with --prefix-mode tokens first if that matters to you.
 # 012 is the one that matters: it is the only stage that moves the cosine
 # schedule and runs rollout.n=8. Starting this job without it risks spending
 # three days training against a curriculum that never moves.

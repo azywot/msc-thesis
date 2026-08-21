@@ -224,9 +224,19 @@ sbatch jobs/fine_tuning/010_smoke_prefix_rft.job
 #    (rollout.n: 8, train_batch_size: 32, TOOL_STEPS: 5).
 sbatch jobs/fine_tuning/012_capped_prefix_rft.job
 
-# 6. The production run: 1800 questions x 2 epochs, ~112 steps, 72 h on 4 GPUs.
-#    Only after 012 is green - see "After 012" below.
+# 6. The production run: 1800 questions x 1 epoch, 56 steps, ~66 h of a 72 h
+#    wall on 4 GPUs. Only after 012 is green - see "After 012" below.
 sbatch jobs/fine_tuning/013_train_prefix_rft.job
+
+# 7. TOKEN MODE. Everything above is step mode, which is the default. The token
+#    path forks after 009: 014 is the mechanism check (the counterpart of 011,
+#    ~10 min) and 013 runs production with PREFIX_CONFIG pointed at the token
+#    config. There is no token counterpart of 010 or 012; if you want the
+#    curriculum exercised in token mode, run 012's config with
+#    --prefix-mode tokens before committing to 013.
+sbatch jobs/fine_tuning/014_tiny_prefix_rft_tokens.job
+PREFIX_CONFIG=experiments/configs/fine_tuning/config_prefix_rft_tokens.yaml \
+  sbatch jobs/fine_tuning/013_train_prefix_rft.job
 ```
 
 **Steps 3 and 4 answer "is the mechanism correct?". Step 5 answers "is the method
