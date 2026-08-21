@@ -9,6 +9,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased] — feat/gepa-integration
 
 ### Added
+- **Prefix-RFT token mode** (`feat/prefix-rft-token-mode`) — the prefix can now be
+  measured in tokens, the paper's own measure, instead of whole teacher decisions. A
+  decision that straddles the budget is split and the model finishes the turn, served
+  through vLLM's `continue_final_message`. Select with `--prefix-mode tokens` on
+  `scripts/launch_verl.py` or `prefix_rft.mode` in the config; the default stays
+  `steps`, so existing configs are unchanged. Token mode makes the 273 single-decision
+  demonstrations prefixable, raising prefixed coverage from 1085 to 1358 questions,
+  which is a confound to report when comparing the two modes rather than a free win.
+  `013_train_prefix_rft.job` now takes its config from `PREFIX_CONFIG` (defaulting to
+  the step-mode config) and reads `EXPERIMENT_NAME` from it instead of duplicating it,
+  so a token-mode production run is a one-variable change rather than an edited job.
+  `014_tiny_prefix_rft_tokens.job` is the token-mode counterpart of `011`, asserting
+  that a turn was actually split and served through vLLM.
+  See [`docs/superpowers/specs/2026-08-19-prefix-rft-token-mode-design.md`](docs/superpowers/specs/2026-08-19-prefix-rft-token-mode-design.md).
 - **Prefix-RFT: fourth adaptation method** (`feat/add-prefix-rft`) — GRPO in which one
   rollout per prompt is seeded with a prefix of a Qwen3-32B teacher demonstration and the
   policy writes the continuation, entropy-clipped and advantage-weighted per

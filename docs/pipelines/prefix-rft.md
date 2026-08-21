@@ -48,7 +48,7 @@ duplicate any of it.
 
 ---
 
-## The step-prefix adaptation - the thing to know before reading a metric
+## Two ways to measure a prefix - the thing to know before reading a metric
 
 The paper's test bed is single-turn math: one prompt, one response, one row in the batch.
 Ours is Flow GRPO, where a trajectory is many turns and each turn is its own row. That
@@ -60,7 +60,9 @@ first `k` are replayed verbatim and the model takes over from decision `k+1`.
 `k = floor(l * m)`, clamped to `[0, m-1]` so there is always at least one on-policy
 decision to score, with `l` drawn from the paper's schedule unchanged.
 
-**Two consequences, accepted rather than fixed:**
+That is **step mode**, `prefix_rft.mode: steps`, and it is the default.
+
+**Two consequences of measuring in decisions:**
 
 1. **`k` is a staircase, not a continuous ratio.** Teacher trajectories average 2.98
    decisions, so the paper's continuous cosine decay is quantised into roughly three
@@ -68,6 +70,75 @@ decision to score, with `l` drawn from the paper's schedule unchanged.
 2. **Single-decision demonstrations never carry a prefix.** 273 of the 1358 demonstrated
    questions have exactly one decision, so `k <= m-1 = 0` always and they train as pure
    GRPO. 1085 of the 1800 training questions are prefixable.
+
+### Token mode: the paper's own measure
+
+`prefix_rft.mode: tokens` measures the prefix in tokens instead, which is what the paper
+does. Both modes share `sample_l` unchanged, so both inherit the same curriculum. The fraction is taken over the concatenation of every decision's response, so with
+decision token lengths `n_1..n_m` summing to `T`:
+
+```
+B = clamp(floor(l * T), 0, T - 1)    token budget for this rollout
+j = how many whole decisions fit in B
+r = B - (n_1 + ... + n_j)            leftover tokens
+```
+
+Decisions `1..j` are replayed whole; if `r > 0`, decision `j+1` is **split** and the
+model finishes the turn the teacher started. The `T - 1` clamp is the paper's
+`prefix_len <= demo_len - 1` guard applied to the concatenation, so at least one token
+is always generated. A split turn's `prefix_mask` row is 1 on its first `r` tokens and 0
+after, which is why a turn is no longer wholly teacher or wholly policy.
+
+```
+y* = [resp_1 | resp_2 | resp_3]        teacher, m = 3, T = 120 tokens
+
+l = 0.80   B = 96    ####|####|##~~~~     j = 2, r = 16, decision 3 split
+l = 0.35   B = 42    ####|##~~|~~~~~~     j = 1, r = 12, decision 2 split
+l = 0.00   B = 0     ~~~~|~~~~|~~~~~~     j = 0, r = 0,  plain GRPO
+```
+
+The split turn is the one replayed turn that reaches vLLM, through
+`continue_final_message`, which leaves the final assistant message open-ended. Its token
+IDs are rebuilt locally afterwards, so the vendored daemon is untouched.
+
+**The ceiling differs too.** Step mode is clamped to `m-1` decisions, so on the average
+2.98-decision demonstration it can never replay more than about 67% of the teacher,
+while token mode reaches the schedule's full 95%. Measured against the real store at
+step 0: step mode replays a mean 2.51 decisions, a 0.70 fraction of the demonstration,
+against token mode's 0.95. Step mode is therefore systematically *less*
+demonstration-heavy early in training, which is the opposite of what "the same
+curriculum, quantised" would suggest.
+
+**Read these two things into any comparison of the modes:**
+
+1. **Coverage is not the same.** Token mode's guard is a token guard, so a
+   single-decision demonstration can be split partway through its only response. That
+   takes prefixable coverage from 1085 questions to all 1358. The modes are therefore
+   not training on the same set of prefixed questions, and that is a confound to report
+   rather than a bonus.
+2. **A tool call can be split mid-JSON.** The model may then complete it into something
+   malformed, which will show up as depressed `actor/reward_with_prefix` in the early
+   steps when `l` is near 0.95. That is a finding about mid-turn prefixes in an agentic
+   setting, not a defect to patch out.
+
+Run it either way:
+
+```bash
+# tiny GPU check of the split path, ~10 min on 3 GPUs (do this first)
+sbatch jobs/fine_tuning/014_tiny_prefix_rft_tokens.job
+
+# production: 013 takes its config from PREFIX_CONFIG, defaulting to step mode
+PREFIX_CONFIG=experiments/configs/fine_tuning/config_prefix_rft_tokens.yaml \
+  sbatch jobs/fine_tuning/013_train_prefix_rft.job
+
+# or override the mode on any prefix config, from the driver
+python scripts/launch_verl.py --config <config.yaml> --prefix-mode tokens
+```
+
+The flag is on `launch_verl.py` alone. The driver owns the schedule and dispatches
+`prefix_k` in step mode or `prefix_l` in token mode; the rollout workers read the mode
+off whichever key arrives, so there is no second setting that could disagree with the
+first. Passing both keys is a hard error.
 
 Replayed decisions are **supervised, not teacher-forced context**: they enter the loss
 as response tokens with `prefix_mask = 1`, carrying the trajectory advantage under the
@@ -274,9 +345,12 @@ the aggregate metrics on top of them.
 | `actor/n_prefixed_rollouts` | How many rollouts in the step were seeded with a demonstration prefix. Zero here means the machinery never engaged - the run would be indistinguishable from plain GRPO in every other log line. |
 | `actor/num_prefix_tokens` | Prefix tokens that entered the loss this step. |
 | `actor/prefix_tokens_zeroed` / `actor/prefix_tokens_total` | The entropy clip's keep ratio. Expect close to the paper's 20% (`1 - zeroed/total`); far from it means the clip threshold or the entropy computation drifted. |
-| `actor/off_ratio` | Share of the batch that is demonstration tokens. The paper's Table 4 warns this destabilises training above roughly 0.5; the smoke check treats that as a finding, not a hard fail. |
+| `actor/off_ratio` | Share of the batch that is demonstration tokens. The paper's own operating point is **5-10%** (Table 4), and Table 4 warns of instability above roughly 0.5. Run 012 measured 0.067, i.e. inside the paper's range, so a number in this region is on target rather than suspiciously low. Read it that way: the paper reaches 51.8 against plain RFT's 45.5 at this share of the batch, so a single-digit percentage is not evidence the prefix is too small to matter. The smoke check treats >0.5 as a finding, not a hard fail. |
 | `actor/reward_with_prefix` vs `actor/reward_without_prefix` | The paper's Figure 4 signature: prefixed rollouts should out-score unprefixed ones once training has run long enough to matter. On a two-step smoke run this is weak evidence and is recorded rather than gated on. |
 | `actor/prefix_low` / `actor/prefix_high` | The schedule's current bounds on `l`, for confirming the cosine decay is moving. |
+| `actor/prefix_steps` | Step mode only: mean `k`, the number of whole teacher decisions replayed. |
+| `actor/prefix_l` | Token mode only: mean sampled `l`, the paper's own quantity. Deliberately a different series from `actor/prefix_steps`, because mean `k` and mean `l` are not comparable. |
+| `actor/prefix_split_fraction` | Share of prefixed turns that were split mid-turn rather than replayed whole. Near 0 in step mode, near 1 in token mode; a low value in a token-mode run means budgets keep landing on decision boundaries and the two modes are converging. |
 
 A misconfigured Prefix-RFT run looks exactly like a GRPO run in every metric *except*
 these - checkpoints save, loss falls, reward moves. These are what distinguish the two,
@@ -362,7 +436,7 @@ watch" plus the two the paper gives predictions for:
 |---|---|---|
 | `actor/prefix_low` falls 0.95 -> 0.05 | A.2's cosine decay | Stop the run. The curriculum is not moving and 012 should have caught it. |
 | `actor/prefix_steps` (mean `k`) falls with it | follows from the above | As above. |
-| `actor/off_ratio` | Table 4 warns above ~0.5 | Not fatal, but record it: the paper attributes instability to demonstration tokens dominating the batch. |
+| `actor/off_ratio` | 5-10% is the paper's own range (Table 4); above ~0.5 it warns of instability | A single-digit percentage is the target, not a shortfall. Record anything above 0.5: the paper attributes instability to demonstration tokens dominating the batch. |
 | `reward_with_prefix` above `reward_without_prefix` early, narrowing later | Figure 4 | Record it. Its absence is a real finding about the multi-turn adaptation, not a bug to chase - and it is the honest thing to report either way. |
 
 ### 2. Evaluation
@@ -383,7 +457,7 @@ Whatever the results are written up in, the eight divergences below need stating
 than left for a reader to find. Two deserve prominence because they change what is being
 measured:
 
-- **The step-prefix adaptation** - `k` is an integer number of teacher decisions, not a
+- **The prefix measure** - in the default step mode `k` is an integer number of teacher decisions, not a
   token fraction, and with a mean of 2.98 decisions per demonstration the paper's
   continuous schedule is quantised into roughly three levels.
 - **GRPO rather than Dr.GRPO**, chosen so Prefix-RFT differs from this project's RL
@@ -432,9 +506,14 @@ at the split point can differ by a single token on small batches.
 
 ### Where we diverge, and why
 
-1. **Integer step prefix instead of a token fraction.** We replay a whole number of
-   teacher *decisions*; the paper cuts at an arbitrary token. See "The step-prefix
-   adaptation" above. This is the one divergence that changes what a prefix *is*.
+1. **Integer step prefix instead of a token fraction - in step mode only.** In the
+   default `prefix_rft.mode: steps` we replay a whole number of teacher *decisions*
+   while the paper cuts at an arbitrary token, which is the one divergence that changes
+   what a prefix *is*. `prefix_rft.mode: tokens` removes it: the prefix becomes a token
+   fraction and a decision can be split. Token mode's only remaining departure is that
+   turn boundaries exist at all, since the fraction is taken over the concatenation of
+   the decisions rather than over one response. Note that the two modes do not train on
+   the same prefixed questions - see "Two ways to measure a prefix" above.
 2. **GRPO with std normalisation instead of Dr.GRPO.** The paper uses Dr.GRPO (A.2), and
    the repo ships both (`compute_dr_grpo_outcome_advantage` alongside the GRPO variant).
    We pair with GRPO so Prefix-RFT differs from this project's existing RL baseline in
