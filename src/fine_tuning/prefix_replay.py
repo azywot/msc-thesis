@@ -123,6 +123,16 @@ class ReplayController:
         ids = self.tokenizer.encode(str(step["response"]), add_special_tokens=False)
         prefix_ids, prefix_text = self._safe_prefix(ids[: self.split_tokens])
         if not prefix_ids:
+            # No head of the budget round-trips, so there is nothing safe to prefill and
+            # this turn runs on-policy. Vanishingly rare (a single token essentially
+            # always round-trips) but it is a silent downgrade, and an unlogged silent
+            # downgrade is the failure this whole pipeline is built to avoid.
+            print(
+                f"[ReplayController] split of decision {self.split_index} abandoned: no "
+                f"prefix of its first {self.split_tokens} tokens survives the text round "
+                "trip. This turn is on-policy and the rollout carries less prefix than "
+                "the schedule asked for."
+            )
             return None
 
         messages = self._decode_messages(prompt_payload)

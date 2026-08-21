@@ -467,39 +467,15 @@ for question, records in by_question.items():
                 f"{question[:50]!r}: the turn after the replayed run is also a whole "
                 "demonstration step - replay did not stop at the budget"
             )
-        # TOKEN MODE: the turn after the verbatim run should be the SPLIT one. It must
-        # start with a proper, non-empty prefix of the corresponding teacher decision
-        # and must not equal it. If it shares nothing with the teacher, the budget
-        # landed on a decision boundary and this run degraded to step mode - legal for
-        # the method, but it means this job did not test what it exists to test.
-        boundary = off + n
-        if boundary < len(teacher):
-            expected = teacher[boundary]
-            shared = 0
-            while shared < min(len(nxt), len(expected)) and nxt[shared] == expected[shared]:
-                shared += 1
-            print(
-                f"      split turn shares {shared} leading chars with "
-                f"teacher[{boundary}] ({len(expected)} chars)"
-            )
-            if shared == 0:
-                failures.append(
-                    f"{question[:50]!r}: the turn after the verbatim run shares no "
-                    f"prefix with teacher[{boundary}]. Either no split happened (the "
-                    "budget landed on a decision boundary, so token mode was not "
-                    "exercised) or the prefill was not conditioned on the teacher."
-                )
-            elif shared >= len(expected):
-                failures.append(
-                    f"{question[:50]!r}: the split turn contains the whole of "
-                    f"teacher[{boundary}]; the budget clamp B <= T-1 should have left "
-                    "at least one token for the policy to write"
-                )
-        else:
-            failures.append(
-                f"{question[:50]!r}: the verbatim run consumed every teacher decision, "
-                "so there was no decision left to split"
-            )
+        # NOTE: no split assertion here, deliberately. The split turn cannot be
+        # identified from the saved text. When the prefill works well the model
+        # reproduces the teacher's remainder exactly, so the split turn folds into the
+        # verbatim run and the turn after it is a freely written one that shares no
+        # prefix with any teacher decision. That is a SUCCESS and an earlier version of
+        # this check called it a failure (job 25918098: 39 teacher tokens + 12 generated
+        # on decision 2, reproduced verbatim, reported as "shares no prefix"). Ground
+        # truth for the split is the ReplayProvider log, which states the token counts
+        # outright; Check B2 asserts on it.
     print(f"    reward: {record.get('reward')}")
 
 if failures:
@@ -644,9 +620,33 @@ PYVERIFY
 echo ""
 echo "── Check B2: a split turn was served through vLLM ───────────────────────"
 if grep -q "\[ReplayProvider\] served split turn" "$ORCH_LOG"; then
-    grep -c "\[ReplayProvider\] served split turn" "$ORCH_LOG" \
-        | xargs -I{} echo "  {} split turn(s) served"
-    grep -m 5 "\[ReplayProvider\] served split turn" "$ORCH_LOG" | sed 's/^/  /'
+    grep -m 10 "\[ReplayProvider\] served split turn" "$ORCH_LOG" | sed 's/^/  /'
+    python - "$ORCH_LOG" <<'PYSPLIT'
+import re, sys
+
+text = open(sys.argv[1], errors="replace").read()
+pairs = [
+    (int(a), int(b))
+    for a, b in re.findall(
+        r"\[ReplayProvider\] served split turn: (\d+) teacher tokens \+ (\d+) generated",
+        text,
+    )
+]
+if not pairs:
+    sys.exit("FAIL: the split lines are present but unparseable; the format changed.")
+
+print(f"  {len(pairs)} split turn(s): {pairs}")
+bad = [p for p in pairs if p[0] <= 0]
+if bad:
+    sys.exit(f"FAIL: a split turn carried no teacher tokens: {bad}")
+# A split that generated nothing means the budget clamp did not leave the policy a
+# token to write, which would make the trajectory pure imitation at that turn.
+empty = [p for p in pairs if p[1] <= 0]
+if empty:
+    sys.exit(f"FAIL: a split turn generated nothing: {empty}")
+print("  every split turn carried teacher tokens AND generated at least one token")
+PYSPLIT
+    if [[ $? -ne 0 ]]; then exit 1; fi
     echo "PASS — the model was prefilled with teacher tokens and finished the turn."
 else
     echo "FAIL — no '[ReplayProvider] served split turn' line in $ORCH_LOG."

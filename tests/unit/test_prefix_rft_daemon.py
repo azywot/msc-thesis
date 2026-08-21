@@ -16,6 +16,7 @@ from verl_ext.prefix_rft.dispatch import (
     read_prefix_spec,
 )
 from verl_ext.prefix_rft.masks import build_prefix_mask
+from verl_ext.prefix_rft.schedule import PrefixStepSchedule
 
 
 # --------------------------------------------------------------------------- #
@@ -441,3 +442,55 @@ def test_min_demo_decisions_of_two_is_a_no_op_for_step_mode():
             schedule=_Schedule(k=1), mode="steps", min_demo_decisions=2, **_spec_kwargs(n)
         )
         assert default == gated, f"m={n}"
+
+
+def test_both_modes_draw_the_same_l_sequence_from_the_same_seed():
+    """The steps-vs-tokens comparison is paired, and quietly depends on this.
+
+    Both modes take exactly one draw per prefixed rollout and skip the draw for the
+    same ineligible questions, so with one seed the same question at the same step
+    gets the same l. The only difference between the runs is how l becomes a prefix.
+    Add a second draw to either mode and the runs silently stop being paired, with
+    nothing to show it; hence this test.
+    """
+    questions = [("q%d" % i, 1 if i % 5 == 0 else 3) for i in range(40)]
+
+    def draws(mode, min_dec):
+        # The real schedule, not _Schedule: sample_k calls sample_l internally, and a
+        # fake that does not model that would make this test pass without testing
+        # anything. PrefixStepSchedule imports no verl, so it is usable here.
+        sched = PrefixStepSchedule(
+            low_init=0.95, low_target=0.05, high=0.95, n_steps=56, seed=42
+        )
+        seen = []
+        real = sched.sample_l
+
+        def spy(global_step):
+            out = real(global_step=global_step)
+            seen.append(round(out[0], 10))
+            return out
+
+        sched.sample_l = spy
+        for step in range(4):
+            for q, m in questions:
+                for j in range(8):
+                    prefix_spec_for(
+                        sample={"question": q},
+                        rollout_index=j,
+                        is_train=True,
+                        schedule=sched,
+                        demo_store=_Store(m),
+                        n_prefixed_rollouts=1,
+                        global_step=step,
+                        mode=mode,
+                        min_demo_decisions=min_dec,
+                    )
+        return seen
+
+    steps_draws = draws("steps", 1)
+    token_draws = draws("tokens", 2)
+    assert len(steps_draws) > 0, "the simulation took no draws; the test proves nothing"
+    assert steps_draws == token_draws, (
+        f"the modes consumed the schedule differently: {len(steps_draws)} draws against "
+        f"{len(token_draws)}. The two runs are no longer paired."
+    )
