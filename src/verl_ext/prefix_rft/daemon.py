@@ -50,6 +50,7 @@ class PrefixRFTDaemon(AgentModeDaemon):
         demo_store=None,
         n_prefixed_rollouts=1,
         prefix_mode="steps",
+        min_demo_decisions=1,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -57,6 +58,7 @@ class PrefixRFTDaemon(AgentModeDaemon):
         self.demo_store = demo_store
         self.n_prefixed_rollouts = n_prefixed_rollouts
         self.prefix_mode = prefix_mode
+        self.min_demo_decisions = min_demo_decisions
         self._global_step = 0
         self.last_prefix_metrics = {}
 
@@ -73,6 +75,7 @@ class PrefixRFTDaemon(AgentModeDaemon):
             n_prefixed_rollouts=self.n_prefixed_rollouts,
             global_step=self._global_step,
             mode=self.prefix_mode,
+            min_demo_decisions=self.min_demo_decisions,
         )
 
     async def _async_set_up(self, data, server_addresses, is_train=True):

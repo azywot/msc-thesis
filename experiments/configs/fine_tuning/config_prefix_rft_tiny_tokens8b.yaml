@@ -68,6 +68,13 @@ python_args:
   # decisions, so the decision that straddles the budget is split and the model
   # finishes the turn the teacher started.
   prefix_rft.mode: 'tokens'
+  # Controlled comparison against config_prefix_rft.yaml. Step mode cannot prefix a
+  # single-decision demonstration (k <= m-1 = 0), so without this token mode would
+  # prefix 1358 questions against step mode's 1085 and any difference between the two
+  # runs would have coverage as a rival explanation. Setting 2 gives both modes the
+  # same eligible set. It gives up a genuine capability of token mode; a run that wants
+  # the paper's full coverage sets this to 1 and reports the confound.
+  prefix_rft.min_demo_decisions: 2
   prefix_rft.high: 0.95
   prefix_rft.low_init: 0.95
   # TEST-ONLY DEVIATION. The paper's target is 0.05 and the production config uses it.

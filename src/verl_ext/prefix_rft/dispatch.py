@@ -98,6 +98,7 @@ def prefix_spec_for(
     n_prefixed_rollouts,
     global_step,
     mode="steps",
+    min_demo_decisions=1,
 ):
     """The payload keys that tell the rollout worker what prefix to replay.
 
@@ -110,6 +111,19 @@ def prefix_spec_for(
     ``_make_controller`` warns when its key is missing entirely, because that means
     dispatch itself broke, and dropping the key would fire that warning constantly.
     """
+    if mode not in ("steps", "tokens"):
+        raise ValueError(f"unknown prefix mode {mode!r}; expected 'steps' or 'tokens'")
+
+    # Eligibility gate, applied before either mode runs so the two cannot disagree
+    # about which questions can carry a prefix. Step mode is structurally limited to
+    # m >= 2 by its k <= m-1 clamp, while a token budget needs no second decision.
+    # Left at 1 the modes prefix different question sets (1085 against 1358), which
+    # confounds any comparison between them; set to 2 they prefix the same 1085.
+    if min_demo_decisions > 1 and demo_store is not None:
+        question = str((sample or {}).get("question", ""))
+        if question and demo_store.n_steps(question) < min_demo_decisions:
+            return {"prefix_l": 0.0} if mode == "tokens" else {"prefix_k": 0}
+
     kwargs = dict(
         sample=sample,
         rollout_index=rollout_index,
@@ -121,9 +135,7 @@ def prefix_spec_for(
     )
     if mode == "tokens":
         return {"prefix_l": prefix_l_for(**kwargs)}
-    if mode == "steps":
-        return {"prefix_k": prefix_k_for(**kwargs)}
-    raise ValueError(f"unknown prefix mode {mode!r}; expected 'steps' or 'tokens'")
+    return {"prefix_k": prefix_k_for(**kwargs)}
 
 
 def read_prefix_spec(task):

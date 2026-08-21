@@ -111,11 +111,17 @@ curriculum, quantised" would suggest.
 
 **Read these two things into any comparison of the modes:**
 
-1. **Coverage is not the same.** Token mode's guard is a token guard, so a
-   single-decision demonstration can be split partway through its only response. That
-   takes prefixable coverage from 1085 questions to all 1358. The modes are therefore
-   not training on the same set of prefixed questions, and that is a confound to report
-   rather than a bonus.
+1. **Coverage is not the same by default, and the shipped config removes the
+   difference.** Token mode's guard is a token guard, so a single-decision
+   demonstration can be split partway through its only response. That would take
+   prefixable coverage from 1085 questions to all 1358, giving any steps-vs-tokens
+   difference a rival explanation. `config_prefix_rft_tokens.yaml` therefore sets
+   `prefix_rft.min_demo_decisions: 2`, which makes token mode skip exactly the
+   questions step mode cannot reach, so both prefix the same 1085. This gives up a
+   real capability of token mode for the sake of a controlled comparison; a run that
+   wants the paper's full coverage sets it to 1 and reports the confound. The trainer
+   prints the eligible count at startup, so the two runs can be checked against each
+   other.
 2. **A tool call can be split mid-JSON.** The model may then complete it into something
    malformed, which will show up as depressed `actor/reward_with_prefix` in the early
    steps when `l` is near 0.95. That is a finding about mid-turn prefixes in an agentic

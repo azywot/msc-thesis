@@ -193,9 +193,12 @@ fraction of the concatenated demonstration, which splits the decision that strad
 the budget so the model finishes a turn the teacher started. Three differences that
 change how results compare:
 
-- **Coverage differs.** `steps` cannot prefix the 273 single-decision demonstrations
-  at all (`k <= m-1 = 0`), so 1085 of 1358 are prefixable. `tokens` can split a single
-  decision, so all 1358 are. The two modes do not train on the same questions.
+- **Coverage differs unless you gate it.** `steps` cannot prefix the 273
+  single-decision demonstrations at all (`k <= m-1 = 0`), so 1085 of 1358 are
+  prefixable. `tokens` can split a single decision, so all 1358 are.
+  `prefix_rft.min_demo_decisions: 2` makes `tokens` skip the same ones, which is what
+  the shipped token config does so a steps-vs-tokens comparison is not confounded by
+  which questions carry a prefix.
 - **The ceiling differs.** `steps` is clamped to `m-1` decisions, so on the average
   3-decision demonstration it can never replay more than ~67% of the teacher, while
   `tokens` reaches 95%. `steps` is systematically less demonstration-heavy early on.
@@ -231,6 +234,7 @@ All under `prefix_rft.` in an experiment config's `python_args`, or as Hydra ove
 | `enable` | `true` / `false` | `true` | Master switch. Also needs `PREFIX_RFT=true` in `env:` so both launchers take the Prefix-RFT path. |
 | `mode` | `steps` / `tokens` | `steps` | How prefix length is measured. Anything else raises at dispatch. |
 | `demos_path` | path to a parquet | `data/training/prefix_rft/prefix_demos.parquet` | The demonstration store, built by `scripts/build_prefix_demos.py`. |
+| `min_demo_decisions` | int >= 1 | `1` | Fewest teacher decisions a question needs before it can carry a prefix. `steps` is structurally 2 already; set `tokens` to 2 for a controlled comparison against it, or leave 1 for the paper's full coverage. |
 | `n_prefixed_rollouts` | int, `0` to `rollout.n` | `1` | Prefixed rollouts per prompt. Paper A.2 uses 1 of 8; a prefixed rollout replaces an on-policy one rather than adding to them. |
 | `high` | float in `[0, 1]` | `0.95` | Upper bound of the `l` draw. Paper A.2. |
 | `low_init` | float in `[0, 1]` | `0.95` | Lower bound at step 0. |

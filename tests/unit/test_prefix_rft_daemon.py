@@ -378,3 +378,66 @@ def test_neither_key_reads_as_no_dispatch():
 def test_a_null_value_reads_as_a_zero_of_the_right_type():
     assert read_prefix_spec({"prefix_l": None}) == ("tokens", 0.0)
     assert read_prefix_spec({"prefix_k": None}) == ("steps", 0)
+
+
+# --------------------------------------------------------------------------- #
+# min_demo_decisions: making the two modes eligible on the same questions       #
+# --------------------------------------------------------------------------- #
+
+
+def _spec_kwargs(n_steps, **over):
+    kwargs = dict(
+        sample={"question": "q"},
+        rollout_index=0,
+        is_train=True,
+        demo_store=_Store(n_steps),
+        n_prefixed_rollouts=1,
+        global_step=0,
+    )
+    kwargs.update(over)
+    return kwargs
+
+
+def test_token_mode_can_prefix_a_single_decision_question_by_default():
+    """The default is the mode's natural behaviour: a token budget needs no second
+    decision, so all 1358 demonstrated questions are eligible."""
+    spec = prefix_spec_for(schedule=_LSchedule(l=0.6), mode="tokens", **_spec_kwargs(1))
+    assert spec["prefix_l"] == pytest.approx(0.6)
+
+
+def test_min_demo_decisions_makes_token_mode_skip_what_step_mode_cannot_reach():
+    """Step mode's k <= m-1 guard leaves single-decision questions unprefixable. Set
+    min_demo_decisions to 2 and token mode skips exactly the same ones, so a
+    steps-vs-tokens comparison is not confounded by which questions carry a prefix."""
+    spec = prefix_spec_for(
+        schedule=_LSchedule(l=0.6), mode="tokens", min_demo_decisions=2, **_spec_kwargs(1)
+    )
+    assert spec == {"prefix_l": 0.0}
+
+
+def test_min_demo_decisions_leaves_multi_decision_questions_alone():
+    spec = prefix_spec_for(
+        schedule=_LSchedule(l=0.6), mode="tokens", min_demo_decisions=2, **_spec_kwargs(2)
+    )
+    assert spec["prefix_l"] == pytest.approx(0.6)
+
+
+def test_min_demo_decisions_applies_to_step_mode_too():
+    """It gates eligibility, not a mode. A value above 2 must bind in both modes or
+    the two configs would silently mean different things."""
+    assert prefix_spec_for(
+        schedule=_Schedule(k=1), mode="steps", min_demo_decisions=4, **_spec_kwargs(3)
+    ) == {"prefix_k": 0}
+    assert prefix_spec_for(
+        schedule=_Schedule(k=1), mode="steps", min_demo_decisions=4, **_spec_kwargs(4)
+    ) == {"prefix_k": 1}
+
+
+def test_min_demo_decisions_of_two_is_a_no_op_for_step_mode():
+    """Step mode already cannot prefix m=1, so matching the modes must not change it."""
+    for n in (1, 2, 3):
+        default = prefix_spec_for(schedule=_Schedule(k=1), mode="steps", **_spec_kwargs(n))
+        gated = prefix_spec_for(
+            schedule=_Schedule(k=1), mode="steps", min_demo_decisions=2, **_spec_kwargs(n)
+        )
+        assert default == gated, f"m={n}"

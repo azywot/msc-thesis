@@ -62,6 +62,26 @@ class PrefixRFTTrainer(AgentFlowTrainer):
         )
         store = DemoStore.from_parquet(cfg.demos_path)
         n_questions, n_decisions = store.coverage()
+        # How many questions this config can actually prefix. Step mode is structurally
+        # m >= 2; token mode is whatever min_demo_decisions says. Logged because the two
+        # modes are only comparable when this number matches.
+        min_decisions = max(
+            int(cfg.get("min_demo_decisions", 1)),
+            2 if str(cfg.get("mode", "steps")) == "steps" else 1,
+        )
+        n_eligible = sum(1 for v in store._by_key.values() if len(v) >= min_decisions)
+        logger.info(
+            "Prefix-RFT: mode=%s, min_demo_decisions=%s, %d of %d questions eligible",
+            cfg.get("mode", "steps"),
+            min_decisions,
+            n_eligible,
+            n_questions,
+        )
+        print(
+            f"Prefix-RFT: mode={cfg.get('mode', 'steps')} "
+            f"min_demo_decisions={min_decisions} -> {n_eligible} of {n_questions} "
+            "questions eligible for a prefix"
+        )
         logger.info(
             "Prefix-RFT: %d demonstrated questions, %d decisions, "
             "schedule %.2f -> %.2f over %d steps",
@@ -95,12 +115,16 @@ class PrefixRFTTrainer(AgentFlowTrainer):
         daemon.demo_store = store
         daemon.n_prefixed_rollouts = int(self.config.prefix_rft.n_prefixed_rollouts)
         daemon.prefix_mode = str(self.config.prefix_rft.get("mode", "steps"))
+        daemon.min_demo_decisions = int(self.config.prefix_rft.get("min_demo_decisions", 1))
         daemon._global_step = 0
         daemon.last_prefix_metrics = {}
         # print, not logger.info: INFO from this package does not reach the SLURM
         # log, so the promotion was invisible to job 25754573's Check B even though
         # it had happened.
-        print(f"Promoted AgentModeDaemon to PrefixRFTDaemon (mode={daemon.prefix_mode})")
+        print(
+            f"Promoted AgentModeDaemon to PrefixRFTDaemon (mode={daemon.prefix_mode}, "
+            f"min_demo_decisions={daemon.min_demo_decisions})"
+        )
 
     def _apply_prefix_advantage(self, batch, metrics):
         """Rewrite the advantage on replayed tokens and log the prefix metrics."""

@@ -16,7 +16,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `scripts/launch_verl.py` or `prefix_rft.mode` in the config; the default stays
   `steps`, so existing configs are unchanged. Token mode makes the 273 single-decision
   demonstrations prefixable, raising prefixed coverage from 1085 to 1358 questions,
-  which is a confound to report when comparing the two modes rather than a free win.
+  which would confound a steps-vs-tokens comparison; `prefix_rft.min_demo_decisions: 2`
+  gates token mode onto the same 1085 questions step mode can reach, and the shipped
+  token config sets it.
   `013_train_prefix_rft.job` now takes its config from `PREFIX_CONFIG` (defaulting to
   the step-mode config) and reads `EXPERIMENT_NAME` from it instead of duplicating it,
   so a token-mode production run is a one-variable change rather than an edited job.
