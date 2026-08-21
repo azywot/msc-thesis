@@ -14,6 +14,8 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+from verl_ext.prefix_rft.dispatch import read_prefix_spec
+
 from .prefix_replay import ReplayController, ReplayProvider, ReplayToolRegistry
 from .rollout import OrchestratorRollout, _get_task_metadata
 
@@ -59,20 +61,33 @@ class PrefixOrchestratorRollout(OrchestratorRollout):
     def _make_controller(self, task: Any) -> Optional[ReplayController]:
         """Build a replay controller for this task, or None to run plain on-policy.
 
+        The mode comes from the payload, so the driver and this worker cannot disagree
+        about which experiment is running. The reading itself is in
+        ``verl_ext.prefix_rft.dispatch.read_prefix_spec`` because this module is not
+        importable in the env that has pytest.
+        """
+        mode, value = read_prefix_spec(task)
+        if mode is None:
+            # Only worth reporting when neither key is there, which means dispatch broke.
+            print(
+                "[PrefixOrchestratorRollout] neither prefix_k nor prefix_l in the task "
+                f"payload — the daemon did not dispatch one. "
+                f"keys={sorted((task or {}).keys())}"
+            )
+            return None
+        if mode == "tokens":
+            return self._make_token_controller(task, value)
+        return self._make_step_controller(task, value)
+
+    def _make_step_controller(self, task, k):
+        """Step mode: replay k whole teacher decisions.
+
         Every ``return None`` here is a silent downgrade to GRPO, so each one says why.
         print(), not logging: INFO from this package does not reach the SLURM log, and a
         run where replay never happened is indistinguishable from a working one without
         these lines (job 25753032).
         """
-        k = int((task or {}).get("prefix_k", 0) or 0)
         if k <= 0:
-            # Expected for 3 of every 4 rollouts and for all validation; only worth
-            # reporting when the key is missing entirely, which means dispatch broke.
-            if task is not None and "prefix_k" not in task:
-                print(
-                    "[PrefixOrchestratorRollout] no prefix_k in the task payload — the "
-                    f"daemon did not dispatch one. keys={sorted(task.keys())}"
-                )
             return None
         store = self._get_store()
         tokenizer = self._get_tokenizer()
@@ -96,6 +111,40 @@ class PrefixOrchestratorRollout(OrchestratorRollout):
             f"decisions for {question_text[:50]!r}"
         )
         return ReplayController(steps, k, tokenizer)
+
+    def _make_token_controller(self, task, l):
+        """Token mode: replay a token fraction of the whole demonstration."""
+        if l <= 0.0:
+            return None
+        store = self._get_store()
+        tokenizer = self._get_tokenizer()
+        if store is None or tokenizer is None:
+            raise RuntimeError(
+                f"prefix_l={l} was dispatched but this worker has no demonstration "
+                "store or tokenizer; token mode cannot downgrade silently or the run "
+                "is not the experiment it claims to be."
+            )
+        question_text, _, _, _ = _get_task_metadata(task)
+        steps = store.steps(question_text)
+        if not steps:
+            # Coverage is partial by design (1358 of 1800), so this one is legitimate.
+            print(
+                f"[PrefixOrchestratorRollout] prefix_l={l:.3f} but the store has no "
+                f"demonstration for this question; running on-policy. "
+                f"question={question_text[:60]!r}"
+            )
+            return None
+        ctrl = ReplayController.from_token_fraction(steps, l, tokenizer)
+        print(
+            f"[PrefixOrchestratorRollout] token prefix l={l:.3f}: {ctrl.k} of "
+            f"{len(steps)} decisions replayed whole"
+            + (
+                f", then {ctrl.split_tokens} tokens of decision {ctrl.k + 1}"
+                if ctrl.split_index is not None
+                else " (no split)"
+            )
+        )
+        return ctrl
 
     def _wrap_provider(self, provider, task):
         controller = self._make_controller(task)

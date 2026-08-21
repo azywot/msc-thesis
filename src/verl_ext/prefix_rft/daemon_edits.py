@@ -26,7 +26,7 @@ EDITS = [
         "\n"
         "        for i in range(num_samples):\n",
     ),
-    # 2. per-rollout copy carrying prefix_k, in place of the shared dict
+    # 2. per-rollout copy carrying the dispatched prefix, in place of the shared dict
     (
         "            # For training, each sample is rolled out multiple times\n"
         "            for j in range(rollouts_per_sample):\n"
@@ -34,11 +34,13 @@ EDITS = [
         "            # For training, each sample is rolled out multiple times\n"
         "            for j in range(rollouts_per_sample):\n"
         "                # PREFIX-RFT EDIT 2: the vendored loop reuses one dict for every\n"
-        "                # rollout of a question. prefix_k differs per rollout, so take a\n"
-        "                # copy and stamp it here.\n"
+        "                # rollout of a question. The prefix differs per rollout, so take\n"
+        "                # a copy and stamp it here. One key per mode: prefix_k in step\n"
+        "                # mode, prefix_l in token mode.\n"
         "                sample = dict(original_sample)\n"
-        '                sample["prefix_k"] = self._prefix_k_for(sample, j, is_train)\n'
-        '                ks.append(sample["prefix_k"])\n'
+        "                spec = self._prefix_spec_for(sample, j, is_train)\n"
+        "                sample.update(spec)\n"
+        "                ks.append(next(iter(spec.values())))\n"
         "\n"
         '                task_metadata = {"data_id": data_id, "is_train": is_train}\n',
     ),
@@ -47,11 +49,11 @@ EDITS = [
         "                    sample=original_sample,\n",
         "                    sample=sample,  # PREFIX-RFT EDIT 3: the per-rollout copy\n",
     ),
-    # 4. remember the per-rollout copy, so prefix_k survives into batch reconstruction
+    # 4. remember the per-rollout copy, so the prefix survives into batch reconstruction
     (
         "                self._task_id_to_original_sample[rollout_id] = original_sample\n",
         "                # PREFIX-RFT EDIT 4: store the copy; get_train_data_batch needs\n"
-        "                # the per-rollout prefix_k to rebuild prefix_mask.\n"
+        "                # the per-rollout prefix to rebuild prefix_mask.\n"
         "                self._task_id_to_original_sample[rollout_id] = sample\n",
     ),
     # 5. summarise the dispatch once every task is queued

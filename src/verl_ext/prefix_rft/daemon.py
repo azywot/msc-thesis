@@ -34,7 +34,7 @@ import torch
 from fine_tuning.agentflow import LLM, NamedResources
 from fine_tuning.agentflow.verl.daemon import AgentModeDaemon
 
-from .dispatch import prefix_k_for
+from .dispatch import prefix_spec_for
 from .masks import build_prefix_mask
 
 logger = logging.getLogger(__name__)
@@ -49,20 +49,22 @@ class PrefixRFTDaemon(AgentModeDaemon):
         schedule=None,
         demo_store=None,
         n_prefixed_rollouts=1,
+        prefix_mode="steps",
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.schedule = schedule
         self.demo_store = demo_store
         self.n_prefixed_rollouts = n_prefixed_rollouts
+        self.prefix_mode = prefix_mode
         self._global_step = 0
         self.last_prefix_metrics = {}
 
     def set_global_step(self, step: int) -> None:
         self._global_step = int(step)
 
-    def _prefix_k_for(self, sample, rollout_index, is_train):
-        return prefix_k_for(
+    def _prefix_spec_for(self, sample, rollout_index, is_train):
+        return prefix_spec_for(
             sample=sample,
             rollout_index=rollout_index,
             is_train=is_train,
@@ -70,6 +72,7 @@ class PrefixRFTDaemon(AgentModeDaemon):
             demo_store=self.demo_store,
             n_prefixed_rollouts=self.n_prefixed_rollouts,
             global_step=self._global_step,
+            mode=self.prefix_mode,
         )
 
     async def _async_set_up(self, data, server_addresses, is_train=True):
@@ -115,11 +118,13 @@ class PrefixRFTDaemon(AgentModeDaemon):
             # For training, each sample is rolled out multiple times
             for j in range(rollouts_per_sample):
                 # PREFIX-RFT EDIT 2: the vendored loop reuses one dict for every
-                # rollout of a question. prefix_k differs per rollout, so take a
-                # copy and stamp it here.
+                # rollout of a question. The prefix differs per rollout, so take
+                # a copy and stamp it here. One key per mode: prefix_k in step
+                # mode, prefix_l in token mode.
                 sample = dict(original_sample)
-                sample["prefix_k"] = self._prefix_k_for(sample, j, is_train)
-                ks.append(sample["prefix_k"])
+                spec = self._prefix_spec_for(sample, j, is_train)
+                sample.update(spec)
+                ks.append(next(iter(spec.values())))
 
                 task_metadata = {"data_id": data_id, "is_train": is_train}
 
@@ -132,7 +137,7 @@ class PrefixRFTDaemon(AgentModeDaemon):
                 )
                 # Store original sample data to reconstruct batch information later
                 # PREFIX-RFT EDIT 4: store the copy; get_train_data_batch needs
-                # the per-rollout prefix_k to rebuild prefix_mask.
+                # the per-rollout prefix to rebuild prefix_mask.
                 self._task_id_to_original_sample[rollout_id] = sample
                 self._total_tasks_queued += 1
 
@@ -149,18 +154,31 @@ class PrefixRFTDaemon(AgentModeDaemon):
             f"prefixed (is_train={is_train}); ks={ks}"
         )
 
-    def _summarise_prefix_dispatch(self, ks):
-        prefixed = [k for k in ks if k > 0]
+    def _summarise_prefix_dispatch(self, values):
+        """Metrics for what was dispatched this step.
+
+        ``sample_l`` is called once more here to report the window. That draw already
+        happened before token mode existed, so it is left as it is; adding a second one
+        would change the curriculum the run actually sees.
+        """
+        prefixed = [v for v in values if v > 0]
         if self.schedule is not None:
             _, low, high = self.schedule.sample_l(global_step=self._global_step)
         else:
             low, high = 0.0, 0.0
-        return {
+        mean = float(np.mean(prefixed)) if prefixed else 0.0
+        out = {
             "actor/n_prefixed_rollouts": len(prefixed),
-            "actor/prefix_steps": float(np.mean(prefixed)) if prefixed else 0.0,
             "actor/prefix_low": float(low),
             "actor/prefix_high": float(high),
         }
+        # Different names on purpose: mean k and mean l are not comparable quantities
+        # and must not land in the same W&B series.
+        if self.prefix_mode == "tokens":
+            out["actor/prefix_l"] = mean
+        else:
+            out["actor/prefix_steps"] = mean
+        return out
 
     def get_train_data_batch(self, max_prompt_length, max_response_length, device):
         data_proto, metrics = super().get_train_data_batch(
@@ -210,6 +228,7 @@ class PrefixRFTDaemon(AgentModeDaemon):
                     "prompt_ids": t.prompt.get("token_ids", []),
                     "response_ids": t.response.get("token_ids", []),
                     "is_prefix": bool((t.metadata or {}).get("prefix", False)),
+                    "prefix_len": int((t.metadata or {}).get("prefix_len", 0) or 0),
                 }
                 for t in rollout.triplets
             ]

@@ -94,12 +94,13 @@ class PrefixRFTTrainer(AgentFlowTrainer):
         daemon.schedule = schedule
         daemon.demo_store = store
         daemon.n_prefixed_rollouts = int(self.config.prefix_rft.n_prefixed_rollouts)
+        daemon.prefix_mode = str(self.config.prefix_rft.get("mode", "steps"))
         daemon._global_step = 0
         daemon.last_prefix_metrics = {}
         # print, not logger.info: INFO from this package does not reach the SLURM
         # log, so the promotion was invisible to job 25754573's Check B even though
         # it had happened.
-        print("Promoted AgentModeDaemon to PrefixRFTDaemon")
+        print(f"Promoted AgentModeDaemon to PrefixRFTDaemon (mode={daemon.prefix_mode})")
 
     def _apply_prefix_advantage(self, batch, metrics):
         """Rewrite the advantage on replayed tokens and log the prefix metrics."""
@@ -126,6 +127,17 @@ class PrefixRFTTrainer(AgentFlowTrainer):
         n_response_tokens = int(response_mask.sum().item())
         metrics["actor/num_prefix_tokens"] = n_prefix_tokens
         metrics["actor/off_ratio"] = n_prefix_tokens / max(1, n_response_tokens)
+
+        # How many prefixed turns were split mid-turn rather than replayed whole.
+        # Derived from the mask so the driver needs nothing back from the worker;
+        # it is near 0 in step mode and near 1 in token mode.
+        per_row_prefix = prefix_mask.sum(dim=-1)
+        per_row_response = response_mask.sum(dim=-1)
+        n_prefixed_rows = int((per_row_prefix > 0).sum().item())
+        n_split_rows = int(
+            ((per_row_prefix > 0) & (per_row_prefix < per_row_response)).sum().item()
+        )
+        metrics["actor/prefix_split_fraction"] = n_split_rows / max(1, n_prefixed_rows)
 
         # The Figure 4 signature: reward-with-prefix should sit above the overall
         # training reward early on, and the gap should narrow as training proceeds.
