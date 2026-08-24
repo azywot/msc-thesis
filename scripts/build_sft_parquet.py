@@ -304,6 +304,42 @@ def _fold_records(records: list, planning_suffix: str, drop_planning_answers: bo
     return folded
 
 
+def _drop_over_length(folded: list, max_length: int, tokenizer_name: str) -> list:
+    """Drop folded rows whose rendered conversation exceeds *max_length* tokens.
+
+    Rendered the way training renders them, so the count matches what
+    check_sft_folded_format.py measures: the full [system, user, assistant] row with
+    thinking disabled and no generation prompt.
+
+    Dropping a row is not the same as dropping its question. A long trajectory folds
+    into several rows and only its late decisions carry the whole action history, so
+    the earlier rows survive and the question stays represented in the split.
+    """
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(tokenizer_name)
+    kept, dropped = [], []
+    for row in folded:
+        n = len(tok.apply_chat_template(
+            list(row["messages"]), tokenize=True,
+            add_generation_prompt=False, enable_thinking=False,
+        ))
+        (kept if n <= max_length else dropped).append((row, n))
+
+    if dropped:
+        surviving = {r["question"] for r, _ in kept}
+        lost = sorted({r["question"] for r, _ in dropped} - surviving)
+        logger.warning(
+            "Dropped %d folded row(s) over --max-length %d (longest %d tokens); "
+            "%d question(s) lost entirely.",
+            len(dropped), max_length, max(n for _, n in dropped), len(lost),
+        )
+        for question in lost:
+            logger.warning("  question no longer represented: %.90s", question)
+
+    return [row for row, _ in kept]
+
+
 def _refold_parquet(args) -> None:
     """Refold an already-built native parquet (and its sibling val split) in place.
 
@@ -336,6 +372,8 @@ def _refold_parquet(args) -> None:
         df = pd.read_parquet(path)
         records = df.to_dict("records")
         folded = _fold_records(records, planning_suffix, args.drop_planning_answers)
+        if args.max_length:
+            folded = _drop_over_length(folded, args.max_length, args.tokenizer)
 
         out_df = pd.DataFrame(folded)
         out_path = output_dir / f"{base_name}_{split_name}.parquet"
@@ -527,6 +565,20 @@ def main():
             "Planning-turn suffix to reproduce in folded planning rows "
             "(default: the orchestrator's _DEFAULT_PLANNING_SUFFIX_TOOLS)."
         ),
+    )
+    parser.add_argument(
+        "--max-length", type=int, default=None,
+        help=(
+            "Folded format only. Drop folded rows longer than this many tokens. Pass the "
+            "same value as data.max_length in the training job. Without it, an over-long "
+            "row survives the fold and is right-truncated at train time, which can consume "
+            "the whole assistant target and leave the row with no supervised tokens "
+            "(check_sft_folded_format.py fails on exactly this)."
+        ),
+    )
+    parser.add_argument(
+        "--tokenizer", default="Qwen/Qwen3-8B",
+        help="Tokenizer used to measure --max-length. Must match the training job.",
     )
     parser.add_argument(
         "--drop-planning-answers", action="store_true",
