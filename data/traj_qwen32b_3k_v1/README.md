@@ -221,18 +221,28 @@ the size of this file:
 | RL train set + store | questions | with a demonstration |
 |---|---:|---:|
 | `combined_train.parquet` + existing `prefix_demos.parquet` | 1800 | 1358 (75%) |
-| `combined_train.parquet` + this file | 1800 | 180 (10%) |
+| `combined_train.parquet` + `prefix_demos_traj3k.parquet` | 1800 | 180 (10%) |
+| `combined_train.parquet` + both merged | 1800 | 1377 (76%) |
 | this file as its own train set | 3000 | 3000 (100%) |
 
 Only 180 of the 3000 questions here also appear in `combined_train.parquet`. Swapping the
 store to this file while keeping `combined_train.parquet` as the RL training set therefore
 drops prefix coverage from 75% to 10%. A miss is not an error (that question trains as
 ordinary GRPO, which is what `demo_ratio` does), but at 10% the prefix mechanism barely
-fires. Either merge the two stores, or take the drop deliberately and say so.
+fires.
 
-Using this file as its own RL training set gives full coverage, but then every question is
-one the teacher already solved *and* supplies the prefix for, which compounds the
-selected-easy problem noted under GRPO above. Prefer merging.
+**Merging the two stores is not the answer either**: 161 of those 180 questions are
+already in `prefix_demos.parquet`, so a merge buys 19 questions, one percent of the pool,
+for an extra moving part. The two collections were run on different question pools, which
+is the whole reason the overlap is small.
+
+So the choice is really which RL training pool to run on. Staying on
+`combined_train.parquet` with the existing store keeps 75% coverage and is the default.
+Using this file as its own RL training set gives 100% coverage, because 2820 of its 3000
+questions sit outside `combined_train.parquet` and every one of them has a demonstration,
+but then every RL question is one the teacher already solved *and* supplies the prefix
+for, which compounds the selected-easy problem noted under GRPO above. `prefix_demos_traj3k.parquet`
+exists for that second case; it is not an upgrade to the first.
 
 634 of the 3000 trajectories (21%) hold a single decision and can never carry a prefix;
 2366 are prefixable. The existing store has the same property (273 of 1358).
