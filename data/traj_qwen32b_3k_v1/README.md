@@ -8,6 +8,8 @@ Qwen3-32B teacher trajectories (AgentFlow, sub-agent mode) collected on the
 | `train.parquet` | 3000 | SFT / prefix training; also usable as a GRPO training pool |
 | `val_200.parquet` | 200 | SFT validation — same distribution as train |
 | `val_60.parquet` | 60 | GRPO validation — questions only, includes AIME |
+| `folded/folded_train.parquet` | 9457 | SFT training, ready to use (built from `train.parquet`) |
+| `folded/folded_val.parquet` | 628 | SFT validation, ready to use (built from `val_200.parquet`) |
 
 ## Verification status (2026-08-24)
 
@@ -22,13 +24,16 @@ token statistics below. The stored system prompts are byte-identical to what the
 and `nq` to the gaia template), so there is no drift between training context and
 inference context, and the collection-time suffix is confirmed stripped.
 
-Two blockers were found. Both are flagged in place below; read them before launching:
+Two blockers were found:
 
-1. `val_200.parquet` fails the folded-SFT pre-flight gate (one over-length row).
-2. The `data.val_files` list in the GRPO snippet raises at dataset construction
-   (`extra_info.difficulty` dtype mismatch).
+1. **Fixed.** `val_200` failed the folded-SFT pre-flight gate on one over-length row.
+   Both splits are now folded, gated and sitting in `folded/`, so SFT is ready to launch.
+   See the SFT section for what was dropped and why.
+2. **Open, and it only bites at the RL stage.** The `data.val_files` list in the GRPO
+   snippet raises at dataset construction, because `extra_info.difficulty` is `double`
+   here and `int64` in the `data/training/` files. See the GRPO section.
 
-`train.parquet` itself is clean and passes every gate.
+`train.parquet` itself is clean and passes every gate untouched.
 
 ## Schema
 
@@ -97,7 +102,14 @@ Measured: 3000 trajectories to 9457 rows (3.15x), one row per assistant decision
 **That command folds `train.parquet` only.** `_refold_parquet` looks for a sibling val
 split by stripping a `_train` suffix off the input stem, and this file is named
 `train.parquet`, so the check never fires and `val_200` is skipped without a warning.
-Run it a second time with `--from-parquet data/traj_qwen32b_3k_v1/val_200.parquet`.
+Fold it separately (the output is named `folded_val_train.parquet`; rename to
+`folded_val.parquet`):
+
+```bash
+python scripts/build_sft_parquet.py --from-parquet data/traj_qwen32b_3k_v1/val_200.parquet \
+    --format folded --output-dir data/traj_qwen32b_3k_v1/folded \
+    --output-name folded_val_train.parquet
+```
 
 Then gate both outputs. This is not optional; it is the check that catches the
 format bug behind the `007` regression:
@@ -106,18 +118,29 @@ format bug behind the `007` regression:
 python scripts/check_sft_folded_format.py \
     --folded data/traj_qwen32b_3k_v1/folded/folded_train.parquet \
     --native data/traj_qwen32b_3k_v1/train.parquet
+python scripts/check_sft_folded_format.py \
+    --folded data/traj_qwen32b_3k_v1/folded/folded_val.parquet \
+    --native data/traj_qwen32b_3k_v1/val_200.parquet
 ```
 
-`folded_train` passes all six gates (9457 rows, max 10,070 tokens, well inside a
-16,384 `data.max_length`).
+**Both are already built and gated** (2026-08-24), in `folded/`:
 
-**Blocker: folded `val_200` fails the gate.** One deepmath trajectory folds to a row of
-18,871 tokens whose user turn alone is 17,648, so right-truncation at `max_length=16384`
-consumes the entire 464-token target and the row reports
-`row_with_zero_supervised_tokens`. Before using `val_200` for SFT validation, drop that
-question, filter rows over `max_length` at fold time, or raise `max_length`. `train`
-is unaffected; only `val_200` carries an over-length trajectory (native max 18,717
-tokens vs 10,352 for train).
+| file | rows | max tokens | gate |
+|---|---:|---:|---|
+| `folded_train.parquet` | 9457 | 10,070 | all six passed |
+| `folded_val.parquet` | 628 | 10,369 | all six passed |
+
+with matching `.jsonl` copies for inspection. Ready for `data.max_length: 16384`.
+
+**One folded val row was dropped to get there.** A single deepmath trajectory folds to a
+row of 18,871 tokens whose user turn alone is 17,648, so right-truncation at
+`max_length=16384` consumed the entire 464-token target and the row reported
+`row_with_zero_supervised_tokens`, failing the gate. That one row is removed, taking the
+fold from 629 to 628. Its question keeps its other 6 decisions, so all 200 questions are
+still represented and `val_200` stays i.i.d. with train at the question level. `train` is
+unaffected; only `val_200` carries an over-length trajectory (native max 18,717 tokens vs
+10,352 for train). **Refolding `val_200` from scratch reintroduces the bad row**, so
+re-apply the length filter or raise `max_length` if you rebuild.
 
 ### GRPO — use as-is; never the folded files
 
@@ -160,38 +183,22 @@ Prefix-RFT does not read this parquet. `verl_ext.prefix_rft.demos.DemoStore` rea
 separate one-row-per-question store with its own schema (`question_key, question_id,
 data_source, question, n_steps, steps[{response, tool_name, tool_result}]`), and
 `scripts/build_prefix_demos.py` builds it from a `collected_*.jsonl`, filtering on
-`correct` and carrying `question_id`. Neither field exists in `train.parquet`, so
-convert first:
+`correct` and carrying `question_id`. Neither field exists in `train.parquet`, so that
+script now takes a `--from-parquet` path as well:
 
-```python
-import sys
-import pandas as pd
-
-sys.path[:0] = ["src", "scripts"]
-from build_prefix_demos import records_to_demo_rows
-
-df = pd.read_parquet("data/traj_qwen32b_3k_v1/train.parquet")
-records = [
-    {
-        "question_id": i,
-        "correct": True,
-        "question": r["question"],
-        "data_source": r["data_source"],
-        "messages": [dict(m) for m in r["messages"]],
-    }
-    for i, r in enumerate(df.to_dict("records"))
-]
-pd.DataFrame(records_to_demo_rows(records)).to_parquet(
-    "data/training/prefix_rft/prefix_demos_traj3k.parquet", index=False
-)
+```bash
+python scripts/build_prefix_demos.py \
+    --from-parquet data/traj_qwen32b_3k_v1/train.parquet \
+    --output data/training/prefix_rft/prefix_demos_traj3k.parquet
 ```
 
-`correct=True` is sound here: only verified-correct trajectories were written to this
-file (see Provenance). `question_id` is positional and used for diagnostics and ordering
-only. **Do not substitute `extra_info.idx` for it**: 170 of its values collide across
-data sources in this file, which is exactly the failure `demos.py` warns about, attaching
-a maths demonstration to a search question with nothing downstream to notice. The lookup
-key is `question_key`, the SHA-1 of the question text.
+The adapter sets `correct=True`, which is sound here because only verified-correct
+trajectories were written to this file (see Provenance), and uses the row position as
+`question_id`, which is carried for diagnostics and ordering only. **It does not use
+`extra_info.idx`**: 170 of that column's values collide across data sources in this file,
+which is exactly the failure `demos.py` warns about, attaching a maths demonstration to a
+search question with nothing downstream to notice. The lookup key is `question_key`, the
+SHA-1 of the question text.
 
 Gate the result before training:
 
