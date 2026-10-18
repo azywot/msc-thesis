@@ -13,6 +13,11 @@ Usage:
     python scripts/build_prefix_demos.py \
         data/training/sft/collected_20260605_214650.jsonl \
         --output data/training/prefix_rft/prefix_demos.parquet
+
+    # or from an already-built trajectory parquet, when the collection log is gone
+    python scripts/build_prefix_demos.py \
+        --from-parquet data/traj_qwen32b_3k_v1/train.parquet \
+        --output data/training/prefix_rft/prefix_demos_traj3k.parquet
 """
 
 from __future__ import annotations
@@ -96,9 +101,42 @@ def records_to_demo_rows(records: list[dict]) -> list[dict]:
     return [rows[k] for k in sorted(rows, key=lambda k: rows[k]["question_id"])]
 
 
+def records_from_parquet(path: Path) -> list[dict]:
+    """Adapt a built trajectory parquet (e.g. traj_qwen32b_3k_v1/train.parquet).
+
+    Such a parquet is already the output of ``build_sft_parquet.py``, so it has
+    dropped the two fields this builder filters on: every surviving trajectory is
+    verified-correct, and ``question_id`` (the row position in the collection run)
+    is gone. ``correct=True`` is therefore sound by construction, and the row
+    position here stands in for ``question_id``, which is carried for diagnostics
+    and ordering only.
+
+    Not ``extra_info.idx``: prepare.py assigns it per data source, so it collides
+    across them (170 collisions in traj_qwen32b_3k_v1/train.parquet) and keying on
+    it would attach a maths demonstration to a search question.
+    """
+    frame = pd.read_parquet(path)
+    return [
+        {
+            "question_id": i,
+            "correct": True,
+            "question": record["question"],
+            "data_source": record["data_source"],
+            "messages": [dict(m) for m in record["messages"]],
+        }
+        for i, record in enumerate(frame.to_dict("records"))
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("jsonl", type=Path, help="collected_<ts>.jsonl from 006")
+    parser.add_argument("jsonl", type=Path, nargs="?", default=None,
+                        help="collected_<ts>.jsonl from 006")
+    parser.add_argument(
+        "--from-parquet", type=Path, default=None,
+        help="Build from a trajectory parquet instead (its `messages` column), "
+             "for collections whose collected_*.jsonl is not on hand.",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -107,13 +145,22 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    records = []
-    with args.jsonl.open() as handle:
-        for line in handle:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
-    logger.info("Read %d records from %s", len(records), args.jsonl)
+    if (args.jsonl is None) == (args.from_parquet is None):
+        raise SystemExit("Pass exactly one of: a collected_*.jsonl, or --from-parquet.")
+
+    if args.from_parquet is not None:
+        if not args.from_parquet.exists():
+            raise SystemExit(f"--from-parquet not found: {args.from_parquet}")
+        records = records_from_parquet(args.from_parquet)
+        logger.info("Read %d trajectories from %s", len(records), args.from_parquet)
+    else:
+        records = []
+        with args.jsonl.open() as handle:
+            for line in handle:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+        logger.info("Read %d records from %s", len(records), args.jsonl)
 
     rows = records_to_demo_rows(records)
     if not rows:
