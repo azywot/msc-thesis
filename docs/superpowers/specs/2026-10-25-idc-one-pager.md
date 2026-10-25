@@ -1,6 +1,6 @@
 # IDC: Interventional Decision Credit (one-pager)
 
-Agata Żywot, for Xinyi Chen, 25 October 2026. Target: ICML 2027 (paper deadline around 22 January, to be confirmed).
+25 October 2026. Target: ICML 2027 (paper deadline around 22 January, to be confirmed).
 
 ## Problem
 

@@ -1,7 +1,7 @@
 # Interventional Decision Credit for Small-LM Orchestrators
 
 <!-- **Research plan for an ICML 2027 submission.**
-Author: Agata Żywot. Collaborator: Xinyi Chen. Written 2026-10-25.
+Author: Agata Żywot. Written 2026-10-25.
 Status: **proposed direction, gated by week-1 tests** (Section 8).
 
 This is the complete plan for the post-thesis project. It is self-contained: every number, design choice and source needed to understand, review or execute it is in this document. It supersedes the earlier version of the plan (called CEPO, Section 13) and incorporates an external review of that version, after every literature claim and number in the review was checked. -->
@@ -450,7 +450,7 @@ Every combination of results maps to exactly one outcome:
 | pass | fail | pass | **Branch B: diagnostic paper** (mechanism, P1, 2x2 taxonomy) with the control target as the fix | Workshop or TMLR; ICML only if the fix clears the bar |
 | pass | fail | fail | **Branch B, analysis only** | Workshop or TMLR |
 | fail | any | pass | **Branch C: control-credit paper** in the multi-agent setting (forcing + target + diagnosis; ASCT, FGPO, TWICE credited prominently). If test 1 passed, the gate stays as an ablation | ICML if gains are large; otherwise NeurIPS 2027 |
-| fail | any | fail | **Stop this line.** One week lost, not a quarter. Choose the next direction with Xinyi | n/a |
+| fail | any | fail | **Stop this line.** One week lost, not a quarter. Choose the next direction. | n/a |
 
 ### 8.2 What changes in each branch
 
@@ -479,7 +479,7 @@ Thirteen weeks from Monday 26 October 2026. **ICML 2027 is projected at abstract
 | 1.5 Test 1 | Search adequacy check on all failed search dispatches; code swap with Qwen3-32B on all failed code dispatches | 1.4 | Agata | Adequate share per domain |
 | 1.6 Test 2 and decision-point check | Forcing vs resampling; π(c′ \| s); share of all-zero Q̂. Also measure how often thinking-off turns have text before `<tool_call>`, and how long it is | 1.4 | Agata | Recovery table; decision-point rule fixed |
 | 1.7 Reading | TWICE in full (method, budget rule, code release), ASCT ablations, CCPO method, TAPO, APPO, StepSearch, HiPRAG, Search-R2; confirm the ICML 2027 call for papers | | Agata | Half-page note on anything that changes Section 3 |
-| 1.8 Weekly meeting | Present 1.2 to 1.7; choose the branch (Section 8.1); settle D10 and D11 | all | Agata, Xinyi | Branch decision |
+| 1.8 Weekly meeting | Present 1.2 to 1.7; choose the branch (Section 8.1); settle D10 and D11 | all | Agata, collaborator | Branch decision |
 
 ### Weeks 2 to 3 (2 to 15 Nov): implementation
 
@@ -518,14 +518,14 @@ Thirteen weeks from Monday 26 October 2026. **ICML 2027 is projected at abstract
 ### Weeks 11 to 12 (4 to 15 Jan): writing
 
 - Full draft with figures: method overview (check → label → credit), tool-avoidance curves (GRPO vs IDC), 2x2 taxonomy over training, executor-upgrade plot, forcing-vs-resampling and compute curves.
-- Internal review with Xinyi and the supervisor; fill missing runs.
+- Internal review with the supervisor; fill missing runs.
 - **16 Jan:** abstract registration.
 
 ### Final days (16 to 22 Jan): submit
 
 - Polish, appendix (label audit, adequacy-check error analysis, full per-benchmark tables), code release preparation, submission.
 
-### Standing items for the weekly meeting with Xinyi
+### Standing items for the weekly meeting with the collaborator
 
 1. Status against the current phase's exit criterion.
 2. New arXiv papers on counterfactual or enumerated agent credit (weekly alert; TWICE appeared three days before this plan was written).
@@ -577,7 +577,7 @@ Thirteen weeks from Monday 26 October 2026. **ICML 2027 is projected at abstract
 |---|---|
 | Thirteen weeks is tight | Minimum paper defined (Section 9, cut order); the week-1 gate prevents sunk cost |
 | Holidays (weeks 9 to 10) | Queue long runs beforehand; do writing-adjacent work |
-| RL runs in weeks 4 to 8 are the bottleneck | D10: decide the split with Xinyi in week 1 |
+| RL runs in weeks 4 to 8 are the bottleneck | D10: decide the split with the collaborator in week 1 |
 | ICML dates differ from the projection | Confirm the call for papers in week 1 (task 1.7) |
 | More concurrent work appears | Weekly alert; the executor-specific claims are the defensible core |
 
@@ -639,7 +639,7 @@ Thirteen weeks from Monday 26 October 2026. **ICML 2027 is projected at abstract
 
 | ID | Decision | Recommendation |
 |---|---|---|
-| D10 | Division of work with Xinyi | Xinyi owns the RL runs and baselines B4, B5, B7 in weeks 4 to 8; Agata owns hooks, labels, evaluation and writing. Decide at the week-1 meeting |
+| D10 | Division of work with the collaborator | The collaborator owns the RL runs and baselines B4, B5, B7 in weeks 4 to 8; Agata owns hooks, labels, evaluation and writing. Decide at the week-1 meeting |
 | D11 | Strong coder: Qwen3-32B or Qwen3-30B-A3B-Instruct | 32B for the week-1 test (cleaner label); switch to 30B-A3B for training if its labels agree with 32B's and it is cheaper (A2) |
 | D12 | Venue if Branch B or C | Branch B: workshop or TMLR. Branch C: ICML if gains clear the bar, otherwise NeurIPS 2027 |
 
