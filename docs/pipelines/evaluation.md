@@ -71,9 +71,21 @@ and `agentflow_text` suites of `scripts/generate_configs.py`.
 A model entry can set `sampling_by_thinking` with a `thinking` and a
 `non_thinking` block (each `temperature`, `top_p`, `top_k`). The block is picked
 per call from the prompt's thinking state and replaces the plain
-`temperature`/`top_p`/`top_k`. It is vLLM-only; other backends reject it. The text
-configs use it so that repeated runs differ. Plain Qwen3 configs without it stay
-greedy (temperature 0.0), so repeating them gives identical results.
+`temperature`/`top_p`/`top_k`. It is vLLM-only; other backends reject it.
+
+Qwen3 on vLLM uses the model-card settings by default: `temperature 0.6, top_p
+0.95, top_k 20` for thinking calls and `temperature 0.7, top_p 0.8, top_k 20` for
+non-thinking calls. This applies to every Qwen3 config that sets none of
+`temperature`, `top_p`, `top_k` or `sampling_by_thinking` on that model entry. A
+config that sets any of them keeps exactly what it set, so `temperature: 0.0`
+still gives greedy decoding. Qwen3 on the MLX, OpenAI or Anthropic backends keeps
+the class defaults (greedy), because those backends cannot switch per call.
+DeepSeek and OLMo keep their own family defaults (`temperature 0.6`). The text
+configs also write the block out explicitly.
+
+Before 2026-11-07 every Qwen3 config was greedy. Rerunning an older Qwen3 config
+now samples, so its numbers will not match results recorded from that config
+earlier. Add `temperature: 0.0` to a model entry to reproduce an old greedy run.
 
 `--seed N` overrides the config seed (and the seed of every model):
 

@@ -9,6 +9,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased] — feat/gepa-integration
 
 ### Added
+- **Text-only GAIA/HLE splits, seeded runs and pass@k** (`feat/text-subsets-pass-at-k`).
+  `all_validation_text` (GAIA, 155 questions) drops the 10 validation questions whose
+  attachment is an image, which no run could answer with `image_inspector` off.
+  `test_text_subset_200` (HLE, 200 questions) walks the same seed-0 shuffle of full HLE
+  that produced `test_subset_200` and keeps text-only questions, so its first 179 are
+  that subset's text questions in order. Both are built from the local snapshots with
+  `scripts/download_datasets.py --text-only --local-only`.
+  `--seed N` on `run_experiment.py` overrides every seed and names the run dir
+  `{split}_seed{N}_...`; `config.json` gains `config_fingerprint` and a per-model `seed`.
+  `generate_job.py --seed`, `launch_experiment.sh --seed` and
+  `run_all_in_folder.sh --seeds 0,1,2,3,4` submit one SLURM job per (config, seed).
+  `scripts/pass_at_k.py` computes the unbiased pass@k estimator over seeded runs and
+  refuses greedy, mismatched, duplicated or crashed runs. 24 Qwen3 text configs live in
+  `experiments/configs/qwen3/{baseline_text,agentflow_text}`. `ModelConfig` gains
+  `sampling_by_thinking` (per-call vLLM sampling chosen by the call's thinking state).
+  See [`docs/superpowers/specs/2026-11-07-text-subsets-pass-at-k-design.md`](docs/superpowers/specs/2026-11-07-text-subsets-pass-at-k-design.md)
+  and [`docs/pipelines/evaluation.md`](docs/pipelines/evaluation.md).
 - **Prefix-RFT token mode** (`feat/prefix-rft-token-mode`) — the prefix can now be
   measured in tokens, the paper's own measure, instead of whole teacher decisions. A
   decision that straddles the budget is split and the model finishes the turn, served
@@ -148,6 +165,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Results land under `experiments/results/gepa_inference/<dataset>/<variant>/`
 
 ### Changed
+- **Qwen3 on vLLM now samples by default** (`feat/text-subsets-pass-at-k`). A Qwen3
+  model entry that sets none of `temperature`, `top_p`, `top_k` or
+  `sampling_by_thinking` now gets the model-card settings: `0.6 / 0.95 / 20` for
+  thinking calls and `0.7 / 0.8 / 20` for non-thinking calls. It was greedy
+  (`temperature 0.0`) before. Entries that pin any sampling field are unchanged, as are
+  Qwen3 on MLX / OpenAI / Anthropic and every other family. **Rerunning an older Qwen3
+  config no longer reproduces its recorded numbers**; add `temperature: 0.0` to the
+  model entry for the old greedy behaviour. This also affects GEPA optimisation and
+  evaluation (`scripts/run_gepa.py` builds its Qwen3 `ModelConfig` without sampling
+  fields) and the orchestrator in `collect_sft_qwen32b.yaml`.
 - **`scripts/failure_modes/` reorganised into sub-packages** — the directory had grown into a flat dump of six unrelated analyses
   - `eval_runs/` — analyses over eval `raw_results.json`: `baseline_counterfactual.py`, `retrieval_locus_split.py` (moved, unchanged)
   - `fine_tuning/` — analyses of the RL/LoRA runs: `base_vs_lora.py` (was `ft_base_vs_lora_analysis.py`), `case_studies.py` (was `ft_case_studies.py`), `all_wrong.py` (was `axpo_all_wrong_analysis.py`)

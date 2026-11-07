@@ -99,7 +99,8 @@ python scripts/generate_configs.py
 - `tools.return_code: true` — `code_generator` returns generated code instead of executing it (required for BigCodeBench)
 - `thinking_mode` — `NO` / `ORCHESTRATOR_ONLY` / `SUBAGENTS_ONLY` / `ALL`
 - `batch_size` — questions per batch (`-1` = all; `1` = no batching)
-- `sampling_by_thinking`: per-model `thinking` / `non_thinking` sampling blocks, vLLM only (rejected for API families); plain Qwen3 configs without it stay greedy, while DeepSeek and OLMo family defaults already sample (T=0.6). `--seed N` overrides the seed and names the run dir `{split}_seed{N}_...`
+- `sampling_by_thinking`: per-model `thinking` / `non_thinking` sampling blocks, vLLM only (rejected for API families). Qwen3 on vLLM defaults to the model-card blocks (0.6/0.95/20 thinking, 0.7/0.8/20 non-thinking) unless the entry sets `temperature`, `top_p` or `top_k`; pin `temperature: 0.0` for greedy. DeepSeek and OLMo family defaults sample at T=0.6.
+- `--seed N` (CLI) overrides every seed and names the run dir `{split}_seed{N}_...`
 - `web_tool_provider` — `serper` (default, fetches full pages) or `tavily` (pre-cleaned content)
 - `gepa_prompt_path` — path to a GEPA `best_candidate.json`; when set, bypasses `PromptBuilder` and loads `system_prompt` + `planning_suffix` directly from the file (used for GEPA inference runs under `experiments/configs/qwen3/gepa_inference/`)
 

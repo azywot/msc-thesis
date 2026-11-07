@@ -16,7 +16,8 @@ CARD = {
 
 
 def test_sampling_for_without_override_uses_model_fields():
-    m = ModelConfig(**QWEN)
+    # Pinning a sampling field opts out of the Qwen3 model-card default.
+    m = ModelConfig(**QWEN, temperature=0.0)
     assert m.sampling_for(True) == {"temperature": 0.0, "top_p": 0.8, "top_k": 20}
     assert m.sampling_for(False) == m.sampling_for(True)
 
@@ -133,7 +134,7 @@ def _cfg_dict(orchestrator):
 
 def test_config_json_includes_sampling_by_thinking():
     with_card = ModelConfig(**QWEN, sampling_by_thinking=CARD)
-    without = ModelConfig(**QWEN)
+    without = ModelConfig(**QWEN, temperature=0.0)
     d1 = _cfg_dict(with_card)["models"]["orchestrator"]
     d2 = _cfg_dict(without)["models"]["orchestrator"]
     assert d1["sampling_by_thinking"] == CARD

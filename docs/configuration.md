@@ -127,9 +127,10 @@ models:
 | `backend` | str | `vllm` | `vllm`, `mlx`, `openai`, `anthropic`. |
 | `max_model_len` | int | `32768` | Prompt + generation, in tokens. |
 | `max_tokens` | int | `8192` | New tokens per call. |
-| `temperature` | float | `0.0` | `0.0` = greedy, the default for reproducibility. |
+| `temperature` | float | `0.0` | `0.0` = greedy. Qwen3 on vLLM samples by default instead; see `sampling_by_thinking`. |
 | `top_p` | float | `0.8` | |
 | `top_k` | int | `20` | |
+| `sampling_by_thinking` | dict \| null | `null`; Qwen3 on vLLM: model card | Two blocks, `thinking` and `non_thinking`, each with `temperature`, `top_p`, `top_k`. vLLM picks one per call from the call's thinking state, replacing the three fields above. vLLM only; rejected for other backends and for the `gpt4` / `claude` families. Qwen3 on vLLM gets `{thinking: 0.6 / 0.95 / 20, non_thinking: 0.7 / 0.8 / 20}` when the entry sets none of `temperature`, `top_p`, `top_k`, `sampling_by_thinking`. |
 | `repetition_penalty` | float | `1.1` | |
 | `supports_thinking` | bool \| null | `null` | Derived from `family` when unset. Setting it by hand overrides that. |
 | `tensor_parallel_size` | int \| null | `null` | GPUs to shard across; auto-detected when unset. |
@@ -139,10 +140,19 @@ models:
 | `lora_adapter_path` | str \| null | `null` | PEFT adapter directory. |
 | `max_lora_rank` | int | `64` | **Must match the training rank.** vLLM's own default is 16; ours is 64. |
 
-Family defaults are not all identical - OLMo 3 ships sampling parameters from
+Family defaults are not all identical. OLMo 3 ships sampling parameters from
 its model card (`temperature=0.6`, `top_p=0.95`, `top_k=-1`,
-`repetition_penalty=1.0`) rather than the table above. Check the configs under
+`repetition_penalty=1.0`) rather than the table above, and DeepSeek uses
+`temperature=0.6`, `top_p=0.95`. Qwen3 on vLLM uses its model-card settings
+through `sampling_by_thinking` (see the table). Pin `temperature: 0.0` on a model
+entry to get greedy decoding back. Check the configs under
 `experiments/configs/olmo3/` before copying numbers from a Qwen config.
+
+Each run's `config.json` records, per model, the sampling fields,
+`sampling_by_thinking` and `seed`, plus a top-level `config_fingerprint` (a hash
+of the config without seeds, paths, run name, description, SLURM and W&B
+settings). `scripts/pass_at_k.py` uses these to check that repeated runs differ
+only in their seed.
 
 ---
 
@@ -329,6 +339,7 @@ you omitted it:
 | `datasets` | all seven | Restrict to a subset of `gaia`, `hle`, `gpqa`, `aime`, `math500`, `musique`, `bigcodebench`. |
 | `variant_type` | `"standard"` | Selects a different config-building path: `orch_capacity`, `lora_inference`, or `subagent_orch_ablation`. |
 | `no_thinking_mode` | `False` | Force `thinking_mode: NO` across the suite. |
+| `sampling_by_thinking` | - | Write this block under `models.orchestrator` in every config of the suite (the `*_text` suites use the Qwen3 model-card values). |
 | `lora_adapter_path` | - | Required when `variant_type` is `lora_inference`. |
 | `adapter_label`, `adapter_desc` | `"LoRA"`, `"LoRA-adapted"` | Naming for adapter-based suites. |
 | `train_job` | `"005_train.job"` | The training job referenced in generated descriptions. |

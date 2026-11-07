@@ -2,6 +2,10 @@
 
 **Date:** 2026-11-07
 **Status:** approved 2026-11-07
+**Update (2026-11-07, after implementation):** at the user's request, Qwen3 on vLLM now
+defaults to the model-card sampling for every config that does not pin a sampling field,
+not only the text configs. The "Qwen3 class default is not changed" decision below is
+superseded; see `CHANGELOG.md` (Changed) and `docs/pipelines/evaluation.md`.
 **Branch:** `feat/text-subsets-pass-at-k`
 
 ## Why

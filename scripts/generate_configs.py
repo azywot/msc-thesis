@@ -329,6 +329,7 @@ TOOL_MODE_LABELS = {
 }
 
 # Qwen3 model-card sampling, applied per call by thinking mode (text-split suites).
+# Same values as agent_engine.models.base.QWEN3_MODEL_CARD_SAMPLING (a test keeps them equal).
 QWEN3_MODEL_CARD_SAMPLING = {
     "thinking": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
     "non_thinking": {"temperature": 0.7, "top_p": 0.8, "top_k": 20},

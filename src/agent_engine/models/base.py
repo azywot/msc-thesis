@@ -4,6 +4,7 @@ This module defines the core abstractions for working with different model provi
 (vLLM, OpenAI, Anthropic, etc.) in a unified way.
 """
 
+import copy
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, ClassVar, Dict, List, Optional
@@ -159,6 +160,16 @@ class ThinkingSampling(BaseModel):
     non_thinking: SamplingOverride
 
 
+# Qwen3 model-card sampling settings (thinking / non-thinking mode). Used as the
+# default for Qwen3 on vLLM; scripts/generate_configs.py keeps an identical copy.
+QWEN3_MODEL_CARD_SAMPLING: Dict[str, Dict[str, Any]] = {
+    "thinking": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+    "non_thinking": {"temperature": 0.7, "top_p": 0.8, "top_k": 20},
+}
+
+_SAMPLING_FIELDS = ("temperature", "top_p", "top_k", "sampling_by_thinking")
+
+
 class ModelConfig(BaseModel):
     """Complete model configuration.
 
@@ -175,7 +186,9 @@ class ModelConfig(BaseModel):
               ``"web_search"``, ``"code_generator"``.
         max_model_len: Maximum sequence length (prompt + generation) in tokens.
         max_tokens: Maximum *new* tokens to generate per call.
-        temperature: Sampling temperature.  ``0.0`` = greedy (default, for reproducibility).
+        temperature: Sampling temperature.  ``0.0`` = greedy (the class default).  Qwen3 on
+            vLLM instead defaults to the model-card settings via ``sampling_by_thinking``
+            unless the config sets any of temperature/top_p/top_k itself.
         top_p: Nucleus sampling threshold.
         top_k: Top-K sampling limit.
         repetition_penalty: Penalty applied to repeated tokens (``1.0`` = no penalty).
@@ -241,6 +254,15 @@ class ModelConfig(BaseModel):
         family_str = family.value if isinstance(family, ModelFamily) else str(family)
         for param, default in cls._FAMILY_DEFAULTS.get(family_str, {}).items():
             values.setdefault(param, default)
+        # Qwen3 on vLLM samples with the model-card settings by default, chosen per call by
+        # the thinking flag. A config that sets any sampling field keeps exactly what it set,
+        # and non-vLLM backends (which cannot switch per call) keep the class defaults.
+        if (
+            family_str == ModelFamily.QWEN3.value
+            and values.get("backend", "vllm") == "vllm"
+            and not any(k in values for k in _SAMPLING_FIELDS)
+        ):
+            values["sampling_by_thinking"] = copy.deepcopy(QWEN3_MODEL_CARD_SAMPLING)
         return values
 
     @field_validator("family", mode="before")
