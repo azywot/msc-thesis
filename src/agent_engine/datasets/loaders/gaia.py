@@ -74,17 +74,21 @@ class GAIADataset(BaseDataset):
                                 attachment_path = self.config.data_dir / "GAIA" / file_path
                                 attachments.append(str(attachment_path))
 
+                    metadata = {
+                        "level": data.get("Level", 1),
+                        "file_name": data.get("file_name", ""),
+                        "file_path": data.get("file_path", ""),
+                        "full_file_path": data.get("full_file_path", ""),
+                        "attachments": attachments,
+                    }
+                    if "source_index" in data:
+                        metadata["source_index"] = data["source_index"]
+
                     example = DatasetExample(
                         question_id=idx,
                         question=data['Question'],
                         answer=data['Answer'],
-                        metadata={
-                            "level": data.get("Level", 1),
-                            "file_name": data.get("file_name", ""),
-                            "file_path": data.get("file_path", ""),
-                            "full_file_path": data.get("full_file_path", ""),
-                            "attachments": attachments,
-                        }
+                        metadata=metadata,
                     )
                     examples.append(example)
 

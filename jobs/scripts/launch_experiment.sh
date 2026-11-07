@@ -1,19 +1,39 @@
 #!/bin/bash
 # Launch experiment: generate job file and submit to SLURM
 #
-# Usage: ./launch_experiment.sh <config_file>
+# Usage: ./launch_experiment.sh <config_file> [--seed N]
 #
 # Example: ./launch_experiment.sh experiments/configs/datasets/gaia/baseline.yaml
 
 set -e
 
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 <config_file>"
+    echo "Usage: $0 <config_file> [--seed N]"
     echo "Example: $0 experiments/configs/datasets/gaia/baseline.yaml"
     exit 1
 fi
 
 CONFIG_FILE="$1"
+shift
+
+SEED_ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --seed)
+            if [ $# -lt 2 ]; then
+                echo "Error: --seed requires a value"
+                echo "Usage: $0 <config_file> [--seed N]"
+                exit 1
+            fi
+            SEED_ARGS=(--seed "$2")
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
 
 # Load .env if present (PROJECT_DIR, ENV_NAME, etc.)
 if [ -f ".env" ]; then
@@ -61,7 +81,7 @@ echo ""
 
 # Generate job file (capture JOB_FILE from script output for consistency)
 echo "Generating SLURM job file..."
-GEN_OUT=$(python jobs/scripts/generate_job.py "$CONFIG_FILE")
+GEN_OUT=$(python jobs/scripts/generate_job.py "$CONFIG_FILE" "${SEED_ARGS[@]}")
 echo "$GEN_OUT"
 JOB_FILE=$(echo "$GEN_OUT" | grep "^JOB_FILE=" | cut -d= -f2-)
 

@@ -7,6 +7,7 @@ SLURM job file using Jinja2 templates.
 import argparse
 import sys
 from pathlib import Path
+from typing import Optional
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -15,8 +16,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 from agent_engine.config import load_experiment_config
 
 
-def generate_job(config_path: Path, output_path: Path = None, project_dir: Path = None):
-    """Generate SLURM job file from experiment config."""
+def generate_job(
+    config_path: Path,
+    output_path: Path = None,
+    project_dir: Path = None,
+    seed: Optional[int] = None,
+):
+    """Generate SLURM job file from experiment config.
+
+    With ``seed``, the job is named ``<name>_seed<seed>``, PYTHONHASHSEED is set to the
+    seed and the run command gets ``--seed <seed>``. Without it, output is unchanged.
+    """
     config = load_experiment_config(config_path)
     slurm = config.slurm
 
@@ -25,8 +35,12 @@ def generate_job(config_path: Path, output_path: Path = None, project_dir: Path 
     if project_dir is None:
         project_dir = Path.cwd()
 
+    seed_suffix = "" if seed is None else f"_seed{seed}"
+    seed_arg = "" if seed is None else f" \\\n  --seed {seed}"
+    job_seed = config.seed if seed is None else seed
+
     if output_path is None:
-        output_path = Path("jobs/generated") / f"{config.name}.job"
+        output_path = Path("jobs/generated") / f"{config.name}{seed_suffix}.job"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -50,7 +64,9 @@ def generate_job(config_path: Path, output_path: Path = None, project_dir: Path 
         cpus_per_task=slurm.cpus_per_task,
         time=slurm.time,
         conda_env=slurm.conda_env,
-        seed=config.seed,
+        seed=job_seed,
+        seed_suffix=seed_suffix,
+        seed_arg=seed_arg,
         config_path=str(config_path.absolute()),
         output_dir=str(config.output_dir),
         project_dir=str(project_dir.absolute()),
@@ -77,6 +93,8 @@ def main():
                         help="Output path for job file (default: jobs/generated/<name>.job)")
     parser.add_argument("--project-dir", type=str,
                         help="Project root directory (default: current directory)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Run seed; names the job <name>_seed<N> and passes --seed N")
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -87,7 +105,7 @@ def main():
         print(f"Error: Config file not found: {config_path}", file=sys.stderr)
         sys.exit(1)
 
-    generate_job(config_path, output_path, project_dir)
+    generate_job(config_path, output_path, project_dir, seed=args.seed)
 
 
 if __name__ == "__main__":

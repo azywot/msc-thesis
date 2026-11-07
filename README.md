@@ -15,7 +15,8 @@ with the same tools, in two modes:
 One YAML key (`baseline: true`) switches between them. Everything else is held
 constant, which is what makes the comparison worth anything.
 
-**Benchmarks:** GAIA, HLE, GPQA, AIME, MATH500, AMC, MuSiQue, BigCodeBench.
+**Benchmarks:** GAIA, HLE, GPQA, AIME, MATH500, AMC, MuSiQue, BigCodeBench, plus
+text-only GAIA-text and HLE-text (image questions removed).
 **Models:** Qwen3 (0.6B–32B), DeepSeek-R1-Distill (7B, 32B), OLMo 3 (Think /
 Instruct). **Backends:** vLLM (cluster), MLX (Apple Silicon), OpenAI / Anthropic.
 
@@ -88,6 +89,15 @@ sbatch jobs/002_download_datasets.job          # all of them, on the cluster
 python scripts/download_datasets.py --dataset gaia     # or one at a time
 ```
 
+The text-only splits (`data/GAIA/all_validation_text.jsonl`, 155 questions, and
+`data/HLE/test_text_subset_200.jsonl`, 200 questions) are built from the
+downloaded snapshots:
+
+```bash
+python scripts/download_datasets.py --dataset gaia --level all --split validation --text-only --local-only
+python scripts/download_datasets.py --dataset hle --split test --subset 200 --seed 0 --text-only --local-only
+```
+
 ---
 
 ## Run one experiment
@@ -123,6 +133,18 @@ Each run writes a timestamped directory containing `raw_results.json`,
 ```bash
 python scripts/analyze_results.py experiments/results/<run>/raw_results.json --by-level --tools
 ```
+
+**Repeated attempts and pass@k.** Qwen3 on vLLM samples with its model-card
+settings by default (pin `temperature: 0.0` on a model entry for greedy). Run the
+same config with several seeds, one SLURM job each, then combine the runs:
+
+```bash
+./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/baseline_text --dataset gaia --seeds 0,1,2,3,4
+python scripts/pass_at_k.py <run_seed0> <run_seed1> ... --k 1 3 5 --by-level --out pass_at_k.json
+```
+
+A seeded run directory is named `{split}_seed{N}_...`. `pass_at_k.py` refuses runs
+that are greedy, differ in config, repeat a seed, or crashed.
 
 See [docs/pipelines/evaluation.md](docs/pipelines/evaluation.md) for what the
 numbers mean and how to read a bad one.
@@ -306,3 +328,18 @@ Working directory is `$HOME/azywot/msc-thesis/`.
 | `jobs/grpo_inference/` | Evaluation of base / SFT / GRPO checkpoints |
 
 Overrides via `sbatch --export=ALL,...`: `ENV_NAME`, `PROJECT_DIR`, `DATA_DIR`.
+
+**Download model weights before launching many jobs.** If a model is not yet in
+`HF_HOME` (scratch is purged periodically), every job that starts downloads it
+into the same cache at once, and the jobs corrupt each other's shards (vLLM then
+fails with `SafetensorError: InvalidHeaderDeserialization`). Fetch each model once
+on the login node first, with `.env` loaded so `HF_HOME` points at the shared cache:
+
+```bash
+set -a; source .env; set +a
+python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-8B')"
+python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-32B')"
+```
+
+A blob in `$HF_HOME/hub/models--*/blobs/` whose sha256 does not match its file
+name is corrupt: delete it and download again.
