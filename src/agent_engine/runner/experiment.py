@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agent_engine.config import load_experiment_config
+from agent_engine.config.loader import apply_seed_override, config_fingerprint
 from agent_engine.models.base import get_tool_call_format
 from agent_engine.core import AgenticOrchestrator
 from agent_engine.utils import setup_logging, set_seed
@@ -49,9 +50,15 @@ def run_experiment(args):
     logger.info(f"Loading config from: {args.config}")
     config = load_experiment_config(Path(args.config))
 
+    seed_override = getattr(args, "seed", None)
+    if seed_override is not None:
+        apply_seed_override(config, seed_override)
+    # Computed before _apply_gpu_assignment mutates model configs.
+    fingerprint = config_fingerprint(config)
+
     output_dir = Path(args.output_dir) if args.output_dir else config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    run_dir, date_str, job_id = _make_run_dir(output_dir, config.dataset.split)
+    run_dir, date_str, job_id = _make_run_dir(output_dir, config.dataset.split, seed=seed_override)
 
     # Mind map cache path mirrors results: cache/mind_map/{dataset}/{split}/{date}_{job_id}
     mind_map_storage = (
@@ -293,6 +300,7 @@ def run_experiment(args):
         if system_prompt_for_config is not None:
             config_dict["system_prompt"] = system_prompt_for_config
         config_dict["config_path"] = str(args.config)
+        config_dict["config_fingerprint"] = fingerprint
         _write_json(run_dir / "config.json", config_dict)
 
         logger.info("Results saved to: %s", run_dir)
@@ -348,11 +356,17 @@ def _write_json(path: Path, data: Any) -> None:
 
 
 
-def _make_run_dir(output_dir: Path, split: str) -> Tuple[Path, str, str]:
-    """Create and return (run_dir, date_str, job_id). run_dir = {split}_YYYY-MM-DD-HH-MM-SS-{job_id}/."""
+def _make_run_dir(
+    output_dir: Path, split: str, seed: Optional[int] = None
+) -> Tuple[Path, str, str]:
+    """Create and return (run_dir, date_str, job_id).
+
+    run_dir = {split}_{date}_{job_id}/, or {split}_seed{seed}_{date}_{job_id}/ when seed is given.
+    """
     date_str = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     job_id = os.environ.get("SLURM_JOB_ID") or _short_id()
-    run_dir = output_dir / f"{split}_{date_str}_{job_id}"
+    prefix = f"{split}_seed{seed}" if seed is not None else split
+    run_dir = output_dir / f"{prefix}_{date_str}_{job_id}"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir, date_str, job_id
 
@@ -382,7 +396,13 @@ def _config_to_dict(config) -> Dict[str, Any]:
             "top_p": m.top_p,
             "top_k": m.top_k,
             "repetition_penalty": m.repetition_penalty,
+            "seed": getattr(m, "seed", None),
             "supports_thinking": m.supports_thinking,
+            "sampling_by_thinking": (
+                m.sampling_by_thinking.model_dump()
+                if getattr(m, "sampling_by_thinking", None) is not None
+                else None
+            ),
         }
         return d
 
@@ -427,6 +447,8 @@ def main():
                        help="Path to experiment config YAML file")
     parser.add_argument("--output-dir", type=str,
                        help="Output directory (overrides config)")
+    parser.add_argument("--seed", type=int, default=None,
+                       help="Override the config seed (also for every model); adds _seed{N} to run dir")
     args = parser.parse_args()
 
     run_experiment(args)

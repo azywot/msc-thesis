@@ -15,6 +15,7 @@ from datasets import load_dataset, DownloadConfig
 from dotenv import load_dotenv
 from huggingface_hub import snapshot_download
 
+from agent_engine.datasets.text_only import filter_gaia_text, select_hle_text
 from agent_engine.utils import set_seed, get_seed_from_env
 
 def _download_cfg(token: str | None) -> DownloadConfig | None:
@@ -74,24 +75,30 @@ def _safe_full_file_path(snapshot_dir: str, rel_path: str | None) -> str | None:
 # GAIA
 # ---------------------------------------------------------------------------
 
-def download_gaia(level: str, split: str, output_dir: str, token: str | None, subset: int = 0, seed: int = 0):
+def download_gaia(level: str, split: str, output_dir: str, token: str | None, subset: int = 0, seed: int = 0,
+                  text_only: bool = False, local_only: bool = False):
     """Download GAIA and save as JSONL.
 
     level: "level1", "level2", "level3", or "all"
     split: "validation" or "test"
+    text_only: drop records whose attachment is an image (keeps order, adds source_index).
+    local_only: reuse <output_dir>/gaia_hf_snapshot and never call snapshot_download.
     """
-    if not token:
+    if not token and not local_only:
         _warn_token("GAIA")
 
     print(f"Downloading GAIA level={level} split={split} …")
     snapshot_dir = os.path.join(output_dir, "gaia_hf_snapshot")
-    os.makedirs(snapshot_dir, exist_ok=True)
-    snapshot_root = snapshot_download(
-        repo_id="gaia-benchmark/GAIA",
-        repo_type="dataset",
-        token=token,
-        local_dir=snapshot_dir,
-    )
+    if local_only:
+        snapshot_root = snapshot_dir
+    else:
+        os.makedirs(snapshot_dir, exist_ok=True)
+        snapshot_root = snapshot_download(
+            repo_id="gaia-benchmark/GAIA",
+            repo_type="dataset",
+            token=token,
+            local_dir=snapshot_dir,
+        )
     print(f"GAIA snapshot at: {snapshot_root}")
 
     dcfg = _download_cfg(token)
@@ -114,8 +121,11 @@ def download_gaia(level: str, split: str, output_dir: str, token: str | None, su
                 "input_output": json.dumps({"inputs": [question], "outputs": [answer]}),
             })
 
+    if text_only:
+        data = filter_gaia_text(data)
     data = _apply_subset(data, subset, seed)
-    _save_jsonl(data, output_dir, _subset_filename(f"{level}_{split}.jsonl", subset))
+    suffix = "_text" if text_only else ""
+    _save_jsonl(data, output_dir, _subset_filename(f"{level}_{split}{suffix}.jsonl", subset))
 
 
 # ---------------------------------------------------------------------------
@@ -488,14 +498,17 @@ def _decode_base64_image(b64: str) -> tuple[bytes, str]:
 
 def download_hle(split: str, output_dir: str, token: str | None,
                  extract_images: bool = False,
-                 subset: int = 0, seed: int = 0):
+                 subset: int = 0, seed: int = 0,
+                 text_only: bool = False, local_only: bool = False):
     """Download HLE and save as JSONL.
 
     split: "test" or "dev"
     subset: cap on examples after shuffling; 0 means all. Adds _subset_N suffix to filename.
     extract_images: if True, write base64 images to files and store their paths.
+    text_only: shuffle the full split, drop image examples, then truncate to `subset`.
+    local_only: load <output_dir>/hle_hf_snapshot and never call snapshot_download.
     """
-    if not token:
+    if not token and not local_only:
         _warn_token("HLE")
 
     print(f"Downloading HLE split={split} …")
@@ -503,16 +516,19 @@ def download_hle(split: str, output_dir: str, token: str | None,
     os.makedirs(snapshot_dir, exist_ok=True)
 
     snapshot_root = None
-    try:
-        snapshot_root = snapshot_download(
-            repo_id="cais/hle",
-            repo_type="dataset",
-            token=token,
-            local_dir=snapshot_dir,
-        )
-        print(f"HLE snapshot at: {snapshot_root}")
-    except Exception as e:
-        print(f"Warning: snapshot download failed, falling back to direct load: {e}", file=sys.stderr)
+    if local_only:
+        snapshot_root = snapshot_dir
+    else:
+        try:
+            snapshot_root = snapshot_download(
+                repo_id="cais/hle",
+                repo_type="dataset",
+                token=token,
+                local_dir=snapshot_dir,
+            )
+            print(f"HLE snapshot at: {snapshot_root}")
+        except Exception as e:
+            print(f"Warning: snapshot download failed, falling back to direct load: {e}", file=sys.stderr)
 
     try:
         ds = load_dataset(snapshot_root or "cais/hle", split=split, download_config=_download_cfg(token))
@@ -522,7 +538,9 @@ def download_hle(split: str, output_dir: str, token: str | None,
         sys.exit(1)
 
     examples = list(ds)
-    if subset and subset < len(examples):
+    if text_only:
+        examples = select_hle_text(examples, subset, seed)
+    elif subset and subset < len(examples):
         set_seed(seed)
         random.shuffle(examples)
         examples = examples[:subset]
@@ -577,7 +595,8 @@ def download_hle(split: str, output_dir: str, token: str | None,
 
         data.append(record)
 
-    _save_jsonl(data, output_dir, _subset_filename(f"{split}.jsonl", subset))
+    suffix = "_text" if text_only else ""
+    _save_jsonl(data, output_dir, _subset_filename(f"{split}{suffix}.jsonl", subset))
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +653,10 @@ def main():
                              "Falls back to $PYTHONHASHSEED, then 0.")
     parser.add_argument("--extract-images", action="store_true",
                         help="HLE: extract base64 images to files instead of embedding them")
+    parser.add_argument("--text-only", action="store_true",
+                        help="GAIA/HLE: drop image examples; output filename gets _text suffix")
+    parser.add_argument("--local-only", action="store_true",
+                        help="GAIA/HLE: use the existing local HF snapshot, no network download")
     args = parser.parse_args()
 
     if args.list:
@@ -651,6 +674,8 @@ def main():
     if dataset not in DATASET_DIRS:
         print(f"Error: unknown dataset '{dataset}'. Use --list to see available datasets.")
         sys.exit(1)
+    if (args.text_only or args.local_only) and dataset not in ("gaia", "hle"):
+        parser.error("--text-only and --local-only are only supported for gaia and hle")
 
     # Validate split per dataset instead of using one global argparse choices list.
     if dataset in _SPLIT_RULES:
@@ -677,11 +702,13 @@ def main():
     seed = args.seed if args.seed is not None else get_seed_from_env(default=0)
     dispatch = {
         "bigcodebench": lambda: download_bigcodebench(output_dir, token, args.split, subset, seed),
-        "gaia": lambda: download_gaia(args.level, args.split, output_dir, token, subset, seed),
+        "gaia": lambda: download_gaia(args.level, args.split, output_dir, token, subset, seed,
+                                      text_only=args.text_only, local_only=args.local_only),
         "gpqa": lambda: download_gpqa(args.variant, output_dir, token, subset, seed),
         "hle": lambda: download_hle(args.split, output_dir, token,
                                     extract_images=args.extract_images,
-                                    subset=subset, seed=seed),
+                                    subset=subset, seed=seed,
+                                    text_only=args.text_only, local_only=args.local_only),
         "math500": lambda: download_math500(output_dir, token, subset, seed),
         "aime": lambda: download_aime(output_dir, token, subset, seed),
         "amc": lambda: download_amc(output_dir, token, subset, seed),

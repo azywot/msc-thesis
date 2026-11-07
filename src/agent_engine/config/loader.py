@@ -4,6 +4,8 @@ This module provides utilities to load and validate experiment configurations
 from YAML files.
 """
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Dict
 
@@ -57,6 +59,30 @@ def load_experiment_config(path: Path) -> ExperimentConfig:
             model_cfg.seed = config.seed
 
     return config
+
+
+def apply_seed_override(config: ExperimentConfig, seed: int) -> None:
+    """Set the experiment seed and every model seed to ``seed``.
+
+    Overwrites model-level seeds too, including ones a YAML declared explicitly.
+    """
+    config.seed = seed
+    for model_cfg in config.models.values():
+        model_cfg.seed = seed
+
+
+def config_fingerprint(config: ExperimentConfig) -> str:
+    """sha256 of the config with seeds, output paths, run name and bookkeeping removed.
+
+    Two runs share a fingerprint iff they differ only in seed, output location, run name,
+    description, SLURM settings or W&B logging (none of which affect the results).
+    """
+    d = config.model_dump(mode="json")
+    for key in ("seed", "output_dir", "slurm", "use_wandb", "wandb_project", "description", "name"):
+        d.pop(key, None)
+    for model_d in d.get("models", {}).values():
+        model_d.pop("seed", None)
+    return hashlib.sha256(json.dumps(d, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _load_models(models_data: Dict[str, Any]) -> Dict[str, ModelConfig]:

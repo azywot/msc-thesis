@@ -144,9 +144,11 @@ class VLLMProvider(BaseModelProvider):
         # apply_chat_template returns JSON; render each prompt string here.
         rendered_prompts = []
         decoded_messages_list: List[Optional[List[Dict[str, Any]]]] = []
+        thinking_flags: List[bool] = []
         for p in prompts:
             raw_prompt = p.get("prompt", "")
             msgs = None
+            use_thinking = False
             try:
                 payload = json.loads(raw_prompt)
                 if isinstance(payload, dict) and "messages" in payload:
@@ -158,16 +160,18 @@ class VLLMProvider(BaseModelProvider):
                 pass
             rendered_prompts.append({**p, "prompt": raw_prompt})
             decoded_messages_list.append(msgs)
+            thinking_flags.append(use_thinking)
 
         safe_max_tokens = min(self.config.max_tokens, 2048)
-        sampling_params = SamplingParams(
-            max_tokens=safe_max_tokens,
-            temperature=self.config.temperature,
-            top_p=self.config.top_p,
-            top_k=self.config.top_k,
-            repetition_penalty=self.config.repetition_penalty,
-            seed=self.config.seed,
-        )
+        sampling_params = [
+            SamplingParams(
+                max_tokens=safe_max_tokens,
+                **self.config.sampling_for(flag),
+                repetition_penalty=self.config.repetition_penalty,
+                seed=self.config.seed,
+            )
+            for flag in thinking_flags
+        ]
 
         with self._lock:
             outputs = self.llm.generate(
@@ -266,9 +270,7 @@ class VLLMProvider(BaseModelProvider):
                     stop_kwargs = {"stop": [stop_token], "include_stop_str_in_output": True}
             params = SamplingParams(
                 max_tokens=safe_max_tokens,
-                temperature=self.config.temperature,
-                top_p=self.config.top_p,
-                top_k=self.config.top_k,
+                **self.config.sampling_for(use_thinking),
                 repetition_penalty=self.config.repetition_penalty,
                 seed=self.config.seed if self.config.seed is not None else 0,
                 **stop_kwargs,
