@@ -144,6 +144,21 @@ def merge_system_into_user(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return result
 
 
+class SamplingOverride(BaseModel):
+    """One sampling block (temperature, top_p, top_k) for a thinking state."""
+
+    temperature: float
+    top_p: float
+    top_k: int
+
+
+class ThinkingSampling(BaseModel):
+    """Sampling blocks chosen per call by the prompt's ``use_thinking`` flag."""
+
+    thinking: SamplingOverride
+    non_thinking: SamplingOverride
+
+
 class ModelConfig(BaseModel):
     """Complete model configuration.
 
@@ -196,6 +211,10 @@ class ModelConfig(BaseModel):
 
     seed: Optional[int] = None
 
+    # Optional per-thinking-state sampling (vLLM only). When set, it replaces
+    # temperature/top_p/top_k per prompt, chosen by the prompt's use_thinking flag.
+    sampling_by_thinking: Optional[ThinkingSampling] = None
+
     backend: str = "vllm"  # "vllm", "mlx", "openai", "anthropic"
 
     # Path to a PEFT LoRA adapter directory (adapter_config.json + adapter_model.safetensors).
@@ -230,6 +249,24 @@ class ModelConfig(BaseModel):
         if isinstance(v, str):
             return ModelFamily(v)
         return v
+
+    @model_validator(mode="after")
+    def _check_sampling_by_thinking_backend(self):
+        if self.sampling_by_thinking is not None:
+            if self.backend != "vllm" or self.family in (ModelFamily.GPT4, ModelFamily.CLAUDE):
+                raise ValueError("sampling_by_thinking is only supported with backend='vllm'")
+        return self
+
+    def sampling_for(self, use_thinking: bool) -> Dict[str, Any]:
+        """Return temperature/top_p/top_k for the given thinking state."""
+        if self.sampling_by_thinking is not None:
+            block = (
+                self.sampling_by_thinking.thinking
+                if use_thinking
+                else self.sampling_by_thinking.non_thinking
+            )
+            return block.model_dump()
+        return {"temperature": self.temperature, "top_p": self.top_p, "top_k": self.top_k}
 
     @model_validator(mode="after")
     def _derive_supports_thinking(self):

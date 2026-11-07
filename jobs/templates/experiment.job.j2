@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --partition={{ partition }}
 #SBATCH --gpus={{ num_gpus }}
-#SBATCH --job-name={{ experiment_name }}
+#SBATCH --job-name={{ experiment_name }}{{ seed_suffix }}
 #SBATCH --ntasks={{ ntasks }}
 #SBATCH --cpus-per-task={{ cpus_per_task }}
 #SBATCH --time={{ time }}
-#SBATCH --output={{ slurm_output_dir }}/{{ experiment_name }}_%A.log
+#SBATCH --output={{ slurm_output_dir }}/{{ experiment_name }}{{ seed_suffix }}_%A.log
 
 # Load modules
 module purge
@@ -46,7 +46,7 @@ python -c "import numpy, torch" 2>/dev/null || { echo "ERROR: numpy/torch not in
 echo "Running experiment: {{ experiment_name }}"
 python scripts/run_experiment.py \
   --config {{ config_path }} \
-  --output-dir {{ output_dir }}
+  --output-dir {{ output_dir }}{{ seed_arg }}
 
 EXIT_CODE=$?
 

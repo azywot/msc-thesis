@@ -1,0 +1,49 @@
+# GAIA-text — Qwen3-8B, sub-agent tools, thinking disabled
+
+name: "TEXT_AF_gaia_qwen8B_subagent_tools_none"
+description: "[AgentFlow; NO image_inspector, NO mindmap; text-only, sampled] GAIA-text all_validation_text with Qwen3-8B, sub-agent tools, thinking disabled"
+
+slurm:
+  partition: "gpu_h100"
+  num_gpus: 2
+  ntasks: 1
+  cpus_per_task: 8
+  time: "24:00:00"
+  conda_env: "agent_engine"
+
+models:
+  orchestrator:
+    name: "Qwen3-8B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-8B"
+    role: "orchestrator"
+    sampling_by_thinking:
+      thinking:
+        temperature: 0.6
+        top_p: 0.95
+        top_k: 20
+      non_thinking:
+        temperature: 0.7
+        top_p: 0.8
+        top_k: 20
+
+tools:
+  enabled_tools:
+    - web_search
+    - code_generator
+    - text_inspector
+  direct_tool_call: false
+
+dataset:
+  name: "gaia"
+  split: "all_validation_text"
+  data_dir: "./data"
+  subset_num: -1
+
+seed: 0
+thinking_mode: "NO"
+output_dir: "./experiments/results/TEXT_agentflow/gaia/qwen8B_subagent_tools_none"
+use_wandb: true
+wandb_project: "benchmarks_text"
+
+cache_dir: "./cache"

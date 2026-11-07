@@ -328,6 +328,12 @@ TOOL_MODE_LABELS = {
     False: "sub-agent tools",
 }
 
+# Qwen3 model-card sampling, applied per call by thinking mode (text-split suites).
+QWEN3_MODEL_CARD_SAMPLING = {
+    "thinking": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+    "non_thinking": {"temperature": 0.7, "top_p": 0.8, "top_k": 20},
+}
+
 # ── suite definitions ──────────────────────────────────────────────────────────
 SUITES = {
     "baseline": {
@@ -493,6 +499,33 @@ SUITES = {
 }
 
 
+def _text_suite(parent: str, subdir: str, prefix: str, out_root: str) -> dict:
+    """Derive a text-only GAIA/HLE suite from a parent suite."""
+    p = SUITES[parent]
+    return {
+        **p,
+        "description_tag": p["description_tag"][:-1] + "; text-only, sampled]",
+        "name_prefix": prefix,
+        "output_dir_root": out_root,
+        "config_subdir": subdir,
+        "datasets": ["gaia", "hle"],
+        "wandb_project": "benchmarks_text",
+        "split_overrides": {
+            "gaia": {"split": "all_validation_text", "display": "GAIA-text"},
+            "hle": {"split": "test_text_subset_200", "display": "HLE-text"},
+        },
+        "sampling_by_thinking": QWEN3_MODEL_CARD_SAMPLING,
+    }
+
+
+SUITES["baseline_text"] = _text_suite(
+    "baseline", "qwen3/baseline_text", "TEXT_baseline", "./experiments/results/TEXT_baseline"
+)
+SUITES["agentflow_text"] = _text_suite(
+    "agentflow", "qwen3/agentflow_text", "TEXT_AF", "./experiments/results/TEXT_agentflow"
+)
+
+
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 def _tools_block(direct: bool, enabled: list[str], return_code: bool = False) -> str:
@@ -507,7 +540,16 @@ def _tools_block(direct: bool, enabled: list[str], return_code: bool = False) ->
     return "\n".join(lines)
 
 
-def _model_block(key: str) -> str:
+def _sampling_lines(sampling: dict) -> list[str]:
+    lines = ["    sampling_by_thinking:"]
+    for mode in ("thinking", "non_thinking"):
+        lines.append(f"      {mode}:")
+        for k, v in sampling[mode].items():
+            lines.append(f"        {k}: {v}")
+    return lines
+
+
+def _model_block(key: str, sampling: Optional[dict] = None) -> str:
     m = MODELS[key]
     lines = [
         "models:",
@@ -520,6 +562,8 @@ def _model_block(key: str) -> str:
     if m["tp"]:
         comment = m.get("tp_comment", "TP must divide num attention heads.")
         lines.append(f"    tensor_parallel_size: {m['tp']}  # {comment}")
+    if sampling:
+        lines.extend(_sampling_lines(sampling))
     return "\n".join(lines)
 
 
@@ -736,7 +780,7 @@ slurm:
   time: "24:00:00"
   conda_env: "agent_engine"
 
-{_model_block(model_key)}
+{_model_block(model_key, suite.get('sampling_by_thinking'))}
 
 {_tools_block(direct, enabled, return_code=return_code)}
 

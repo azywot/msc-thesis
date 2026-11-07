@@ -81,6 +81,12 @@ python scripts/run_experiment.py --config <config.yaml> --output-dir ./experimen
 ./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/baseline --local  # sequential, no SLURM
 ```
 
+Text-only splits (`all_validation_text` GAIA 155, `test_text_subset_200` HLE 200) use the `qwen3/baseline_text` and `qwen3/agentflow_text` configs. Seeded repeats for pass@k:
+```bash
+./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/baseline_text --dataset gaia --seeds 0,1,2,3,4
+python scripts/pass_at_k.py <run0> <run1> ... --k 1 3 5 --by-level
+```
+
 Regenerate all configs after changing `generate_configs.py`:
 ```bash
 python scripts/generate_configs.py
@@ -93,12 +99,13 @@ python scripts/generate_configs.py
 - `tools.return_code: true` — `code_generator` returns generated code instead of executing it (required for BigCodeBench)
 - `thinking_mode` — `NO` / `ORCHESTRATOR_ONLY` / `SUBAGENTS_ONLY` / `ALL`
 - `batch_size` — questions per batch (`-1` = all; `1` = no batching)
+- `sampling_by_thinking`: per-model `thinking` / `non_thinking` sampling blocks, vLLM only (rejected for API families); plain Qwen3 configs without it stay greedy, while DeepSeek and OLMo family defaults already sample (T=0.6). `--seed N` overrides the seed and names the run dir `{split}_seed{N}_...`
 - `web_tool_provider` — `serper` (default, fetches full pages) or `tavily` (pre-cleaned content)
 - `gepa_prompt_path` — path to a GEPA `best_candidate.json`; when set, bypasses `PromptBuilder` and loads `system_prompt` + `planning_suffix` directly from the file (used for GEPA inference runs under `experiments/configs/qwen3/gepa_inference/`)
 
 ## Outputs (per run, under `output_dir/`)
 
-`raw_results.json`, `metrics.json`, `config.json`, `experiment.log`, `raw_results.partial.json` (rolling checkpoint, deleted on clean finish).
+`raw_results.json`, `metrics.json`, `config.json`, `experiment.log`, `raw_results.partial.json` (rolling checkpoint, deleted on clean finish). `config.json` includes `config_fingerprint`, which `scripts/pass_at_k.py` requires to match across seeded runs. Do not use `subset_num > 0` configs for pass@k (the subset changes with the seed).
 
 Analyse:
 ```bash

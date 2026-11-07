@@ -38,10 +38,108 @@ sequentially in the current shell.
 
 ---
 
+## Text-only splits
+
+Two splits drop every question that needs an image, so the text-only Qwen3
+models are not penalised for what they cannot see.
+
+| Split | Benchmark | Size | What is excluded |
+|---|---|---|---|
+| `all_validation_text` | GAIA | 155 | Questions with a `.jpg`, `.jpeg` or `.png` attachment |
+| `test_text_subset_200` | HLE | 200 | Multimodal (image) questions |
+
+HLE-text is built from the same seed-0 shuffle of full HLE as `test_subset_200`,
+filtered to text-only questions and then truncated to 200. Its first 179
+questions are therefore exactly the text-only questions of `test_subset_200`, in
+order, so the two sets are nested. GAIA-text rows carry `source_index`, the line
+index of the question in `all_validation.jsonl`. The helpers live in
+`src/agent_engine/datasets/text_only.py`.
+
+To rebuild the local files:
+
+```bash
+python scripts/download_datasets.py --dataset gaia --level all --split validation --text-only --local-only
+python scripts/download_datasets.py --dataset hle --split test --subset 200 --seed 0 --text-only --local-only
+```
+
+The 24 Qwen3 text configs live in `experiments/configs/qwen3/baseline_text/` and
+`experiments/configs/qwen3/agentflow_text/`. They come from the `baseline_text`
+and `agentflow_text` suites of `scripts/generate_configs.py`.
+
+## Sampling and seeds
+
+A model entry can set `sampling_by_thinking` with a `thinking` and a
+`non_thinking` block (each `temperature`, `top_p`, `top_k`). The block is picked
+per call from the prompt's thinking state and replaces the plain
+`temperature`/`top_p`/`top_k`. It is vLLM-only; other backends reject it. The text
+configs use it so that repeated runs differ. Plain Qwen3 configs without it stay
+greedy (temperature 0.0), so repeating them gives identical results.
+
+`--seed N` overrides the config seed (and the seed of every model):
+
+```bash
+python scripts/run_experiment.py --config <config>.yaml --seed 3
+```
+
+A seeded run directory is named `{split}_seed{N}_{date}_{job}`. Every run (seeded
+or not) writes a `config_fingerprint` to `config.json`: a hash of the config with
+the seeds, output directory, run name, description, SLURM settings and W&B
+settings left out. Runs of one configuration share a fingerprint. Each model entry
+in `config.json` also records its `seed`. One sampling seed is used per attempt and
+is shared by all requests in that attempt.
+
+To launch several seeds:
+
+```bash
+./experiments/scripts/run_all_in_folder.sh experiments/configs/qwen3/baseline_text --dataset gaia --seeds 0,1,2,3,4
+./jobs/scripts/launch_experiment.sh <config>.yaml --seed 2     # one config, one seed
+python jobs/scripts/generate_job.py <config>.yaml --seed 2               # job script only
+```
+
+Each config and seed becomes its own SLURM job (or runs in turn with `--local`).
+
+## pass@k
+
+```bash
+python scripts/pass_at_k.py RUN0 RUN1 RUN2 RUN3 RUN4 --k 1 3 5 --by-level --out pass_at_k.json
+```
+
+Each `RUN` is a run directory or a `raw_results.json` path. `--k` takes one or
+more values (default 1 3 5). The estimator is the unbiased one: with n attempts
+and c correct for a question, pass@k = 1 - C(n-c, k) / C(n, k). Questions with
+fewer than k attempts are excluded and counted in the output. The script also
+prints mean accuracy and its standard deviation over seeds (the sample standard
+deviation, with n-1 in the denominator). `--k` values must be at least 1.
+
+It refuses to combine runs unless all of these hold:
+
+- at least two runs, each a different run directory, with distinct seeds (and
+  distinct per-model seeds when `config.json` records them);
+- the same `config_fingerprint` (a missing fingerprint also fails);
+- the same set of question ids, with the same question text;
+- no role with effective temperature 0 (greedy runs repeat themselves);
+- no duplicate question id inside a run, and every result has `question_id` and `correct`.
+
+`--allow-mismatch` turns only the fingerprint, question-set and question-text
+problems into warnings. The run count, duplicate seeds or run directories, the
+structural checks (including a result row with an `error` key) and the greedy
+check cannot be waived. A warning is also printed when all runs have identical
+predictions on every shared question, since sampling may then not be varying with
+the seed.
+
+Do not use a config with `subset_num > 0` for pass@k. Such a config picks a
+random subset after `set_seed(config.seed)`, so each seed sees different
+questions and pass@k will reject the runs. Use a full split (`subset_num: -1`, as
+all the text configs do) or a small dedicated split file.
+
+Runtime caveat: attempts share a common search cache; queries not yet cached are fetched independently by each attempt.
+
+---
+
 ## What a run produces
 
 Each run creates a timestamped subdirectory under `output_dir/`, e.g.
-`all_validation_2026-02-22-22-25-02_<job_id>/`:
+`all_validation_2026-02-22-22-25-02_<job_id>/` (`all_validation_seed0_<date>_<job_id>/` when run with `--seed 0`):
 
 | File | Contents |
 |---|---|
