@@ -142,3 +142,14 @@ def test_config_json_includes_sampling_by_thinking():
     assert {k: v for k, v in d1.items() if k != "sampling_by_thinking"}.keys() == d2.keys() - {
         "sampling_by_thinking"
     }
+
+
+def test_render_prompt_returns_rendered_string_not_json_payload():
+    p = _provider(ModelConfig(**QWEN))
+    seen = []
+    p._render_messages = lambda msgs, use_thinking, force_tool_call=False: (
+        seen.append((msgs, use_thinking, force_tool_call)) or "<|im_start|>rendered"
+    )
+    msgs = [{"role": "user", "content": "hi"}]
+    assert p.render_prompt(msgs, use_thinking=True) == "<|im_start|>rendered"
+    assert seen == [(msgs, True, False)]

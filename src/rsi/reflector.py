@@ -66,9 +66,8 @@ class InProcessReflector:
         try:
             from vllm import SamplingParams
 
-            # provider.apply_chat_template() returns a JSON payload that only
-            # VLLMProvider.generate() understands; llm.generate needs the rendered string.
-            prompt = self.provider._render_messages(messages, self.enable_thinking)
+            # llm.generate needs the rendered string, not apply_chat_template()'s JSON payload.
+            prompt = self.provider.render_prompt(messages, self.enable_thinking)
             params = [
                 SamplingParams(
                     max_tokens=self.max_tokens,

@@ -37,7 +37,7 @@ class FakeVLLMProvider:
         self.config = SimpleNamespace(temperature=0.7, role="orchestrator")
         self.rendered_with_thinking = []
 
-    def _render_messages(self, msgs, use_thinking, force_tool_call=False):
+    def render_prompt(self, msgs, use_thinking=False):
         self.rendered_with_thinking.append(use_thinking)
         return "RENDERED"
 
