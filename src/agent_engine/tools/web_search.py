@@ -12,6 +12,7 @@ import json
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..core.tool import BaseTool, ToolResult
+from ..prompts.templating import render_placeholders
 from .registry import register_tool
 from ..utils.logging import get_logger
 from ..utils.parsing import strip_thinking_tags
@@ -22,11 +23,52 @@ from ..external.url_fetcher import fetch_page_content, extract_snippet_with_cont
 logger = get_logger(__name__)
 
 
+WEB_SEARCH_ANALYSIS_TEMPLATE = """**Task Instruction:**
+
+You are tasked with reading and analyzing web pages based on the following inputs: **Current Search Query** and **Searched Web Pages**. Your objective is to extract relevant and helpful information for the **Current Search Query** from the **Searched Web Pages**.
+
+**Guidelines:**
+
+1. **Analyze the Searched Web Pages:**
+- Carefully review the content of each searched web page.
+- Identify factual information that is relevant to the **Current Search Query**.
+
+2. **Extract Relevant Information:**
+- Select the information from the Searched Web Pages that directly answers or contributes to the **Current Search Query**.
+- Ensure that the extracted information is accurate and relevant.
+
+3. **Output Format:**
+- **If the web pages provide helpful information for current search query:** Present the information beginning with `**Final Information**` as shown below.
+**Final Information**
+
+[Helpful information]
+
+- **If the web pages do not provide any helpful information for current search query:** Output the following text.
+
+**Final Information**
+
+No helpful information found.
+
+**Inputs:**
+- **Current Search Query:**
+{query}
+
+- **Searched Web Pages:**
+{formatted_results}
+
+Now you should analyze each web page and find helpful information based on the current search query "{query}".
+"""
+
+WEB_SEARCH_PLACEHOLDERS = ("query", "formatted_results")
+
+
 class WebSearchTool(BaseTool):
     """Web search using Serper or Tavily API.
 
     Supports direct mode (no LLM) or sub-agent mode (with LLM analysis).
     """
+
+    analysis_template = WEB_SEARCH_ANALYSIS_TEMPLATE
 
     def __init__(
         self,
@@ -276,47 +318,19 @@ class WebSearchTool(BaseTool):
         output = strip_thinking_tags(result.text)
         return output, result.usage
 
+    def set_analysis_template(self, template: str) -> None:
+        """Swap the analysis prompt template; analyses are cached per template."""
+        self.analysis_template = template
+
     def build_analysis_prompt(
         self,
         query: str,
         formatted_results: str,
     ) -> str:
         """Build the sub-agent prompt for web-page analysis."""
-        instruction = f"""**Task Instruction:**
-
-You are tasked with reading and analyzing web pages based on the following inputs: **Current Search Query** and **Searched Web Pages**. Your objective is to extract relevant and helpful information for the **Current Search Query** from the **Searched Web Pages**.
-
-**Guidelines:**
-
-1. **Analyze the Searched Web Pages:**
-- Carefully review the content of each searched web page.
-- Identify factual information that is relevant to the **Current Search Query**.
-
-2. **Extract Relevant Information:**
-- Select the information from the Searched Web Pages that directly answers or contributes to the **Current Search Query**.
-- Ensure that the extracted information is accurate and relevant.
-
-3. **Output Format:**
-- **If the web pages provide helpful information for current search query:** Present the information beginning with `**Final Information**` as shown below.
-**Final Information**
-
-[Helpful information]
-
-- **If the web pages do not provide any helpful information for current search query:** Output the following text.
-
-**Final Information**
-
-No helpful information found.
-
-**Inputs:**
-- **Current Search Query:**
-{query}
-
-- **Searched Web Pages:**
-{formatted_results}
-
-Now you should analyze each web page and find helpful information based on the current search query "{query}".
-"""
+        instruction = render_placeholders(
+            self.analysis_template, {"query": query, "formatted_results": formatted_results}
+        )
 
         prompt_messages = [{"role": "user", "content": instruction}]
         prompt = self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
@@ -449,11 +463,8 @@ Now you should analyze each web page and find helpful information based on the c
         Lazily created, mirroring the orchestrator's old ``_get_analysis_cache``
         so a tool built without one still works.
         """
-        cache = getattr(self, "_analysis_cache", None)
-        if cache is None:
-            cache = {}
-            self._analysis_cache = cache
-        return cache
+        caches = self.__dict__.setdefault("_analysis_caches", {})
+        return caches.setdefault(self.analysis_template, {})
 
     def prepare(self, state, tool_call, args):
         """Defer a search, or short-circuit with a ToolResult."""

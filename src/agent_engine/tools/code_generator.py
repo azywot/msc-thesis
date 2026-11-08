@@ -16,11 +16,28 @@ import time
 from typing import Any, Dict, List, Optional
 
 from ..core.tool import BaseTool, ToolResult
+from ..prompts.templating import render_placeholders
 from .registry import register_tool
 from ..utils.logging import get_logger
 from ..utils.parsing import strip_thinking_tags
 
 logger = get_logger(__name__)
+
+
+CODE_GENERATOR_TASK_TEMPLATE = (
+    "You are a code generator. Generate ONLY executable Python code, with NO explanations, "
+    "NO comments about what the code does, and NO additional text.\n\n"
+    "{context_block}Problem: {task}\n\n"
+    "Requirements:\n"
+    "- Output ONLY the Python code\n"
+    "- The code must be executable as a standalone script\n"
+    "- The code must print its output directly\n"
+    "- NO explanatory text before or after the code\n"
+    "- NO comments like \"Here's the code\" or \"This will output\"\n\n"
+    "Python code:"
+)
+
+CODE_GENERATOR_PLACEHOLDERS = ("context_block", "task")
 
 
 class CodeGeneratorTool(BaseTool):
@@ -29,6 +46,8 @@ class CodeGeneratorTool(BaseTool):
     Supports direct mode (execute provided code) or sub-agent mode
     (LLM generates code from task description).
     """
+
+    task_template = CODE_GENERATOR_TASK_TEMPLATE
 
     def __init__(
         self,
@@ -231,6 +250,10 @@ class CodeGeneratorTool(BaseTool):
 
         return self.execute_code(code)
 
+    def set_task_template(self, template: str) -> None:
+        """Swap the task prompt template (used when ``return_code`` is False)."""
+        self.task_template = template
+
     def build_task_prompt(self, task: str, context: str = "") -> str:
         """Build the sub-agent LLM prompt for code generation.
 
@@ -259,17 +282,8 @@ class CodeGeneratorTool(BaseTool):
                 "Python code:"
             )
         else:
-            prompt = (
-                "You are a code generator. Generate ONLY executable Python code, with NO explanations, "
-                "NO comments about what the code does, and NO additional text.\n\n"
-                f"{context_block}Problem: {task}\n\n"
-                "Requirements:\n"
-                "- Output ONLY the Python code\n"
-                "- The code must be executable as a standalone script\n"
-                "- The code must print its output directly\n"
-                "- NO explanatory text before or after the code\n"
-                "- NO comments like \"Here's the code\" or \"This will output\"\n\n"
-                "Python code:"
+            prompt = render_placeholders(
+                self.task_template, {"context_block": context_block, "task": task}
             )
         prompt_messages = [{"role": "user", "content": prompt}]
         return self.model_provider.apply_chat_template(prompt_messages, use_thinking=self.use_thinking)
@@ -483,7 +497,7 @@ class CodeGeneratorTool(BaseTool):
         except Exception as exc:
             return ToolResult(success=False, output="", metadata={}, error=str(exc))
         return BatchJob(state=state, tool_call=tool_call, tool=self,
-                        payload={"prompt": prompt})
+                        payload={"prompt": prompt, "task": task, "context": att_ctx})
 
     def batch_prompt(self, job) -> str:
         return job.payload["prompt"]
