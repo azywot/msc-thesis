@@ -76,7 +76,27 @@ def _classify(p):
     return None
 
 
-def _summary(state, config, seed_bundle, rounds):
+def _confirm_line(run_dir, state):
+    path = run_dir / "confirm.json"
+    if not path.exists():
+        return (
+            "- Confirmation: not run yet (`scripts/run_prompt_search.py --confirm N` scores v0 and"
+            " the champion on N questions outside every pool)"
+        )
+    c = _read(path)
+    p = c.get("paired") or {}
+    line = (
+        f"- Confirmation on {c['n']} unused questions: seed {_pct(c['seed_acc'])}, champion"
+        f" {c['champion']} {_pct(c['champion_acc'])} (both right {p.get('both', 0)}, seed only"
+        f" {p.get('seed_only', 0)}, champion only {p.get('champion_only', 0)}, neither"
+        f" {p.get('neither', 0)}; records in confirm/)"
+    )
+    if c["champion"] != state["champion"]:
+        line += f". Stale: the champion is now {state['champion']}; rerun --confirm"
+    return line
+
+
+def _summary(state, config, seed_bundle, rounds, run_dir):
     reflector = (config.get("reflector") or {}).get("model", "unknown")
     skipped = sum(1 for r in rounds if r.get("skipped"))
     lines = [
@@ -89,23 +109,35 @@ def _summary(state, config, seed_bundle, rounds):
         f"- Rollouts: {state['rollouts']}",
         f"- Seed held-out accuracy: {_pct(state['seed_heldout'])}",
         f"- Champion: {state['champion']}, held-out accuracy {_pct(state['champion_heldout'])}",
-        f"- Beats seed: {state['beats_seed']}",
+        f"- Beats seed: {state['beats_seed']}. This is measured on the held-out batch that also"
+        " selected the champion, so it is optimistic.",
+        _confirm_line(run_dir, state),
         "",
     ]
     return lines
 
 
-def _curve(state, rounds, n_heldout):
+def _round_files(run_dir, r):
+    links = [f"[record](rounds/round_{r:02d}.json)"]
+    if (run_dir / "rounds" / f"round_{r:02d}_reflector_input.json").exists():
+        links.append(f"[reflector input](rounds/round_{r:02d}_reflector_input.json)")
+    return ", ".join(links)
+
+
+def _curve(state, rounds, n_heldout, run_dir):
     chars = {v["label"]: v["prompt_chars"] for v in state["versions"]}
     lines = [
         "## Search curve",
         "",
-        "Rollouts are derived from the round records (shown batch, screening, held-out).",
+        "Rollouts are derived from the round records (shown batch, screening, held-out). Each"
+        " round's record holds the raw reflector outputs; its reflector input file holds the exact"
+        " messages sent and the shown trajectories.",
         "",
         "| round | rollouts so far | champion held-out | candidate held-out | accepted |"
-        " champion prompt_chars |",
-        "|---|---|---|---|---|---|",
-        f"| 0 | {n_heldout} | {_pct(state['seed_heldout'])} | n/a | seed | {chars.get('v0', 'n/a')} |",
+        " champion prompt_chars | files |",
+        "|---|---|---|---|---|---|---|",
+        f"| 0 | {n_heldout} | {_pct(state['seed_heldout'])} | n/a | seed | {chars.get('v0', 'n/a')}"
+        " | |",
     ]
     total = n_heldout
     champ_held = state["seed_heldout"]
@@ -120,7 +152,7 @@ def _curve(state, rounds, n_heldout):
             accepted = "yes" if rec.get("accepted") else "no"
         lines.append(
             f"| {rec['round']} | {total} | {_pct(champ_held)} | {_pct(rec.get('heldout'))} |"
-            f" {accepted} | {chars.get(champ, 'n/a')} |"
+            f" {accepted} | {chars.get(champ, 'n/a')} | {_round_files(run_dir, rec['round'])} |"
         )
     lines.append("")
     return lines
@@ -271,8 +303,8 @@ def write_report(run_dir, tool_schemas, tool_call_format):
     rounds = _rounds(run_dir, state["rounds_done"])
 
     lines = [f"# Prompt search report: {run_dir.name}", ""]
-    lines += _summary(state, config, seed_bundle, rounds)
-    lines += _curve(state, rounds, n_heldout)
+    lines += _summary(state, config, seed_bundle, rounds, run_dir)
+    lines += _curve(state, rounds, n_heldout, run_dir)
     lines += _rejections(rounds)
     lines += _units_edited(rounds)
     lines += _diffs(seed_bundle, champ_bundle, champion)

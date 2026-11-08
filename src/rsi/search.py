@@ -7,7 +7,7 @@ import os
 import random
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rsi.bundle import (
     UNITS,
@@ -25,6 +25,8 @@ from rsi.reflector_input import HistoryEntry, ReflectorContext, build_reflector_
 from rsi.validate import normalize_example, validate_unit
 
 MAX_DIFF_CHARS = 2000
+MAX_REJECTED_LINES = 5
+REJECTED_REASON_CHARS = 200
 
 
 class SearchConfig(BaseModel):
@@ -36,7 +38,7 @@ class SearchConfig(BaseModel):
     shown_minibatch: int = 16
     screen_minibatch: int = 16
     max_parse_retries: int = 2
-    history_max: int = 8
+    history_max: int = Field(8, ge=0)
     ngram: int = 8
     seed: int = 0
     output_root: Path = Path("experiments/results/rsi/phase1")
@@ -65,16 +67,40 @@ def _prompt_chars(bundle, tool_schemas, tool_call_format):
     return len(system) + len(planning_suffix(bundle)) + subagents
 
 
-def _unit_diff(old, new, unit):
+def _text_diff(old, new, old_name, new_name):
     lines = difflib.unified_diff(
-        unit_text(old, unit).splitlines(),
-        unit_text(new, unit).splitlines(),
-        "champion",
-        "candidate",
-        n=1,
-        lineterm="",
+        old.splitlines(), new.splitlines(), old_name, new_name, n=1, lineterm=""
     )
-    text = "\n".join(lines)
+    return "\n".join(lines)
+
+
+def _parts(value, path=""):
+    """(path, text) for every leaf of an orchestrator dict, in document order."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _parts(item, f"{path}/{key}" if path else str(key))
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            yield from _parts(item, f"{path}/{i}")
+    elif isinstance(value, str):
+        yield path, value
+    else:
+        yield path, json.dumps(value, ensure_ascii=False)
+
+
+def _unit_diff(old, new, unit):
+    """Unified diff of one unit. Orchestrator edits are diffed per changed part, then capped."""
+    if unit == "orchestrator":
+        before, after = dict(_parts(old.orchestrator)), dict(_parts(new.orchestrator))
+        paths = list(before) + [p for p in after if p not in before]
+        chunks = [
+            _text_diff(before.get(p, ""), after.get(p, ""), f"champion/{p}", f"candidate/{p}")
+            for p in paths
+            if before.get(p) != after.get(p)
+        ]
+        text = "\n".join(c for c in chunks if c)
+    else:
+        text = _text_diff(unit_text(old, unit), unit_text(new, unit), "champion", "candidate")
     if len(text) > MAX_DIFF_CHARS:
         text = text[:MAX_DIFF_CHARS] + "\n... (diff cut)"
     return text
@@ -173,8 +199,55 @@ def _sample_proposals(cfg, reflector, messages, r):
     return records
 
 
+def shown_minibatch_ids(pool, size, seed, r):
+    """Question ids shown in round `r` (1-based).
+
+    One seeded permutation of the shown pool is cut into disjoint minibatches; round r takes
+    the next one. When a pass over the pool is used up, the pool is permuted again (seeded by
+    seed and the pass number), so the draw is the same on a resumed run.
+    """
+    pool = list(pool)
+    if not pool:
+        return []
+    size = max(1, min(size, len(pool)))
+    per_pass = len(pool) // size
+    cycle, slot = divmod(r - 1, per_pass)
+    perm = list(pool)
+    random.Random(f"rsi-shown:{seed}:{cycle}").shuffle(perm)
+    return perm[slot * size : (slot + 1) * size]
+
+
+def _redact(reason):
+    """Drop the quoted text of a leakage error, so no matched text is echoed back."""
+    return reason.split(": '", 1)[0]
+
+
+def _rejected_lines(out_dir, r):
+    """Short "unit: first error" lines for the previous round's rejected proposals."""
+    path = out_dir / "rounds" / f"round_{r - 1:02d}.json"
+    if r <= 1 or not path.exists():
+        return []
+    lines = []
+    for p in _read_json(path).get("proposals", []):
+        if p.get("errors"):
+            reason = str(p["errors"][0])
+        elif p.get("leak_errors"):
+            reason = "leakage: " + _redact(str(p["leak_errors"][0]))
+        else:
+            continue
+        if len(reason) > REJECTED_REASON_CHARS:
+            reason = reason[:REJECTED_REASON_CHARS] + "..."
+        lines.append(f"{p.get('unit') or 'unparsed'}: {reason}")
+        if len(lines) == MAX_REJECTED_LINES:
+            break
+    return lines
+
+
 def _build_messages(cfg, ctx_args, history, count_tokens):
-    """Reflector messages, halving the history on a budget failure. None means skipped."""
+    """Reflector messages, halving the history on a budget failure. None means skipped.
+
+    Returns (messages, stats, history_size).
+    """
     n = min(cfg.history_max, len(history))
     sizes = []
     while n > 0:
@@ -184,12 +257,13 @@ def _build_messages(cfg, ctx_args, history, count_tokens):
     for size in sizes:
         ctx = ReflectorContext(history=history[len(history) - size :] if size else [], **ctx_args)
         try:
-            return build_reflector_messages(
+            messages, stats = build_reflector_messages(
                 ctx,
                 count_tokens,
                 cfg.reflector.input_budget_tokens,
                 cfg.reflector.per_call_chars,
             )
+            return messages, stats, size
         except ValueError:
             continue
     return None
@@ -233,8 +307,8 @@ def _run_round(
     }
     new_history, new_versions = [], []
 
-    # 1. champion on a shown minibatch
-    ids = sample_minibatch(pools.shown, cfg.shown_minibatch, rng)
+    # 1. champion on a shown minibatch (disjoint from the earlier rounds' within a pass)
+    ids = shown_minibatch_ids(pools.shown, cfg.shown_minibatch, cfg.seed, r)
     record["minibatch_question_ids"] = list(ids)
     trajectories = executor.run(champion, [examples[i] for i in ids])
 
@@ -248,13 +322,23 @@ def _run_round(
         trajectories=trajectories,
         rendered_system_prompt=render_system_prompt(champion, tool_schemas, tool_call_format),
         units=list(UNITS),
+        rejected=_rejected_lines(out_dir, r),
     )
     built = _build_messages(cfg, ctx_args, history, count_tokens)
     if built is None:
         record["skipped"] = "prompt_over_budget"
         return record, new_history, new_versions, executor.rollouts
-    messages, stats = built
+    messages, stats, history_size = built
     record["reflector_stats"] = stats
+    # written before sampling, so a job killed mid-sample still leaves the exact input
+    _write_json_atomic(
+        out_dir / "rounds" / f"round_{r:02d}_reflector_input.json",
+        {
+            "messages": messages,
+            "trajectories": [t.to_dict() for t in trajectories],
+            "history_size": history_size,
+        },
+    )
     record["shown_question_ids"] = list(ids)
     for t in trajectories:
         shown_answers.add(t.gold)
@@ -431,6 +515,8 @@ def run_search(
     if state_path.exists():
         state = _read_json(state_path)
         executor.rollouts = state["rollouts"]
+        # the reflector's "Seed prompts" block must show the run's real v0
+        seed = load_bundle(out_dir / "bundles" / "v0.json")
     else:
         state = _initial_state(
             cfg, executor, seed, examples, pools, tool_schemas, tool_call_format, out_dir

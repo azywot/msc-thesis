@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 
 from rsi.bundle import unit_text
 
-HISTORY_LIMIT = 8
 MIN_PER_CALL_CHARS = 200
 FALLBACK_FIELD_CAPS = (400, 200, 100)
 
@@ -63,6 +62,7 @@ class ReflectorContext:
     trajectories: list = field(default_factory=list)
     rendered_system_prompt: str = ""
     units: list = field(default_factory=list)
+    rejected: list = field(default_factory=list)
 
 
 def _system_message(domain):
@@ -92,7 +92,7 @@ def _render_history(history):
     if not history:
         return "(no earlier edits)"
     lines = []
-    for h in history[-HISTORY_LIMIT:]:
+    for h in history:
         verdict = "accepted" if h.accepted else "rejected"
         lines.append(
             f"- {h.label} [{h.unit}] {verdict}; screen {_fmt_score(h.screen_score)}, "
@@ -153,8 +153,11 @@ def _render_trajectory(t, pcc, cut_actions, cap):
         lines.append(f"  Tool: {a.get('tool_name', a.get('tool', 'unknown'))}")
         lines.append(f"  Sub-goal: {_excerpt(a.get('sub_goal', ''), cap)}")
         lines.append(f"  Command: {_excerpt(a.get('command', ''), cap)}")
-        lines.append(f"  Result: {_excerpt(a.get('result', ''), pcc)}")
-        for call in by_index.get(i, []):
+        calls = by_index.get(i, [])
+        if not calls:
+            # with a matched sub-agent call the result repeats its response or output
+            lines.append(f"  Result: {_excerpt(a.get('result', ''), pcc)}")
+        for call in calls:
             lines.append(_render_call(call, pcc, cap))
     return "\n".join(lines), omitted
 
@@ -179,6 +182,9 @@ def _render_user(ctx, shown, pcc, cut_actions, cap):
     if ctx.best is not None and not _same(ctx.best, ctx.champion) and not _same(ctx.best, ctx.seed):
         out += ["", "## Best prompts so far", _render_prompts(ctx.best, units)]
     out += ["", "## History of edits", _render_history(ctx.history)]
+    if ctx.rejected:
+        out += ["", "## Last round's rejected proposals"]
+        out += [f"- {line}" for line in ctx.rejected]
     counts = Counter(t.failure_label for t in shown if t.failure_label)
     if counts:
         problems = ", ".join(f"{k} x{v}" for k, v in counts.most_common())

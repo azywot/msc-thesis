@@ -165,3 +165,39 @@ def test_never_over_budget_even_if_tiny():
     msgs, stats = build_reflector_messages(c, char_count, 1_500, 4_000)
     assert stats["input_tokens"] <= 1_500
     assert char_count(msgs[0]["content"] + msgs[1]["content"]) <= 1_500
+
+
+def _history(n):
+    return [
+        HistoryEntry(label=f"h{i}", unit="orchestrator", diff=f"+ line {i}", rationale=f"why {i}")
+        for i in range(n)
+    ]
+
+
+def test_every_history_entry_given_is_rendered():
+    c = make_ctx([make_traj(0)])
+    c.history = _history(12)
+    user = build_reflector_messages(c, char_count, 50_000, 400)[0][1]["content"]
+    assert all(f"- h{i} [orchestrator]" in user for i in range(12))
+
+
+def test_action_result_only_without_subagent_call():
+    t = make_traj(0, n_actions=3)
+    for k, a in enumerate(t.action_history):
+        a["result"] = f"UNIQUERESULT{k}"
+    user = build_reflector_messages(make_ctx([t]), char_count, 50_000, 400)[0][1]["content"]
+    # actions 0 and 1 have a web_search / code_generator call; action 2 has none
+    assert "UNIQUERESULT0" not in user and "UNIQUERESULT1" not in user
+    assert "Result: UNIQUERESULT2" in user
+    assert "Response: resp" in user and "Output: 1" in user
+
+
+def test_rejected_proposals_section():
+    c = make_ctx([make_traj(0)])
+    c.rejected = ["orchestrator: example: needs at least one non-final step"]
+    user = build_reflector_messages(c, char_count, 50_000, 400)[0][1]["content"]
+    assert "## Last round's rejected proposals" in user
+    assert "- orchestrator: example: needs at least one non-final step" in user
+    c.rejected = []
+    user = build_reflector_messages(c, char_count, 50_000, 400)[0][1]["content"]
+    assert "rejected proposals" not in user

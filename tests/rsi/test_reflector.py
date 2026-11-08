@@ -133,3 +133,29 @@ def test_build_reflector(monkeypatch):
     assert isinstance(build_reflector(s, prov), ReflectorClient)
     with pytest.raises(ValueError):
         build_reflector(ReflectorSettings(model="m", backend="openai"), prov)
+
+
+def test_parse_json_fence_with_inner_code_fence():
+    import json
+
+    template = "Task: {task}\n```python\nprint('hi')\n```\nContext: {context}"
+    obj = {"unit": "code_generator", "rationale": "r", "expected_effect": "e"}
+    obj["replacement"] = template
+    t = "<think>x</think>Proposal:\n```json\n" + json.dumps(obj, indent=2) + "\n```\n"
+    p = parse_proposal(t)
+    assert p.unit == "code_generator" and p.replacement == template
+
+
+def test_parse_inner_fence_falls_back_when_later_fence_is_broken():
+    import json
+
+    good = json.dumps({"unit": "web_search", "replacement": "a ```python x``` b"})
+    t = "```json\n" + good + '\n```\nand a broken one:\n```json\n{"unit": \n```'
+    assert parse_proposal(t).unit == "web_search"
+
+
+def test_settings_reject_budget_over_model_len():
+    with pytest.raises(ValueError, match="max_model_len"):
+        ReflectorSettings(model="m", input_budget_tokens=20_000, max_tokens=16_384)
+    ok = ReflectorSettings(model="m", input_budget_tokens=16_384, max_tokens=16_384)
+    assert ok.input_budget_tokens + ok.max_tokens == ok.max_model_len

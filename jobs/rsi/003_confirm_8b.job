@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --job-name=RSICF8B
+#SBATCH --partition=gpu_h100
+# One H100: Qwen3-8B in-process runs v0 and the champion (no reflector is used).
+#SBATCH --gpus=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=08:00:00
+#SBATCH --output=out/rsi/confirm_8b_%A.log
+#SBATCH --error=out/rsi/confirm_8b_%A.err
+
+# Confirmation of a finished 8B prompt search: scores v0 and the champion on 200 questions of the
+# domain that are in no pool (search and math each have 350 unused rows), writes confirm.json and
+# confirm/v<N>.json and regenerates report.md.
+# Submit: mkdir -p out/rsi && sbatch --export=ALL,DOMAIN=search jobs/rsi/003_confirm_8b.job   (or DOMAIN=math)
+# Use EXTRA_ARGS="--run-name <name>" for a non-default run name; CONFIRM_N changes N.
+# The 32B-reflector run is confirmed on the same single GPU (no reflector server is needed):
+#   sbatch --export=ALL,DOMAIN=search,CONFIG=experiments/configs/rsi/phase1/search_reflector_qwen3_32b.yaml jobs/rsi/003_confirm_8b.job
+# Resubmitting reuses confirm/v<N>.json files already written for the same questions.
+
+set -euo pipefail
+mkdir -p out/rsi
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+export CONFIG="${CONFIG:-experiments/configs/rsi/phase1/search_reflector_qwen3_8b.yaml}"
+export DOMAIN="${DOMAIN:-search}"
+export EXTRA_ARGS="--confirm ${CONFIRM_N:-200} ${EXTRA_ARGS:-}"
+exec bash "$PROJECT_DIR/jobs/rsi/_prompt_search_body.sh"

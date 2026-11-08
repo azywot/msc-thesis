@@ -2,10 +2,12 @@
 """Run the MASS-style prompt search (RSI phase 1) for one domain.
 
     python scripts/run_prompt_search.py --config <yaml> --domain search|math \
-        [--run-name NAME] [--dry-run] [--report-only]
+        [--run-name NAME] [--dry-run | --report-only | --confirm N]
 
 The YAML is an ExperimentConfig plus a ``search:`` block parsed into SearchConfig. Outputs go to
-``<search.output_root>/<run_name>/<domain>/``.
+``<search.output_root>/<run_name>/<domain>/``. ``--confirm N`` scores v0 and the champion of an
+existing run on N questions of the domain that are in no pool (confirm.json, confirm/v<N>.json)
+and regenerates the report.
 """
 
 import argparse
@@ -33,6 +35,7 @@ from agent_engine.runner.tools import build_tool_registry  # noqa: E402
 from agent_engine.tools.registry import ToolDeps  # noqa: E402
 from agent_engine.utils import set_seed, setup_logging  # noqa: E402
 from rsi.bundle import seed_bundle  # noqa: E402
+from rsi.confirm import run_confirm  # noqa: E402
 from rsi.data import load_domain_examples, make_pools  # noqa: E402
 from rsi.executor import BundleExecutor  # noqa: E402
 from rsi.leakage import LeakageIndex  # noqa: E402
@@ -85,6 +88,11 @@ def load_search_config(path):
         raw = yaml.safe_load(f)
     if "search" not in raw:
         raise ValueError(f"{path} has no 'search:' block")
+    # render_system_prompt always renders sub-agent AgentFlow mode
+    if exp.tools.direct_tool_call:
+        raise ValueError(f"{path}: prompt search needs tools.direct_tool_call: false")
+    if exp.baseline:
+        raise ValueError(f"{path}: prompt search needs baseline: false")
     return exp, SearchConfig.model_validate(raw["search"])
 
 
@@ -117,8 +125,16 @@ def main(argv=None):
     ap.add_argument("--config", required=True)
     ap.add_argument("--domain", required=True, choices=["search", "math"])
     ap.add_argument("--run-name", default=None)
-    ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--report-only", action="store_true")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--report-only", action="store_true")
+    mode.add_argument(
+        "--confirm",
+        type=int,
+        default=None,
+        metavar="N",
+        help="score v0 and the champion of an existing run on N questions outside every pool",
+    )
     args = ap.parse_args(argv)
 
     setup_logging()
@@ -138,9 +154,7 @@ def main(argv=None):
 
     if args.dry_run or args.report_only:
         stub = _StubProvider()
-        providers = (
-            {t: stub for t in exp.tools.enabled_tools} if not exp.tools.direct_tool_call else {}
-        )
+        providers = {t: stub for t in exp.tools.enabled_tools}
         registry = _build_tools(exp, cache_manager, api_keys, providers, stub)
         tool_schemas = registry.get_all_schemas()
         if args.report_only:
@@ -155,8 +169,11 @@ def main(argv=None):
         print(f"shown={len(pools.shown)} screen={len(pools.screen)} heldout={len(pools.heldout)}")
         return 0
 
+    if args.confirm is not None and not (out_dir / "state.json").exists():
+        raise ValueError(f"{out_dir / 'state.json'} not found: run the search before --confirm")
+
     orch_cfg = exp.get_model("orchestrator")
-    if search.reflector.backend == "in_process":
+    if args.confirm is None and search.reflector.backend == "in_process":
         if search.reflector.model != orch_cfg.path_or_id:
             raise ValueError(
                 "in_process reflector must be the executor model: reflector "
@@ -167,27 +184,18 @@ def main(argv=None):
     model_cache = {}
     orchestrator_model = setup_model_provider(orch_cfg, api_keys, model_cache)
     providers = {}
-    if not exp.tools.direct_tool_call:
-        for name in exp.tools.enabled_tools:
-            cfg = exp.get_model(name)
-            providers[name] = (
-                setup_model_provider(cfg, api_keys, model_cache)
-                if cfg is not None
-                else orchestrator_model
-            )
+    for name in exp.tools.enabled_tools:
+        cfg = exp.get_model(name)
+        providers[name] = (
+            setup_model_provider(cfg, api_keys, model_cache)
+            if cfg is not None
+            else orchestrator_model
+        )
     registry = _build_tools(exp, cache_manager, api_keys, providers, orchestrator_model)
     tool_schemas = registry.get_all_schemas()
 
     examples_list = load_domain_examples(search.data_path, args.domain)
     examples = {e.question_id: e for e in examples_list}
-    pools = make_pools(examples_list, search.pools, search.pool_seed)
-    seed = seed_bundle(args.domain, tool_schemas, exp.tools.direct_tool_call)
-
-    import pandas as pd
-
-    all_questions = [str(q) for q in pd.read_parquet(search.data_path)["question"]]
-    leakage = LeakageIndex(all_questions, n=search.ngram)
-
     executor = _SavingExecutor(
         BundleExecutor(
             orchestrator_model,
@@ -199,6 +207,27 @@ def main(argv=None):
         ),
         cache_manager,
     )
+
+    if args.confirm is not None:
+        try:
+            result = run_confirm(out_dir, executor, examples, args.confirm)
+        finally:
+            cache_manager.save_caches()
+        print(
+            f"confirm: n={result['n']} seed={100 * result['seed_acc']:.1f}%"
+            f" champion {result['champion']}={100 * result['champion_acc']:.1f}%"
+        )
+        path = write_report(out_dir, tool_schemas, tool_call_format)
+        print(f"report: {path}")
+        return 0
+
+    pools = make_pools(examples_list, search.pools, search.pool_seed)
+    seed = seed_bundle(args.domain, tool_schemas, exp.tools.direct_tool_call)
+
+    import pandas as pd
+
+    all_questions = [str(q) for q in pd.read_parquet(search.data_path)["question"]]
+    leakage = LeakageIndex(all_questions, n=search.ngram)
     reflector = build_reflector(search.reflector, orchestrator_model)
 
     from transformers import AutoTokenizer

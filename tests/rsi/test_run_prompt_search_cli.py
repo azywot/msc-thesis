@@ -165,3 +165,64 @@ def test_dry_run_refuses_changed_config_in_existing_dir(tmp_path, tiny_parquet, 
     cfg.write_text(yaml.safe_dump(raw))
     with pytest.raises(ValueError, match="ngram"):
         main(["--config", str(cfg), "--domain", "search", "--dry-run"])
+
+
+@pytest.mark.parametrize(
+    "patch, match",
+    [({"tools": {"direct_tool_call": True}}, "direct_tool_call"), ({"baseline": True}, "baseline")],
+)
+def test_non_subagent_modes_are_rejected(tmp_path, tiny_parquet, monkeypatch, patch, match):
+    cfg = write_config(
+        tmp_path, tiny_parquet, tmp_path / "out", {"shown": 10, "screen": 6, "heldout": 4}
+    )
+    raw = yaml.safe_load(cfg.read_text())
+    for key, value in patch.items():
+        if isinstance(value, dict):
+            raw[key].update(value)
+        else:
+            raw[key] = value
+    cfg.write_text(yaml.safe_dump(raw))
+    monkeypatch.setenv("SERPER_API_KEY", "x")
+    with pytest.raises(ValueError, match=match):
+        main(["--config", str(cfg), "--domain", "search", "--dry-run"])
+
+
+def test_confirm_mode_scores_an_existing_run(tmp_path, tiny_parquet, monkeypatch, capsys):
+    cfg = write_config(
+        tmp_path, tiny_parquet, tmp_path / "out", {"shown": 10, "screen": 6, "heldout": 4}
+    )
+    monkeypatch.setenv("SERPER_API_KEY", "x")
+    seen, provider = _patch_full_run(monkeypatch, tmp_path)
+    calls = {}
+
+    def fake_confirm(out_dir, executor, examples, n):
+        calls.update(out_dir=out_dir, executor=executor, examples=examples, n=n)
+        return {"n": n, "seed_acc": 0.25, "champion_acc": 0.5, "champion": "v1"}
+
+    monkeypatch.setattr(SCRIPT, "run_confirm", fake_confirm)
+    monkeypatch.setattr(
+        SCRIPT, "build_reflector", lambda *a: pytest.fail("confirm must not build a reflector")
+    )
+    out = tmp_path / "out" / cfg.stem / "search"
+    with pytest.raises(ValueError, match="state.json"):
+        main(["--config", str(cfg), "--domain", "search", "--confirm", "7"])
+    assert "out_dir" not in calls
+
+    out.mkdir(parents=True)
+    (out / "state.json").write_text("{}")
+    assert main(["--config", str(cfg), "--domain", "search", "--confirm", "7"]) == 0
+    assert calls["n"] == 7 and calls["out_dir"] == out
+    assert calls["executor"]._inner.model_provider is provider
+    assert all(k == v.question_id for k, v in calls["examples"].items())
+    assert "args" not in seen  # run_search never called
+    printed = capsys.readouterr().out
+    assert "confirm: n=7 seed=25.0% champion v1=50.0%" in printed
+
+
+def test_confirm_is_exclusive_with_dry_run(tmp_path, tiny_parquet, monkeypatch):
+    cfg = write_config(
+        tmp_path, tiny_parquet, tmp_path / "out", {"shown": 10, "screen": 6, "heldout": 4}
+    )
+    monkeypatch.setenv("SERPER_API_KEY", "x")
+    with pytest.raises(SystemExit):
+        main(["--config", str(cfg), "--domain", "search", "--dry-run", "--confirm", "5"])

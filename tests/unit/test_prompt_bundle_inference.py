@@ -167,3 +167,44 @@ def test_bundle_rejected_outside_subagent_mode(extra):
         ExperimentConfig.model_validate(
             {"name": "x", "models": {}, "prompt_bundle_path": "a.json", **extra}
         )
+
+
+@pytest.mark.parametrize(
+    "dataset, domain, ok",
+    [
+        ("gaia", "search", True),
+        ("hle", "search", True),
+        ("musique", "search", True),
+        ("aime", "math", True),
+        ("gpqa", "search", False),
+        ("bigcodebench", "search", False),
+        ("aime", "search", False),
+        ("gaia", "math", False),
+    ],
+)
+def test_bundle_template_must_match_the_benchmark(tmp_path, SCHEMAS, dataset, domain, ok):
+    bundle_path = tmp_path / "champion.json"
+    save_bundle(seed_bundle(domain, SCHEMAS), bundle_path)
+    config = SimpleNamespace(prompt_bundle_path=bundle_path, dataset=SimpleNamespace(name=dataset))
+    if ok:
+        exp._check_bundle_template(config)
+    else:
+        with pytest.raises(ValueError, match="template"):
+            exp._check_bundle_template(config)
+
+
+def test_runner_refuses_mismatched_bundle_before_loading_models(monkeypatch, tmp_path, SCHEMAS):
+    bundle_path = tmp_path / "champion.json"
+    save_bundle(seed_bundle("search", SCHEMAS), bundle_path)
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(
+        _BASE_YAML.replace("name: gaia", "name: gpqa")
+        + f"output_dir: {tmp_path / 'out'}\ncache_dir: {tmp_path / 'cache'}\n"
+        f"prompt_bundle_path: {bundle_path}\n"
+    )
+    monkeypatch.setattr(
+        exp, "setup_model_provider", lambda *a, **k: pytest.fail("models loaded before check")
+    )
+    with pytest.raises(ValueError, match="gpqa"):
+        exp.run_experiment(SimpleNamespace(config=cfg_path, output_dir=None, seed=None))
+    assert not (tmp_path / "out").exists()

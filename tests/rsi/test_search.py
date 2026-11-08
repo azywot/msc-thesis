@@ -279,3 +279,142 @@ def test_resume_rejects_a_changed_config(tmp_path, env):
     state = run_search(env.cfg(rounds=2), "search", env.fresh_executor(), refl, *env.args(tmp_path))
     assert state["rounds_done"] == 2
     assert json.loads((tmp_path / "config.json").read_text())["rounds"] == 2
+
+
+def test_history_max_must_be_non_negative(env):
+    with pytest.raises(ValueError):
+        env.cfg(history_max=-1)
+
+
+def _round(tmp_path, r):
+    return json.loads((tmp_path / "rounds" / f"round_{r:02d}.json").read_text())
+
+
+def test_shown_minibatches_are_disjoint_within_a_pass(tmp_path, env):
+    from rsi.search import shown_minibatch_ids
+
+    pool = list(range(10, 20))
+    first = [shown_minibatch_ids(pool, 3, 0, r) for r in (1, 2, 3)]
+    flat = [q for ids in first for q in ids]
+    assert len(flat) == 9 and len(set(flat)) == 9 and set(flat) <= set(pool)
+    # a new pass re-permutes; every round stays within the pool and has no repeats
+    later = [shown_minibatch_ids(pool, 3, 0, r) for r in (4, 5, 6)]
+    assert all(len(set(ids)) == 3 and set(ids) <= set(pool) for ids in later)
+    assert later != first
+    assert shown_minibatch_ids(pool, 3, 0, 2) == first[1]  # deterministic
+    assert shown_minibatch_ids(pool, 3, 1, 1) != first[0]  # seeded by cfg.seed
+    assert sorted(shown_minibatch_ids(pool, 50, 0, 1)) == pool  # batch larger than pool
+
+    refl = FakeReflector([proposal_json("orchestrator", {"turn1n_prompt": "x"})] * 30)
+    run_search(
+        env.cfg(rounds=3, shown_minibatch=2), "search", env.executor, refl, *env.args(tmp_path)
+    )
+    ids = [q for r in (1, 2, 3) for q in _round(tmp_path, r)["minibatch_question_ids"]]
+    assert sorted(ids) == sorted(env.pools.shown)
+
+
+def test_resume_draws_the_same_minibatches(tmp_path, env):
+    texts = [proposal_json("orchestrator", {"turn1n_prompt": "x"})] * 30
+    cfg = dict(shown_minibatch=2)
+    run_search(
+        env.cfg(rounds=3, **cfg),
+        "search",
+        env.executor,
+        FakeReflector(texts),
+        *env.args(tmp_path / "a"),
+    )
+    b = tmp_path / "b"
+    run_search(
+        env.cfg(rounds=1, **cfg), "search", env.fresh_executor(), FakeReflector(texts), *env.args(b)
+    )
+    run_search(
+        env.cfg(rounds=3, **cfg), "search", env.fresh_executor(), FakeReflector(texts), *env.args(b)
+    )
+    for r in (1, 2, 3):
+        assert (
+            _round(tmp_path / "a", r)["minibatch_question_ids"]
+            == _round(b, r)["minibatch_question_ids"]
+        )
+
+
+def test_resume_takes_the_seed_from_disk(tmp_path, env):
+    import copy
+
+    refl = FakeReflector([proposal_json("orchestrator", {"turn1n_prompt": "x"})] * 30)
+    run_search(env.cfg(rounds=1), "search", env.executor, refl, *env.args(tmp_path))
+    examples, pools, seed, *rest = env.args(tmp_path)
+    other = copy.deepcopy(seed)
+    other.orchestrator["tool_use_note"] = "FRESHLYBUILTSEEDMARKER"
+    run_search(
+        env.cfg(rounds=2), "search", env.fresh_executor(), refl, examples, pools, other, *rest
+    )
+    user = refl.messages[-1][1]["content"]
+    assert "FRESHLYBUILTSEEDMARKER" not in user and "## Seed prompts (v0)" not in user
+
+
+def test_reflector_input_is_written_before_sampling(tmp_path, env):
+    refl = FakeReflector([proposal_json("orchestrator", {"turn1n_prompt": "x"})] * 30)
+    run_search(env.cfg(rounds=2), "search", env.executor, refl, *env.args(tmp_path))
+    for r in (1, 2):
+        saved = json.loads(
+            (tmp_path / "rounds" / f"round_{r:02d}_reflector_input.json").read_text()
+        )
+        assert saved["messages"] == refl.messages[r - 1]
+        assert [t["question_id"] for t in saved["trajectories"]] == _round(tmp_path, r)[
+            "minibatch_question_ids"
+        ]
+        assert saved["history_size"] == (0 if r == 1 else 3)
+
+    class Crashing(FakeReflector):
+        def sample(self, messages, seeds):
+            raise RuntimeError("killed mid-sample")
+
+    with pytest.raises(RuntimeError):
+        run_search(
+            env.cfg(rounds=1),
+            "search",
+            env.fresh_executor(),
+            Crashing([]),
+            *env.args(tmp_path / "c"),
+        )
+    assert (tmp_path / "c" / "rounds" / "round_01_reflector_input.json").exists()
+    assert not (tmp_path / "c" / "rounds" / "round_01.json").exists()
+
+
+def test_last_round_rejections_reach_the_reflector(tmp_path, env):
+    leak = proposal_json("orchestrator", {"turn1n_prompt": env.a_shown_gold_answer})
+    refl = FakeReflector(["not json"] * 9 + [leak] * 3 + ["not json"] * 30)
+    run_search(env.cfg(rounds=3), "search", env.executor, refl, *env.args(tmp_path))
+    round1 = refl.messages[0][1]["content"]
+    assert "rejected proposals" not in round1
+    round2 = refl.messages[3][1]["content"]
+    section = round2.split("## Last round's rejected proposals\n", 1)[1].split("\n\n", 1)[0]
+    lines = section.splitlines()
+    assert len(lines) == 5 and all(line.startswith("- unparsed: parse error") for line in lines)
+    round3 = refl.messages[4][1]["content"]  # round 2 parsed at the first attempt
+    section3 = round3.split("## Last round's rejected proposals\n", 1)[1].split("\n\n", 1)[0]
+    assert section3.splitlines()[0].startswith("- orchestrator: leakage")
+    assert env.a_shown_gold_answer.split()[0] not in section3  # the leaked text is not quoted
+
+
+def test_orchestrator_history_diff_is_per_part(env):
+    import copy
+
+    from rsi.search import MAX_DIFF_CHARS, _unit_diff
+
+    champ = copy.deepcopy(env.seed)
+    paragraphs = [f"Paragraph {i}: " + "word " * 120 for i in range(6)]
+    champ.orchestrator["guidance_opening"] = "\n\n".join(paragraphs)
+    cand = copy.deepcopy(champ)
+    cand.orchestrator["guidance_opening"] = "\n\n".join(
+        paragraphs[:-1] + ["BRAND NEW CLOSING TEXT"]
+    )
+    name = sorted(cand.orchestrator["tool_descriptions"])[0]
+    cand.orchestrator["tool_descriptions"][name]["description"] = "NEW TOOL TEXT"
+    diff = _unit_diff(champ, cand, "orchestrator")
+    assert "+BRAND NEW CLOSING TEXT" in diff and "+NEW TOOL TEXT" in diff
+    assert "champion/guidance_opening" in diff
+    assert f"tool_descriptions/{name}/description" in diff
+    assert "Paragraph 0" not in diff  # unchanged lines of a changed part are not repeated
+    assert "turn0_prompt" not in diff  # unchanged parts are left out
+    assert len(diff) <= MAX_DIFF_CHARS + len("\n... (diff cut)")

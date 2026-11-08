@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from agent_engine.utils.parsing import strip_thinking_tags
 
@@ -23,6 +23,15 @@ class ReflectorSettings(BaseModel):
     top_k: int = 20
     enable_thinking: bool = True
     timeout_s: int = 900
+
+    @model_validator(mode="after")
+    def _fits_context(self):
+        if self.input_budget_tokens + self.max_tokens > self.max_model_len:
+            raise ValueError(
+                f"reflector input_budget_tokens ({self.input_budget_tokens}) + max_tokens "
+                f"({self.max_tokens}) exceeds max_model_len ({self.max_model_len})"
+            )
+        return self
 
 
 def _error_item(seed, exc):
@@ -177,25 +186,51 @@ class ProposalParseError(ValueError):
     pass
 
 
-_FENCE = re.compile(r"```json\s*\n?(.*?)```", re.DOTALL | re.IGNORECASE)
+_FENCE_OPEN = re.compile(r"```json", re.IGNORECASE)
+
+
+def _candidate_objects(body):
+    """Decoders of the JSON values to try, most trusted first.
+
+    For every ```json fence, from the last to the first: the object decoded from the fence's
+    first "{" (a string inside it may itself hold a ``` fence, e.g. a ```python block), then
+    the fence body up to the next ```. Last, the span from the body's first "{" to its last "}".
+    """
+    decoder = json.JSONDecoder()
+    for m in reversed(list(_FENCE_OPEN.finditer(body))):
+        start = m.end()
+        brace = body.find("{", start)
+        if brace >= 0:
+            yield lambda b=brace: decoder.raw_decode(body, b)[0]
+        close = body.find("```", start)
+        if close >= 0:
+            yield lambda a=start, b=close: json.loads(body[a:b].strip())
+    first, last = body.find("{"), body.rfind("}")
+    if first >= 0 and last > first:
+        yield lambda: json.loads(body[first : last + 1])
 
 
 def parse_proposal(text):
     body = strip_thinking_tags(text or "")
     if not body:
         raise ProposalParseError("empty reflector output")
-    fences = _FENCE.findall(body)
-    if fences:
-        blob = fences[-1].strip()
-    else:
-        start, end = body.find("{"), body.rfind("}")
-        if start < 0 or end <= start:
-            raise ProposalParseError("no JSON object found in reflector output")
-        blob = body[start : end + 1]
-    try:
-        data = json.loads(blob)
-    except json.JSONDecodeError as exc:
-        raise ProposalParseError(f"invalid JSON: {exc}") from exc
+    data, first_error, tried = None, None, False
+    for attempt in _candidate_objects(body):
+        tried = True
+        try:
+            value = attempt()
+        except json.JSONDecodeError as exc:
+            first_error = first_error or exc
+            continue
+        if data is None:
+            data = value
+        if isinstance(value, dict) and "unit" in value and "replacement" in value:
+            data = value
+            break
+    if not tried:
+        raise ProposalParseError("no JSON object found in reflector output")
+    if data is None:
+        raise ProposalParseError(f"invalid JSON: {first_error}") from first_error
     if not isinstance(data, dict):
         raise ProposalParseError("proposal JSON is not an object")
     for key in ("unit", "replacement"):

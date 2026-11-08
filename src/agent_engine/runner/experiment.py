@@ -40,6 +40,30 @@ from agent_engine.tools.registry import ToolDeps
 logger = logging.getLogger(__name__)
 
 
+def _check_bundle_template(config) -> None:
+    """Refuse a prompt bundle whose domain template differs from the benchmark's template.
+
+    A bundle renders its system prompt with the template of its own domain
+    (``rsi.bundle.DOMAINS``), so on a benchmark with another template (GPQA,
+    BigCodeBench, ...) that benchmark's final instructions would be silently lost.
+    """
+    if getattr(config, "prompt_bundle_path", None) is None:
+        return
+    from rsi.bundle import DOMAINS, load_bundle
+
+    bundle = load_bundle(Path(config.prompt_bundle_path))
+    builder = PromptBuilder()
+    bundle_template_name = DOMAINS[bundle.domain]
+    benchmark = builder._resolve_template(config.dataset.name, baseline=False)
+    own = builder._resolve_template(bundle_template_name, baseline=False)
+    if benchmark != own:
+        raise ValueError(
+            f"prompt bundle {config.prompt_bundle_path} (domain {bundle.domain!r}) renders the "
+            f"{bundle_template_name!r} prompt template, but dataset {config.dataset.name!r} "
+            f"uses a different template; its final instructions would be lost"
+        )
+
+
 def run_experiment(args):
     """Run complete experiment.
 
@@ -54,6 +78,7 @@ def run_experiment(args):
     seed_override = getattr(args, "seed", None)
     if seed_override is not None:
         apply_seed_override(config, seed_override)
+    _check_bundle_template(config)
     # Computed before _apply_gpu_assignment mutates model configs.
     fingerprint = config_fingerprint(config)
 
