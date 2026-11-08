@@ -127,8 +127,8 @@ are shared by 5 or more training questions (all DeepMath boilerplate such as
 
 | # | Run | Resources | Purpose |
 |---|---|---|---|
-| 1 | Smoke: 1 round per domain, 8B reflector | 1 GPU | Check the GPU path end to end (**running now**) |
-| 2 | Main: 10 rounds per domain, 8B reflector | 1 GPU, 24 h each | Can the 8B improve its own team's prompts? |
+| 1 | Smoke: 1 round per domain, 8B reflector | 1 GPU | Check the GPU path end to end (**done**) |
+| 2 | Main: 10 rounds per domain, 8B reflector | 1 GPU, 24 h each | Can the 8B improve its own team's prompts? (**queued**) |
 | 3 | Control: 10 rounds per domain, 32B reflector | 3 GPUs, 24 h each | Is the 8B reflector the bottleneck? |
 | 4 | Confirmation of each finished run | 1 GPU, 8 h | The reportable seed-vs-champion comparison |
 | 5 | Optional: benchmarks under the searched prompts | as normal inference | Diagnostic only (GAIA, HLE, MuSiQue for search; AIME for math) |
@@ -149,21 +149,19 @@ versus internalisation, weak reflector versus no signal).
 
 - **Done:** implementation, reviews, documentation, a dry run of both domains
   (pools of 300 / 200 / 50 built correctly).
-- **Smoke runs:** in progress; the pipeline runs end to end on the GPU so far.
-  Seed held-out accuracy: **search 38%, math 54%** (50 questions each).
-- **Next:** inspect the round-1 proposals (how many of the 8B's candidates
-  parse and validate), then launch the 10-round main runs.
+- **Smoke runs (1 round per domain):** the pipeline runs end to end on the GPU,
+  about 10 to 13 minutes per round.
+  - Seed held-out accuracy: **search 38%, math 54%** (50 questions each).
+  - All 6 reflector proposals parsed; 4 passed validation. All 6 edited a
+    sub-agent template, none the orchestrator.
+  - No candidate was promoted after one round (search tied, math one question lower).
+- **Next:** the 10-round main runs for both domains are queued.
 
 ## 8. Open risks and known limitations
 
-- **Output format may be hard for an 8B.** A proposal is a JSON object; editing
-  a sub-agent template means returning about 1.5K characters of escaped text, and
-  the worked example contains JSON inside JSON. The smoke run measures the
-  failure rate. If it is high, the planned fix is a simpler format: one part
-  per proposal, plain-text replacement in tags, no JSON escaping. The fix would be
-  applied to both reflector arms.
-- **Runtime:** whether 10 rounds fit in 24 h is not yet known; resume covers an
-  overrun.
+- **The 8B drops template placeholders.** The JSON format was not a problem in
+  the smoke run, but 2 of 6 proposals rewrote a sub-agent template without its
+  required placeholders and were rejected. To watch over 10 rounds.
 - **Signal versus noise:** gains of a few held-out questions are within noise
   until confirmed on the 200 unused questions.
 - **Not in the reflector's view:** the orchestrator's per-step reasoning text is
