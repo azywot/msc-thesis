@@ -80,6 +80,8 @@ def config_fingerprint(config: ExperimentConfig) -> str:
     d = config.model_dump(mode="json")
     for key in ("seed", "output_dir", "slurm", "use_wandb", "wandb_project", "description", "name"):
         d.pop(key, None)
+    if d.get("prompt_bundle_path") is None:
+        d.pop("prompt_bundle_path", None)  # keeps fingerprints of pre-existing configs stable
     for model_d in d.get("models", {}).values():
         model_d.pop("seed", None)
     return hashlib.sha256(json.dumps(d, sort_keys=True).encode("utf-8")).hexdigest()
