@@ -529,6 +529,18 @@ class CodeGeneratorTool(BaseTool):
             usage=tr.usage,
         )
 
+    def subagent_record(self, job, generation, result) -> dict:
+        """Describe this sub-agent call for the reflector's trajectory log."""
+        return {
+            "tool": "code_generator",
+            "inputs": {
+                "task": job.payload.get("task", ""),
+                "context": job.payload.get("context", ""),
+            },
+            "response": strip_thinking_tags(generation.text),
+            "output": result.output or "",
+        }
+
 
 @register_tool("code_generator")
 def build_code_generator(deps) -> CodeGeneratorTool:

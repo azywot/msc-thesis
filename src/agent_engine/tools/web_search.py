@@ -545,6 +545,17 @@ class WebSearchTool(BaseTool):
         return ToolResult(success=True, output=text,
                           metadata={"query": query, "mode": "sub-agent"})
 
+    def subagent_record(self, job, generation, result) -> dict:
+        """Describe this sub-agent call for the reflector's trajectory log."""
+        query = job.payload["query"]
+        formatted = self._format_results(job.payload["payload"].get("results", []), query)
+        return {
+            "tool": "web_search",
+            "inputs": {"query": query, "formatted_results": formatted},
+            "response": strip_thinking_tags(generation.text),
+            "output": result.output or "",
+        }
+
 
 @register_tool("web_search")
 def build_web_search(deps) -> WebSearchTool:

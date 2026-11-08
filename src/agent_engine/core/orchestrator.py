@@ -106,6 +106,7 @@ class AgenticOrchestrator:
         cache_manager=None,
         baseline: bool = False,
         planning_suffix: Optional[str] = None,
+        acting_suffix: str = "",
     ):
         """Initialize the orchestrator.
 
@@ -122,6 +123,9 @@ class AgenticOrchestrator:
             baseline: When ``True`` the planning turn is skipped and each turn
                       uses the raw growing conversation (``state.messages``)
                       instead of the structured AgentFlow memory prompt.
+            acting_suffix: Raw text appended to every memory-turn user message
+                           (callers include any leading newlines). The empty
+                           default leaves the prompt byte-identical.
         """
         self.model = model_provider
         self.tools = tool_registry
@@ -131,6 +135,7 @@ class AgenticOrchestrator:
         self.use_thinking = use_thinking and model_provider.config.supports_thinking
         self.baseline = baseline
         self.planning_suffix: Optional[str] = planning_suffix
+        self.acting_suffix: str = acting_suffix
         # Force tool-call prefix injection on action turns for families (DeepSeek)
         # that hallucinate tool use in their thinking blocks instead of emitting <tool_call>.
         # Disabled in baseline mode: the forced prefix injects a <sub_goal> tag which
@@ -508,7 +513,7 @@ class AgenticOrchestrator:
 
         return [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": "\n".join(parts)},
+            {"role": "user", "content": "\n".join(parts) + self.acting_suffix},
         ]
 
     def _commit_tool_result(
