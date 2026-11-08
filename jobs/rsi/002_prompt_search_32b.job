@@ -1,0 +1,23 @@
+#!/bin/bash
+#SBATCH --job-name=RSIPS32B
+#SBATCH --partition=gpu_h100
+# Three H100s. GPU 0: Qwen3-8B executor in-process. GPUs 1-2: Qwen3-32B reflector (vllm serve, tp=2).
+#SBATCH --gpus=3
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=24:00:00
+#SBATCH --output=out/rsi/prompt_search_32b_%A.log
+#SBATCH --error=out/rsi/prompt_search_32b_%A.err
+
+# Submit: mkdir -p out/rsi && sbatch --export=ALL,DOMAIN=search jobs/rsi/002_prompt_search_32b.job   (or DOMAIN=math)
+
+set -euo pipefail
+mkdir -p out/rsi
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+export CONFIG="experiments/configs/rsi/phase1/search_reflector_qwen3_32b.yaml"
+export DOMAIN="${DOMAIN:-search}"
+export EXTRA_ARGS="${EXTRA_ARGS:-}"
+export REFLECTOR_SERVER_MODEL="Qwen/Qwen3-32B"
+export REFLECTOR_GPUS="1,2"
+export REFLECTOR_TP=2
+exec bash "$PROJECT_DIR/jobs/rsi/_prompt_search_body.sh"

@@ -390,20 +390,8 @@ def _shown_answers_so_far(out_dir, examples, rounds_done):
     return answers
 
 
-def run_search(
-    cfg,
-    domain,
-    executor,
-    reflector,
-    examples,
-    pools,
-    seed,
-    leakage,
-    count_tokens,
-    tool_schemas,
-    tool_call_format,
-    out_dir,
-):
+def write_run_header(cfg, pools, out_dir):
+    """Write config.json and pools.json, refusing to overwrite a run dir made with other settings."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     config_path = out_dir / "config.json"
@@ -420,6 +408,24 @@ def run_search(
     if pools_path.exists() and _read_json(pools_path) != pools.to_dict():
         raise ValueError(f"{pools_path} differs from the pools given; use a fresh output dir")
     _write_json_atomic(pools_path, pools.to_dict())
+
+
+def run_search(
+    cfg,
+    domain,
+    executor,
+    reflector,
+    examples,
+    pools,
+    seed,
+    leakage,
+    count_tokens,
+    tool_schemas,
+    tool_call_format,
+    out_dir,
+):
+    out_dir = Path(out_dir)
+    write_run_header(cfg, pools, out_dir)
 
     state_path = out_dir / "state.json"
     if state_path.exists():
