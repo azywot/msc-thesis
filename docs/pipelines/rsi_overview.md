@@ -1,7 +1,7 @@
 # RSI phase 1: overview and progress
 
 **Status (2026-11-08):** implemented, tested, first GPU smoke runs in progress.
-**Branch:** `feat/mass-rsi` (18 commits on top of `58a253a`, not yet merged).
+**Branch:** `feat/mass-rsi` ([PR #37](https://github.com/azywot/msc-thesis/pull/37)).
 **Detail:** the operational guide is `docs/pipelines/rsi.md`; the design is
 `docs/superpowers/specs/2026-11-04-recursive-self-improvement-design.md`; the
 task-by-task plan is `docs/superpowers/plans/2026-11-08-rsi-phase1-prompt-search.md`.
