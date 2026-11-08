@@ -9,6 +9,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased] — feat/gepa-integration
 
 ### Added
+- **RSI phase 1 prompt search** (`feat/mass-rsi`). MASS-style search over a prompt bundle
+  (orchestrator parts, `web_search` and `code_generator` templates) with Qwen3-8B in every
+  role; the reflector is the same in-process vLLM engine by default, or Qwen3-32B over a
+  separate server as a control. Per round: shown minibatch, K proposals, validation, leakage
+  guard, screen, strict held-out promotion. Resumable, with `--dry-run`, `--report-only` and
+  `--confirm N`. New `src/rsi/`, `scripts/run_prompt_search.py`, `jobs/rsi/`,
+  `experiments/configs/rsi/phase1/`. New config key `prompt_bundle_path` (mutually exclusive
+  with `gepa_prompt_path`; fingerprints of existing configs unchanged). Phase 2 (collection and
+  fine-tuning) is not implemented. See [`docs/pipelines/rsi.md`](docs/pipelines/rsi.md).
 - **Text-only GAIA/HLE splits, seeded runs and pass@k** (`feat/text-subsets-pass-at-k`).
   `all_validation_text` (GAIA, 155 questions) drops the 10 validation questions whose
   attachment is an image, which no run could answer with `image_inspector` off.
