@@ -118,6 +118,3 @@ Proposed rule after the 10-round runs: if nothing is promoted and the edits stay
 on sub-agent templates, rerun with a fixed unit per candidate and compare; if
 the edits are spread across units and still nothing improves, go to the 32B
 control instead.
-
-**Is 50 held-out questions enough?** One question is 2 points, so most single
-promotions will be noise; the confirmation set is what decides.
