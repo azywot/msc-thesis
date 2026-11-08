@@ -128,7 +128,7 @@ are shared by 5 or more training questions (all DeepMath boilerplate such as
 | # | Run | Resources | Purpose |
 |---|---|---|---|
 | 1 | Smoke: 1 round per domain, 8B reflector | 1 GPU | Check the GPU path end to end (**done**) |
-| 2 | Main: 10 rounds per domain, 8B reflector | 1 GPU, 24 h each | Can the 8B improve its own team's prompts? (**queued**) |
+| 2 | Main: 10 rounds per domain, 8B reflector | 1 GPU, 24 h each | Can the 8B improve its own team's prompts? (**running**) |
 | 3 | Control: 10 rounds per domain, 32B reflector | 3 GPUs, 24 h each | Is the 8B reflector the bottleneck? |
 | 4 | Confirmation of each finished run | 1 GPU, 8 h | The reportable seed-vs-champion comparison |
 | 5 | Optional: benchmarks under the searched prompts | as normal inference | Diagnostic only (GAIA, HLE, MuSiQue for search; AIME for math) |
@@ -147,6 +147,8 @@ versus internalisation, weak reflector versus no signal).
 
 ## 7. Current status
 
+- **Model:** all runs so far use Qwen3-8B in every role, reflector included.
+  The 32B-reflector control has not been run yet.
 - **Done:** implementation, reviews, documentation, a dry run of both domains
   (pools of 300 / 200 / 50 built correctly).
 - **Smoke runs (1 round per domain):** the pipeline runs end to end on the GPU,
@@ -155,7 +157,7 @@ versus internalisation, weak reflector versus no signal).
   - All 6 reflector proposals parsed; 4 passed validation. All 6 edited a
     sub-agent template, none the orchestrator.
   - No candidate was promoted after one round (search tied, math one question lower).
-- **Next:** the 10-round main runs for both domains are queued.
+- **Next:** the 10-round main runs for both domains are running.
 
 ## 8. Open risks and known limitations
 
@@ -169,3 +171,26 @@ versus internalisation, weak reflector versus no signal).
 - **Minor:** the 32B client sends its 3 requests one after another (slower, not
   wrong); a hard kill can lose the latest web-search cache entries (rounds
   already on disk are safe).
+
+## 9. Open questions
+
+**Which parts should a proposal change, and how granularly?** In the smoke run
+the reflector edited only sub-agent templates, never the orchestrator. It
+followed the visible failures: in math, the only two wrong answers in its
+minibatch had used the code tool, while most questions are solved without tools,
+so a code-template edit reaches few questions. Options considered:
+
+- **Keep free choice of one unit per proposal** (current).
+- **Fixed unit per candidate slot:** of the 3 candidates per round, one edits
+  the orchestrator, one `web_search`, one `code_generator`. Every round tries an
+  orchestrator edit, and each candidate still changes one thing.
+- **Several units per proposal:** reaches the orchestrator too, but a mistake in
+  any part rejects the whole candidate, outputs get longer, and a gain can no
+  longer be traced to one change. Not preferred for an 8B reflector.
+
+Decided after the 10-round runs:
+1. A champion is promoted: keep the current setup and confirm it.
+2. No promotion, and most proposals (about 80% or more) edit sub-agent
+   templates: rerun with a fixed unit per slot and compare with the free-choice run.
+3. No promotion, with edits spread across units: the bottleneck is the 8B's
+   proposals or held-out noise, so run the 32B-reflector control instead.
