@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from ..models.base import ModelConfig
 
@@ -125,13 +125,29 @@ class ExperimentConfig(BaseModel):
     cache_dir: Path = Path("./cache")
     slurm: SlurmConfig = SlurmConfig()
     gepa_prompt_path: Optional[Path] = None
+    prompt_bundle_path: Optional[Path] = None
 
-    @field_validator("output_dir", "cache_dir", "gepa_prompt_path", mode="before")
+    @field_validator(
+        "output_dir", "cache_dir", "gepa_prompt_path", "prompt_bundle_path", mode="before"
+    )
     @classmethod
     def _coerce_paths(cls, v):
         if isinstance(v, str):
             return Path(v)
         return v
+
+    @model_validator(mode="after")
+    def _one_prompt_source(self):
+        if self.prompt_bundle_path is not None and self.gepa_prompt_path is not None:
+            raise ValueError("prompt_bundle_path and gepa_prompt_path are mutually exclusive")
+        if self.prompt_bundle_path is not None and (
+            self.baseline or self.tools.direct_tool_call
+        ):
+            raise ValueError(
+                "prompt_bundle_path requires sub-agent mode: baseline and "
+                "tools.direct_tool_call must be false"
+            )
+        return self
 
     def get_model(self, role: str) -> Optional[ModelConfig]:
         """Return the :class:`ModelConfig` for *role*, or ``None`` if not configured."""

@@ -256,5 +256,5 @@ src/agent_engine/
 ```
 
 Two packages sit alongside it: `src/fine_tuning/` (RL and SFT, including
-vendored AgentFlow) and `src/gepa_integration/` (prompt optimisation). Both are
-covered in [pipelines/](pipelines/).
+vendored AgentFlow) `src/gepa_integration/` (prompt optimisation) and `src/rsi/` (RSI phase 1
+prompt search). All are covered in [pipelines/](pipelines/).
