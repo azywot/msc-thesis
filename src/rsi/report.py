@@ -14,6 +14,7 @@ from rsi.bundle import (
     unit_text,
 )
 from rsi.executor import TrajectoryRecord
+from rsi.team import HEADERS, TEAM_UNIT
 
 MAX_PAIRED = 3
 CELL_CHARS = 700
@@ -91,8 +92,17 @@ def _confirm_line(run_dir, state):
         f" {p.get('seed_only', 0)}, champion only {p.get('champion_only', 0)}, neither"
         f" {p.get('neither', 0)}; records in confirm/)"
     )
+    if c.get("mcnemar_p") is not None:
+        line += f"; exact McNemar p = {c['mcnemar_p']:.3f}"
     if c["champion"] != state["champion"]:
         line += f". Stale: the champion is now {state['champion']}; rerun --confirm"
+    ablation = run_dir / "ablation.json"
+    if ablation.exists() and _read(ablation).get("champion") == c["champion"]:
+        for v in _read(ablation)["reverted"].values():
+            line += (
+                f"\n  - With {v['section']} reverted to the seed: {_pct(v['acc'])}"
+                f" (lost {v['lost_vs_champion']}, gained {v['gained_vs_champion']} vs the champion)"
+            )
     return line
 
 
@@ -183,8 +193,11 @@ def _rejections(rounds):
 
 
 def _units_edited(rounds):
-    proposed = {u: 0 for u in UNITS}
-    accepted = {u: 0 for u in UNITS}
+    units = list(UNITS)
+    if any(p.get("unit") == TEAM_UNIT for rec in rounds for p in rec.get("proposals", [])):
+        units.append(TEAM_UNIT)
+    proposed = {u: 0 for u in units}
+    accepted = {u: 0 for u in units}
     for rec in rounds:
         for p in rec.get("proposals", []):
             if p.get("unit") in proposed:
@@ -192,7 +205,31 @@ def _units_edited(rounds):
         if rec.get("accepted") and (rec.get("chosen") or {}).get("unit") in accepted:
             accepted[rec["chosen"]["unit"]] += 1
     lines = ["## Units edited", "", "| unit | proposals | accepted |", "|---|---|---|"]
-    lines += [f"| {u} | {proposed[u]} | {accepted[u]} |" for u in UNITS]
+    lines += [f"| {u} | {proposed[u]} | {accepted[u]} |" for u in units]
+    lines.append("")
+    if TEAM_UNIT in units:
+        lines += _sections_changed(rounds)
+    return lines
+
+
+def _sections_changed(rounds):
+    """How often valid team edits changed each section, and how often together."""
+    single, combos, valid = {}, {}, 0
+    for rec in rounds:
+        for p in rec.get("proposals", []):
+            changed = p.get("sections_changed")
+            if p.get("unit") != TEAM_UNIT or changed is None or p.get("errors"):
+                continue
+            valid += 1
+            for key in changed:
+                single[key] = single.get(key, 0) + 1
+            combo = " + ".join(HEADERS[k] for k in changed) or "(none)"
+            combos[combo] = combos.get(combo, 0) + 1
+    lines = [f"Sections changed by the {valid} team edits that passed validation:", ""]
+    lines += ["| section | edits |", "|---|---|"]
+    lines += [f"| {HEADERS[k]} | {single.get(k, 0)} |" for k in HEADERS]
+    lines += ["", "| sections changed together | edits |", "|---|---|"]
+    lines += [f"| {c} | {n} |" for c, n in sorted(combos.items(), key=lambda x: -x[1])]
     lines.append("")
     return lines
 

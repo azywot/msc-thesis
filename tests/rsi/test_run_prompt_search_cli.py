@@ -77,7 +77,7 @@ def test_dry_run_writes_pools_and_seed_bundle(tmp_path, tiny_parquet, monkeypatc
 
 def test_shipped_configs_parse():
     paths = sorted(SHIPPED.glob("*.yaml"))
-    assert len(paths) == 3
+    assert len(paths) == 4
     for p in paths:
         exp, search = load_search_config(p)
         assert exp.thinking_mode.value == "NO" and exp.max_turns == 7
@@ -226,3 +226,42 @@ def test_confirm_is_exclusive_with_dry_run(tmp_path, tiny_parquet, monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "x")
     with pytest.raises(SystemExit):
         main(["--config", str(cfg), "--domain", "search", "--dry-run", "--confirm", "5"])
+
+
+def test_ablate_mode_scores_an_existing_run(tmp_path, tiny_parquet, monkeypatch, capsys):
+    cfg = write_config(
+        tmp_path, tiny_parquet, tmp_path / "out", {"shown": 10, "screen": 6, "heldout": 4}
+    )
+    monkeypatch.setenv("SERPER_API_KEY", "x")
+    seen, provider = _patch_full_run(monkeypatch, tmp_path)
+    calls = {}
+
+    def fake_ablation(out_dir, executor, examples):
+        calls.update(out_dir=out_dir, executor=executor)
+        return {
+            "champion": "v2",
+            "champion_acc": 0.5,
+            "reverted": {
+                "web_search": {
+                    "section": "WEB_SEARCH SUB-AGENT",
+                    "acc": 0.25,
+                    "lost_vs_champion": 3,
+                    "gained_vs_champion": 1,
+                }
+            },
+        }
+
+    monkeypatch.setattr(SCRIPT, "run_ablation", fake_ablation)
+    monkeypatch.setattr(
+        SCRIPT, "build_reflector", lambda *a: pytest.fail("ablate must not build a reflector")
+    )
+    with pytest.raises(ValueError, match="before --ablate"):
+        main(["--config", str(cfg), "--domain", "search", "--ablate"])
+    out = tmp_path / "out" / cfg.stem / "search"
+    out.mkdir(parents=True)
+    (out / "state.json").write_text("{}")
+    assert main(["--config", str(cfg), "--domain", "search", "--ablate"]) == 0
+    assert calls["out_dir"] == out and calls["executor"]._inner.model_provider is provider
+    assert "args" not in seen
+    printed = capsys.readouterr().out
+    assert "revert WEB_SEARCH SUB-AGENT: 25.0% (lost 3, gained 1)" in printed

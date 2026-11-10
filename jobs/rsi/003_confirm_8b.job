@@ -17,11 +17,18 @@
 # The 32B-reflector run is confirmed on the same single GPU (no reflector server is needed):
 #   sbatch --export=ALL,DOMAIN=search,CONFIG=experiments/configs/rsi/phase1/search_reflector_qwen3_32b.yaml jobs/rsi/003_confirm_8b.job
 # Resubmitting reuses confirm/v<N>.json files already written for the same questions.
+# ABLATE=1 (after the confirmation of a run with orchestrator_mode: full) instead re-scores the
+# champion with each changed prompt section reverted to the seed and writes ablation.json.
 
 set -euo pipefail
 mkdir -p out/rsi
 PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
 export CONFIG="${CONFIG:-experiments/configs/rsi/phase1/search_reflector_qwen3_8b.yaml}"
 export DOMAIN="${DOMAIN:-search}"
-export EXTRA_ARGS="--confirm ${CONFIRM_N:-200} ${EXTRA_ARGS:-}"
+if [ -n "${ABLATE:-}" ]; then
+  # section ablation of a confirmed full-mode run (see docs/pipelines/rsi.md)
+  export EXTRA_ARGS="--ablate ${EXTRA_ARGS:-}"
+else
+  export EXTRA_ARGS="--confirm ${CONFIRM_N:-200} ${EXTRA_ARGS:-}"
+fi
 exec bash "$PROJECT_DIR/jobs/rsi/_prompt_search_body.sh"

@@ -2,12 +2,13 @@
 """Run the MASS-style prompt search (RSI phase 1) for one domain.
 
     python scripts/run_prompt_search.py --config <yaml> --domain search|math \
-        [--run-name NAME] [--dry-run | --report-only | --confirm N]
+        [--run-name NAME] [--dry-run | --report-only | --confirm N | --ablate]
 
 The YAML is an ExperimentConfig plus a ``search:`` block parsed into SearchConfig. Outputs go to
 ``<search.output_root>/<run_name>/<domain>/``. ``--confirm N`` scores v0 and the champion of an
 existing run on N questions of the domain that are in no pool (confirm.json, confirm/v<N>.json)
-and regenerates the report.
+and regenerates the report. ``--ablate`` (after --confirm, full-mode runs) re-scores the champion
+on the same questions with each changed prompt section reverted to the seed (ablation.json).
 """
 
 import argparse
@@ -35,7 +36,7 @@ from agent_engine.runner.tools import build_tool_registry  # noqa: E402
 from agent_engine.tools.registry import ToolDeps  # noqa: E402
 from agent_engine.utils import set_seed, setup_logging  # noqa: E402
 from rsi.bundle import seed_bundle  # noqa: E402
-from rsi.confirm import run_confirm  # noqa: E402
+from rsi.confirm import run_ablation, run_confirm  # noqa: E402
 from rsi.data import load_domain_examples, make_pools  # noqa: E402
 from rsi.executor import BundleExecutor  # noqa: E402
 from rsi.leakage import LeakageIndex  # noqa: E402
@@ -135,6 +136,11 @@ def main(argv=None):
         metavar="N",
         help="score v0 and the champion of an existing run on N questions outside every pool",
     )
+    mode.add_argument(
+        "--ablate",
+        action="store_true",
+        help="after --confirm: score the champion with each changed section reverted to the seed",
+    )
     args = ap.parse_args(argv)
 
     setup_logging()
@@ -175,11 +181,13 @@ def main(argv=None):
         print(f"shown={len(pools.shown)} screen={len(pools.screen)} heldout={len(pools.heldout)}")
         return 0
 
-    if args.confirm is not None and not (out_dir / "state.json").exists():
-        raise ValueError(f"{out_dir / 'state.json'} not found: run the search before --confirm")
+    scoring_only = args.confirm is not None or args.ablate
+    if scoring_only and not (out_dir / "state.json").exists():
+        flag = "--confirm" if args.confirm is not None else "--ablate"
+        raise ValueError(f"{out_dir / 'state.json'} not found: run the search before {flag}")
 
     orch_cfg = exp.get_model("orchestrator")
-    if args.confirm is None and search.reflector.backend == "in_process":
+    if not scoring_only and search.reflector.backend == "in_process":
         if search.reflector.model != orch_cfg.path_or_id:
             raise ValueError(
                 "in_process reflector must be the executor model: reflector "
@@ -219,10 +227,28 @@ def main(argv=None):
             result = run_confirm(out_dir, executor, examples, args.confirm)
         finally:
             cache_manager.save_caches()
-        print(
+        line = (
             f"confirm: n={result['n']} seed={100 * result['seed_acc']:.1f}%"
             f" champion {result['champion']}={100 * result['champion_acc']:.1f}%"
         )
+        if result.get("mcnemar_p") is not None:
+            line += f" (McNemar p={result['mcnemar_p']:.3f})"
+        print(line)
+        path = write_report(out_dir, tool_schemas, tool_call_format)
+        print(f"report: {path}")
+        return 0
+
+    if args.ablate:
+        try:
+            result = run_ablation(out_dir, executor, examples)
+        finally:
+            cache_manager.save_caches()
+        print(f"ablation: champion {result['champion']}={100 * result['champion_acc']:.1f}%")
+        for v in result["reverted"].values():
+            print(
+                f"  revert {v['section']}: {100 * v['acc']:.1f}%"
+                f" (lost {v['lost_vs_champion']}, gained {v['gained_vs_champion']})"
+            )
         path = write_report(out_dir, tool_schemas, tool_call_format)
         print(f"report: {path}")
         return 0

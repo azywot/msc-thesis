@@ -10,6 +10,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from rsi.bundle import UNITS, is_full, unit_text
+from rsi.team import output_format_text, render_team_document
 
 MIN_PER_CALL_CHARS = 200
 FALLBACK_FIELD_CAPS = (400, 200, 100)
@@ -82,6 +83,13 @@ def output_schema_text(units=UNITS, full=False):
 
 OUTPUT_SCHEMA_TEXT = output_schema_text()
 
+PROTECTED_TEXT_TEAM = (
+    "The tool list, the <sub_goal>/<tool_call> format paragraph and the \\boxed{} final answer "
+    "rule are protected: they are inserted through the {tools} and {answer_format} placeholders "
+    "of the orchestrator system prompt. The sub-agents' inputs are inserted through {inputs}. "
+    "The rendered system prompt is shown read-only for context."
+)
+
 
 @dataclass
 class HistoryEntry:
@@ -105,9 +113,26 @@ class ReflectorContext:
     rendered_system_prompt: str = ""
     units: list = field(default_factory=list)
     rejected: list = field(default_factory=list)
+    # team edits: the reflector rewrites the whole team as one plain-text document
+    team: bool = False
+    # sub-agents whose section is shown in a team edit (None: every sub-agent in the bundle)
+    subagents: list = None
 
 
-def _system_message(domain, units=UNITS, full=False):
+def _system_message(
+    domain, units=UNITS, full=False, team=False, subagents=("web_search", "code_generator")
+):
+    if team:
+        return (
+            f"You improve the prompts of a small team of language-model agents (an orchestrator "
+            f"and its sub-agents) for the {domain} domain, so that the team answers more questions "
+            f"correctly. You see the whole team as one document, past edits with their scores, "
+            f"and example runs, including what the sub-agents received and returned. You may "
+            f"change any number of sections in one edit. Look especially at the hand-offs: what "
+            f"the orchestrator asks each sub-agent for, what the sub-agent returns, and whether "
+            f"the orchestrator checks it and asks again when it is weak.\n\n"
+            f"{LEAKAGE_INSTRUCTION}\n\n{PROTECTED_TEXT_TEAM}\n\n{output_format_text(subagents)}"
+        )
     units = list(units)
     if len(units) == 1:
         task = f"This turn you edit the {units[0]} unit"
@@ -210,7 +235,9 @@ def _render_trajectory(t, pcc, cut_actions, cap):
     return "\n".join(lines), omitted
 
 
-def _render_prompts(bundle, units):
+def _render_prompts(bundle, units, team=False, subagents=None):
+    if team:
+        return render_team_document(bundle, subagents)
     parts = []
     for unit in units:
         parts.append(f"[{unit}]\n{unit_text(bundle, unit)}")
@@ -223,12 +250,16 @@ def _same(a, b):
 
 def _render_user(ctx, shown, pcc, cut_actions, cap):
     units = ctx.units or ["orchestrator", "web_search", "code_generator"]
+
+    def prompts(bundle):
+        return _render_prompts(bundle, units, ctx.team, ctx.subagents)
+
     out = ["## Current champion", "Rendered system prompt (read-only):", ctx.rendered_system_prompt]
-    out += ["", "Editable units:", _render_prompts(ctx.champion, units)]
+    out += ["", "Team document:" if ctx.team else "Editable units:", prompts(ctx.champion)]
     if not _same(ctx.seed, ctx.champion):
-        out += ["", "## Seed prompts (v0)", _render_prompts(ctx.seed, units)]
+        out += ["", "## Seed prompts (v0)", prompts(ctx.seed)]
     if ctx.best is not None and not _same(ctx.best, ctx.champion) and not _same(ctx.best, ctx.seed):
-        out += ["", "## Best prompts so far", _render_prompts(ctx.best, units)]
+        out += ["", "## Best prompts so far", prompts(ctx.best)]
     out += ["", "## History of edits", _render_history(ctx.history)]
     if ctx.rejected:
         out += ["", "## Last round's rejected proposals"]
@@ -259,9 +290,11 @@ def _drop_one(shown):
 
 
 def build_reflector_messages(ctx, count_tokens, budget_tokens, per_call_chars):
-    system = _system_message(
-        ctx.domain, ctx.units or UNITS, is_full(ctx.champion)
-    )
+    if ctx.team:
+        subagents = ctx.subagents if ctx.subagents is not None else list(ctx.champion.subagents)
+        system = _system_message(ctx.domain, team=True, subagents=subagents)
+    else:
+        system = _system_message(ctx.domain, ctx.units or UNITS, is_full(ctx.champion))
     stats = {
         "trajectories_total": len(ctx.trajectories),
         "trajectories_shown": 0,

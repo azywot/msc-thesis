@@ -209,6 +209,24 @@ def _candidate_objects(body):
         yield lambda: json.loads(body[first : last + 1])
 
 
+# JSON reads an unescaped "\b" or "\f" as backspace or form feed; in a prompt that is always a
+# LaTeX command whose backslash the model did not double (e.g. \boxed, \frac).
+_STRAY_ESCAPES = {"\b": "\\b", "\f": "\\f"}
+
+
+def restore_latex_escapes(value):
+    """Turn stray backspace and form-feed characters back into backslash text, recursively."""
+    if isinstance(value, str):
+        for char, text in _STRAY_ESCAPES.items():
+            value = value.replace(char, text)
+        return value
+    if isinstance(value, dict):
+        return {k: restore_latex_escapes(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [restore_latex_escapes(v) for v in value]
+    return value
+
+
 def parse_proposal(text):
     body = strip_thinking_tags(text or "")
     if not body:
@@ -239,7 +257,7 @@ def parse_proposal(text):
         raise ProposalParseError("'unit' must be a non-empty string")
     return Proposal(
         unit=data["unit"],
-        replacement=data["replacement"],
-        rationale=str(data.get("rationale", "")),
-        expected_effect=str(data.get("expected_effect", "")),
+        replacement=restore_latex_escapes(data["replacement"]),
+        rationale=restore_latex_escapes(str(data.get("rationale", ""))),
+        expected_effect=restore_latex_escapes(str(data.get("expected_effect", ""))),
     )

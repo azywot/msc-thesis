@@ -8,7 +8,7 @@ import random
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from rsi.bundle import (
     UNITS,
@@ -21,8 +21,19 @@ from rsi.bundle import (
 )
 from rsi.data import PoolSizes, sample_minibatch
 from rsi.executor import accuracy
-from rsi.reflector import ProposalParseError, ReflectorSettings, parse_proposal
+from rsi.reflector import Proposal, ProposalParseError, ReflectorSettings, parse_proposal
 from rsi.reflector_input import HistoryEntry, ReflectorContext, build_reflector_messages
+from rsi.team import (
+    TEAM_UNIT,
+    TeamParseError,
+    apply_team,
+    changed_sections,
+    parse_team_reply,
+    resolve_sections,
+    team_diff,
+    team_sections,
+    validate_team,
+)
 from rsi.validate import normalize_example, validate_unit
 
 MAX_DIFF_CHARS = 2000
@@ -49,6 +60,9 @@ class SearchConfig(BaseModel):
     # unit assigned to each candidate slot, cycled (slot k edits slot_units[k % len]);
     # None lets the reflector choose any unit for every slot
     slot_units: Optional[List[str]] = None
+    # "team": every candidate rewrites the whole team (orchestrator and sub-agents) in one
+    # plain-text reply (see rsi.team); needs orchestrator_mode "full" and no slot_units
+    edit_mode: Literal["unit", "team"] = "unit"
 
     @field_validator("slot_units")
     @classmethod
@@ -61,15 +75,26 @@ class SearchConfig(BaseModel):
                 raise ValueError(f"unknown slot_units {unknown}; allowed {list(UNITS)}")
         return v
 
+    @model_validator(mode="after")
+    def _team_needs_full(self):
+        if self.edit_mode == "team":
+            if self.orchestrator_mode != "full":
+                raise ValueError('edit_mode "team" needs orchestrator_mode "full"')
+            if self.slot_units:
+                raise ValueError('edit_mode "team" cannot be combined with slot_units')
+        return self
+
     def units_for_slot(self, k):
         """Units slot k may edit."""
+        if self.edit_mode == "team":
+            return [TEAM_UNIT]
         if not self.slot_units:
             return list(UNITS)
         return [self.slot_units[k % len(self.slot_units)]]
 
 
 # fields added after the first runs, with the value an older config.json implies
-_CONFIG_FIELD_DEFAULTS = {"orchestrator_mode": "parts", "slot_units": None}
+_CONFIG_FIELD_DEFAULTS = {"orchestrator_mode": "parts", "slot_units": None, "edit_mode": "unit"}
 
 
 def _write_json_atomic(path, data):
@@ -117,6 +142,8 @@ def _parts(value, path=""):
 
 def _unit_diff(old, new, unit):
     """Unified diff of one unit. Orchestrator edits are diffed per changed part, then capped."""
+    if unit == TEAM_UNIT:
+        return team_diff(old, new, MAX_DIFF_CHARS)
     if unit == "orchestrator":
         before, after = dict(_parts(old.orchestrator)), dict(_parts(new.orchestrator))
         paths = list(before) + [p for p in after if p not in before]
@@ -192,6 +219,22 @@ def _sample_group(reflector, messages_by_slot, slots, seeds):
     return [items[k] for k in slots]
 
 
+def _parse(cfg, text):
+    """The proposal in a reflector reply; raises ProposalParseError."""
+    if cfg.edit_mode != "team":
+        return parse_proposal(text)
+    try:
+        sections, rationale, unknown = parse_team_reply(text)
+    except TeamParseError as exc:
+        raise ProposalParseError(str(exc)) from exc
+    return Proposal(
+        unit=TEAM_UNIT,
+        replacement={"sections": sections, "unknown_headers": unknown},
+        rationale=rationale,
+        expected_effect="",
+    )
+
+
 def _sample_proposals(cfg, reflector, messages_by_slot, r):
     """Sample K slots, re-sampling failed slots. Returns one record per attempt.
 
@@ -226,12 +269,13 @@ def _sample_proposals(cfg, reflector, messages_by_slot, r):
             proposal = None
             if reason is None:
                 try:
-                    proposal = parse_proposal(rec["text"])
+                    proposal = _parse(cfg, rec["text"])
                 except ProposalParseError as exc:
                     reason = f"parse error: {exc}"
-            if proposal is not None and proposal.unit not in UNITS:
+            allowed = cfg.units_for_slot(k)
+            if proposal is not None and proposal.unit not in allowed and proposal.unit not in UNITS:
                 reason = f"unknown unit {proposal.unit!r}"
-            elif proposal is not None and proposal.unit not in cfg.units_for_slot(k):
+            elif proposal is not None and proposal.unit not in allowed:
                 reason = (
                     f"unit {proposal.unit!r} was not asked for "
                     f"(this candidate edits {cfg.units_for_slot(k)})"
@@ -364,7 +408,11 @@ def _run_round(
 
     # 2. reflector input
     history = [HistoryEntry(**h) for h in state["history"]]
+    enabled = [s["function"]["name"] for s in tool_schemas]
+    team_subagents = [u for u in champion.subagents if u in enabled]
     ctx_args = dict(
+        team=cfg.edit_mode == "team",
+        subagents=team_subagents,
         domain=domain,
         champion=champion,
         seed=seed,
@@ -400,14 +448,14 @@ def _run_round(
         record["reflector_stats_by_units"] = {
             key: (b[1] if b is not None else None) for key, b in built_by_key.items()
         }
-        reflector_input["slot_units"] = [cfg.units_for_slot(k) for k in range(cfg.candidates_per_round)]
+        reflector_input["slot_units"] = [
+            cfg.units_for_slot(k) for k in range(cfg.candidates_per_round)
+        ]
         reflector_input["messages_by_units"] = {
             key: (b[0] if b is not None else None) for key, b in built_by_key.items()
         }
     # written before sampling, so a job killed mid-sample still leaves the exact input
-    _write_json_atomic(
-        out_dir / "rounds" / f"round_{r:02d}_reflector_input.json", reflector_input
-    )
+    _write_json_atomic(out_dir / "rounds" / f"round_{r:02d}_reflector_input.json", reflector_input)
     record["shown_question_ids"] = list(ids)
     for t in trajectories:
         shown_answers.add(t.gold)
@@ -422,13 +470,26 @@ def _run_round(
         proposal = rec.pop("_proposal")
         if rec["errors"] or proposal is None:
             continue
-        payload = _prepare_payload(proposal.unit, copy.deepcopy(proposal.replacement), champion)
-        errors = validate_unit(proposal.unit, payload, seed, tool_schemas)
+        if proposal.unit == TEAM_UNIT:
+            raw = copy.deepcopy(proposal.replacement)
+            base = team_sections(champion, team_subagents)
+            payload = resolve_sections(raw["sections"], champion, team_subagents)
+            rec["sections_changed"] = changed_sections(base, payload)
+            rec["sections_unchanged_or_omitted"] = [
+                k for k in base if k not in rec["sections_changed"]
+            ]
+            errors = validate_team(payload, raw["unknown_headers"], enabled, base)
+        else:
+            payload = _prepare_payload(proposal.unit, copy.deepcopy(proposal.replacement), champion)
+            errors = validate_unit(proposal.unit, payload, seed, tool_schemas)
         if errors:
             rec["errors"] = errors
             continue
         try:
-            candidate = replace_unit(champion, proposal.unit, payload)
+            if proposal.unit == TEAM_UNIT:
+                candidate = apply_team(champion, payload)
+            else:
+                candidate = replace_unit(champion, proposal.unit, payload)
         except Exception as exc:
             rec["errors"] = [f"could not apply replacement: {exc}"]
             continue

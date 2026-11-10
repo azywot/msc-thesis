@@ -21,13 +21,14 @@ Code: `src/rsi/`, entry point `scripts/run_prompt_search.py`.
 
 ---
 
-## Two reflector setups
+## Setups
 
 | Setup | Config | Job | GPUs |
 |---|---|---|---|
 | **Default**: Qwen3-8B reflects on its own engine. The reflector calls the executor's in-process vLLM engine with its own sampling parameters (per-candidate seed, reflector temperature and token limit), so the executor settings are untouched. | `search_reflector_qwen3_8b.yaml` | `001_prompt_search_8b.job` | 1 H100 |
 | **Control**: Qwen3-32B reflects over a separate `vllm serve` (port 8001, tensor parallel 2). The executor is still Qwen3-8B. | `search_reflector_qwen3_32b.yaml` | `002_prompt_search_32b.job` | 3 H100 |
 | **Fixed slots, full orchestrator**: as the default, but each round has one candidate per unit, and the orchestrator candidate rewrites the whole system prompt (`slot_units`, `orchestrator_mode: full`). | `search_reflector_qwen3_8b_slots_full.yaml` | `001_prompt_search_8b.job` with `CONFIG=` that file | 1 H100 |
+| **Team edits**: every candidate rewrites the whole team (orchestrator and both sub-agents) in one plain-text reply, as in MASS (`edit_mode: team`, see [Team edits](#team-edits)). Held-out pool of 150. | `search_reflector_qwen3_8b_team.yaml` | `001_prompt_search_8b.job` with `CONFIG=` that file | 1 H100 |
 
 The control tells you whether a weak 8B reflector was the limiting factor. The
 `in_process` backend refuses to start unless `search.reflector.model` equals
@@ -58,6 +59,57 @@ attachment notes; the memory-turn structure. Sub-agent templates must keep
 exactly their required placeholders. Worked examples must call only enabled
 tools with valid arguments and end with a `\boxed{` answer. `text_inspector`
 stays at the seed.
+
+## Team edits
+
+With `edit_mode: team` (needs `orchestrator_mode: full`), a candidate is not one
+unit but the whole team, edited in one go (`src/rsi/team.py`). This follows
+MASS, whose optimizer rewrites one free-text "multi agent design" block holding
+every agent's instruction and what it returns to the orchestrator. MASS
+defaults to JSON output but keeps a plain-text mode as the fallback for local
+models that truncate while JSON-escaping a long prompt; that is the mode used
+here.
+
+The reflector sees the team as one document and replies in the same format:
+
+```
+=== RATIONALE ===
+<two or three sentences>
+=== ORCHESTRATOR SYSTEM PROMPT ===
+<new text, or UNCHANGED>
+=== PLANNING TURN ===
+=== AFTER EACH TOOL RESULT ===
+=== WEB_SEARCH SUB-AGENT ===
+=== CODE_GENERATOR SUB-AGENT ===
+```
+
+- **UNCHANGED or left out** keeps the champion's section, so the 8B does not
+  have to copy text it keeps. A verbatim copy also counts as unchanged.
+- **The reflector writes instructions only.** The orchestrator system prompt
+  keeps `{tools}` and `{answer_format}` as in full mode. Each sub-agent section
+  may hold `{inputs}` once to mark where its inputs go; left out, they are
+  appended at the end. The input blocks are the seed templates' own text
+  (`**Inputs:**` to the end for `web_search`, `{context_block}Problem: {task}`
+  for `code_generator`), so the seed renders byte-identically and a dropped
+  placeholder cannot happen.
+- **Validation** rejects, with a named reason: no section changed; `{tools}` or
+  `{answer_format}` not exactly once; an empty planning turn; `{tools}` or
+  `{answer_format}` in a turn prompt; `{inputs}` more than once; a raw input
+  name such as `{query}` in a sub-agent section; a sub-agent section with no
+  instructions; an unknown header; a section of a tool that is not enabled.
+  A reply with no `=== ... ===` headers is a parse error and is re-sampled.
+  Other words in curly braces stay literal text.
+- **The reflector prompt** points at the hand-offs: what the orchestrator asks
+  each sub-agent for, what the sub-agent returns, and whether the orchestrator
+  checks it and asks again.
+- **Records.** Each proposal stores `sections_changed`; the history diff and the
+  report cover every changed section, and the report counts which sections
+  changed and which changed together.
+- **Attribution** is lost within one edit. `--ablate` recovers it after the run
+  (see [Running it](#running-it)).
+
+The JSON modes now also repair an unescaped `\b` or `\f` (read by JSON as a
+backspace or form feed, e.g. from `\boxed` or `\frac`) back into backslash text.
 
 ## Data
 
@@ -100,7 +152,8 @@ Rounds run `rounds` times (default 10). Round `r`:
    cannot fit even without history, the round is skipped (`prompt_over_budget`).
 3. **K proposals.** `candidates_per_round` (3) proposals are sampled with
    per-slot seeds. A slot that returns an error, empty text, a truncated
-   output, unparseable JSON or an unknown unit is re-sampled up to
+   output, unparseable JSON (team edits: no section headers) or an unknown
+   unit is re-sampled up to
    `max_parse_retries` (2) times. A round with no usable proposal keeps the
    champion.
 4. **Validation.** Each proposal is checked against the protected parts above
@@ -156,6 +209,9 @@ mkdir -p out/rsi && sbatch --export=ALL,DOMAIN=search jobs/rsi/002_prompt_search
 
 # 003: confirmation of a finished 8B run on 200 unused questions (8 h, one GPU)
 mkdir -p out/rsi && sbatch --export=ALL,DOMAIN=search jobs/rsi/003_confirm_8b.job
+
+# 003 with ABLATE=1, after the confirmation of a full-mode run: section ablation
+mkdir -p out/rsi && sbatch --export=ALL,DOMAIN=search,ABLATE=1,CONFIG=experiments/configs/rsi/phase1/search_reflector_qwen3_8b_team.yaml jobs/rsi/003_confirm_8b.job
 ```
 
 Details:
@@ -175,8 +231,15 @@ Details:
   Confirm the 32B-reflector run on the same single-GPU job by overriding the
   config: `sbatch --export=ALL,DOMAIN=search,CONFIG=experiments/configs/rsi/phase1/search_reflector_qwen3_32b.yaml jobs/rsi/003_confirm_8b.job`.
   Resubmitting reuses `confirm/<label>.json` files written for the same
-  questions.
-- `--dry-run`, `--report-only` and `--confirm` are mutually exclusive.
+  questions. `confirm.json` includes the exact McNemar p-value of the paired
+  counts.
+- **Ablate** (after `--confirm`, runs with `orchestrator_mode: full`): `--ablate`
+  re-scores the champion on the confirmation questions once per section that
+  differs from the seed, with that section reverted to the seed. It writes
+  `ablation.json` (accuracy, and questions lost and gained against the
+  champion, per reverted section) and shows the result in the report. A section
+  whose reversion loses many questions carried the gain.
+- `--dry-run`, `--report-only`, `--confirm` and `--ablate` are mutually exclusive.
 - Jobs need `SERPER_API_KEY` or `TAVILY_API_KEY` in `.env` for web search.
 
 ## Outputs
@@ -191,7 +254,8 @@ Under `experiments/results/rsi/phase1/<run_name>/<domain>/`:
 | `heldout/v<N>.json` | Per-question held-out trajectories for each of those versions. |
 | `rounds/round_NN.json` | Full round record: minibatch ids, raw reflector outputs, errors, leakage errors, screen scores, chosen candidate, held-out score, accepted. |
 | `rounds/round_NN_reflector_input.json` | The exact messages sent to the reflector, the shown trajectories and the history size. Written before sampling, so a job killed mid-sample still leaves its input. |
-| `confirm.json`, `confirm/v<N>.json` | Confirmation scores, paired counts and per-question records (after `--confirm`). |
+| `confirm.json`, `confirm/v<N>.json` | Confirmation scores, paired counts, McNemar p and per-question records (after `--confirm`). |
+| `ablation.json`, `confirm/v<N>_revert_<section>.json` | Champion with one section reverted, per changed section (after `--ablate`). |
 | `report.md` | Human-readable report (see below). |
 
 ## Reading `report.md`
@@ -230,6 +294,7 @@ The YAML is a normal `ExperimentConfig` plus a `search:` block
 | `seed` | `0` | Seeds minibatches and proposal sampling. |
 | `output_root` | `experiments/results/rsi/phase1` | Output root. |
 | `orchestrator_mode` | `parts` | `parts`: the orchestrator unit is the seven named parts above. `full`: it is the whole system prompt as free text, plus the planning-turn and acting-turn prompts; the system prompt must contain `{tools}` and `{answer_format}` exactly once each, which are filled with the protected tool section and the final-answer rules. The full-mode seed renders byte-identically to the parts seed. |
+| `edit_mode` | `unit` | `unit`: a candidate edits one unit. `team`: a candidate rewrites the whole team in one plain-text reply ([Team edits](#team-edits)); needs `orchestrator_mode: full` and no `slot_units`. |
 | `slot_units` | none | Unit assigned to each candidate slot, cycled (slot k edits `slot_units[k % len]`), e.g. `[orchestrator, web_search, code_generator]`. Each slot then gets its own reflector input, and a proposal for another unit is re-sampled. None lets every slot choose any unit. |
 | `reflector` | required | See below. |
 
@@ -275,9 +340,10 @@ the seed prompts, not under searched prompts.
 
 ## Known limitations
 
-- **The GPU path has not been run.** The search, validation, leakage, report
-  and confirm logic is covered by tests with fake executors and reflectors;
-  nothing has run against real vLLM yet.
+- **Team edits have not run on a GPU yet.** They are covered by tests with fake
+  executors and reflectors, and the reflector input was built from real
+  trajectories (it fits the 14,000-token budget with 10 of 16 search and all
+  16 math trajectories). The unit modes have run 10 rounds in both domains.
 - **SIGTERM handling.** The script turns SIGTERM into a clean exit so caches
   are saved, but vLLM may install its own handler and override it. If a job is
   killed hard, the web caches may not be flushed (they are also saved after
@@ -287,4 +353,6 @@ the seed prompts, not under searched prompts.
 - **The 24 h wall-clock fit is untested.** 10 rounds with a thinking reflector
   and 50-question held-out runs may or may not fit; resume covers an overrun.
 - **Search and held-out noise.** Screening uses 16 questions and held-out 50,
-  so most accepted gains are within noise until confirmed.
+  so most accepted gains are within noise until confirmed. On the 200
+  confirmation questions the seed scored 4 to 8 points away from its 50-question
+  held-out score, which is why the team config uses a held-out pool of 150.
