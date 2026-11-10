@@ -9,7 +9,7 @@ import json
 from collections import Counter
 from dataclasses import dataclass, field
 
-from rsi.bundle import unit_text
+from rsi.bundle import UNITS, is_full, unit_text
 
 MIN_PER_CALL_CHARS = 200
 FALLBACK_FIELD_CAPS = (400, 200, 100)
@@ -20,18 +20,27 @@ LEAKAGE_INSTRUCTION = (
     "questions."
 )
 
-OUTPUT_SCHEMA_TEXT = """Reply with one JSON object and nothing else:
-{"unit": "...", "rationale": "...", "expected_effect": "...", "replacement": ...}
-- "unit" is one of the units you were asked to improve ("orchestrator", "web_search" or \
-"code_generator").
-- "rationale" says which recurring problem the edit targets and why it should help.
-- "expected_effect" says what should change in the trajectories.
-- "replacement" depends on the unit:
-  - orchestrator: a partial dict holding only the parts you change. Allowed keys are \
+_UNIT_RULES = {
+    "orchestrator": """  - orchestrator: a partial dict holding only the parts you change. Allowed keys are \
 "guidance_opening", "guidance_closing", "example", "turn0_prompt", "turn1n_prompt", \
 "tool_descriptions" and "tool_use_note". "example" keeps the template shape shown in the current \
-prompts. "tool_call" inside the example may be an object.
-  - web_search or code_generator: the full new template string."""
+prompts. "tool_call" inside the example may be an object.""",
+    "orchestrator_full": """  - orchestrator: an object with any of "system_prompt", "turn0_prompt" and \
+"turn1n_prompt"; parts you leave out stay as they are.
+    - "system_prompt" is the complete system prompt, written as you see fit, including any \
+worked example. It must contain the placeholder {tools} exactly once and the placeholder \
+{answer_format} exactly once. The system replaces {tools} with the tool list and the tool-call \
+format, and {answer_format} with the final-answer rules, so do not restate them.
+    - "turn0_prompt" is the instruction for the planning turn, before any tool is called. It \
+must not be empty.
+    - "turn1n_prompt" is appended to every later turn. It may be empty.""",
+    "web_search": """  - web_search: the full new template string. It must contain the placeholders \
+{query} (replaced by the search query) and {formatted_results} (replaced by the fetched web \
+pages), and no other word in curly braces.""",
+    "code_generator": """  - code_generator: the full new template string. It must contain the placeholders \
+{context_block} (replaced by optional context, possibly empty) and {task} (replaced by the \
+task), and no other word in curly braces.""",
+}
 
 PROTECTED_TEXT = (
     "Protected parts must not change: tool names, parameter names, types and the required "
@@ -39,6 +48,39 @@ PROTECTED_TEXT = (
     "final answer rule; attachment notes; the memory-turn structure. The rendered system prompt "
     "is shown read-only for context."
 )
+
+PROTECTED_TEXT_FULL = (
+    "The tool list, the <sub_goal>/<tool_call> format paragraph and the \\boxed{} final answer "
+    "rule are protected: they are inserted through the {tools} and {answer_format} placeholders "
+    "and cannot be edited. The rendered system prompt is shown read-only for context."
+)
+
+
+def output_schema_text(units=UNITS, full=False):
+    """Reply format and validity rules for the units the reflector may edit."""
+    units = list(units)
+    if len(units) == 1:
+        unit_line = f'- "unit" must be "{units[0]}".'
+    else:
+        names = ", ".join(f'"{u}"' for u in units)
+        unit_line = f'- "unit" is one of the units you were asked to improve ({names}).'
+    rules = [
+        _UNIT_RULES["orchestrator_full" if (u == "orchestrator" and full) else u] for u in units
+    ]
+    return "\n".join(
+        [
+            "Reply with one JSON object and nothing else:",
+            '{"unit": "...", "rationale": "...", "expected_effect": "...", "replacement": ...}',
+            unit_line,
+            '- "rationale" says which recurring problem the edit targets and why it should help.',
+            '- "expected_effect" says what should change in the trajectories.',
+            '- "replacement" depends on the unit. A proposal that breaks these rules is rejected:',
+            *rules,
+        ]
+    )
+
+
+OUTPUT_SCHEMA_TEXT = output_schema_text()
 
 
 @dataclass
@@ -65,14 +107,20 @@ class ReflectorContext:
     rejected: list = field(default_factory=list)
 
 
-def _system_message(domain):
+def _system_message(domain, units=UNITS, full=False):
+    units = list(units)
+    if len(units) == 1:
+        task = f"This turn you edit the {units[0]} unit"
+    else:
+        task = "Each turn you edit exactly one unit of the team's prompts"
+    protected = PROTECTED_TEXT_FULL if full else PROTECTED_TEXT
     return (
         f"You improve the prompts of a small team of language-model agents (an orchestrator and "
-        f"its sub-agents) for the {domain} domain. Each turn you edit exactly one unit of the "
-        f"team's prompts so that the team answers more questions correctly. You see the current "
+        f"its sub-agents) for the {domain} domain. {task} so that the team answers more "
+        f"questions correctly. You see the current "
         f"prompts, past edits with their scores, and example runs, including what the "
-        f"sub-agents received and returned.\n\n{LEAKAGE_INSTRUCTION}\n\n{PROTECTED_TEXT}\n\n"
-        f"{OUTPUT_SCHEMA_TEXT}"
+        f"sub-agents received and returned.\n\n{LEAKAGE_INSTRUCTION}\n\n{protected}\n\n"
+        f"{output_schema_text(units, full)}"
     )
 
 
@@ -211,7 +259,9 @@ def _drop_one(shown):
 
 
 def build_reflector_messages(ctx, count_tokens, budget_tokens, per_call_chars):
-    system = _system_message(ctx.domain)
+    system = _system_message(
+        ctx.domain, ctx.units or UNITS, is_full(ctx.champion)
+    )
     stats = {
         "trajectories_total": len(ctx.trajectories),
         "trajectories_shown": 0,

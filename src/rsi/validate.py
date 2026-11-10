@@ -6,7 +6,7 @@ import json
 from agent_engine.prompts.templating import find_placeholders
 from agent_engine.tools.code_generator import CODE_GENERATOR_PLACEHOLDERS
 from agent_engine.tools.web_search import WEB_SEARCH_PLACEHOLDERS
-from rsi.bundle import UNITS
+from rsi.bundle import FULL_EDITABLE, FULL_PLACEHOLDERS, FULL_PROMPT_KEY, UNITS, is_full
 
 ORCH_PARTS = (
     "guidance_opening",
@@ -162,6 +162,32 @@ def _validate_orchestrator(payload, seed, index):
     return errors
 
 
+def _validate_orchestrator_full(payload):
+    if not isinstance(payload, dict):
+        return ["orchestrator payload must be an object"]
+    errors = []
+    for key in sorted(set(payload) - set(FULL_EDITABLE)):
+        errors.append(f"unknown orchestrator part {key!r} (allowed: {list(FULL_EDITABLE)})")
+    for key in FULL_EDITABLE:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if not isinstance(value, str):
+            errors.append(f"{key} must be a string")
+        elif not value.strip() and key != "turn1n_prompt":
+            errors.append(f"{key} must be non-empty")
+    prompt = payload.get(FULL_PROMPT_KEY)
+    if isinstance(prompt, str):
+        found = find_placeholders(prompt)
+        for name in FULL_PLACEHOLDERS:
+            n = found.count(name)
+            if n != 1:
+                errors.append(
+                    f"{FULL_PROMPT_KEY} must contain {{{name}}} exactly once (found {n})"
+                )
+    return errors
+
+
 def _validate_template(unit, template):
     if not isinstance(template, str):
         return [f"{unit} template must be a string"]
@@ -180,6 +206,8 @@ def validate_unit(unit, payload, seed, tool_schemas):
         return [f"unknown unit {unit!r}"]
     index = _schema_index(tool_schemas)
     if unit == "orchestrator":
+        if is_full(seed):
+            return _validate_orchestrator_full(payload)
         return _validate_orchestrator(payload, seed, index)
     if unit not in index:
         return [f"tool {unit!r} is not enabled, so its sub-agent prompt cannot be edited"]

@@ -138,6 +138,30 @@ class PromptBuilder:
 
         return "\n\n".join(sections)
 
+    def protected_sections(
+        self,
+        dataset_name: str,
+        tool_schemas: List[Dict[str, Any]],
+        tool_call_format: ToolCallFormat = ToolCallFormat.JSON,
+        tool_use_note: Optional[str] = None,
+        max_search_limit: int = 10,
+    ) -> Dict[str, str]:
+        """The two system-prompt sections that are never rewritten, exactly as
+        build_system_prompt() places them (sub-agent AgentFlow mode):
+
+        * ``tools``: the tool list with the call-format paragraph and tool-use note;
+        * ``answer_format``: the template's final instructions (the boxed-answer rule).
+        """
+        template = self._resolve_template(dataset_name, False)
+        return {
+            "tools": self._format_tool_schemas(
+                tool_schemas, max_search_limit, False,
+                baseline=False, tool_call_format=tool_call_format,
+                tool_use_note=tool_use_note,
+            ),
+            "answer_format": template.get("final_instructions", "").strip(),
+        }
+
     def _resolve_template(self, dataset_name: str, baseline: bool) -> Dict[str, Any]:
         """Load the template used for *dataset_name* (falls back to the base template)."""
         try:

@@ -163,7 +163,13 @@ def main(argv=None):
             return 0
         examples = load_domain_examples(search.data_path, args.domain)
         pools = make_pools(examples, search.pools, search.pool_seed)
-        seed = seed_bundle(args.domain, tool_schemas, exp.tools.direct_tool_call)
+        seed = seed_bundle(
+            args.domain,
+            tool_schemas,
+            exp.tools.direct_tool_call,
+            orchestrator_mode=search.orchestrator_mode,
+            tool_call_format=tool_call_format,
+        )
         write_run_header(search, pools, out_dir)
         _write_json_atomic(out_dir / "bundles" / "v0.json", seed.to_dict())
         print(f"shown={len(pools.shown)} screen={len(pools.screen)} heldout={len(pools.heldout)}")
@@ -222,7 +228,13 @@ def main(argv=None):
         return 0
 
     pools = make_pools(examples_list, search.pools, search.pool_seed)
-    seed = seed_bundle(args.domain, tool_schemas, exp.tools.direct_tool_call)
+    seed = seed_bundle(
+        args.domain,
+        tool_schemas,
+        exp.tools.direct_tool_call,
+        orchestrator_mode=search.orchestrator_mode,
+        tool_call_format=tool_call_format,
+    )
 
     import pandas as pd
 

@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent_engine.core.orchestrator import _DEFAULT_PLANNING_SUFFIX_TOOLS
+from agent_engine.models.base import ToolCallFormat
 from agent_engine.prompts.builder import PromptBuilder
+from agent_engine.prompts.templating import render_placeholders
 from agent_engine.tools.code_generator import CODE_GENERATOR_TASK_TEMPLATE
 from agent_engine.tools.web_search import WEB_SEARCH_ANALYSIS_TEMPLATE
 
@@ -18,6 +20,13 @@ DOMAINS = {"search": "gaia", "math": "deepmath"}
 UNITS = ("orchestrator", "web_search", "code_generator")
 
 _ORCH_PART_KEYS = ("guidance_opening", "guidance_closing", "example", "tool_use_note")
+
+ORCHESTRATOR_MODES = ("parts", "full")
+# Full mode: the reflector rewrites the whole system prompt as free text. These placeholders
+# must each appear exactly once; rendering fills them with the protected sections.
+FULL_PROMPT_KEY = "system_prompt"
+FULL_PLACEHOLDERS = ("tools", "answer_format")
+FULL_EDITABLE = (FULL_PROMPT_KEY, "turn0_prompt", "turn1n_prompt")
 
 
 @dataclass
@@ -53,7 +62,20 @@ def _descriptions_from_schemas(tool_schemas):
     return out
 
 
-def seed_bundle(domain, tool_schemas, direct_tool_call=False):
+def is_full(bundle):
+    """True for a bundle whose orchestrator system prompt is one free-text template."""
+    return FULL_PROMPT_KEY in bundle.orchestrator
+
+
+def seed_bundle(
+    domain,
+    tool_schemas,
+    direct_tool_call=False,
+    orchestrator_mode="parts",
+    tool_call_format=ToolCallFormat.JSON,
+):
+    if orchestrator_mode not in ORCHESTRATOR_MODES:
+        raise ValueError(f"unknown orchestrator_mode {orchestrator_mode!r}")
     parts = PromptBuilder().resolve_orchestrator_parts(
         DOMAINS[domain], tool_schemas, direct_tool_call
     )
@@ -70,7 +92,40 @@ def seed_bundle(domain, tool_schemas, direct_tool_call=False):
         "web_search": WEB_SEARCH_ANALYSIS_TEMPLATE,
         "code_generator": CODE_GENERATOR_TASK_TEMPLATE,
     }
-    return PromptBundle(domain=domain, orchestrator=orchestrator, subagents=subagents)
+    bundle = PromptBundle(domain=domain, orchestrator=orchestrator, subagents=subagents)
+    if orchestrator_mode == "full":
+        bundle = _to_full(bundle, tool_schemas, tool_call_format)
+    return bundle
+
+
+def _protected(bundle, tool_schemas, tool_call_format):
+    orch = bundle.orchestrator
+    schemas = apply_tool_descriptions(tool_schemas, orch.get("tool_descriptions") or {})
+    return PromptBuilder().protected_sections(
+        DOMAINS[bundle.domain], schemas, tool_call_format, tool_use_note=orch.get("tool_use_note")
+    )
+
+
+def _to_full(bundle, tool_schemas, tool_call_format):
+    """The parts-mode seed as one template that renders to the same system prompt."""
+    rendered = render_system_prompt(bundle, tool_schemas, tool_call_format)
+    template = rendered
+    for name, text in _protected(bundle, tool_schemas, tool_call_format).items():
+        if not text or template.count(text) != 1:
+            raise ValueError(f"protected section {name!r} not found exactly once in the seed")
+        template = template.replace(text, "{" + name + "}")
+    orch = bundle.orchestrator
+    orchestrator = {
+        FULL_PROMPT_KEY: template,
+        "turn0_prompt": orch["turn0_prompt"],
+        "turn1n_prompt": orch["turn1n_prompt"],
+        # not editable in full mode; they render the {tools} section
+        "tool_descriptions": copy.deepcopy(orch["tool_descriptions"]),
+        "tool_use_note": orch["tool_use_note"],
+    }
+    return PromptBundle(
+        domain=bundle.domain, orchestrator=orchestrator, subagents=dict(bundle.subagents)
+    )
 
 
 def save_bundle(bundle, path):
@@ -102,6 +157,9 @@ def apply_tool_descriptions(schemas, tool_descriptions):
 
 def render_system_prompt(bundle, tool_schemas, tool_call_format):
     orch = bundle.orchestrator
+    if is_full(bundle):
+        values = _protected(bundle, tool_schemas, tool_call_format)
+        return render_placeholders(orch[FULL_PROMPT_KEY], values)
     schemas = apply_tool_descriptions(tool_schemas, orch.get("tool_descriptions") or {})
     overrides = {k: copy.deepcopy(orch[k]) for k in _ORCH_PART_KEYS if k in orch}
     return PromptBuilder().build_system_prompt(
@@ -144,6 +202,10 @@ def replace_unit(bundle, unit, payload):
 
 def unit_text(bundle, unit):
     if unit == "orchestrator":
+        if is_full(bundle):
+            return "\n\n".join(
+                f"--- {key} ---\n{bundle.orchestrator.get(key) or ''}" for key in FULL_EDITABLE
+            )
         return json.dumps(bundle.orchestrator, indent=2, ensure_ascii=False, sort_keys=True)
     return bundle.subagents[unit]
 
@@ -153,6 +215,7 @@ def editable_texts(bundle):
     orch = bundle.orchestrator
     texts = []
     for key in (
+        FULL_PROMPT_KEY,
         "guidance_opening",
         "guidance_closing",
         "turn0_prompt",

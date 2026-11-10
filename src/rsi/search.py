@@ -6,8 +6,9 @@ import json
 import os
 import random
 from pathlib import Path
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from rsi.bundle import (
     UNITS,
@@ -43,6 +44,32 @@ class SearchConfig(BaseModel):
     seed: int = 0
     output_root: Path = Path("experiments/results/rsi/phase1")
     reflector: ReflectorSettings
+    # "full": the orchestrator system prompt is one free-text template (see rsi.bundle)
+    orchestrator_mode: Literal["parts", "full"] = "parts"
+    # unit assigned to each candidate slot, cycled (slot k edits slot_units[k % len]);
+    # None lets the reflector choose any unit for every slot
+    slot_units: Optional[List[str]] = None
+
+    @field_validator("slot_units")
+    @classmethod
+    def _known_units(cls, v):
+        if v is not None:
+            if not v:
+                raise ValueError("slot_units must be non-empty or null")
+            unknown = [u for u in v if u not in UNITS]
+            if unknown:
+                raise ValueError(f"unknown slot_units {unknown}; allowed {list(UNITS)}")
+        return v
+
+    def units_for_slot(self, k):
+        """Units slot k may edit."""
+        if not self.slot_units:
+            return list(UNITS)
+        return [self.slot_units[k % len(self.slot_units)]]
+
+
+# fields added after the first runs, with the value an older config.json implies
+_CONFIG_FIELD_DEFAULTS = {"orchestrator_mode": "parts", "slot_units": None}
 
 
 def _write_json_atomic(path, data):
@@ -151,19 +178,37 @@ def _failure(item):
     return None
 
 
-def _sample_proposals(cfg, reflector, messages, r):
-    """Sample K slots, re-sampling failed slots. Returns one record per attempt."""
+def _sample_group(reflector, messages_by_slot, slots, seeds):
+    """Sample `slots`, batching slots that share the same messages. Items in slot order."""
+    items = {}
+    groups = {}
+    for k, seed in zip(slots, seeds):
+        groups.setdefault(id(messages_by_slot[k]), []).append((k, seed))
+    for members in groups.values():
+        messages = messages_by_slot[members[0][0]]
+        got = list(reflector.sample(messages, [seed for _, seed in members]))
+        for i, (k, _) in enumerate(members):
+            items[k] = got[i] if i < len(got) else {"text": "", "finish_reason": "error: missing"}
+    return [items[k] for k in slots]
+
+
+def _sample_proposals(cfg, reflector, messages_by_slot, r):
+    """Sample K slots, re-sampling failed slots. Returns one record per attempt.
+
+    `messages_by_slot` maps a slot to its reflector messages; slots without messages are
+    skipped (their input did not fit the budget).
+    """
     base = cfg.seed * 100000 + r * 100
     records = []
-    pending = list(range(cfg.candidates_per_round))
+    pending = [k for k in range(cfg.candidates_per_round) if k in messages_by_slot]
     for attempt in range(cfg.max_parse_retries + 1):
         if not pending:
             break
         seeds = [base + k + 10 * attempt for k in pending]
-        items = list(reflector.sample(messages, seeds))
+        items = _sample_group(reflector, messages_by_slot, pending, seeds)
         failed = []
         for i, (k, seed) in enumerate(zip(pending, seeds)):
-            item = items[i] if i < len(items) else {"text": "", "finish_reason": "error: missing"}
+            item = items[i]
             rec = {
                 "slot": k,
                 "attempt": attempt,
@@ -186,6 +231,11 @@ def _sample_proposals(cfg, reflector, messages, r):
                     reason = f"parse error: {exc}"
             if proposal is not None and proposal.unit not in UNITS:
                 reason = f"unknown unit {proposal.unit!r}"
+            elif proposal is not None and proposal.unit not in cfg.units_for_slot(k):
+                reason = (
+                    f"unit {proposal.unit!r} was not asked for "
+                    f"(this candidate edits {cfg.units_for_slot(k)})"
+                )
             if proposal is not None:
                 rec["unit"] = proposal.unit
                 rec["rationale"] = proposal.rationale
@@ -321,23 +371,42 @@ def _run_round(
         best=champion,
         trajectories=trajectories,
         rendered_system_prompt=render_system_prompt(champion, tool_schemas, tool_call_format),
-        units=list(UNITS),
         rejected=_rejected_lines(out_dir, r),
     )
-    built = _build_messages(cfg, ctx_args, history, count_tokens)
-    if built is None:
+    # one reflector input per distinct unit assignment; slots with the same units share it
+    built_by_key = {}
+    messages_by_slot = {}
+    for k in range(cfg.candidates_per_round):
+        units = cfg.units_for_slot(k)
+        key = ",".join(units)
+        if key not in built_by_key:
+            built_by_key[key] = _build_messages(
+                cfg, dict(ctx_args, units=units), history, count_tokens
+            )
+        if built_by_key[key] is not None:
+            messages_by_slot[k] = built_by_key[key][0]
+    if not messages_by_slot:
         record["skipped"] = "prompt_over_budget"
         return record, new_history, new_versions, executor.rollouts
-    messages, stats, history_size = built
+    first = next(b for b in built_by_key.values() if b is not None)
+    messages, stats, history_size = first
     record["reflector_stats"] = stats
+    reflector_input = {
+        "messages": messages,
+        "trajectories": [t.to_dict() for t in trajectories],
+        "history_size": history_size,
+    }
+    if cfg.slot_units:
+        record["reflector_stats_by_units"] = {
+            key: (b[1] if b is not None else None) for key, b in built_by_key.items()
+        }
+        reflector_input["slot_units"] = [cfg.units_for_slot(k) for k in range(cfg.candidates_per_round)]
+        reflector_input["messages_by_units"] = {
+            key: (b[0] if b is not None else None) for key, b in built_by_key.items()
+        }
     # written before sampling, so a job killed mid-sample still leaves the exact input
     _write_json_atomic(
-        out_dir / "rounds" / f"round_{r:02d}_reflector_input.json",
-        {
-            "messages": messages,
-            "trajectories": [t.to_dict() for t in trajectories],
-            "history_size": history_size,
-        },
+        out_dir / "rounds" / f"round_{r:02d}_reflector_input.json", reflector_input
     )
     record["shown_question_ids"] = list(ids)
     for t in trajectories:
@@ -345,7 +414,7 @@ def _run_round(
         shown_answers.update(t.aliases)
 
     # 3. sample proposals
-    proposals = _sample_proposals(cfg, reflector, messages, r)
+    proposals = _sample_proposals(cfg, reflector, messages_by_slot, r)
 
     # 4. validate and leakage-check the final parsed proposal of every slot
     survivors = []
@@ -484,7 +553,12 @@ def write_run_header(cfg, pools, out_dir):
         old = _read_json(config_path)
         ignore = {"rounds", "output_root"}
         keys = (set(old) | set(cfg_dict)) - ignore
-        diff = sorted(k for k in keys if old.get(k) != cfg_dict.get(k))
+        diff = sorted(
+            k
+            for k in keys
+            if old.get(k, _CONFIG_FIELD_DEFAULTS.get(k))
+            != cfg_dict.get(k, _CONFIG_FIELD_DEFAULTS.get(k))
+        )
         if diff:
             raise ValueError(f"{config_path} differs from the config given in: {diff}")
     _write_json_atomic(config_path, cfg_dict)

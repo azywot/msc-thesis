@@ -27,6 +27,7 @@ Code: `src/rsi/`, entry point `scripts/run_prompt_search.py`.
 |---|---|---|---|
 | **Default**: Qwen3-8B reflects on its own engine. The reflector calls the executor's in-process vLLM engine with its own sampling parameters (per-candidate seed, reflector temperature and token limit), so the executor settings are untouched. | `search_reflector_qwen3_8b.yaml` | `001_prompt_search_8b.job` | 1 H100 |
 | **Control**: Qwen3-32B reflects over a separate `vllm serve` (port 8001, tensor parallel 2). The executor is still Qwen3-8B. | `search_reflector_qwen3_32b.yaml` | `002_prompt_search_32b.job` | 3 H100 |
+| **Fixed slots, full orchestrator**: as the default, but each round has one candidate per unit, and the orchestrator candidate rewrites the whole system prompt (`slot_units`, `orchestrator_mode: full`). | `search_reflector_qwen3_8b_slots_full.yaml` | `001_prompt_search_8b.job` with `CONFIG=` that file | 1 H100 |
 
 The control tells you whether a weak 8B reflector was the limiting factor. The
 `in_process` backend refuses to start unless `search.reflector.model` equals
@@ -228,6 +229,8 @@ The YAML is a normal `ExperimentConfig` plus a `search:` block
 | `ngram` | `8` | Leakage n-gram length. |
 | `seed` | `0` | Seeds minibatches and proposal sampling. |
 | `output_root` | `experiments/results/rsi/phase1` | Output root. |
+| `orchestrator_mode` | `parts` | `parts`: the orchestrator unit is the seven named parts above. `full`: it is the whole system prompt as free text, plus the planning-turn and acting-turn prompts; the system prompt must contain `{tools}` and `{answer_format}` exactly once each, which are filled with the protected tool section and the final-answer rules. The full-mode seed renders byte-identically to the parts seed. |
+| `slot_units` | none | Unit assigned to each candidate slot, cycled (slot k edits `slot_units[k % len]`), e.g. `[orchestrator, web_search, code_generator]`. Each slot then gets its own reflector input, and a proposal for another unit is re-sampled. None lets every slot choose any unit. |
 | `reflector` | required | See below. |
 
 `search.reflector`:

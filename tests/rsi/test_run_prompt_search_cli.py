@@ -77,7 +77,7 @@ def test_dry_run_writes_pools_and_seed_bundle(tmp_path, tiny_parquet, monkeypatc
 
 def test_shipped_configs_parse():
     paths = sorted(SHIPPED.glob("*.yaml"))
-    assert len(paths) == 2
+    assert len(paths) == 3
     for p in paths:
         exp, search = load_search_config(p)
         assert exp.thinking_mode.value == "NO" and exp.max_turns == 7
