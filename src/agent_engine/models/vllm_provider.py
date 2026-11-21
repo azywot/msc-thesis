@@ -303,6 +303,15 @@ class VLLMProvider(BaseModelProvider):
             ensure_ascii=False,
         )
 
+    def render_prompt(self, messages: List[Dict[str, Any]], use_thinking: bool = False) -> str:
+        """Render a messages list to the prompt string ``llm.generate`` expects.
+
+        Unlike apply_chat_template(), which returns a JSON payload for generate(),
+        this returns the chat-template-rendered text, with the same family
+        handling generate() applies. For callers that drive ``self.llm`` directly.
+        """
+        return self._render_messages(messages, use_thinking)
+
     def cleanup(self):
         """Release GPU memory."""
         if hasattr(self, 'llm'):

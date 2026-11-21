@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH --job-name=RSIPS8B
+#SBATCH --partition=gpu_h100
+# One H100: Qwen3-8B in-process serves the executor and the reflector.
+#SBATCH --gpus=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=24:00:00
+#SBATCH --output=out/rsi/prompt_search_8b_%A.log
+#SBATCH --error=out/rsi/prompt_search_8b_%A.err
+
+# Submit: mkdir -p out/rsi && sbatch --export=ALL,DOMAIN=search jobs/rsi/001_prompt_search_8b.job   (or DOMAIN=math)
+# Resubmitting the same command resumes a killed run (run name defaults to the config stem).
+# Use EXTRA_ARGS="--run-name <name>" only for a non-default run name.
+
+set -euo pipefail
+mkdir -p out/rsi
+PROJECT_DIR="${PROJECT_DIR:-$HOME/azywot/msc-thesis}"
+export CONFIG="experiments/configs/rsi/phase1/search_reflector_qwen3_8b.yaml"
+export DOMAIN="${DOMAIN:-search}"
+export EXTRA_ARGS="${EXTRA_ARGS:-}"
+exec bash "$PROJECT_DIR/jobs/rsi/_prompt_search_body.sh"

@@ -16,6 +16,14 @@ from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Closing sentence of the tool-format block; editable through ``overrides["tool_use_note"]``.
+DEFAULT_TOOL_USE_NOTE = (
+    "Important: You may call tools zero, one, or multiple times as needed. "
+    "Only call a tool when it would help answer the question. "
+    "After receiving tool results in <tool_response></tool_response> tags, "
+    "continue your reasoning with the new information."
+)
+
 
 class PromptBuilder:
     """Builds prompts from YAML templates."""
@@ -69,6 +77,7 @@ class PromptBuilder:
         direct_tool_call: bool = True,
         baseline: bool = False,
         tool_call_format: ToolCallFormat = ToolCallFormat.JSON,
+        overrides: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Build system prompt with tools and instructions.
 
@@ -77,7 +86,60 @@ class PromptBuilder:
         *tool_call_format* controls the syntax used in format instructions and
         examples: :attr:`ToolCallFormat.JSON` (default, Qwen3-style) or
         :attr:`ToolCallFormat.PYTHONIC` (OLMo 3-style).
+
+        *overrides* may hold any subset of ``guidance_opening``, ``guidance_closing``,
+        ``example`` and ``tool_use_note``; each replaces exactly that section. It only
+        applies when *tool_schemas* is non-empty and *baseline* is False. The boxed-answer
+        rule (``final_instructions``) and the tool-format paragraph are never overridable.
         """
+        template = self._resolve_template(dataset_name, baseline)
+        use_overrides = bool(overrides) and bool(tool_schemas) and not baseline
+        ov = overrides if use_overrides else {}
+
+        # Section order mirrors MAT: base_instruction → tools → example → final_instructions
+        sections = []
+
+        if ov.get("guidance_opening") is not None:
+            if ov["guidance_opening"].strip():
+                sections.append(ov["guidance_opening"].strip())
+        elif tool_schemas and "base_instruction_tools" in template:
+            sections.append(template["base_instruction_tools"].strip())
+        elif "base_instruction" in template:
+            sections.append(template["base_instruction"].strip())
+
+        if tool_schemas:
+            sections.append(
+                self._format_tool_schemas(
+                    tool_schemas, max_search_limit, direct_tool_call,
+                    baseline=baseline, tool_call_format=tool_call_format,
+                    tool_use_note=ov.get("tool_use_note"),
+                )
+            )
+
+        example_text = self._select_and_format_example(
+            template, tool_schemas, direct_tool_call,
+            baseline=baseline, tool_call_format=tool_call_format,
+            example_override=ov.get("example"),
+        )
+        if example_text:
+            sections.append(example_text)
+
+        if "final_instructions" in template:
+            sections.append(template["final_instructions"].strip())
+
+        if tool_schemas:
+            if ov.get("guidance_closing") is not None:
+                if ov["guidance_closing"].strip():
+                    sections.append(ov["guidance_closing"].strip())
+            else:
+                ft_key = self._final_tools_key(template, direct_tool_call)
+                if ft_key in template:
+                    sections.append(template[ft_key].strip())
+
+        return "\n\n".join(sections)
+
+    def _resolve_template(self, dataset_name: str, baseline: bool) -> Dict[str, Any]:
+        """Load the template used for *dataset_name* (falls back to the base template)."""
         try:
             # Which template a dataset uses lives in datasets/spec.py.
             # GAIA, HLE and MuSiQue share the single-QA template; AIME, MATH500,
@@ -90,44 +152,55 @@ class PromptBuilder:
             else:
                 template_name = f"{spec.template}_baseline" if baseline else spec.template
 
-            template = self.load_template(template_name)
+            return self.load_template(template_name)
         except FileNotFoundError:
             logger.warning(f"Template '{dataset_name}' not found, using base template")
-            template = self.load_template("base_baseline" if baseline else "base")
+            return self.load_template("base_baseline" if baseline else "base")
 
-        # Section order mirrors MAT: base_instruction → tools → example → final_instructions
-        sections = []
-
-        if tool_schemas and "base_instruction_tools" in template:
-            sections.append(template["base_instruction_tools"].strip())
-        elif "base_instruction" in template:
-            sections.append(template["base_instruction"].strip())
-
-        if tool_schemas:
-            sections.append(
-                self._format_tool_schemas(
-                    tool_schemas, max_search_limit, direct_tool_call,
-                    baseline=baseline, tool_call_format=tool_call_format,
-                )
-            )
-
-        example_text = self._select_and_format_example(
-            template, tool_schemas, direct_tool_call,
-            baseline=baseline, tool_call_format=tool_call_format,
+    @staticmethod
+    def _final_tools_key(template: Dict[str, Any], direct_tool_call: bool) -> str:
+        mode_key = (
+            "final_instructions_tools_direct"
+            if direct_tool_call
+            else "final_instructions_tools_subagent"
         )
-        if example_text:
-            sections.append(example_text)
+        return mode_key if mode_key in template else "final_instructions_tools"
 
-        if "final_instructions" in template:
-            sections.append(template["final_instructions"].strip())
+    @staticmethod
+    def _example_key(tool_schemas: List[Dict[str, Any]], direct_tool_call: bool) -> Optional[str]:
+        enabled_tools = {schema.get("function", {}).get("name", "") for schema in tool_schemas}
+        has_search = "web_search" in enabled_tools
+        has_code = "code_generator" in enabled_tools
 
-        if tool_schemas:
-            mode_key = "final_instructions_tools_direct" if direct_tool_call else "final_instructions_tools_subagent"
-            ft_key = mode_key if mode_key in template else "final_instructions_tools"
-            if ft_key in template:
-                sections.append(template[ft_key].strip())
+        if has_search and has_code:
+            return "example_search_code_direct" if direct_tool_call else "example_search_code_subagent"
+        if has_search:
+            return "example_search_only"
+        if has_code:
+            return "example_code_direct" if direct_tool_call else "example_code_subagent"
+        return None
 
-        return "\n\n".join(sections)
+    def resolve_orchestrator_parts(
+        self,
+        dataset_name: str,
+        tool_schemas: List[Dict[str, Any]],
+        direct_tool_call: bool,
+    ) -> Dict[str, Any]:
+        """Return the editable orchestrator parts as today's templates resolve them.
+
+        Passing the result back as ``overrides`` to :meth:`build_system_prompt` renders the
+        same prompt as passing no overrides.
+        """
+        template = self._resolve_template(dataset_name, baseline=False)
+        ft_key = self._final_tools_key(template, direct_tool_call)
+        example_key = self._example_key(tool_schemas, direct_tool_call)
+        example = template.get(example_key) if example_key else None
+        return {
+            "guidance_opening": template.get("base_instruction_tools", "").strip(),
+            "guidance_closing": template.get(ft_key, "").strip(),
+            "example": example if example else None,
+            "tool_use_note": DEFAULT_TOOL_USE_NOTE,
+        }
 
     @staticmethod
     def _json_tool_call_to_single(tool_call_json: str) -> str:
@@ -187,6 +260,7 @@ class PromptBuilder:
         direct_tool_call: bool = False,
         baseline: bool = False,
         tool_call_format: ToolCallFormat = ToolCallFormat.JSON,
+        tool_use_note: Optional[str] = None,
     ) -> str:
         """Format tool schemas and call-format instructions."""
         if not schemas:
@@ -203,12 +277,7 @@ class PromptBuilder:
             "You are provided with function signatures within <tools></tools> XML tags:\n"
             f"<tools>\n{tools_json}\n</tools>\n\n"
         )
-        tail = (
-            "Important: You may call tools zero, one, or multiple times as needed. "
-            "Only call a tool when it would help answer the question. "
-            "After receiving tool results in <tool_response></tool_response> tags, "
-            "continue your reasoning with the new information."
-        )
+        tail = DEFAULT_TOOL_USE_NOTE if tool_use_note is None else tool_use_note
 
         # ── DeepSeek JSON_SINGLE: sub_goal kept for AF tracking; JSON replaces <tool_call> ──
         if tool_call_format == ToolCallFormat.JSON_SINGLE:
@@ -269,29 +338,27 @@ class PromptBuilder:
         direct_tool_call: bool,
         baseline: bool = False,
         tool_call_format: ToolCallFormat = ToolCallFormat.JSON,
+        example_override: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Select and format appropriate example based on tools and mode."""
-        enabled_tools = {schema.get("function", {}).get("name", "") for schema in tool_schemas}
-        has_search = "web_search" in enabled_tools
-        has_code = "code_generator" in enabled_tools
+        """Select and format appropriate example based on tools and mode.
 
-        example_key = None
-        if has_search and has_code:
-            example_key = "example_search_code_direct" if direct_tool_call else "example_search_code_subagent"
-        elif has_search:
-            example_key = "example_search_only"
-        elif has_code:
-            example_key = "example_code_direct" if direct_tool_call else "example_code_subagent"
+        *example_override* is formatted with the same step loop instead of the template's.
+        """
+        if example_override is not None:
+            example = example_override
+        else:
+            example_key = self._example_key(tool_schemas, direct_tool_call)
 
-        if not example_key or example_key not in template:
-            if "example" in template and template["example"]:
-                return self._format_example(template["example"], baseline=baseline)
-            return ""
+            if not example_key or example_key not in template:
+                if "example" in template and template["example"]:
+                    return self._format_example(template["example"], baseline=baseline)
+                return ""
+
+            example = template[example_key]
 
         open_tag  = self._CALL_TAG_OPEN[tool_call_format]
         close_tag = self._CALL_TAG_CLOSE[tool_call_format]
 
-        example = template[example_key]
         if not example or "question" not in example or "steps" not in example:
             return ""
 
