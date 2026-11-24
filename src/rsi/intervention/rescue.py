@@ -93,6 +93,7 @@ def run_rescue(
     out_path: Path,
     max_turns: int,
     count_tokens: Optional[Callable] = None,
+    show_gold: bool = True,
 ) -> List[dict]:
     out_path = Path(out_path)
     for attempt in range(1, settings.max_attempts + 1):
@@ -124,6 +125,7 @@ def run_rescue(
             messages_list.append(
                 build_fix_messages(
                     rec,
+                    show_gold=show_gold,
                     previous=previous,
                     per_call_chars=settings.per_call_chars,
                     count_tokens=count_tokens,

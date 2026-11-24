@@ -209,3 +209,21 @@ def test_malformed_middle_line_still_raises(tmp_path):
     path.write_text('{"question_id": 2, "att\n' + json.dumps({"question_id": 1}) + "\n")
     with pytest.raises(json.JSONDecodeError):
         _run([_cand(ORD["a"])], [[_reply(1)]], tmp_path)
+
+
+def test_show_gold_false_hides_gold_from_reflector(tmp_path):
+    orch = FakeOrchestrator(Prov)
+    refl = FakeReflector([[_reply(1)]])
+    run_rescue(
+        [_cand(ORD["a"])],
+        orchestrator=orch,
+        providers=[Prov],
+        reflector=refl,
+        index=LeakageIndex([]),
+        settings=RescueSettings(max_attempts=1),
+        out_path=tmp_path / "r.jsonl",
+        max_turns=MAX_TURNS,
+        show_gold=False,
+    )
+    prompt = refl.calls[0][0][0][1]["content"]
+    assert "(hidden)" in prompt and "Paris" not in prompt
