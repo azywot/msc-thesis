@@ -34,3 +34,11 @@ def test_low_information_answers_are_exempt():
 def test_empty_and_none_inputs_are_ignored():
     idx = LeakageIndex(["", None, "short q"], n=8)
     assert idx.check(["", None], ["", None, "   "]) == []
+
+
+def test_exempt_text_suppresses_shared_ngrams():
+    idx = LeakageIndex(Q, n=8)
+    text = "the editor of the book Grand Canyon A Different View"
+    assert idx.check([text], [])
+    assert idx.check([text], [], exempt_text=Q[0]) == []
+    assert idx.check([text], [], exempt_text="unrelated words only")

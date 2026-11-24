@@ -42,13 +42,19 @@ class LeakageIndex:
             for i in range(len(toks) - n + 1):
                 self._grams.add(tuple(toks[i : i + n]))
 
-    def check(self, texts, shown_answers):
+    def _grams_of(self, text):
+        toks = _tokens(text)
+        return {tuple(toks[i : i + self.n]) for i in range(len(toks) - self.n + 1)}
+
+    def check(self, texts, shown_answers, exempt_text=None):
+        """Return leakage errors; n-grams that also occur in `exempt_text` are not reported."""
         errors = []
+        exempt = self._grams_of(exempt_text) if exempt_text else set()
         for text in texts or []:
             toks = _tokens(text)
             for i in range(len(toks) - self.n + 1):
                 gram = tuple(toks[i : i + self.n])
-                if gram in self._grams:
+                if gram in self._grams and gram not in exempt:
                     errors.append(
                         "%d-gram match with a training question: '%s'" % (self.n, " ".join(gram))
                     )
