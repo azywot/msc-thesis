@@ -76,8 +76,10 @@ def domain_of(data_source: str) -> str:
 def intervention_candidates(records: List[dict], n_passes: int):
     """Pass-1 records of questions with exactly n_passes records, none correct.
 
-    Error records and planning-answered records (turns == 0) are skipped and
-    counted per domain.
+    A question with an error record in ANY pass is not a genuine 0-of-n: it is
+    counted in "skipped_error" and is not a candidate. Planning-answered pass-1
+    records (turns == 0) are counted in "skipped_planning_answer". "zero_of_n" is
+    the total that skipped_error, skipped_planning_answer and candidates partition.
     """
     by_qid: Dict[object, List[dict]] = {}
     for rec in records:
@@ -93,10 +95,10 @@ def intervention_candidates(records: List[dict], n_passes: int):
             continue
         first = next((r for r in recs if r.get("pass") == 1), None)
         if first is None:
-            continue
+            raise ValueError("question %r has no pass 1 record" % (recs[0].get("question_id"),))
         domain = domain_of(first["data_source"])
         stats[domain]["zero_of_n"] += 1
-        if first.get("error") or not first.get("messages"):
+        if any(r.get("error") for r in recs) or not first.get("messages"):
             stats[domain]["skipped_error"] += 1
         elif first.get("turns", 0) == 0:
             stats[domain]["skipped_planning_answer"] += 1
@@ -116,12 +118,20 @@ def state_from_record(record: dict, step: int) -> ExecutionState:
     start = 3 if raw_plan else 2  # [system, user, (plan)]
     kept = history[:step]
     tool_calls = []
-    for action in kept:
+    for i, action in enumerate(kept):
         try:
             call = json.loads(action["command"])
-        except (TypeError, ValueError, KeyError):
-            call = {"name": action.get("tool_name"), "arguments": {}}
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ValueError(
+                "question %r action %d has a malformed command" % (record.get("question_id"), i)
+            ) from exc
         tool_calls.append(call)
+    output_messages = [dict(m) for m in messages[start : start + 2 * step]]
+    if len(output_messages) != 2 * step:
+        raise ValueError(
+            "question %r is truncated: expected %d output messages, found %d"
+            % (record.get("question_id"), 2 * step, len(output_messages))
+        )
     state = ExecutionState(
         question_id=record["question_id"],
         question=record["question"],
@@ -129,7 +139,7 @@ def state_from_record(record: dict, step: int) -> ExecutionState:
         query_analysis=record.get("query_analysis", ""),
         raw_query_analysis=raw_plan,
         action_history=[dict(a) for a in kept],
-        output_messages=[dict(m) for m in messages[start : start + 2 * step]],
+        output_messages=output_messages,
         tool_calls=tool_calls,
         turn=step,
         metadata={

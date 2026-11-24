@@ -152,3 +152,43 @@ def test_state_from_record_step_zero_and_out_of_range():
         state_from_record(rec, 3)
     with pytest.raises(ValueError):
         state_from_record(rec, -1)
+
+
+def test_error_in_later_pass_is_skipped_not_candidate():
+    recs = [_rec("q1", 1), _rec("q1", 2, error="boom", messages=[])]
+    cands, stats = intervention_candidates(recs, 2)
+    assert cands == []
+    assert stats["search"]["zero_of_n"] == 1 and stats["search"]["skipped_error"] == 1
+    assert stats["search"]["candidates"] == 0
+
+
+def test_missing_pass_one_raises():
+    with pytest.raises(ValueError, match="q1"):
+        intervention_candidates([_rec("q1", 2), _rec("q1", 3)], 2)
+
+
+def test_malformed_command_raises():
+    rec = _full(2)
+    rec["action_history"][1]["command"] = "not json"
+    with pytest.raises(ValueError, match="action 1"):
+        state_from_record(rec, 2)
+
+
+def test_truncated_record_raises():
+    rec = _full(2)
+    rec["messages"] = rec["messages"][:5]
+    with pytest.raises(ValueError, match="truncated"):
+        state_from_record(rec, 2)
+
+
+def test_state_from_record_without_plan_message():
+    rec = _full(2)
+    rec["raw_query_analysis"] = ""
+    del rec["messages"][2]
+    st = state_from_record(rec, 2)
+    assert st.output_messages[0]["content"] == "call0" and len(st.output_messages) == 4
+    orch = AgenticOrchestrator(model_provider=MagicMock(), tool_registry=ToolRegistry())
+    prompt = orch._build_memory_prompt(st, "sys")
+    assert prompt[1]["content"] == build_sft_parquet._memory_user_content(
+        "the question", "plan", rec["action_history"][:2]
+    )
