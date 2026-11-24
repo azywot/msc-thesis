@@ -44,6 +44,7 @@ from agent_engine.models.base import ModelFamily, get_tool_call_format
 from agent_engine.prompts.builder import PromptBuilder
 from agent_engine.tools import CodeGeneratorTool, WebSearchTool
 from agent_engine.utils import set_seed, setup_logging
+from rsi.intervention.records import set_sampling_seed, trajectory_messages
 
 logger = logging.getLogger(__name__)
 
@@ -65,27 +66,45 @@ def _data_source_to_prompt_dataset(data_source: str) -> str:
 
 
 def _build_sft_messages(state) -> List[Dict[str, str]]:
-    """Combine initial system+user messages with the full conversation turns.
+    """Kept for existing callers; see rsi.intervention.records.trajectory_messages."""
+    return trajectory_messages(state)
 
-    state.messages holds [system, user] (AgentFlow rewrites it each turn but
-    always keeps these two at indices 0 and 1).
-    state.output_messages holds the accumulated assistant + tool turns for
-    tool-call and final-answer steps — but NOT the planning turn.
 
-    The planning turn (Turn 0) output is stored separately in
-    state.raw_query_analysis (full text including <think> tags).
-    We prepend it as an assistant message so the SFT data includes the full
-    planning → tool-call → answer trajectory that the model must learn.
-    """
-    initial = list(state.messages[:2])   # [system, user]
-    turns: List[Dict[str, str]] = []
+def make_record(
+    row: Dict[str, Any],
+    state,
+    pass_idx: int,
+    seed: int,
+    aliases: List[str],
+    prediction: str,
+    correct: bool,
+) -> Dict[str, Any]:
+    """Build one collected record with enough state to rebuild an ExecutionState."""
+    return {
+        "question_id": row["_qid"],
+        "pass": pass_idx + 1,
+        "question": row["question"],
+        "data_source": row["data_source"],
+        "ground_truth": row["result"],
+        "prediction": prediction,
+        "correct": correct,
+        "messages": trajectory_messages(state),
+        "turns": state.turn,
+        "tool_counts": state.tool_counts,
+        "aliases": aliases,
+        "seed": seed,
+        "query_analysis": state.query_analysis,
+        "raw_query_analysis": state.raw_query_analysis,
+        "action_history": state.action_history,
+        "subagent_calls": state.metadata.get("subagent_calls", []),
+    }
 
-    # Turn 0: planning (only present in AgentFlow mode, not baseline)
-    if state.raw_query_analysis:
-        turns.append({"role": "assistant", "content": state.raw_query_analysis})
 
-    turns.extend(state.output_messages)
-    return initial + turns
+def _row_aliases(row: Dict[str, Any]) -> List[str]:
+    """Answer aliases from extra_info["golden_answers"], as rsi/data.py reads them."""
+    extra = row.get("extra_info")
+    golden = extra.get("golden_answers") if isinstance(extra, dict) else None
+    return [str(a) for a in golden] if golden is not None else []
 
 
 def _setup_model_provider(model_cfg, api_keys: Dict[str, str], model_cache: Dict):
@@ -337,6 +356,12 @@ def main():
             pass_correct = 0
             pass_total = 0
 
+            # Each pass samples differently: seed = config.seed + 0-based pass index.
+            pass_seed = (config.seed if config.seed is not None else 0) + pass_idx
+            set_sampling_seed(
+                [orchestrator_model, *model_providers.values(), *model_cache.values()], pass_seed
+            )
+
             for batch_start in range(0, len(remaining), batch_size):
                 batch = remaining[batch_start : batch_start + batch_size]
                 batch_end = batch_start + len(batch)
@@ -383,9 +408,11 @@ def main():
 
                 for row, state in zip(batch, states):
                     prediction = state.answer or ""
+                    aliases = _row_aliases(row)
                     eval_result = evaluate_answer(
                         prediction=prediction,
                         ground_truth=str(row["result"]),
+                        answer_aliases=aliases,
                     )
                     correct = bool(eval_result.get("correct", False))
                     if correct:
@@ -393,19 +420,9 @@ def main():
                         pass_correct += 1
                         solved.add(row["_qid"])
 
-                    messages = _build_sft_messages(state)
-                    record = {
-                        "question_id": row["_qid"],
-                        "pass": pass_idx + 1,
-                        "question": row["question"],
-                        "data_source": row["data_source"],
-                        "ground_truth": row["result"],
-                        "prediction": prediction,
-                        "correct": correct,
-                        "messages": messages,
-                        "turns": state.turn,
-                        "tool_counts": state.tool_counts,
-                    }
+                    record = make_record(
+                        row, state, pass_idx, pass_seed, aliases, prediction, correct
+                    )
                     jsonl_file.write(json.dumps(record, default=str) + "\n")
                     jsonl_file.flush()
                     total_count += 1
