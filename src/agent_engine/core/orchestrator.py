@@ -301,6 +301,65 @@ class AgenticOrchestrator:
         if not self.baseline:
             self._run_planning_turn(states)
 
+        self._finish_batch(states)
+        return states
+
+    def resume_batch(
+        self,
+        states: List[ExecutionState],
+        injected_outputs: Sequence[Optional[str]],
+    ) -> List[ExecutionState]:
+        """Continue rebuilt states, optionally spending one turn on an injected output.
+
+        Each state arrives with its prefix already set (messages, query_analysis,
+        action_history, output_messages, tool_calls, tool_counts, turn).  For a
+        non-``None`` injected text the orchestrator spends one turn on it exactly
+        as if the model had generated it, then runs the normal loop and the
+        max-turns synthesis.  ``None`` continues directly from the prefix.
+
+        Raises:
+            ValueError: lengths differ, a state is finished, an injected text has
+                no parsable tool call, or an injected state has no turn left.
+        """
+        if len(states) != len(injected_outputs):
+            raise ValueError("states and injected_outputs must have the same length")
+        parsed: List[Optional[Dict[str, Any]]] = []
+        for s, text in zip(states, injected_outputs):
+            if s.finished:
+                raise ValueError(f"State for question {s.question_id} is already finished")
+            if text is None:
+                parsed.append(None)
+                continue
+            if s.turn >= self.max_turns:
+                raise ValueError(
+                    f"Question {s.question_id} has no turn left for an injected call "
+                    f"(turn={s.turn}, max_turns={self.max_turns})"
+                )
+            tool_call = parse_tool_call(text)
+            if not tool_call:
+                raise ValueError(f"Injected output for question {s.question_id} has no tool call")
+            parsed.append(tool_call)
+
+        for s in states:
+            self._init_mind_map(s)
+
+        jobs_by_tool: Dict[str, List[BatchJob]] = {}
+        immediate_results: List[_ImmediateResult] = []
+        for s, text, tool_call in zip(states, injected_outputs, parsed):
+            if tool_call is None:
+                continue
+            s.turn += 1
+            s.current_output = text
+            self._classify_tool_call(s, tool_call, text, jobs_by_tool, immediate_results)
+        self._apply_immediate_results(immediate_results)
+        if jobs_by_tool:
+            flush_batches(jobs_by_tool, self._commit_tool_result, _accumulate_usage)
+
+        self._finish_batch(states)
+        return states
+
+    def _finish_batch(self, states: List[ExecutionState]) -> None:
+        """Run the turn loop to completion, then the max-turns synthesis."""
         while True:
             active = [s for s in states if not s.finished and s.turn < self.max_turns]
             if not active:
@@ -335,8 +394,6 @@ class AgenticOrchestrator:
                     s.metadata["max_turns_reached"] = True
                     s.answer = extract_answer(s.current_output)
                     s.finished = True
-
-        return states
 
     def cleanup(self):
         """Release model and tool resources."""
