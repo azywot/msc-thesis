@@ -95,6 +95,43 @@ class InProcessReflector:
         except Exception as exc:
             return [_error_item(s, exc) for s in seeds]
 
+    def sample_batch(self, messages_list, seeds):
+        """One prompt per seed, all generated in a single ``llm.generate`` call."""
+        if len(messages_list) != len(seeds):
+            raise ValueError("messages_list and seeds differ in length")
+        if not seeds:
+            return []
+        try:
+            from vllm import SamplingParams
+
+            prompts = [self.provider.render_prompt(m, self.enable_thinking) for m in messages_list]
+            params = [
+                SamplingParams(
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                    top_k=self.top_k,
+                    seed=s,
+                )
+                for s in seeds
+            ]
+            with self.provider._lock:
+                outputs = self.provider.llm.generate(
+                    prompts,
+                    sampling_params=params,
+                    lora_request=getattr(self.provider, "lora_request", None),
+                )
+            return [
+                {
+                    "text": o.outputs[0].text,
+                    "finish_reason": o.outputs[0].finish_reason,
+                    "seed": s,
+                }
+                for o, s in zip(outputs, seeds)
+            ]
+        except Exception as exc:
+            return [_error_item(s, exc) for s in seeds]
+
 
 class ReflectorClient:
     """Reflector served by a separate OpenAI-compatible vLLM server (32B control)."""
@@ -147,6 +184,11 @@ class ReflectorClient:
             except Exception as exc:
                 out.append(_error_item(s, exc))
         return out
+
+    def sample_batch(self, messages_list, seeds):
+        if len(messages_list) != len(seeds):
+            raise ValueError("messages_list and seeds differ in length")
+        return [self.sample(m, [s])[0] for m, s in zip(messages_list, seeds)]
 
 
 def build_reflector(settings, executor_provider):

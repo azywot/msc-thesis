@@ -100,6 +100,27 @@ def test_in_process_reflector_uses_own_sampling_on_the_shared_engine():
     assert out[0] == {"text": "t5", "finish_reason": "stop", "seed": 5}
 
 
+def test_in_process_sample_batch_one_generate_call():
+    prov = FakeVLLMProvider()
+    out = InProcessReflector(prov, max_tokens=9).sample_batch(
+        [[{"role": "user", "content": "a"}], [{"role": "user", "content": "b"}]], [4, 4]
+    )
+    ((prompts, params),) = prov.llm.calls
+    assert prompts == ["RENDERED", "RENDERED"] and [p.seed for p in params] == [4, 4]
+    assert prov.rendered_with_thinking == [True, True]
+    assert out == [{"text": "t4", "finish_reason": "stop", "seed": 4}] * 2
+
+
+def test_client_sample_batch_pairs_prompt_and_seed(monkeypatch):
+    calls = install_fake_openai(monkeypatch)
+    out = ReflectorClient("http://h/v1", "m", max_tokens=10).sample_batch(
+        [[{"role": "user", "content": "a"}], [{"role": "user", "content": "b"}]], [7, 8]
+    )
+    assert [c["seed"] for c in calls] == [7, 8]
+    assert [c["messages"][0]["content"] for c in calls] == ["a", "b"]
+    assert [o["seed"] for o in out] == [7, 8]
+
+
 def test_in_process_errors_become_items():
     prov = FakeVLLMProvider()
     prov.llm.generate = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("oom"))

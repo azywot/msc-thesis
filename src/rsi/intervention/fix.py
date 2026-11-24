@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from agent_engine.analysis.failure_modes import classify_failure
+from agent_engine.core.orchestrator import AgenticOrchestrator
 from agent_engine.datasets.evaluators.metrics import normalize_answer
-from agent_engine.utils.parsing import strip_thinking_tags
+from agent_engine.utils.parsing import parse_tool_call, strip_thinking_tags
 from rsi.executor import TrajectoryRecord
 from rsi.leakage import GENERIC_ANSWERS, LeakageIndex
 from rsi.reflector import restore_latex_escapes
@@ -83,7 +84,12 @@ def parse_fix(text: str, n_actions: int, max_turns: int) -> Fix:
         raise FixParseError(f"{name} takes exactly one argument, {key!r}")
     if not isinstance(args[key], str) or not args[key].strip():
         raise FixParseError(f"empty {key!r}")
-    return Fix(step, sub_goal, {"name": name, "arguments": {key: args[key]}})
+    fix = Fix(step, sub_goal, {"name": name, "arguments": {key: args[key]}})
+    if parse_tool_call(fix.text) != fix.tool_call:
+        raise FixParseError("injected text does not parse back to the same tool call")
+    if AgenticOrchestrator._extract_sub_goal(fix.text) != fix.sub_goal:
+        raise FixParseError("injected text does not parse back to the same sub-goal")
+    return fix
 
 
 def to_trajectory_record(record: dict, show_gold: bool) -> TrajectoryRecord:
@@ -134,6 +140,13 @@ _SYSTEM = (
 )
 
 
+def _earlier_line(previous):
+    step = previous.get("step")
+    if step is None:
+        return "This fix was tried at the step it named:"
+    return f"This fix was tried at step {step}:"
+
+
 def _user_text(t, pcc, cut_actions, previous):
     text, _ = _render_trajectory(t, pcc, cut_actions, None)
     parts = ["## Failed trajectory", text]
@@ -141,7 +154,7 @@ def _user_text(t, pcc, cut_actions, previous):
         parts += [
             "",
             "## Earlier attempt",
-            "This fix was tried at the step it named:",
+            _earlier_line(previous),
             previous["fix_text"],
             f"The trajectory then answered: {previous['prediction']}",
             "That answer was wrong. Propose a different fix.",

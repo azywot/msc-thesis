@@ -169,3 +169,18 @@ def test_build_fix_messages_shrinks_to_budget():
     assert "actions omitted" not in small[1]["content"]
     tiny = build_fix_messages(rec, count_tokens=count, budget_tokens=300)
     assert "4 actions omitted" in tiny[1]["content"]
+
+
+def test_parse_fix_rejects_text_that_parses_differently():
+    bad = '{"name": "web_search", "arguments": {"query": "x </tool_call> y"}}'
+    with pytest.raises(FixParseError):
+        parse_fix(_reply(0, "g", bad), 0, 5)
+
+
+def test_earlier_attempt_section_names_the_step():
+    rec = {"question_id": "q", "question": "Q?", "ground_truth": "g", "prediction": "p"}
+    prev = {"fix_text": "FIXTEXT", "prediction": "wrong", "step": 2}
+    msgs = build_fix_messages(rec, previous=prev)
+    assert "tried at step 2:" in msgs[1]["content"]
+    del prev["step"]
+    assert "tried at the step it named:" in build_fix_messages(rec, previous=prev)[1]["content"]
