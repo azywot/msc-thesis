@@ -191,3 +191,21 @@ def test_rows_have_expected_fields(tmp_path):
     assert r["domain"] == "search" and r["kind"] == "rewrite" and r["seed"] == 1001
     assert r["messages"][-1] == {"role": "assistant", "content": "x"}
     assert r["ground_truth"] == "Paris" and r["aliases"] == []
+
+
+def test_rerun_tolerates_truncated_last_row(tmp_path):
+    path = tmp_path / "rescue.jsonl"
+    done = {"question_id": 1, "attempt": 1, "correct": False, "fix_text": "FT"}
+    path.write_text(json.dumps(done) + "\n" + '{"question_id": 2, "att')
+    cands = [_cand(ORD["a"]), _cand(ORD["b"])]
+    rows, _, refl = _run(cands, [[_reply(1)]], tmp_path, settings=RescueSettings(max_attempts=1))
+    assert len(refl.calls[0][0]) == 1
+    assert sorted((r["question_id"], r["attempt"]) for r in rows) == [(1, 1), (2, 1)]
+    assert len(path.read_text().splitlines()) == 2
+
+
+def test_malformed_middle_line_still_raises(tmp_path):
+    path = tmp_path / "rescue.jsonl"
+    path.write_text('{"question_id": 2, "att\n' + json.dumps({"question_id": 1}) + "\n")
+    with pytest.raises(json.JSONDecodeError):
+        _run([_cand(ORD["a"])], [[_reply(1)]], tmp_path)

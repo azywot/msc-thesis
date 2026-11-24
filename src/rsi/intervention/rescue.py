@@ -6,6 +6,7 @@ between the two is the effect of the fix.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
@@ -26,6 +27,8 @@ from rsi.intervention.records import (
 )
 from rsi.leakage import LeakageIndex
 
+logger = logging.getLogger(__name__)
+
 
 class RescueSettings(BaseModel):
     max_attempts: int = 2
@@ -35,19 +38,35 @@ class RescueSettings(BaseModel):
 
 
 def _read_rows(path: Path) -> List[dict]:
+    """Read JSONL rows. A truncated final line (job killed mid-write) is dropped and logged;
+    a malformed line anywhere else is real corruption and raises."""
     if not path.exists():
         return []
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     rows = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
+    for i, line in enumerate(lines):
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            if i != len(lines) - 1:
+                raise
+            logger.warning("ignoring truncated last line of %s", path)
     return rows
+
+
+def _repair_tail(path: Path) -> None:
+    """Cut the file back to its last complete line so an append starts on a fresh line."""
+    if not path.exists():
+        return
+    data = path.read_bytes()
+    if not data or data.endswith(b"\n"):
+        return
+    path.write_bytes(data[: data.rfind(b"\n") + 1])
 
 
 def _append_rows(path: Path, rows: List[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    _repair_tail(path)
     with open(path, "a", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")

@@ -60,51 +60,12 @@ class InProcessReflector:
         self.top_k = top_k
         self.enable_thinking = enable_thinking
 
-    def sample(self, messages, seeds):
-        if not seeds:
-            return []
+    def _generate(self, render, seeds):
+        """Render prompts (inside the error guard) and generate once per seed in one call."""
         try:
             from vllm import SamplingParams
 
-            # llm.generate needs the rendered string, not apply_chat_template()'s JSON payload.
-            prompt = self.provider.render_prompt(messages, self.enable_thinking)
-            params = [
-                SamplingParams(
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    top_k=self.top_k,
-                    seed=s,
-                )
-                for s in seeds
-            ]
-            with self.provider._lock:
-                outputs = self.provider.llm.generate(
-                    [prompt] * len(seeds),
-                    sampling_params=params,
-                    lora_request=getattr(self.provider, "lora_request", None),
-                )
-            return [
-                {
-                    "text": o.outputs[0].text,
-                    "finish_reason": o.outputs[0].finish_reason,
-                    "seed": s,
-                }
-                for o, s in zip(outputs, seeds)
-            ]
-        except Exception as exc:
-            return [_error_item(s, exc) for s in seeds]
-
-    def sample_batch(self, messages_list, seeds):
-        """One prompt per seed, all generated in a single ``llm.generate`` call."""
-        if len(messages_list) != len(seeds):
-            raise ValueError("messages_list and seeds differ in length")
-        if not seeds:
-            return []
-        try:
-            from vllm import SamplingParams
-
-            prompts = [self.provider.render_prompt(m, self.enable_thinking) for m in messages_list]
+            prompts = render()
             params = [
                 SamplingParams(
                     max_tokens=self.max_tokens,
@@ -131,6 +92,27 @@ class InProcessReflector:
             ]
         except Exception as exc:
             return [_error_item(s, exc) for s in seeds]
+
+    def sample(self, messages, seeds):
+        if not seeds:
+            return []
+
+        def render():
+            # llm.generate needs the rendered string, not apply_chat_template()'s JSON payload.
+            return [self.provider.render_prompt(messages, self.enable_thinking)] * len(seeds)
+
+        return self._generate(render, seeds)
+
+    def sample_batch(self, messages_list, seeds):
+        """One prompt per seed, all generated in a single ``llm.generate`` call."""
+        if len(messages_list) != len(seeds):
+            raise ValueError("messages_list and seeds differ in length")
+        if not seeds:
+            return []
+        return self._generate(
+            lambda: [self.provider.render_prompt(m, self.enable_thinking) for m in messages_list],
+            seeds,
+        )
 
 
 class ReflectorClient:
