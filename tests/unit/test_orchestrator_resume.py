@@ -120,3 +120,72 @@ def test_resume_rejects_bad_input():
     done.finished = True
     with pytest.raises(ValueError):
         orch.resume_batch([done], [None])
+
+
+PLAN_SUFFIX = (
+    "\n\nBefore using any tools, analyze this query to determine the approach needed.\n"
+    "Instructions:\n"
+    "1. Identify the main objectives in the query.\n"
+    "2. List the necessary skills and tools.\n"
+    "3. For each tool, explain how it helps address the query.\n"
+    "4. Note any additional considerations.\n\n"
+    "Be brief and precise. Do NOT call any tools yet."
+)
+SYNTH = (
+    "You have used all available tool calls. Based on the information gathered so far, "
+    "provide your final answer now."
+)
+
+
+def test_run_batch_single_prompt_bytes_unchanged():
+    """One shared system prompt: turn and synthesis prompts match the pre-fix bytes."""
+    orch, model = make_orch(["p1", "p2"] + [CALL % "q1"] * 4 + ["\\boxed{A}", "\\boxed{B}"], 2)
+    orch.run_batch(questions=["Q?", "Q2?"], question_ids=[0, 1], system_prompts=["SYS", "SYS"])
+    step1 = (
+        "\n\n**Previous Steps:**\nAction Step 1:\n  - Tool: web_search\n  - Sub-goal: \n"
+        '  - Command: {"name": "web_search", "arguments": {"query": "q1"}}\n'
+        "  - Result: result for q1\n"
+    )
+    step2 = step1.replace("Action Step 1", "Action Step 2").replace("\n\n**Previous Steps:**", "")
+    assert model.prompts_seen == [
+        "SYS\nQ?" + PLAN_SUFFIX,
+        "SYS\nQ2?" + PLAN_SUFFIX,
+        "SYS\nQ?\n\n**Query Analysis:**\np1",
+        "SYS\nQ2?\n\n**Query Analysis:**\np2",
+        "SYS\nQ?\n\n**Query Analysis:**\np1" + step1,
+        "SYS\nQ2?\n\n**Query Analysis:**\np2" + step1,
+        "SYS\nQ?\n\n**Query Analysis:**\np1" + step1 + step2 + "\n" + SYNTH,
+        "SYS\nQ2?\n\n**Query Analysis:**\np2" + step1 + step2 + "\n" + SYNTH,
+    ]
+
+
+def _assert_own_system_prompt(prompts, by_question):
+    assert prompts
+    for p in prompts:
+        owners = [q for q in by_question if "\n" + q in p]
+        assert len(owners) == 1, p
+        assert p.startswith(by_question[owners[0]] + "\n"), p
+
+
+def test_run_batch_mixed_system_prompts_each_state_keeps_its_own():
+    orch, model = make_orch(["p1", "p2"] + [CALL % "q1"] * 4 + ["\\boxed{A}", "\\boxed{B}"], 2)
+    orch.run_batch(
+        questions=["alpha?", "beta?"], question_ids=[0, 1], system_prompts=["SYS_A", "SYS_B"]
+    )
+    assert len(model.prompts_seen) == 8  # planning, two turns, synthesis
+    _assert_own_system_prompt(model.prompts_seen, {"alpha?": "SYS_A", "beta?": "SYS_B"})
+
+
+def test_resume_batch_mixed_system_prompts_each_state_keeps_its_own():
+    orch, model = make_orch([CALL % "q1"] * 3 + ["\\boxed{A}", "\\boxed{B}"], 3)
+    a, b = prefix_state(), prefix_state()
+    for s, qid, question, system in ((a, 0, "alpha?", "SYS_A"), (b, 1, "beta?", "MATH_SYS")):
+        s.question_id, s.question = qid, question
+        s.messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": question},
+        ]
+    orch.resume_batch([a, b], [INJECTED, None])
+    # a: injected turn 2, generated turn 3, synthesis; b: generated turns 2 and 3, synthesis
+    assert len(model.prompts_seen) == 5
+    _assert_own_system_prompt(model.prompts_seen, {"alpha?": "SYS_A", "beta?": "MATH_SYS"})

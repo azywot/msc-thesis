@@ -368,10 +368,14 @@ class AgenticOrchestrator:
 
         unfinished = [s for s in states if not s.finished]
         if unfinished:
-            system_prompt = unfinished[0].messages[0]["content"]
+            # Each state keeps its own system prompt: a batch can mix domains.
             nudge_prompts = [
                 self.model.apply_chat_template(
-                    (s.messages if self.baseline else self._build_memory_prompt(s, system_prompt))
+                    (
+                        s.messages
+                        if self.baseline
+                        else self._build_memory_prompt(s, s.messages[0]["content"])
+                    )
                     + [{"role": "user", "content": "You have used all available tool calls. Based on the information gathered so far, provide your final answer now."}],
                     use_thinking=self.use_thinking,
                 )
@@ -410,10 +414,14 @@ class AgenticOrchestrator:
         for s in active:
             s.turn += 1
 
-        system_prompt = active[0].messages[0]["content"]
+        # Each state keeps its own system prompt: a batch can mix domains.
         prompts = [
             self.model.apply_chat_template(
-                s.messages if self.baseline else self._build_memory_prompt(s, system_prompt),
+                (
+                    s.messages
+                    if self.baseline
+                    else self._build_memory_prompt(s, s.messages[0]["content"])
+                ),
                 use_thinking=self.use_thinking,
                 force_tool_call=self._force_tool_call and s.turn == 1,
             )
