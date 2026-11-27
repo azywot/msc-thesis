@@ -11,8 +11,11 @@
 
 # Tool-call intervention with a Qwen3-32B reflector served on port 8001, on the 0-of-3 questions of job 004.
 # Submit: mkdir -p out/rsi && sbatch jobs/rsi/006_rescue_32b.job
+#   trial on the first N 0-of-3 questions (job 004 with the same SUBSET first):
+#     sbatch --export=ALL,SUBSET=200 jobs/rsi/006_rescue_32b.job
 #   add the blind check: sbatch --export=ALL,BLIND=1 jobs/rsi/006_rescue_32b.job
 # Output: experiments/results/rsi/phase2/rescue_32b/{candidates.json,rescue.jsonl,gate.json,gate.md}
+#   (rescue_32b_subset<N> when SUBSET is set)
 
 set -euo pipefail
 
@@ -108,13 +111,28 @@ fi
 
 export CUDA_VISIBLE_DEVICES=0
 
-mkdir -p out/rsi experiments/results/rsi/phase2/rescue_32b
+# --- subset handling begin
+COLLECT_DIR="data/training/rsi_phase2/collect_8b"
+RESCUE_DIR="experiments/results/rsi/phase2/rescue_32b"
+SUBSET_ARG=""
+if [[ -n "${SUBSET:-}" ]]; then
+    if ! [[ "$SUBSET" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: SUBSET must be a positive integer, got: $SUBSET"
+        exit 1
+    fi
+    COLLECT_DIR="${COLLECT_DIR}_subset${SUBSET}"
+    RESCUE_DIR="${RESCUE_DIR}_subset${SUBSET}"
+    SUBSET_ARG="--subset ${SUBSET}"
+fi
+# --- subset handling end
+
+mkdir -p out/rsi "$RESCUE_DIR"
 
 shopt -s nullglob
-COLLECTED=(data/training/rsi_phase2/collect_8b/collected_*.jsonl)
+COLLECTED=("$COLLECT_DIR"/collected_*.jsonl)
 shopt -u nullglob
 if [[ ${#COLLECTED[@]} -eq 0 ]]; then
-    echo "ERROR: no collected_*.jsonl in data/training/rsi_phase2/collect_8b (run job 004 first)."
+    echo "ERROR: no collected_*.jsonl in $COLLECT_DIR (run job 004 first)."
     exit 1
 fi
 
@@ -127,9 +145,9 @@ fi
 python scripts/run_call_intervention.py \
     --config experiments/configs/rsi/phase2/rescue_qwen3_32b.yaml \
     --collected "${COLLECTED[@]}" \
-    --out-dir experiments/results/rsi/phase2/rescue_32b \
-    $BLIND_ARG
+    --out-dir "$RESCUE_DIR" \
+    $BLIND_ARG $SUBSET_ARG
 
 echo ""
 echo "Rescue complete at: $(date)"
-cat experiments/results/rsi/phase2/rescue_32b/gate.md 2>/dev/null || echo "  (no gate.md, check log)"
+cat "$RESCUE_DIR/gate.md" 2>/dev/null || echo "  (no gate.md, check log)"

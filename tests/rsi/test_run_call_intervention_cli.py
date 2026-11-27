@@ -108,3 +108,59 @@ def test_cli_report_only_does_not_load_models(tmp_path, setup, monkeypatch):
     gate = json.loads((out / "gate.json").read_text())
     assert gate["search"]["candidates"] == 1 and gate["search"]["rescued"] == 0
     assert gate["gate"]["pass"] is False
+
+
+def _write_collected(path, per_question):
+    """per_question: list of (qid, source, correct_by_pass, extra)."""
+    with open(path, "w") as f:
+        for qid, source, correct, extra in per_question:
+            for p, ok in enumerate(correct, start=1):
+                rec = _cand(qid)
+                rec.update({"pass": p, "correct": ok, "data_source": source, **extra})
+                f.write(json.dumps(rec) + "\n")
+
+
+def test_subset_restricts_the_pool_before_counting(tmp_path, setup, monkeypatch):
+    cfg_path, _, out = setup
+    collected = tmp_path / "many.jsonl"
+    # collected order: 1 solved, 2 zero-of-3, 3 zero-of-3 with error (skipped), 4 zero-of-3,
+    # 5 zero-of-3; subset 3 keeps the first three 0-of-3 questions: 2, 3, 4 (and 1, solved)
+    _write_collected(
+        collected,
+        [
+            (1, "hotpotqa", [True, True, True], {}),
+            (2, "hotpotqa", [False] * 3, {}),
+            (3, "hotpotqa", [False] * 3, {"error": "boom"}),
+            (4, "hotpotqa", [False] * 3, {}),
+            (5, "hotpotqa", [False] * 3, {}),
+        ],
+    )
+    reflector = FakeReflector([[_reply(1), _reply(1)]])
+    orch = FakeOrchestrator(Prov)
+    monkeypatch.setattr(
+        SCRIPT,
+        "build_runtime",
+        lambda exp, icfg: (orch, [Prov], reflector, lambda msgs: 10, FakeCache()),
+    )
+    argv = ["--config", str(cfg_path), "--collected", str(collected), "--out-dir", str(out)]
+    assert SCRIPT.main(argv + ["--subset", "3"]) == 0
+    gate = json.loads((out / "gate.json").read_text())
+    assert gate["search"]["zero_of_n"] == 3
+    assert gate["search"]["skipped_error"] == 1 and gate["search"]["candidates"] == 2
+    # both candidates rescued by the fake orchestrator: 2 of the 3 questions, not 2 of 4
+    assert gate["search"]["rescued"] == 2
+    assert gate["search"]["rescue_rate"] == pytest.approx(100 * 2 / 3)
+    cands = json.loads((out / "candidates.json").read_text())
+    assert [c["question_id"] for c in cands["candidates"]] == [2, 4]
+    assert cands["pool_question_ids"] == [1, 2, 3, 4]
+
+
+def test_no_subset_keeps_counts_over_every_question(tmp_path, setup, monkeypatch):
+    cfg_path, _, out = setup
+    collected = tmp_path / "many.jsonl"
+    _write_collected(collected, [(i, "hotpotqa", [False] * 3, {}) for i in (1, 2, 3)])
+    argv = ["--config", str(cfg_path), "--collected", str(collected), "--out-dir", str(out)]
+    assert SCRIPT.main(argv + ["--report-only"]) == 0
+    gate = json.loads((out / "gate.json").read_text())
+    assert gate["search"]["zero_of_n"] == 3
+    assert "pool_question_ids" not in json.loads((out / "candidates.json").read_text())

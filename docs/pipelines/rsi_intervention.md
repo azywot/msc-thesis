@@ -72,8 +72,8 @@ draw). Every row carries a control draw in `control_correct`.
 
 To redo only the report from an existing `rescue.jsonl`, run
 `scripts/run_call_intervention.py` with `--report-only` and the same `--config`,
-`--collected` and `--out-dir` the job uses. `--subset N` limits the run to N
-questions for a quick trial.
+`--collected` and `--out-dir` the job uses. `--subset N` limits the run to the first N 0-of-3
+questions in collected order for a quick trial (section 14).
 
 ## 4. The gate
 
@@ -322,6 +322,32 @@ an upper bound on the training questions, not a benchmark gain.
 After `compare_arms.py` (section 12), run it again with
 `--comparison experiments/results/rsi_inference/comparison/comparison.json` to add the
 benchmark accuracy and behaviour figures.
+
+## 14. Trial run on a subset
+
+To check the pipeline and get a first look before the full run, collect on the first
+200 training questions, then rescue and report on them:
+
+```bash
+sbatch --export=ALL,SUBSET=200 jobs/rsi/004_collect_8b.job
+sbatch --export=ALL,SUBSET=200 jobs/rsi/005_rescue_8b.job   # after 004 has finished
+```
+
+Collection writes to `data/training/rsi_phase2/collect_8b_subset200`, the rescue to
+`experiments/results/rsi/phase2/rescue_8b_subset200`. The rescue keeps the first N
+0-of-3 questions in collected order and computes `zero_of_n`, the skip counts and the
+candidates on the questions up to the last of those, so the gate rates describe the
+same questions. Job 006 takes the same `SUBSET`. Without `SUBSET` nothing changes.
+
+```bash
+python scripts/report_intervention.py \
+    --collected data/training/rsi_phase2/collect_8b_subset200/collected_*.jsonl \
+    --rescue-dir experiments/results/rsi/phase2/rescue_8b_subset200 \
+    --out-dir experiments/results/rsi/phase2/report_8b_subset200
+```
+
+A subset this small gives wide intervals, so the trial checks the pipeline and gives a
+first look; it is not the gate decision.
 
 ## Running the tests
 

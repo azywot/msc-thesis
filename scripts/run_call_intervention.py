@@ -34,6 +34,7 @@ from rsi.intervention.records import (  # noqa: E402
     domain_of,
     intervention_candidates,
     load_collected,
+    subset_pool,
 )
 from rsi.intervention.report import blind_sample, summarize, write_gate  # noqa: E402
 from rsi.intervention.rescue import RescueSettings, _read_rows, run_rescue  # noqa: E402
@@ -138,13 +139,17 @@ def main(argv=None):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     records = load_collected([Path(p) for p in args.collected])
-    candidates, counts = intervention_candidates(records, icfg.n_passes)
+    pool_ids = None
     if args.subset is not None:
-        candidates = candidates[: args.subset]
+        # Restrict the pool before counting, so zero_of_n, the skip counts and the candidates
+        # all describe the same questions.
+        records, pool_ids = subset_pool(records, icfg.n_passes, args.subset)
+    candidates, counts = intervention_candidates(records, icfg.n_passes)
     _write_json(
         out_dir / "candidates.json",
         {
             "counts": counts,
+            **({"pool_question_ids": pool_ids} if pool_ids is not None else {}),
             "candidates": [
                 {
                     "question_id": c["question_id"],

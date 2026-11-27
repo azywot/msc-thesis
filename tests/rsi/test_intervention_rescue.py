@@ -409,3 +409,13 @@ def test_second_attempt_after_parse_error_has_no_earlier_section(tmp_path):
     rows, _, refl = _run([_cand(ORD["a"])], [["garbage"], [_reply(2, "second try")]], tmp_path)
     assert [r["status"] for r in rows] == ["parse_error", "ok"]
     assert "Earlier attempt" not in refl.calls[1][0][0][1]["content"]
+
+
+def test_single_prompt_chunk_error_is_a_parse_error_not_a_raise(tmp_path):
+    path = tmp_path / "rescue.jsonl"
+    refl = EchoReflector(path, error_on_call=1)
+    rows = _run_with(
+        [_cand(1)], refl, tmp_path, settings=RescueSettings(max_attempts=1, chunk_size=1)
+    )
+    assert [r["status"] for r in rows] == ["parse_error"]
+    assert "error: oom" in rows[0]["reasons"][0]

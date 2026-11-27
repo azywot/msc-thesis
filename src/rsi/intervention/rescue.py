@@ -209,9 +209,10 @@ def _run_chunk(
             raise RuntimeError(
                 f"reflector returned {len(items)} items for {len(messages_list)} prompts"
             )
-        if all(is_error_item(item) for item in items):
+        if len(items) > 1 and all(is_error_item(item) for item in items):
             # A failed engine call, not bad fixes: writing parse_error rows would use up the
-            # attempt for every question in the chunk on a rerun.
+            # attempt for every question in the chunk on a rerun. A one-prompt chunk is exempt:
+            # raising there would repeat on every resubmit and the job could never finish.
             raise RuntimeError(
                 f"reflector failed on all {len(items)} prompts of attempt {attempt}: "
                 f"{items[0].get('finish_reason')}"

@@ -108,6 +108,28 @@ def intervention_candidates(records: List[dict], n_passes: int):
     return candidates, stats
 
 
+def subset_pool(records: List[dict], n_passes: int, n: int):
+    """Records of the collection prefix that ends at the n-th 0-of-n question.
+
+    Walks the questions in collected order and stops after the n-th question that has
+    ``n_passes`` records and none correct (error and planning-answer ones included), so the
+    counts and candidates computed on the result all describe the same questions. Returns
+    ``(records, question_ids)``; with fewer than n such questions, everything is kept.
+    """
+    by_qid: Dict[object, List[dict]] = {}
+    for rec in records:
+        by_qid.setdefault(rec.get("question_id"), []).append(rec)
+    pool, zero = [], 0
+    for qid, recs in by_qid.items():
+        pool.append(qid)
+        if len(recs) == n_passes and not any(r.get("correct") for r in recs):
+            zero += 1
+            if zero >= n:
+                break
+    keep = set(pool)
+    return [r for r in records if r.get("question_id") in keep], pool
+
+
 def state_from_record(record: dict, step: int) -> ExecutionState:
     """Rebuild the ExecutionState after the first ``step`` actions of a record."""
     history = record.get("action_history") or []
