@@ -27,6 +27,7 @@ intervention:
     attempt_seed_base: 1000
     per_call_chars: 1500
     input_budget_tokens: 14000
+    chunk_size: 100
   reflector:
     backend: "in_process"
     model: "Qwen/Qwen3-8B"

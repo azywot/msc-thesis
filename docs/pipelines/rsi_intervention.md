@@ -57,6 +57,19 @@ were wrong in all three passes, and asks the 8B reflector for one fixed call.
 Output in `experiments/results/rsi/phase2/rescue_8b/`: `candidates.json`,
 `rescue.jsonl`, `gate.json`, `gate.md`.
 
+Rows are appended to `rescue.jsonl` after every chunk of 100 candidates
+(`rescue.chunk_size` in the config), so if the job is killed, resubmit it: it skips
+the (question, attempt) pairs already on disk and loses at most one chunk. If the
+reflector fails on every prompt of a chunk (for example the engine ran out of
+memory, or the 32B server is down), the job stops with a `RuntimeError` before
+writing that chunk's rows; fix the cause and resubmit.
+
+Each row has a `status`: `ok` (the fix was injected and its continuation graded in
+`correct`), `parse_error` (the reply had no usable fix), `leakage` (the fix was
+rejected by the leakage guard) or `rescued_earlier` (the question was already
+rescued at an earlier attempt, so this row holds only that attempt's no-fix control
+draw). Every row carries a control draw in `control_correct`.
+
 To redo only the report from an existing `rescue.jsonl`, run
 `scripts/run_call_intervention.py` with `--report-only` and the same `--config`,
 `--collected` and `--out-dir` the job uses. `--subset N` limits the run to N
@@ -67,15 +80,22 @@ questions for a quick trial.
 Read `experiments/results/rsi/phase2/rescue_8b/gate.md` (the same numbers are in
 `gate.json`; the job also prints `gate.md` at the end of its log).
 
+- **Denominator**: every rate the gate uses is over the domain's 0-of-3 questions
+  (`zero_of_n` in `gate.json`), not over the candidates. Questions skipped before
+  the rescue (`skipped_error`, `skipped_planning_answer`) count as not rescued. The
+  same rates over the candidates are reported as `rescue_rate_candidates`,
+  `control_rate_candidates` and `net_points_candidates`; they do not decide the gate.
 - **Rescue rate**: rescued questions over 0-of-3 questions, per domain (math and
   search), after leakage rejection.
 - **No-fix control rate**: the same questions resumed from the same step with no
-  injected call, the same number of times as the reflector's attempts. Some
-  questions get solved by resampling alone.
+  injected call, once per attempt (two draws per question), whether or not the fix
+  rescued the question. A question counts as control-solved if any of its control
+  draws is correct. Some questions get solved by resampling alone.
 - **Net rescue rate** = rescue rate minus no-fix control rate (`net_points` in
   `gate.json`).
-- **Pass**: net rescue of at least 10 points in at least one domain. `gate.md`
-  starts with `# Gate: PASS` or `# Gate: FAIL` and lists the passing domains.
+- **Pass**: net rescue of at least 10 points in at least one domain, over its 0-of-3
+  questions. `gate.md` starts with `# Gate: PASS` or `# Gate: FAIL` and lists the
+  passing domains.
 
 The per-domain table also reports attempts used, leakage rejections, parse errors
 and the kind distribution (rewrite, follow-up, insert).
@@ -112,9 +132,11 @@ sbatch --export=ALL,BLIND=1 jobs/rsi/006_rescue_32b.job
 ```
 
 This adds a `blind` section to `gate.json` and `gate.md` ("N of M previously rescued
-questions rescued again") and writes `blind.jsonl`. A large gap between the blind
-rate and the rescue rate means the fixes depend on seeing the answer. It is reported,
-not a pass/fail condition.
+questions rescued again; no-fix control: K of M") and writes `blind.jsonl`. The
+control figure (`control_rescued`, `control_rate`) is the chance baseline: compare
+the blind rate with it, not with zero. A large gap between the blind rate and the
+rescue rate means the fixes depend on seeing the answer. It is reported, not a
+pass/fail condition.
 
 ## 6. Build arm I
 
@@ -162,7 +184,7 @@ without `--native`. Slurm must pass the empty `NATIVE_FILE=` and `NATIVE_VAL_FIL
 through to the job. The job never prints the native path, and the check script logs
 to stderr, so open `out/fine_tuning/sft_train/sft_folded_<jobid>.err` (not the
 `.log`) and look at the pre-flight section. With `--native` the check logs
-`Every native question present: ...` and `Trajectories N -> rows M (...x)`. If
+`Every native question present: ...` and `Trajectories N → rows M (...x)`. If
 neither line appears, the empty values arrived and all is well. If either appears,
 the default native files were used: cancel both jobs, because the check ran against
 the wrong data.
