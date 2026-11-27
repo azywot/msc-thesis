@@ -11,6 +11,7 @@ from rsi.intervention.fix import (
     to_trajectory_record,
 )
 from rsi.leakage import LeakageIndex
+from rsi.reflector_input import LEAKAGE_INSTRUCTION
 
 
 def _reply(step=1, sg="find X", call='{"name": "web_search", "arguments": {"query": "X born"}}'):
@@ -142,7 +143,6 @@ def test_build_fix_messages_hides_gold():
     assert [m["role"] for m in msgs] == ["system", "user"]
     blob = msgs[0]["content"] + msgs[1]["content"]
     assert "GOLDANSWER" not in blob and "(hidden)" in blob
-    assert "Do not copy question text" in msgs[0]["content"]
     assert "<step>" in msgs[0]["content"]
     assert "GOLDANSWER" in build_fix_messages(_rec(), show_gold=True)[1]["content"]
 
@@ -184,3 +184,12 @@ def test_earlier_attempt_section_names_the_step():
     assert "tried at step 2:" in msgs[1]["content"]
     del prev["step"]
     assert "tried at the step it named:" in build_fix_messages(rec, previous=prev)[1]["content"]
+
+
+def test_fix_prompt_allows_question_entities_and_forbids_the_answer():
+    system = build_fix_messages(_rec())[0]["content"]
+    assert LEAKAGE_INSTRUCTION not in system
+    assert "Do not copy question text" not in system
+    assert "may use the question's own entities, numbers and wording" in system
+    assert "Do not put the gold answer, or anything that reveals it" in system
+    assert system.endswith("such fixes are rejected.")

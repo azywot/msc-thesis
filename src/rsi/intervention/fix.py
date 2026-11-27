@@ -17,7 +17,7 @@ from agent_engine.utils.parsing import parse_tool_call, strip_thinking_tags
 from rsi.executor import TrajectoryRecord
 from rsi.leakage import GENERIC_ANSWERS, LeakageIndex
 from rsi.reflector import restore_latex_escapes
-from rsi.reflector_input import LEAKAGE_INSTRUCTION, MIN_PER_CALL_CHARS, _render_trajectory
+from rsi.reflector_input import MIN_PER_CALL_CHARS, _render_trajectory
 
 TOOL_ARGS = {"web_search": "query", "code_generator": "task"}
 MAX_SUB_GOAL_CHARS = 500
@@ -120,6 +120,15 @@ def to_trajectory_record(record: dict, show_gold: bool) -> TrajectoryRecord:
     )
 
 
+# Phase 1's LEAKAGE_INSTRUCTION forbids the question's entities and numbers, which a corrected
+# query or task must carry; the leakage guard exempts the question's own text, so only the
+# answer is forbidden here.
+FIX_LEAKAGE_INSTRUCTION = (
+    "The corrected call may use the question's own entities, numbers and wording. Do not put "
+    "the gold answer, or anything that reveals it, in the sub-goal or the tool call; such fixes "
+    "are rejected."
+)
+
 _SYSTEM = (
     "You are reviewing one failed run of a tool-using orchestrator that answers a question by "
     "calling tools step by step. Each action has a sub-goal and one tool call. Read the "
@@ -136,7 +145,7 @@ _SYSTEM = (
     "<step>N</step>\n"
     "<sub_goal>one sentence, at most 500 characters</sub_goal>\n"
     '<tool_call>{"name": "web_search", "arguments": {"query": "..."}}</tool_call>\n\n'
-    + LEAKAGE_INSTRUCTION
+    + FIX_LEAKAGE_INSTRUCTION
 )
 
 
