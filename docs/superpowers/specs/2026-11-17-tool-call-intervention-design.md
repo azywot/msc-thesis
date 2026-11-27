@@ -1,7 +1,10 @@
 # Tool-call intervention: design
 
-**Date:** 2026-11-17
-**Status:** design, approved in conversation; not yet planned or built.
+**Date:** 2026-11-17 (updated 2026-11-27)
+**Status:** built and reviewed on branch `feat/tool-call-intervention`; collection started
+2026-11-27. Section 12 records the decisions made while building it; where it is more
+specific than Sections 1 to 11, Section 12 is what the code does. How to run it:
+`docs/pipelines/rsi_intervention.md`.
 **Builds on:** `docs/superpowers/specs/2026-11-04-recursive-self-improvement-design.md`
 (the RSI spec: Phase 2 cycle, arms, evaluation), `docs/pipelines/rsi_overview.md`
 (Phase 1 results).
@@ -190,8 +193,10 @@ questions over 0-of-3 questions, per domain, after leakage rejection.
 Some 0-of-3 questions will be solved by sampling the continuation again, with no fix.
 **No-fix control (Claude's call):** for every question, resume from the same point `p`
 the reflector chose, with the original next step left to the model (no injected call),
-the same number of times as the reflector's attempts. The **net rescue rate** is the
-rescue rate minus the no-fix control's rate.
+once per reflector attempt slot: two draws for every question, whether or not the fix
+already rescued it, each with the same sampling seed as that attempt's fix. A question
+is control-solved if any of its draws is correct. The **net rescue rate** is the rescue
+rate minus the no-fix control's rate, both over the domain's 0-of-3 questions.
 
 - **Net rescue rate of at least 10 points in at least one domain:** build arm I and train.
 - **Below that in both:** rerun the rescue step with the 32B reflector. If that also fails
@@ -269,3 +274,134 @@ Nothing from the RSI spec's Phase 2 exists yet. This plan builds, for both arms:
 - The exact reflector prompt and tag format, within Section 4.3.
 - How collection saves failed trajectories, within Section 4.2.
 - Batching and job layout on the cluster.
+
+Section 12 records how each of these was settled.
+
+## 12. Decisions made during implementation
+
+Code lives in `src/rsi/intervention/` (records, fix, rescue, report),
+`scripts/run_call_intervention.py`, `scripts/build_arm_i_parquet.py`,
+`scripts/compare_arms.py` and `scripts/report_intervention.py`. Each point below was
+settled during the build or its reviews.
+
+### 12.1 Collection
+
+- **Seeds:** pass `k` (0-based) samples with seed `config.seed + k` (0, 1, 2), set on
+  every model provider, sub-agents included. Without this the three passes would repeat
+  each other.
+- **Later passes:** as in the existing collection script, passes 2 and 3 only rerun the
+  questions still unsolved. A question has three records only if it failed every pass.
+- **Grading** accepts the gold answer's aliases (`extra_info["golden_answers"]`), the
+  same yardstick the rescue step uses, so "0 of 3" and "rescued" are measured alike.
+- **System prompts:** each question gets the seed prompt of its own domain: the
+  `deepmath` prompt for math, the `gaia` prompt for `hotpotqa` and `nq`. A pre-existing
+  orchestrator bug built every prompt in a batch from the first question's system
+  prompt, so mixed batches ran about half their questions under the other domain's
+  prompt. It is fixed: every state now uses its own system prompt. Batches with one
+  prompt, which covers every benchmark run, are byte-identical to before. Collections
+  made before the fix (including the earlier 32B SFT collection) were affected.
+- **Records:** every run is saved, right or wrong, with the question, gold answer and
+  aliases, seed, prediction, plan, `query_analysis`, `action_history`, sub-agent calls
+  and full messages, which is enough to rebuild the run at any step.
+
+### 12.2 Candidates
+
+- Candidates are the pass-1 records of questions with exactly three records, none
+  correct.
+- A question with an error record in any pass is not a genuine 0 of 3: it is counted as
+  `skipped_error`. Runs whose planning turn gave the final answer are counted as
+  `skipped_planning_answer` (Section 4.2). Malformed or truncated records raise an error
+  instead of being guessed at.
+
+### 12.3 The fix
+
+- **Reply format:** `<step>N</step>`, `<sub_goal>...</sub_goal>` and
+  `<tool_call>{json}</tool_call>`, after the reflector's thinking. `N` is the number of
+  original actions kept (the `p` of Section 4.1), capped at `min(n_actions,
+  max_turns - 1)` so the injected call always has a turn. The last complete block of each
+  tag is used. The call must be `web_search` with a non-empty `query` or `code_generator`
+  with a non-empty `task`, nothing else; the sub-goal is at most 500 characters.
+- **Round-trip check:** the fix is injected as text in the orchestrator's own action
+  format. A fix is rejected as a parse error unless that text parses back to exactly the
+  same call and sub-goal, so the arm I training target is always the fix itself.
+- **Reflector instruction on leakage:** the corrected call may use the question's own
+  entities, numbers and wording (a corrected search has to name them); it must not
+  contain the gold answer or anything that reveals it. Phase 1's prompt-search
+  instruction ("do not copy named entities or numbers") does not apply to fixes.
+- **Leakage guard (Section 4.4):** whole-token match of the normalised gold and aliases
+  in the sub-goal and argument, after removing line-start list numbering, with no length
+  exemption, so `2` in "print x, which should be 2" is rejected but a numbered step "2."
+  is not. Answers that occur in the question are exempt, and so are 8-word sequences
+  shared with the question itself.
+- **Second attempt:** the reflector is shown its first fix, the step it targeted and the
+  wrong answer that followed. If the first fix was rejected for leakage it is told so; a
+  parse error passes nothing forward.
+- **Long trajectories:** if the reflector input exceeds 14000 tokens, per-call text is
+  halved down to 200 characters, then middle actions are cut.
+
+### 12.4 The rescue step
+
+- **Pairing:** for each attempt `a`, the fix continuation and the no-fix control start
+  from separately rebuilt states and use the same sampling seed, `1000 + a`.
+- **Control step:** the fix's `p`. For a parse error it is `min(n_actions,
+  max_turns - 1)`. For a question already rescued at attempt 1, attempt 2 runs the
+  control only, at the rescuing fix's step, and writes a row with status
+  `rescued_earlier`.
+- **Row statuses:** `ok`, `parse_error`, `leakage`, `rescued_earlier`. Every row carries
+  a control draw.
+- **Robustness:** each attempt runs in chunks of 100 candidates and appends its rows
+  after every chunk, so a killed job loses at most one chunk and a rerun skips what is on
+  disk. If every reflector call in a chunk fails, the run stops with an error rather than
+  using up an attempt for every question. A single failed call counts as a parse error.
+
+### 12.5 The gate
+
+- Rescue rate, control rate and net points are over the domain's 0-of-3 questions
+  (`zero_of_n`), as in Section 6. The same rates over the candidates only are reported
+  next to them but do not decide the gate.
+- **Blind check:** one attempt with the gold answer hidden (seed `1000 + 99`) on up to 100
+  rescued questions. It reports its own no-fix control as the chance baseline.
+
+### 12.6 Arm I
+
+- One rescued trajectory per question: the first correct `ok` attempt.
+- Its folded rows are kept from the fix on (`rows[1 + p:]`) only if row `1 + p`'s target
+  equals the fix text. Otherwise the trajectory is dropped and counted as misaligned.
+- Over-length filtering (16384 tokens) applies to the new rows only. A rescued question
+  already in arm C (matched by question text, or by domain plus index) is an error.
+- Arm C's rows come first and unchanged, and arm C's validation file is copied byte for
+  byte. Training shuffles rows, so their order does not matter.
+
+### 12.7 Training and evaluation
+
+- The SFT job takes the data files and run name from the environment, so both arms run
+  the same job and settings.
+- GPU assignment counts model instances (path plus adapter), not paths, so a LoRA
+  orchestrator and base sub-agents on the same Qwen3-8B get one GPU each. Configs without
+  an adapter are assigned exactly as before.
+- GAIA and HLE evaluation configs keep the `text_inspector` sub-agent, like the base
+  reference runs, so base, arm C and arm I see the same tools. The adapter was trained
+  without that tool.
+- The arm comparison reads only the named variant in each results folder and takes its
+  newest run by timestamp. The base MuSiQue run predates the `validation_subset_200` split
+  name, so McNemar is computed for arm I against arm C only.
+
+### 12.8 Figures report and trial runs
+
+- `scripts/report_intervention.py` turns the rescue output into `report.md`,
+  `report.json` and figures:
+  - rescue against the no-fix control, with the net interval from Newcombe's paired
+    method on the same questions;
+  - the ceiling on the training questions: pass@1, pass@3, and pass@3 plus net rescued;
+  - the funnel from 0-of-3 questions to rescued;
+  - fix kinds and steps;
+  - tool use before and after the fix;
+  - the blind check;
+  - examples.
+
+  The ceiling is an upper bound on what the decision changes could add on the training
+  questions, not a benchmark gain. After evaluation it also plots the arm comparison.
+- `SUBSET=N` runs a trial: the collection job collects only the first N training
+  questions, and the rescue job rescues only the first N 0-of-3 questions in collected
+  order. The gate counts are restricted to the questions up to the last of those, so
+  subset rates are not diluted.

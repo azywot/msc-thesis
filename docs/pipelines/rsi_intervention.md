@@ -29,8 +29,18 @@ one of:
 mkdir -p out/rsi && sbatch jobs/rsi/004_collect_8b.job
 ```
 
-One H100, up to 24 h. Three passes per training question (seeds `config.seed + k`).
-Output: `data/training/rsi_phase2/collect_8b/collected_<ts>.jsonl`.
+One H100, up to 24 h; the full 1800 questions take about 5 h (about 8.5 min per
+batch of 100). Three passes, each with its own seed (`config.seed + k`: 0, 1, 2).
+Pass 1 runs every question; passes 2 and 3 rerun only the questions still unsolved,
+so a question has three records only if it was wrong every time. Each question gets
+its own domain's seed prompt (`deepmath` for math, `gaia` for `hotpotqa` and `nq`);
+the job logs this at the start.
+
+Output: `data/training/rsi_phase2/collect_8b/collected_<ts>.jsonl`, one record per
+run, right or wrong, with the question, gold answer and aliases, seed, prediction,
+plan, `action_history`, sub-agent calls and full messages. Progress (pass, batch and
+each question's result) goes to `out/rsi/collect_8b_<jobid>.err`; check it with
+`grep batch out/rsi/collect_8b_<jobid>.err | tail -1`.
 
 ## 2. Build arm C
 
@@ -53,7 +63,13 @@ sbatch jobs/rsi/005_rescue_8b.job
 ```
 
 One H100, up to 24 h. It reads every `collected_*.jsonl`, takes the questions that
-were wrong in all three passes, and asks the 8B reflector for one fixed call.
+were wrong in all three passes, and asks the 8B reflector (thinking on) for one fixed
+call: the step to fix, a sub-goal and the corrected `web_search` query or
+`code_generator` task. The fix may use the question's own entities and numbers, but
+not the gold answer. Each fix is injected and the orchestrator continues to an answer.
+Alongside it, a no-fix control resumes the same question from the same step with the
+same seed and nothing injected (two control draws per question). At most two attempts per question; the second is shown
+the first fix and its wrong answer. Progress goes to `out/rsi/rescue_8b_<jobid>.err`.
 Output in `experiments/results/rsi/phase2/rescue_8b/`: `candidates.json`,
 `rescue.jsonl`, `gate.json`, `gate.md`.
 
@@ -317,7 +333,10 @@ It writes `report.md` (figures with captions and the numbers behind them),
 the gate threshold, the ceiling on the training questions, the funnel, fix kinds and
 steps, the behaviour of rescued trajectories, the blind check (if `blind.jsonl`
 exists) and a table of rescued examples (`--examples N`, default 8). The ceiling is
-an upper bound on the training questions, not a benchmark gain.
+an upper bound on the training questions, not a benchmark gain. Single rates carry
+95% Wilson intervals; the net rescue interval uses Newcombe's paired method, because
+the fix and the control are measured on the same questions. The report refuses to
+run if its counts disagree with `gate.json`.
 
 After `compare_arms.py` (section 12), run it again with
 `--comparison experiments/results/rsi_inference/comparison/comparison.json` to add the
@@ -370,3 +389,17 @@ python -m pytest tests/unit tests/rsi --deselect tests/rsi/test_run_prompt_searc
 | 9 configs | `experiments/configs/qwen3/rsi_inference/arm_{c,i}/<dataset>/qwen8B_sub8B_none.yaml` |
 | 11 evaluation | `experiments/results/rsi_inference/arm_{c,i}/<benchmark>/qwen8B_sub8B_none/<run>/` |
 | 12 comparison | `experiments/results/rsi_inference/comparison/comparison.{json,md}` |
+| 13 report | `experiments/results/rsi/phase2/report_8b/{report.md,report.json,figures/}` |
+
+## Logs
+
+Python progress messages go to each job's `.err` file; the `.log` file holds shell
+and vLLM output.
+
+| Job | Logs |
+|---|---|
+| 004 collect | `out/rsi/collect_8b_<jobid>.{log,err}` |
+| 005 rescue (8B) | `out/rsi/rescue_8b_<jobid>.{log,err}` |
+| 006 rescue (32B) | `out/rsi/rescue_32b_<jobid>.{log,err}` |
+| 007 training | `out/fine_tuning/sft_train/sft_folded_<jobid>.{log,err}` |
+| evaluation | `experiment.log` in each run folder |
