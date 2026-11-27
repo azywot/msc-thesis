@@ -180,3 +180,11 @@ def test_settings_reject_budget_over_model_len():
         ReflectorSettings(model="m", input_budget_tokens=20_000, max_tokens=16_384)
     ok = ReflectorSettings(model="m", input_budget_tokens=16_384, max_tokens=16_384)
     assert ok.input_budget_tokens + ok.max_tokens == ok.max_model_len
+
+
+def test_is_error_item():
+    from rsi.reflector import _error_item, is_error_item
+
+    assert is_error_item(_error_item(3, RuntimeError("oom")))
+    assert not is_error_item({"text": "", "finish_reason": "length", "seed": 1})
+    assert not is_error_item({"text": "x", "finish_reason": "stop", "seed": 1})

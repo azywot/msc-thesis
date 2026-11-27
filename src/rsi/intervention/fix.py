@@ -160,14 +160,16 @@ def _user_text(t, pcc, cut_actions, previous):
     text, _ = _render_trajectory(t, pcc, cut_actions, None)
     parts = ["## Failed trajectory", text]
     if previous:
-        parts += [
-            "",
-            "## Earlier attempt",
-            _earlier_line(previous),
-            previous["fix_text"],
-            f"The trajectory then answered: {previous['prediction']}",
-            "That answer was wrong. Propose a different fix.",
-        ]
+        parts += ["", "## Earlier attempt", _earlier_line(previous), previous["fix_text"]]
+        if previous.get("status") == "leakage":
+            parts.append(
+                "That fix was rejected because it revealed the answer. Propose a different fix."
+            )
+        else:
+            parts += [
+                f"The trajectory then answered: {previous['prediction']}",
+                "That answer was wrong. Propose a different fix.",
+            ]
     return "\n".join(parts)
 
 

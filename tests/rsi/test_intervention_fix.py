@@ -193,3 +193,15 @@ def test_fix_prompt_allows_question_entities_and_forbids_the_answer():
     assert "may use the question's own entities, numbers and wording" in system
     assert "Do not put the gold answer, or anything that reveals it" in system
     assert system.endswith("such fixes are rejected.")
+
+
+def test_earlier_attempt_after_leakage_rejection():
+    rec = {"question_id": "q", "question": "Q?", "ground_truth": "g", "prediction": "p"}
+    prev = {"status": "leakage", "fix_text": "FIXTEXT", "prediction": "", "step": 1}
+    user = build_fix_messages(rec, previous=prev)[1]["content"]
+    assert "FIXTEXT" in user and "tried at step 1:" in user
+    assert "rejected because it revealed the answer" in user
+    assert "then answered" not in user and "That answer was wrong" not in user
+    prev["status"] = "ok"
+    user = build_fix_messages(rec, previous=prev)[1]["content"]
+    assert "The trajectory then answered: " in user and "That answer was wrong" in user

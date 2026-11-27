@@ -34,8 +34,16 @@ class ReflectorSettings(BaseModel):
         return self
 
 
+_ERROR_PREFIX = "error: "
+
+
 def _error_item(seed, exc):
-    return {"text": "", "finish_reason": f"error: {exc}", "seed": seed}
+    return {"text": "", "finish_reason": f"{_ERROR_PREFIX}{exc}", "seed": seed}
+
+
+def is_error_item(item) -> bool:
+    """True for the placeholder returned when generation itself raised, not for a real reply."""
+    return not item.get("text") and str(item.get("finish_reason") or "").startswith(_ERROR_PREFIX)
 
 
 class InProcessReflector:
