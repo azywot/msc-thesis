@@ -264,7 +264,14 @@ def test_no_em_dashes_in_report(tmp_path):
 
 @pytest.mark.parametrize(
     "table,lo,hi",
-    [((20, 40, 4, 236), 7.9, 16.4), ((10, 30, 15, 245), 0.6, 9.5), ((3, 6, 0, 31), 2.7, 28.7)],
+    [
+        ((20, 40, 4, 236), 7.9, 16.4),
+        ((10, 30, 15, 245), 0.6, 9.5),
+        ((3, 6, 0, 31), 2.7, 28.7),
+        ((0, 3, 5, 2), -61.6, 31.6),
+        ((0, 5, 10, 5), -55.2, 12.3),
+        ((1, 10, 20, 9), -47.8, 1.6),
+    ],
 )
 def test_paired_net_interval_reference_values(table, lo, hi):
     got = R.net_interval(*table)
@@ -292,3 +299,24 @@ def test_blind_has_no_sighted_interval(tmp_path):
     data = R.build_report([collected], rdir, tmp_path / "out")
     assert "sighted_ci" not in data["blind"]
     assert "by construction" in (tmp_path / "out" / "report.md").read_text()
+
+
+def test_inconsistent_rescue_folder_raises(tmp_path):
+    collected, rdir, gate = make_inputs(tmp_path)
+    gate["search"]["rescued"] += 1
+    (rdir / "gate.json").write_text(json.dumps(gate))
+    with pytest.raises(ValueError, match="inconsistent"):
+        R.build_report([collected], rdir, tmp_path / "out")
+
+
+def test_paired_table_uses_candidates_json(tmp_path):
+    collected, rdir, _ = make_inputs(tmp_path)
+    cands, _ = intervention_candidates(R.load_collected([collected]), 3)
+    listing = [
+        {"question_id": c["question_id"], "domain": R.domain_of(c["data_source"])} for c in cands
+    ]
+    (rdir / "candidates.json").write_text(json.dumps({"candidates": listing}))
+    data = R.build_report([collected], rdir, tmp_path / "out")
+    assert data["domains"]["search"]["net_ci"] == pytest.approx(
+        [100 * x for x in R.net_interval(1, 1, 0, 2)]
+    )

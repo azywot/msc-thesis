@@ -96,7 +96,7 @@ def net_interval(both: int, rescue_only: int, control_only: int, neither: int):
     l2, u2 = wilson(k2, n)
     margins = (k1 * (n - k1) * k2 * (n - k2)) ** 0.5
     c = both * neither - rescue_only * control_only
-    c = c - n / 2 if c > n / 2 else (c + n / 2 if c < -n / 2 else 0.0)  # Newcombe's correction
+    c = max(c - n / 2, 0.0) if c > 0 else c  # Newcombe corrects only a positive AD - BC
     phi = c / margins if margins else 0.0
     d = p1 - p2
     lo = d - math.sqrt(max(0.0, (p1 - l1) ** 2 + (u2 - p2) ** 2 - 2 * phi * (p1 - l1) * (u2 - p2)))
@@ -160,7 +160,9 @@ def _rescued_rows(rows: List[dict]) -> Dict[object, dict]:
     return out
 
 
-def compute(records: List[dict], rows: List[dict], gate: dict, pool=None) -> dict:
+def compute(
+    records: List[dict], rows: List[dict], gate: dict, pool=None, candidate_ids=None
+) -> dict:
     if pool is not None:
         records = [r for r in records if r.get("question_id") in pool]
     by_q: Dict[object, List[dict]] = {}
@@ -213,8 +215,20 @@ def compute(records: List[dict], rows: List[dict], gate: dict, pool=None) -> dic
             )
         lo1, hi1 = wilson(rescued, zero)
         loc, hic = wilson(control, zero)
-        res_ids = {q for q, r in rescued_row.items() if r.get("domain") == domain}
-        ctl_ids = {r["question_id"] for r in drows if r.get("control_correct")}
+        # Same set the gate counts over: the domain's candidates.
+        cands = (
+            set(candidate_ids[domain])
+            if candidate_ids is not None
+            else {r["question_id"] for r in drows}
+        )
+        res_ids = {q for q, r in rescued_row.items() if r.get("domain") == domain and q in cands}
+        ctl_ids = {r["question_id"] for r in drows if r.get("control_correct")} & cands
+        if len(res_ids) != rescued or len(ctl_ids) != control:
+            raise ValueError(
+                f"{domain}: rescue.jsonl gives {len(res_ids)} rescued and {len(ctl_ids)} "
+                f"control-solved candidates, gate.json says {rescued} and {control}; "
+                "the rescue folder is inconsistent"
+            )
         both = len(res_ids & ctl_ids)
         r_only, c_only = len(res_ids) - both, len(ctl_ids) - both
         lon, hin = net_interval(both, r_only, c_only, zero - both - r_only - c_only)
@@ -943,13 +957,17 @@ def build_report(collected, rescue_dir, out_dir, comparison=None, n_examples=8) 
     if blind_rows is not None and "blind" not in gate:
         gate = {**gate, "blind": summarize([], [], {}, blind_rows=blind_rows)["blind"]}
     records = load_collected([Path(p) for p in collected])
-    pool = None
+    pool, candidate_ids = None, None
     cand_path = rescue_dir / "candidates.json"
     if cand_path.exists():
-        ids = json.loads(cand_path.read_text(encoding="utf-8")).get("pool_question_ids")
+        cj = json.loads(cand_path.read_text(encoding="utf-8"))
+        ids = cj.get("pool_question_ids")
+        candidate_ids = {d: [] for d in DOMAINS}
+        for c in cj.get("candidates", []):
+            candidate_ids.setdefault(c["domain"], []).append(c["question_id"])
         if ids is not None:
             pool = set(ids)
-    data = compute(records, rows, gate, pool)
+    data = compute(records, rows, gate, pool, candidate_ids)
     comp = json.loads(Path(comparison).read_text(encoding="utf-8")) if comparison else None
 
     fig_rescue_vs_control(data, fig_dir)
