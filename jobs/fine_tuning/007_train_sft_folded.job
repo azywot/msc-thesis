@@ -135,8 +135,13 @@ export PYTHONUNBUFFERED=1
 
 mkdir -p out/fine_tuning/sft_train
 
-TRAIN_FILE=data/training/sft/sft_folded_train.parquet
-VAL_FILE=data/training/sft/sft_folded_val.parquet
+# Overridable via `sbatch --export=ALL,...` so arm runs reuse this job unchanged.
+TRAIN_FILE="${TRAIN_FILE:-data/training/sft/sft_folded_train.parquet}"
+VAL_FILE="${VAL_FILE:-data/training/sft/sft_folded_val.parquet}"
+# No colon here: an explicitly empty value (NATIVE_FILE=) drops the --native check,
+# while unset keeps the default.
+NATIVE_FILE="${NATIVE_FILE-data/training/sft/sft_train.parquet}"
+NATIVE_VAL_FILE="${NATIVE_VAL_FILE-data/training/sft/sft_val.parquet}"
 
 for required_file in "$TRAIN_FILE" "$VAL_FILE"; do
     if [[ ! -f "$required_file" ]]; then
@@ -153,15 +158,19 @@ done
 # from a regressed benchmark weeks later. This is the check that was missing first time.
 echo ""
 echo "Pre-flight: verifying folded rows render exactly as inference does..."
+NATIVE_ARGS=()
+[[ -n "$NATIVE_FILE" ]] && NATIVE_ARGS=(--native "$NATIVE_FILE")
 python scripts/check_sft_folded_format.py \
-    --folded "$TRAIN_FILE" --native data/training/sft/sft_train.parquet \
+    --folded "$TRAIN_FILE" "${NATIVE_ARGS[@]}" \
     --max-length 16384
+NATIVE_ARGS=()
+[[ -n "$NATIVE_VAL_FILE" ]] && NATIVE_ARGS=(--native "$NATIVE_VAL_FILE")
 python scripts/check_sft_folded_format.py \
-    --folded "$VAL_FILE" --native data/training/sft/sft_val.parquet \
+    --folded "$VAL_FILE" "${NATIVE_ARGS[@]}" \
     --max-length 16384
 echo "Pre-flight passed."
 
-EXPERIMENT_NAME="qwen3-8b-sft-folded-v1"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-qwen3-8b-sft-folded-v1}"
 # Same layout as the GRPO LoRA runs (launch_verl.py:158-163):
 #   /scratch-shared/$USER/fine_tuning/lora_adapters/<experiment>/<run-tag>/
 # so SFT and GRPO adapters sit side by side and a run never clobbers its predecessor.

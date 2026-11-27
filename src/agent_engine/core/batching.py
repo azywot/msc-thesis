@@ -70,6 +70,11 @@ def flush_batches(jobs_by_tool, commit, accumulate_usage) -> None:
 
     ``commit(state, tool_call, text)`` and ``accumulate_usage(state, usage)``
     are injected so this module never imports the orchestrator.
+
+    A tool that defines ``subagent_record(job, generation, result)`` also gets
+    its call logged to ``state.metadata["subagent_calls"]``, tagged with the
+    ``action_index`` the commit will occupy. Logging only reads; it never
+    alters ``commit`` or usage accounting.
     """
     ordered = sorted(
         jobs_by_tool.items(),
@@ -99,4 +104,9 @@ def flush_batches(jobs_by_tool, commit, accumulate_usage) -> None:
             for job, out in zip(group, outputs):
                 accumulate_usage(job.state, out.usage)
                 result = job.tool.finalize(job, out)
+                recorder = getattr(job.tool, "subagent_record", None)
+                if recorder is not None:
+                    record = dict(recorder(job, out, result))
+                    record["action_index"] = len(getattr(job.state, "action_history", ()))
+                    job.state.metadata.setdefault("subagent_calls", []).append(record)
                 commit(job.state, job.tool_call, result.output or "")

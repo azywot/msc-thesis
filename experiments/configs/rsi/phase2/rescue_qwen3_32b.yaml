@@ -1,0 +1,39 @@
+name: "rsi_phase2_rescue_qwen3_8b_reflector_qwen3_32b"
+models:
+  orchestrator:
+    name: "Qwen3-8B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-8B"
+    role: "orchestrator"
+    gpu_memory_utilization: 0.70
+tools:
+  enabled_tools: [web_search, code_generator]
+  direct_tool_call: false
+  web_tool_provider: "serper"
+  max_search_limit: 10
+max_turns: 7
+batch_size: 100
+seed: 0
+thinking_mode: "NO"
+cache_dir: "./cache"
+intervention:
+  data_path: "data/training/train/combined_train.parquet"
+  n_passes: 3
+  threshold_points: 10.0
+  blind_n: 100
+  ngram: 8
+  rescue:
+    max_attempts: 2
+    attempt_seed_base: 1000
+    per_call_chars: 1500
+    input_budget_tokens: 14000
+    chunk_size: 100
+  reflector:
+    backend: "openai"
+    base_url: "http://localhost:8001/v1"
+    model: "Qwen/Qwen3-32B"
+    max_model_len: 32768
+    max_tokens: 16384
+    input_budget_tokens: 14000
+    per_call_chars: 1500
+    enable_thinking: true

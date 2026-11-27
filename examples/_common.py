@@ -23,7 +23,7 @@ from agent_engine.tools import (
     WebSearchTool,
 )
 from agent_engine.utils import set_seed, setup_logging
-from agent_engine.models.vllm_provider import resolve_gpu_assignments
+from agent_engine.models.vllm_provider import model_instance_key, resolve_gpu_assignments
 
 
 # ---------------------------------------------------------------------------
@@ -170,9 +170,9 @@ def build_model_providers(
         def _apply(cfg) -> None:
             if cfg is None:
                 return
-            path = cfg.path_or_id
-            if path in gpu_assignments:
-                util, gpu_ids = gpu_assignments[path]
+            key = model_instance_key(cfg)
+            if key in gpu_assignments:
+                util, gpu_ids = gpu_assignments[key]
                 if cfg.gpu_memory_utilization is None:
                     cfg.gpu_memory_utilization = util
                 if cfg.gpu_ids is None and gpu_ids is not None:

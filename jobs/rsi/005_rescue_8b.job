@@ -1,0 +1,101 @@
+#!/bin/bash
+#SBATCH --job-name=RSIRes8B
+#SBATCH --partition=gpu_h100
+# One H100: Qwen3-8B orchestrator and sub-agents share one vLLM instance.
+#SBATCH --gpus=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=24:00:00
+#SBATCH --output=out/rsi/rescue_8b_%A.log
+#SBATCH --error=out/rsi/rescue_8b_%A.err
+
+# Tool-call intervention with the Qwen3-8B reflector in process, on the 0-of-3 questions of job 004.
+# Submit: mkdir -p out/rsi && sbatch jobs/rsi/005_rescue_8b.job
+#   trial on the first N 0-of-3 questions (job 004 with the same SUBSET first):
+#     sbatch --export=ALL,SUBSET=200 jobs/rsi/005_rescue_8b.job
+#   add the blind check: sbatch --export=ALL,BLIND=1 jobs/rsi/005_rescue_8b.job
+# Output: experiments/results/rsi/phase2/rescue_8b/{candidates.json,rescue.jsonl,gate.json,gate.md}
+#   (rescue_8b_subset<N> when SUBSET is set)
+
+set -euo pipefail
+
+echo "=========================================="
+echo "MSC Thesis - RSI phase 2 rescue (8B)"
+echo "=========================================="
+echo "Start time: $(date)"
+echo "Job ID: ${SLURM_JOB_ID:-local}  Node: $(hostname)"
+echo ""
+
+module purge
+module load 2025
+module load Miniconda3/25.5.1-1
+module load CUDA/12.8.0
+module load cuDNN/9.10.1.4-CUDA-12.8.0
+
+# Under sbatch, SLURM copies this script to /var/spool/slurm, so the script's own location
+# cannot be used. SLURM_SUBMIT_DIR is the dir sbatch was invoked from.
+PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$HOME/azywot/msc-thesis}}"
+cd "$PROJECT_DIR" || exit 1
+echo "Project directory: $PROJECT_DIR"
+
+if [[ -f ".env" ]]; then
+    echo "Loading environment variables from .env..."
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | grep -v '^[[:space:]]*#')
+    set +a
+fi
+
+if [[ -z "${SERPER_API_KEY:-}" && -z "${TAVILY_API_KEY:-}" ]]; then
+    echo "ERROR: SERPER_API_KEY or TAVILY_API_KEY must be set."
+    exit 1
+fi
+
+source activate agent_engine
+# Conda env's libstdc++ must take precedence over the older system /lib64 version.
+export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+
+if [[ ! -f data/training/train/combined_train.parquet ]]; then
+    echo "ERROR: Missing required file: data/training/train/combined_train.parquet"
+    exit 1
+fi
+
+# --- subset handling begin
+COLLECT_DIR="data/training/rsi_phase2/collect_8b"
+RESCUE_DIR="experiments/results/rsi/phase2/rescue_8b"
+SUBSET_ARG=""
+if [[ -n "${SUBSET:-}" ]]; then
+    if ! [[ "$SUBSET" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: SUBSET must be a positive integer, got: $SUBSET"
+        exit 1
+    fi
+    COLLECT_DIR="${COLLECT_DIR}_subset${SUBSET}"
+    RESCUE_DIR="${RESCUE_DIR}_subset${SUBSET}"
+    SUBSET_ARG="--subset ${SUBSET}"
+fi
+# --- subset handling end
+
+mkdir -p out/rsi "$RESCUE_DIR"
+
+shopt -s nullglob
+COLLECTED=("$COLLECT_DIR"/collected_*.jsonl)
+shopt -u nullglob
+if [[ ${#COLLECTED[@]} -eq 0 ]]; then
+    echo "ERROR: no collected_*.jsonl in $COLLECT_DIR (run job 004 first)."
+    exit 1
+fi
+
+BLIND_ARG=""
+if [[ "${BLIND:-0}" == "1" ]]; then
+    BLIND_ARG="--blind"
+fi
+
+# shellcheck disable=SC2086
+python scripts/run_call_intervention.py \
+    --config experiments/configs/rsi/phase2/rescue_qwen3_8b.yaml \
+    --collected "${COLLECTED[@]}" \
+    --out-dir "$RESCUE_DIR" \
+    $BLIND_ARG $SUBSET_ARG
+
+echo ""
+echo "Rescue complete at: $(date)"
+cat "$RESCUE_DIR/gate.md" 2>/dev/null || echo "  (no gate.md, check log)"

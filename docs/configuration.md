@@ -68,6 +68,7 @@ orchestrator is also driven directly by the fine-tuning rollout code.
 | `cache_dir` | path | `./cache` | Root of the search/URL cache. |
 | `slurm` | SlurmConfig | defaults | See [SLURM](#slurm-slurmconfig). |
 | `gepa_prompt_path` | path \| null | `null` | See [GEPA prompts](#gepa-prompt-path). |
+| `prompt_bundle_path` | path \| null | `null` | See [Prompt bundle path](#prompt-bundle-path). |
 
 ### `batch_size`
 
@@ -248,6 +249,18 @@ When set, `PromptBuilder` is bypassed entirely: `system_prompt` and
 templates. This is how a GEPA-optimised prompt is evaluated - see
 [pipelines/gepa.md](pipelines/gepa.md). Because it short-circuits the builder,
 a config with this key set ignores the dataset's normal template.
+
+## Prompt bundle path
+
+```yaml
+prompt_bundle_path: experiments/results/rsi/phase1/<run>/<domain>/bundles/v1.json
+```
+
+Renders the system prompt, planning suffix and sub-agent templates from an RSI
+prompt bundle. The benchmark's prompt template must match the bundle's domain
+template, `tools.direct_tool_call` and `baseline` must be false, and the key is
+mutually exclusive with `gepa_prompt_path`. Unset, nothing changes (fingerprints
+included). See [pipelines/rsi.md](pipelines/rsi.md).
 
 ---
 

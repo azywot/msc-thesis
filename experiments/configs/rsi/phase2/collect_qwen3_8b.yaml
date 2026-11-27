@@ -1,0 +1,18 @@
+name: "rsi_phase2_collect_qwen3_8b"
+models:
+  orchestrator:
+    name: "Qwen3-8B"
+    family: "qwen3"
+    path_or_id: "Qwen/Qwen3-8B"
+    role: "orchestrator"
+    gpu_memory_utilization: 0.70
+tools:
+  enabled_tools: [web_search, code_generator]
+  direct_tool_call: false
+  web_tool_provider: "serper"
+  max_search_limit: 10
+max_turns: 7
+batch_size: 100
+seed: 0
+thinking_mode: "NO"
+cache_dir: "./cache"

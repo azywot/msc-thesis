@@ -32,6 +32,7 @@ Instruct). **Backends:** vLLM (cluster), MLX (Apple Silicon), OpenAI / Anthropic
 | Know what a config key does | [docs/configuration.md](docs/configuration.md) |
 | Run an evaluation | [docs/pipelines/evaluation.md](docs/pipelines/evaluation.md) |
 | Optimise prompts (GEPA) | [docs/pipelines/gepa.md](docs/pipelines/gepa.md) |
+| Search prompts with a self-reflector (RSI phase 1) | [docs/pipelines/rsi.md](docs/pipelines/rsi.md) |
 | Fine-tune (SFT / RL / Prefix-RFT) | [docs/pipelines/sft.md](docs/pipelines/sft.md), [docs/pipelines/rl.md](docs/pipelines/rl.md), [docs/pipelines/prefix-rft.md](docs/pipelines/prefix-rft.md) |
 | Add a benchmark | [docs/guides/add-a-benchmark.md](docs/guides/add-a-benchmark.md) |
 | Add a tool or sub-agent | [docs/guides/add-a-tool-or-subagent.md](docs/guides/add-a-tool-or-subagent.md) |
@@ -169,6 +170,7 @@ src/
     utils/             tool-call parsing, logging, seeding
   fine_tuning/         RL (GRPO) + SFT; agentflow/ is vendored - see its VENDORED.md
   gepa_integration/    prompt optimisation
+  rsi/                 RSI phase 1 prompt search (bundle, search loop, report)
   verl_ext/            local verl extensions (folded SFT dataset, checkpoint utils)
 
 scripts/               run_experiment, analyze_results, generate_configs,
@@ -178,7 +180,7 @@ experiments/
   configs/             YAML configs by model family; most are generated
   scripts/             run_all_in_folder.sh
   results/             default output root
-jobs/                  SLURM scripts - 001-007 setup, fine_tuning/, gepa/, grpo_inference/
+jobs/                  SLURM scripts - 001-007 setup, fine_tuning/, gepa/, rsi/, grpo_inference/
 tests/                 unit/ + characterization/ (behaviour-locking fixtures)
 examples/              one runnable script per tool
 docs/                  see the table above
@@ -325,6 +327,7 @@ Working directory is `$HOME/azywot/msc-thesis/`.
 | `jobs/007_add_bigcodebench_libs.job` | Extra libraries for BigCodeBench |
 | `jobs/fine_tuning/` | SFT and RL training - see the pipeline docs |
 | `jobs/gepa/` | GEPA data prep, smoke tests, optimisation |
+| `jobs/rsi/` | RSI phase 1 prompt search and confirmation |
 | `jobs/grpo_inference/` | Evaluation of base / SFT / GRPO checkpoints |
 
 Overrides via `sbatch --export=ALL,...`: `ENV_NAME`, `PROJECT_DIR`, `DATA_DIR`.
