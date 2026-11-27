@@ -126,8 +126,15 @@ def test_one_trajectory_per_rescued_question():
 def test_overlap_with_arm_c_raises():
     with pytest.raises(ValueError):
         M.build_arm_i(_arm_c(), [_rescue(question="old math")], {}, SUFFIX)
-    with pytest.raises(ValueError):
-        M.build_arm_i(_arm_c(), [_rescue()], {1: {"idx": 7}}, SUFFIX)
+    with pytest.raises(ValueError):  # same category (deepmath), same idx
+        M.build_arm_i(
+            _arm_c(), [_rescue(data_source="deepmath", domain="math")], {1: {"idx": 7}}, SUFFIX
+        )
+
+
+def test_same_idx_in_other_category_does_not_raise():
+    arm_i, _ = M.build_arm_i(_arm_c(), [_rescue()], {1: {"idx": 7}}, SUFFIX)  # hotpotqa idx 7
+    assert len(arm_i) == 3
 
 
 def test_stats_counts(monkeypatch):

@@ -95,7 +95,12 @@ def build_arm_i(
 ) -> tuple:
     """Return (arm I dataframe, stats). Arm I is arm C's rows, untouched, then the new rows."""
     arm_c_questions = set(arm_c_train["question"])
-    arm_c_idx = {i for i in (_idx(e) for e in arm_c_train["extra_info"]) if i is not None}
+    # idx is only unique within a category (math and search each use 0..899).
+    arm_c_idx = {
+        (sft._category(ds), _idx(e))
+        for ds, e in zip(arm_c_train["data_source"], arm_c_train["extra_info"])
+        if _idx(e) is not None
+    }
 
     first = {}
     for r in rescue_rows:
@@ -106,7 +111,8 @@ def build_arm_i(
     new_rows, misaligned, by_kind, by_domain = [], 0, Counter(), Counter()
     for qid, r in first.items():
         info = extra_info.get(qid)
-        if r["question"] in arm_c_questions or (_idx(info) is not None and _idx(info) in arm_c_idx):
+        key = (sft._category(r["data_source"]), _idx(info))
+        if r["question"] in arm_c_questions or (key[1] is not None and key in arm_c_idx):
             raise ValueError(f"rescued question {qid} already appears in arm C")
         folded = rescued_rows(r, planning_suffix)
         if folded is None:
