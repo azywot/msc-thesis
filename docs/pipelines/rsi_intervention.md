@@ -157,11 +157,15 @@ sbatch --export=ALL,TRAIN_FILE=data/training/rsi_phase2/arm_c/arm_c_folded_train
 sbatch --export=ALL,TRAIN_FILE=data/training/rsi_phase2/arm_i/arm_i_folded_train.parquet,VAL_FILE=data/training/rsi_phase2/arm_i/arm_i_folded_val.parquet,EXPERIMENT_NAME=qwen3-8b-rsi-arm-i,NATIVE_FILE=,NATIVE_VAL_FILE= jobs/fine_tuning/007_train_sft_folded.job
 ```
 
-**Confirm in the first arm's log** that the pre-flight format check ran without
-`--native`. Slurm must pass the empty `NATIVE_FILE=` and `NATIVE_VAL_FILE=` through
-to the job. If the log shows the check used the default native files
-(`data/training/sft/sft_train.parquet` or `sft_val.parquet`), stop and cancel both
-jobs: the check was run against the wrong data, and the empty values did not arrive.
+**Confirm in the first arm's stderr file** that the pre-flight format check ran
+without `--native`. Slurm must pass the empty `NATIVE_FILE=` and `NATIVE_VAL_FILE=`
+through to the job. The job never prints the native path, and the check script logs
+to stderr, so open `out/fine_tuning/sft_train/sft_folded_<jobid>.err` (not the
+`.log`) and look at the pre-flight section. With `--native` the check logs
+`Every native question present: ...` and `Trajectories N -> rows M (...x)`. If
+neither line appears, the empty values arrived and all is well. If either appears,
+the default native files were used: cancel both jobs, because the check ran against
+the wrong data.
 
 ### Where the adapter lands, and the run tag
 
@@ -188,6 +192,10 @@ each with the real run tag of that arm, then regenerate:
 python scripts/generate_configs.py --suite rsi_arm_c_inference
 python scripts/generate_configs.py --suite rsi_arm_i_inference
 ```
+
+Commit the edited constants and the regenerated configs together, or
+`tests/unit/test_wiring_invariants.py::test_the_generator_reproduces_the_committed_configs`
+fails.
 
 Configs land in `experiments/configs/qwen3/rsi_inference/arm_c/<dataset>/` and
 `.../arm_i/<dataset>/`, one per benchmark (GAIA, HLE, GPQA, AIME, MuSiQue), named
@@ -226,7 +234,7 @@ srun --partition=gpu_h100 --gpus=2 --cpus-per-task=8 --time=01:00:00 \
 
 (`srun` needs the conda env active and the module loads from the job scripts; if you
 prefer, wrap the same `python` line in a short `sbatch` script.) Success is one
-completed question and a `raw_results.json` in `out/rsi_smoke/arm_c_aime_run/`. A
+completed question and a `raw_results.json` in `out/rsi_smoke/arm_c_aime_run/<split>_<date>_<jobid>/` (the runner creates that run subdirectory under `--output-dir`). A
 missing-adapter or `<run-tag>` error here means step 9 was not done.
 
 ## 11. Evaluate
