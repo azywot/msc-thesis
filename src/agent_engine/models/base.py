@@ -381,3 +381,14 @@ class BaseModelProvider(ABC):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.cleanup()
+
+
+def model_instance_key(cfg) -> str:
+    """Identity of a loaded engine: model path plus LoRA adapter.
+
+    This is the key ``runner/providers.py`` caches providers by (it lives here, not in
+    ``vllm_provider``, so API-only installs can import it), so GPU assignment and
+    provider reuse agree on what counts as one engine. A LoRA orchestrator and a base
+    sub-agent loaded from the same path are two engines.
+    """
+    return f"{cfg.path_or_id}|lora:{cfg.lora_adapter_path or ''}"

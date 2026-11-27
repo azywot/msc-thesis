@@ -17,6 +17,8 @@ Run from the repo root:
         (LoRA-adapted Qwen3-8B orchestrator + Qwen3-1.7B subagents; no thinking / orch thinking)
         Before running, set LORA_ADAPTER_PLACEHOLDER to the actual adapter path.
     python scripts/generate_configs.py --suite sft_inference
+    python scripts/generate_configs.py --suite rsi_arm_c_inference
+    python scripts/generate_configs.py --suite rsi_arm_i_inference
         (SFT-adapted Qwen3-8B orchestrator + Qwen3-1.7B subagents; NO thinking only)
         Before running, set SFT_ADAPTER_PLACEHOLDER to the actual adapter path.
 
@@ -187,6 +189,22 @@ VARIANTS_LORA_INFERENCE = [
 VARIANTS_SFT_INFERENCE = [
     ("qwen8B_sub1_7b_none", "8B", "1.7B", "NO"),
 ]
+
+# Tool-call-intervention evaluation: the arm C / arm I orchestrator adapter with base
+# Qwen3-8B sub-agents, no thinking.
+VARIANTS_RSI_INFERENCE = [
+    ("qwen8B_sub8B_none", "8B", "8B", "NO"),
+]
+
+# Replace <run-tag> with the value the training job prints.
+RSI_ARM_C_ADAPTER_PLACEHOLDER = (
+    "/gpfs/home3/xchen1/azywot/msc-thesis/data/adapters/"
+    "qwen3-8b-rsi-arm-c/<run-tag>/best_adapter"
+)
+RSI_ARM_I_ADAPTER_PLACEHOLDER = (
+    "/gpfs/home3/xchen1/azywot/msc-thesis/data/adapters/"
+    "qwen3-8b-rsi-arm-i/<run-tag>/best_adapter"
+)
 
 # ── all possible variants ──────────────────────────────────────────────────────
 # (filename_stem, model_key, direct_tool_call, enabled_tools_key, thinking_mode)
@@ -496,6 +514,42 @@ SUITES = {
         "train_job":       "007_train_sft_folded.job",
         # Replace <run-tag> with the value from the training job log before running inference.
         "lora_adapter_path": SFT_ADAPTER_PLACEHOLDER,
+    },
+    "rsi_arm_c_inference": {
+        "description_tag": "[RSI arm C inference]",
+        "name_prefix":     "RSI_ArmC_eval",
+        "output_dir_root": "./experiments/results/rsi_inference/arm_c",
+        "config_subdir":   "qwen3/rsi_inference/arm_c",
+        "baseline":        False,
+        "variant_type":    "lora_inference",  # same YAML shape: adapter on the orchestrator only
+        "variants":        VARIANTS_RSI_INFERENCE,
+        "datasets":        ["gaia", "hle", "gpqa", "aime", "musique"],
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+        "adapter_label":   "ArmC",
+        "adapter_desc":    "arm C adapted",
+        "train_job":       "007_train_sft_folded.job",
+        # Replace <run-tag> with the value from the training job log before running inference.
+        "lora_adapter_path": RSI_ARM_C_ADAPTER_PLACEHOLDER,
+    },
+    "rsi_arm_i_inference": {
+        "description_tag": "[RSI arm I inference]",
+        "name_prefix":     "RSI_ArmI_eval",
+        "output_dir_root": "./experiments/results/rsi_inference/arm_i",
+        "config_subdir":   "qwen3/rsi_inference/arm_i",
+        "baseline":        False,
+        "variant_type":    "lora_inference",  # same YAML shape: adapter on the orchestrator only
+        "variants":        VARIANTS_RSI_INFERENCE,
+        "datasets":        ["gaia", "hle", "gpqa", "aime", "musique"],
+        "num_gpus":        2,
+        "wandb_project":   "benchmarks",
+        "split_overrides": {},
+        "adapter_label":   "ArmI",
+        "adapter_desc":    "arm I adapted",
+        "train_job":       "007_train_sft_folded.job",
+        # Replace <run-tag> with the value from the training job log before running inference.
+        "lora_adapter_path": RSI_ARM_I_ADAPTER_PLACEHOLDER,
     },
 }
 

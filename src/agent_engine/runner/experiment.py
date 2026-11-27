@@ -140,15 +140,18 @@ def run_experiment(args):
     try:
         if _all_mlx:
             raise RuntimeError("skip — all models use MLX backend")
-        from agent_engine.models.vllm_provider import resolve_gpu_assignments
+        from agent_engine.models.vllm_provider import (
+            model_instance_key,
+            resolve_gpu_assignments,
+        )
         gpu_assignments = resolve_gpu_assignments(config)
 
         def _apply_gpu_assignment(model_cfg) -> None:
             if model_cfg is None:
                 return
-            path = model_cfg.path_or_id
-            if path in gpu_assignments:
-                util, gpu_ids = gpu_assignments[path]
+            key = model_instance_key(model_cfg)
+            if key in gpu_assignments:
+                util, gpu_ids = gpu_assignments[key]
                 if model_cfg.gpu_memory_utilization is None:
                     model_cfg.gpu_memory_utilization = util
                 if model_cfg.gpu_ids is None and gpu_ids is not None:

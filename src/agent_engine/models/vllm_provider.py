@@ -9,6 +9,7 @@ from vllm import LLM, SamplingParams
 from vllm.lora.request import LoRARequest
 
 from .base import (
+    model_instance_key,
     BaseModelProvider, GenerationResult, ModelConfig, ModelFamily, ToolCallFormat, get_tool_call_format,
     _ENABLE_THINKING_KWARG_FAMILIES, _NO_SYSTEM_PROMPT_FAMILIES, _THINK_PREFIX_FAMILIES,
     _TOOL_ROLE_AS_ENVIRONMENT_FAMILIES, _SUPPRESS_NO_FUNCTIONS_SUFFIX_FAMILIES,
@@ -383,14 +384,16 @@ class VLLMProvider(BaseModelProvider):
 
 
 def resolve_gpu_assignments(config) -> Dict[str, Tuple[float, Optional[List[int]]]]:
-    """Compute (gpu_memory_utilization, gpu_ids) for each distinct local model path.
+    """Compute (gpu_memory_utilization, gpu_ids) for each distinct local model instance.
 
-    - 1 distinct local model                  → util=0.95, no pinning (all GPUs visible)
-    - N distinct models, total GPUs needed ≤ available
-                                              → pin each model to its own GPU slice;
+    Instances are keyed by :func:`model_instance_key` (path plus LoRA adapter).
+
+    - 1 distinct local instance               → util=0.95, no pinning (all GPUs visible)
+    - N distinct instances, total GPUs needed ≤ available
+                                              → pin each instance to its own GPU slice;
                                                 large models (14B/32B/72B) get 2 GPUs,
                                                 others get 1 GPU
-    - N distinct models, total GPUs needed > available
+    - N distinct instances, total GPUs needed > available
                                               → util = 0.9 / N (shared, no pinning)
     """
     try:
@@ -410,17 +413,21 @@ def resolve_gpu_assignments(config) -> Dict[str, Tuple[float, Optional[List[int]
 
     orch_cfg = config.get_model("orchestrator")
 
-    # Collect distinct local model paths preserving load order (orchestrator first).
+    # Collect distinct local model instances preserving load order (orchestrator first).
     seen: set = set()
     ordered_paths: List[str] = []
 
-    def _add(path: str) -> None:
-        if path not in seen:
-            seen.add(path)
-            ordered_paths.append(path)
+    path_of: Dict[str, str] = {}
+
+    def _add(cfg) -> None:
+        key = model_instance_key(cfg)
+        if key not in seen:
+            seen.add(key)
+            ordered_paths.append(key)
+            path_of[key] = cfg.path_or_id
 
     if _is_local(orch_cfg):
-        _add(orch_cfg.path_or_id)
+        _add(orch_cfg)
 
     if not config.tools.direct_tool_call:
         for tool_name in config.tools.enabled_tools:
@@ -428,10 +435,10 @@ def resolve_gpu_assignments(config) -> Dict[str, Tuple[float, Optional[List[int]
             if model_cfg is None:
                 pass  # falls back to orchestrator instance (same path already in set)
             elif _is_local(model_cfg):
-                _add(model_cfg.path_or_id)
+                _add(model_cfg)
 
     n = len(ordered_paths)
-    main_path = orch_cfg.path_or_id if _is_local(orch_cfg) else None
+    main_path = model_instance_key(orch_cfg) if _is_local(orch_cfg) else None
 
     assignment: Dict[str, Tuple[float, Optional[List[int]]]] = {}
 
@@ -445,7 +452,7 @@ def resolve_gpu_assignments(config) -> Dict[str, Tuple[float, Optional[List[int]
         # Multiple distinct models: pin each to its own GPU slice.
         # Large models (14B+) require 2 GPUs for tensor parallelism; others need 1.
         pairs = ([main_path] + [p for p in ordered_paths if p != main_path]) if main_path else ordered_paths
-        gpus_per_model = {p: (2 if _is_large(p) else 1) for p in pairs}
+        gpus_per_model = {p: (2 if _is_large(path_of[p]) else 1) for p in pairs}
         total_needed = sum(gpus_per_model.values())
 
         if total_needed <= num_gpus:

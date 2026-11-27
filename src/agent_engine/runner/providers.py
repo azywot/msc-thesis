@@ -7,7 +7,7 @@ as a library rather than only executable as a script.
 import logging
 from typing import Any, Dict, Optional
 
-from agent_engine.models.base import ModelFamily
+from agent_engine.models.base import ModelFamily, model_instance_key
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ def setup_model_provider(model_config, api_keys: Dict[str, str], model_cache: Op
     # Check cache for local models (API models are lightweight, no need to cache).
     # Include lora_adapter_path in the key so a LoRA instance and the base model
     # don't collide when both appear in the same experiment.
-    cache_key = f"{model_config.path_or_id}|lora:{model_config.lora_adapter_path or ''}"
+    cache_key = model_instance_key(model_config)
     if model_cache is not None and cache_key in model_cache:
         if model_config.family not in (ModelFamily.GPT4, ModelFamily.CLAUDE):
             cached_provider = model_cache[cache_key]
