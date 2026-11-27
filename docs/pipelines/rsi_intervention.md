@@ -301,6 +301,28 @@ significance is not required for success. For the gain to be trusted, the behavi
 shares should move in the targeted direction (more code calls on AIME, more repeated
 searches on MuSiQue and GAIA for arm I than for arm C).
 
+## 13. Report with figures
+
+After the gate (section 4), make the report from the rescue folder:
+
+```bash
+python scripts/report_intervention.py \
+    --collected data/training/rsi_phase2/collect_8b/collected_*.jsonl \
+    --rescue-dir experiments/results/rsi/phase2/rescue_8b \
+    --out-dir experiments/results/rsi/phase2/report_8b
+```
+
+It writes `report.md` (figures with captions and the numbers behind them),
+`report.json` and `figures/*.png` and `.pdf`: rescue against the no-fix control with
+the gate threshold, the ceiling on the training questions, the funnel, fix kinds and
+steps, the behaviour of rescued trajectories, the blind check (if `blind.jsonl`
+exists) and a table of rescued examples (`--examples N`, default 8). The ceiling is
+an upper bound on the training questions, not a benchmark gain.
+
+After `compare_arms.py` (section 12), run it again with
+`--comparison experiments/results/rsi_inference/comparison/comparison.json` to add the
+benchmark accuracy and behaviour figures.
+
 ## Running the tests
 
 `tests/rsi/test_run_prompt_search_cli.py` hangs in a checkout that has the 58G
