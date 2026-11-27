@@ -2,14 +2,19 @@
 
 Usage:
     python scripts/compare_arms.py --base-root R --arm-c-root R --arm-i-root R [--out-dir D]
+        [--base-variant V] [--arm-variant V]
 
-Each root holds ``<root>/<benchmark>/<variant>/<run>/raw_results.json``; the newest run
-(by directory name) of the first variant found is used. Writes ``comparison.json`` and
+Each root holds ``<root>/<benchmark>/<variant>/<run>/raw_results.json``. Only the named
+variant is read (``--base-variant`` for the base root, default ``qwen8B_subagent_tools_none``;
+``--arm-variant`` for both arm roots, default ``qwen8B_sub8B_none``). Within it the newest run
+is the one whose directory name carries the latest ``YYYY-MM-DD-HH-MM-SS`` timestamp; a
+directory without one is ranked by the file's mtime and sorts before any timestamped run. Writes ``comparison.json`` and
 ``comparison.md`` to ``--out-dir`` (default: current directory).
 """
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -20,6 +25,8 @@ from rsi.confirm import mcnemar_p  # noqa: E402
 
 BENCHMARKS = ["gaia", "hle", "gpqa", "aime", "musique"]
 ARMS = ("base", "arm_c", "arm_i")
+BASE_VARIANT = "qwen8B_subagent_tools_none"
+ARM_VARIANT = "qwen8B_sub8B_none"
 
 
 def load_run(path: Path) -> dict:
@@ -65,19 +72,32 @@ def compare(base: dict, arm_c: dict, arm_i: dict, benchmark: str) -> dict:
     return result
 
 
-def newest_raw_results(root: Path, benchmark: str) -> Path:
-    found = sorted(
-        Path(root).glob(f"{benchmark}/*/*/raw_results.json"), key=lambda p: p.parent.name
-    )
+_TS = re.compile(r"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}")
+
+
+def _recency(path: Path):
+    m = _TS.search(path.parent.name)
+    return (1, m.group(0)) if m else (0, f"{path.stat().st_mtime_ns:030d}")
+
+
+def newest_raw_results(root: Path, benchmark: str, variant: str) -> Path:
+    found = list(Path(root).glob(f"{benchmark}/{variant}/*/raw_results.json"))
     if not found:
-        raise FileNotFoundError(f"no raw_results.json under {root}/{benchmark}")
-    return found[-1]
+        raise FileNotFoundError(f"no raw_results.json under {root}/{benchmark}/{variant}")
+    return max(found, key=_recency)
 
 
-def build(base_root, arm_c_root, arm_i_root) -> dict:
+def build(base_root, arm_c_root, arm_i_root, base_variant=BASE_VARIANT, arm_variant=ARM_VARIANT):
     per = []
     for b in BENCHMARKS:
-        runs = [load_run(newest_raw_results(r, b)) for r in (base_root, arm_c_root, arm_i_root)]
+        runs = [
+            load_run(newest_raw_results(r, b, v))
+            for r, v in (
+                (base_root, base_variant),
+                (arm_c_root, arm_variant),
+                (arm_i_root, arm_variant),
+            )
+        ]
         per.append(compare(*runs, b))
     mean = {k: sum(p["accuracy"][k] for p in per) / len(per) for k in ARMS}
     return {
@@ -112,9 +132,13 @@ def main(argv=None) -> dict:
     ap.add_argument("--base-root", type=Path, required=True)
     ap.add_argument("--arm-c-root", type=Path, required=True)
     ap.add_argument("--arm-i-root", type=Path, required=True)
+    ap.add_argument("--base-variant", default=BASE_VARIANT)
+    ap.add_argument("--arm-variant", default=ARM_VARIANT)
     ap.add_argument("--out-dir", type=Path, default=Path("."))
     args = ap.parse_args(argv)
-    data = build(args.base_root, args.arm_c_root, args.arm_i_root)
+    data = build(
+        args.base_root, args.arm_c_root, args.arm_i_root, args.base_variant, args.arm_variant
+    )
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "comparison.json").write_text(json.dumps(data, indent=2))
     (args.out_dir / "comparison.md").write_text(render_md(data))
