@@ -21,7 +21,9 @@ def _domain_summary(cands: List[dict], rows: List[dict], skips: dict) -> dict:
     attempts, kinds = Counter(), Counter()
     for c in cands:
         qrows = sorted(by_q.get(c["question_id"], []), key=lambda r: r["attempt"])
-        hit = next((r for r in qrows if r.get("correct")), None)
+        # Rescued = a fix row ("ok") whose continuation is correct. "rescued_earlier" rows are
+        # control-only draws: they count toward the control, not as attempts or parse errors.
+        hit = next((r for r in qrows if r.get("status") == "ok" and r.get("correct")), None)
         if hit is not None:
             rescued += 1
             attempts[str(hit["attempt"])] += 1
@@ -29,18 +31,26 @@ def _domain_summary(cands: List[dict], rows: List[dict], skips: dict) -> dict:
         if any(r.get("control_correct") for r in qrows):
             control += 1
     n = len(cands)
+    # The gate's rates are over all 0-of-N questions (spec section 6), so questions skipped
+    # before the rescue (error records, planning-turn answers) count as not rescued.
+    zero_of_n = skips["zero_of_n"]
     domain_rows = [r for r in rows if r["question_id"] in {c["question_id"] for c in cands}]
     reasons = Counter(
         reason for r in domain_rows if r.get("status") == "leakage" for reason in r["reasons"]
     )
-    rescue_rate, control_rate = _pct(rescued, n), _pct(control, n)
+    rescue_rate, control_rate = _pct(rescued, zero_of_n), _pct(control, zero_of_n)
+    rescue_rate_c, control_rate_c = _pct(rescued, n), _pct(control, n)
     out = {
+        "zero_of_n": zero_of_n,
         "candidates": n,
         "rescued": rescued,
         "rescue_rate": rescue_rate,
         "control_solved": control,
         "control_rate": control_rate,
         "net_points": round(rescue_rate - control_rate, 6),
+        "rescue_rate_candidates": rescue_rate_c,
+        "control_rate_candidates": control_rate_c,
+        "net_points_candidates": round(rescue_rate_c - control_rate_c, 6),
         "attempts_used": {k: attempts[k] for k in sorted(attempts)},
         "parse_errors": sum(1 for r in domain_rows if r.get("status") == "parse_error"),
         "leakage_rejections": sum(1 for r in domain_rows if r.get("status") == "leakage"),
@@ -48,7 +58,7 @@ def _domain_summary(cands: List[dict], rows: List[dict], skips: dict) -> dict:
         "kinds": {k: kinds[k] for k in KINDS if kinds[k]},
     }
     for key, value in skips.items():
-        if key != "candidates":
+        if key not in ("candidates", "zero_of_n"):
             out[key] = value
     return out
 
@@ -75,10 +85,14 @@ def summarize(
     if blind_rows is not None:
         questions = {r["question_id"] for r in blind_rows}
         rescued = {r["question_id"] for r in blind_rows if r.get("correct")}
+        # The blind run's paired no-fix control is the chance baseline for its rescue rate.
+        control = {r["question_id"] for r in blind_rows if r.get("control_correct")}
         summary["blind"] = {
             "n": len(questions),
             "rescued": len(rescued),
             "rate": _pct(len(rescued), len(questions)),
+            "control_rescued": len(control),
+            "control_rate": _pct(len(control), len(questions)),
         }
     return summary
 
@@ -109,6 +123,10 @@ def write_gate(out_dir: Path, summary: dict) -> None:
         f"Net rescue of at least {gate['threshold_points']} points in at least one domain. "
         f"Passing domains: {', '.join(gate['passing_domains']) or 'none'}.",
         "",
+        "rescue_rate, control_rate and net_points are over the domain's 0-of-N questions "
+        "(zero_of_n), and decide the gate; the *_candidates columns use the candidates as the "
+        "denominator.",
+        "",
     ]
     for name, d in summary.items():
         if name not in ("gate", "blind"):
@@ -119,7 +137,8 @@ def write_gate(out_dir: Path, summary: dict) -> None:
             "## Blind check (reflector does not see the gold answer)",
             "",
             f"{b['rescued']} of {b['n']} previously rescued questions rescued again "
-            f"({b['rate']}%).",
+            f"({b['rate']}%); no-fix control: {b['control_rescued']} of {b['n']} "
+            f"({b['control_rate']}%).",
             "",
         ]
     (out_dir / "gate.md").write_text("\n".join(lines), encoding="utf-8")

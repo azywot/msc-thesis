@@ -82,7 +82,13 @@ def test_cli_dry_end_to_end(tmp_path, setup, monkeypatch):
     gate = json.loads((out / "gate.json").read_text())
     assert {"search", "math", "gate", "blind"} <= set(gate)
     assert gate["gate"]["pass"] is True and gate["search"]["net_points"] == 100.0
-    assert gate["blind"] == {"n": 1, "rescued": 1, "rate": 100.0}
+    assert gate["blind"] == {
+        "n": 1,
+        "rescued": 1,
+        "rate": 100.0,
+        "control_rescued": 0,
+        "control_rate": 0.0,
+    }
     blind_row = json.loads((out / "blind.jsonl").read_text().splitlines()[0])
     assert blind_row["seed"] == 1099
     blind_prompt = reflector.calls[-1][0][0][1]["content"]

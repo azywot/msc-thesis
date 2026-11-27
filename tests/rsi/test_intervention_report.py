@@ -41,9 +41,13 @@ def test_summarize_net_points_and_gate():
     cands, rows = _setup()
     s = summarize(cands, rows, COUNTS)
     assert s["search"]["candidates"] == 10 and s["search"]["rescued"] == 4
-    assert s["search"]["rescue_rate"] == 40.0 and s["search"]["control_rate"] == 10.0
-    assert s["search"]["net_points"] == 30.0
-    assert s["math"]["net_points"] == 0.0
+    # rates are over the 12 zero-of-n questions, not the 10 candidates
+    assert s["search"]["rescue_rate"] == 33.333333 and s["search"]["control_rate"] == 8.333333
+    assert s["search"]["net_points"] == 25.0
+    assert s["search"]["rescue_rate_candidates"] == 40.0
+    assert s["search"]["control_rate_candidates"] == 10.0
+    assert s["search"]["net_points_candidates"] == 30.0
+    assert s["math"]["net_points"] == 0.0 and s["math"]["net_points_candidates"] == 0.0
     assert s["gate"] == {"threshold_points": 10.0, "pass": True, "passing_domains": ["search"]}
     assert s["search"]["skipped_error"] == 1 and s["search"]["zero_of_n"] == 12
     assert "blind" not in s
@@ -72,20 +76,46 @@ def test_gate_fails_below_threshold():
     search, math = _cands("search", 1000, 0), _cands("math", 1000, 5000)
     rows = [_row(c, correct=i < 109, control=i < 10) for i, c in enumerate(search)]
     rows += [_row(c, correct=i < 109, control=i < 10) for i, c in enumerate(math)]
-    s = summarize(search + math, rows, COUNTS)
+    counts = {d: dict(COUNTS[d], zero_of_n=1000, candidates=1000) for d in COUNTS}
+    s = summarize(search + math, rows, counts)
     assert s["search"]["net_points"] < 10.0
     assert s["gate"]["pass"] is False and s["gate"]["passing_domains"] == []
 
 
 def test_blind_summary_and_write_gate(tmp_path):
     cands, rows = _setup()
-    blind = [_row(cands[0], correct=True), _row(cands[1], correct=False)]
+    blind = [
+        _row(cands[0], correct=True),
+        _row(cands[1], correct=False, control=True),
+        _row(cands[2], correct=False),
+        _row(cands[3], correct=False),
+    ]
     s = summarize(cands, rows, COUNTS, blind_rows=blind)
-    assert s["blind"] == {"n": 2, "rescued": 1, "rate": 50.0}
+    assert s["blind"] == {
+        "n": 4,
+        "rescued": 1,
+        "rate": 25.0,
+        "control_rescued": 1,
+        "control_rate": 25.0,
+    }
     write_gate(tmp_path, s)
     assert json.loads((tmp_path / "gate.json").read_text())["gate"]["pass"] is True
     md = (tmp_path / "gate.md").read_text()
     assert md.index("PASS") < md.index("search") and "blind" in md.lower()
+    assert "1 of 4 previously rescued questions rescued again (25.0%)" in md
+    assert "no-fix control: 1 of 4 (25.0%)" in md
+    assert "| rescue_rate_candidates | 40.0 |" in md and "| net_points | 25.0 |" in md
+    assert "over the domain's 0-of-N questions" in md
+
+
+def test_gate_uses_zero_of_n_denominator_not_candidates():
+    cands = _cands("search", 10, 0)
+    rows = [_row(c, correct=i < 2) for i, c in enumerate(cands)]
+    counts = {"search": dict(COUNTS["search"], zero_of_n=25)}
+    s = summarize(cands, rows, counts)
+    assert s["search"]["net_points_candidates"] == 20.0
+    assert s["search"]["net_points"] == 8.0
+    assert s["gate"]["pass"] is False and s["gate"]["passing_domains"] == []
 
 
 def test_blind_sample_deterministic_and_rescued_only():
@@ -96,3 +126,18 @@ def test_blind_sample_deterministic_and_rescued_only():
     rescued = {r["question_id"] for r in rows if r["correct"]}
     assert set(ids) <= rescued
     assert sorted(blind_sample(rows, 1000)) == sorted(rescued)
+
+
+def test_rescued_earlier_rows_count_toward_control_only():
+    cands = _cands("search", 2, 0)
+    rows = [
+        _row(cands[0], 1, correct=True),
+        _row(cands[0], 2, status="rescued_earlier", control=True),
+        _row(cands[1], 1, correct=False),
+        _row(cands[1], 2, correct=False),
+    ]
+    counts = {"search": dict(COUNTS["search"], zero_of_n=2, candidates=2)}
+    s = summarize(cands, rows, counts)["search"]
+    assert s["rescued"] == 1 and s["attempts_used"] == {"1": 1}
+    assert s["control_solved"] == 1 and s["kinds"] == {"rewrite": 1}
+    assert s["parse_errors"] == 0 and s["leakage_rejections"] == 0
