@@ -57,3 +57,14 @@ def test_jobs_use_the_variables():
         text = (JOBS / job).read_text()
         assert '"$COLLECT_DIR"/collected_*.jsonl' in text
         assert '--out-dir "$RESCUE_DIR"' in text and "$SUBSET_ARG" in text
+
+
+def test_subset_must_be_a_positive_integer():
+    for job in ("004_collect_8b.job", "005_rescue_8b.job", "006_rescue_32b.job"):
+        for bad in ("0", "007", "abc", "-1"):
+            try:
+                _resolve(job, {"SUBSET": bad})
+            except subprocess.CalledProcessError:
+                continue
+            raise AssertionError(f"{job} accepted SUBSET={bad}")
+        assert _resolve(job, {"SUBSET": "10"})["SUBSET_ARG"] == "--subset 10"

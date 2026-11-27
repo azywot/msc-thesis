@@ -260,3 +260,35 @@ def test_no_em_dashes_in_report(tmp_path):
     R.build_report([collected], rdir, tmp_path / "out", comp)
     assert "—" not in (tmp_path / "out" / "report.md").read_text()
     assert "—" not in Path(R.__file__).read_text()
+
+
+@pytest.mark.parametrize(
+    "table,lo,hi",
+    [((20, 40, 4, 236), 7.9, 16.4), ((10, 30, 15, 245), 0.6, 9.5), ((3, 6, 0, 31), 2.7, 28.7)],
+)
+def test_paired_net_interval_reference_values(table, lo, hi):
+    got = R.net_interval(*table)
+    assert 100 * got[0] == pytest.approx(lo, abs=0.1) and 100 * got[1] == pytest.approx(hi, abs=0.1)
+    assert R.net_interval(0, 0, 0, 0) == (0.0, 0.0)
+
+
+def test_report_net_interval_uses_the_paired_table(tmp_path):
+    collected, rdir, _ = make_inputs(tmp_path)
+    s = R.build_report([collected], rdir, tmp_path / "out")["domains"]["search"]
+    # 4 zero-of-3 questions: q6 solved by both, q1 by rescue only, q2 and q3 by neither
+    expected = R.net_interval(1, 1, 0, 2)
+    assert s["net_ci"] == pytest.approx([100 * expected[0], 100 * expected[1]])
+
+
+def test_no_data_labels():
+    assert R.net_label({"zero_of_n": 0, "net_points": 0.0}) == "no data"
+    assert R.net_label({"zero_of_n": 4, "net_points": 25.0}) == "net +25.0 points"
+    assert R.ceiling_label({"questions": 0}) == "no data"
+    assert R.ceiling_label({"questions": 3}) == ""
+
+
+def test_blind_has_no_sighted_interval(tmp_path):
+    collected, rdir, _ = make_inputs(tmp_path, blind=True)
+    data = R.build_report([collected], rdir, tmp_path / "out")
+    assert "sighted_ci" not in data["blind"]
+    assert "by construction" in (tmp_path / "out" / "report.md").read_text()

@@ -419,3 +419,16 @@ def test_single_prompt_chunk_error_is_a_parse_error_not_a_raise(tmp_path):
     )
     assert [r["status"] for r in rows] == ["parse_error"]
     assert "error: oom" in rows[0]["reasons"][0]
+
+
+def test_single_prompt_chunk_error_is_logged(tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _run_with(
+            [_cand(1)],
+            EchoReflector(tmp_path / "rescue.jsonl", error_on_call=1),
+            tmp_path,
+            settings=RescueSettings(max_attempts=1, chunk_size=1),
+        )
+    assert any("error: oom" in r.getMessage() for r in caplog.records)

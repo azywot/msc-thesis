@@ -64,7 +64,7 @@ COLLECT_DIR="data/training/rsi_phase2/collect_8b"
 RESCUE_DIR="experiments/results/rsi/phase2/rescue_8b"
 SUBSET_ARG=""
 if [[ -n "${SUBSET:-}" ]]; then
-    if ! [[ "$SUBSET" =~ ^[0-9]+$ ]]; then
+    if ! [[ "$SUBSET" =~ ^[1-9][0-9]*$ ]]; then
         echo "ERROR: SUBSET must be a positive integer, got: $SUBSET"
         exit 1
     fi

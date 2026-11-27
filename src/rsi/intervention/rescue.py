@@ -217,6 +217,13 @@ def _run_chunk(
                 f"reflector failed on all {len(items)} prompts of attempt {attempt}: "
                 f"{items[0].get('finish_reason')}"
             )
+        if len(items) == 1 and is_error_item(items[0]):
+            logger.warning(
+                "reflector error on a single-prompt chunk (attempt %d, question %r): %s",
+                attempt,
+                to_fix[0]["question_id"],
+                items[0].get("finish_reason"),
+            )
         for rec, item in zip(to_fix, items):
             fix_entries[rec["question_id"]] = _fix_entry(rec, item, index, max_turns)
 

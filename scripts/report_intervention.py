@@ -82,21 +82,35 @@ def wilson(k: int, n: int, z: float = 1.96) -> Tuple[float, float]:
     return max(0.0, centre - half), min(1.0, centre + half)
 
 
-def net_interval(k1: int, k2: int, n: int) -> Tuple[float, float]:
-    """Newcombe interval for p1 - p2 (rescue minus control), in fractions.
+def net_interval(both: int, rescue_only: int, control_only: int, neither: int):
+    """Newcombe's paired interval (method 10) for rescue rate minus control rate, as fractions.
 
-    It treats the two proportions as independent, which ignores that they are measured on the
-    same questions, so it is a rough guide to the spread, not a paired test."""
+    The 2x2 table is over the same questions: solved by both draws, by the rescue only, by the
+    control only, by neither. Returns (0, 0) for an empty table."""
+    n = both + rescue_only + control_only + neither
     if n <= 0:
         return 0.0, 0.0
+    k1, k2 = both + rescue_only, both + control_only
     p1, p2 = k1 / n, k2 / n
     l1, u1 = wilson(k1, n)
     l2, u2 = wilson(k2, n)
+    margins = (k1 * (n - k1) * k2 * (n - k2)) ** 0.5
+    c = both * neither - rescue_only * control_only
+    c = c - n / 2 if c > n / 2 else (c + n / 2 if c < -n / 2 else 0.0)  # Newcombe's correction
+    phi = c / margins if margins else 0.0
     d = p1 - p2
-    return (
-        d - math.sqrt((p1 - l1) ** 2 + (u2 - p2) ** 2),
-        d + math.sqrt((u1 - p1) ** 2 + (p2 - l2) ** 2),
-    )
+    lo = d - math.sqrt(max(0.0, (p1 - l1) ** 2 + (u2 - p2) ** 2 - 2 * phi * (p1 - l1) * (u2 - p2)))
+    hi = d + math.sqrt(max(0.0, (u1 - p1) ** 2 + (p2 - l2) ** 2 - 2 * phi * (u1 - p1) * (p2 - l2)))
+    return lo, hi
+
+
+def net_label(v: dict) -> str:
+    """Text written above a domain in rescue_vs_control."""
+    return "no data" if not v["zero_of_n"] else f"net {v['net_points']:+.1f} points"
+
+
+def ceiling_label(v: dict) -> str:
+    return "no data" if not v["questions"] else ""
 
 
 def _pct(k: int, n: int) -> float:
@@ -199,7 +213,11 @@ def compute(records: List[dict], rows: List[dict], gate: dict, pool=None) -> dic
             )
         lo1, hi1 = wilson(rescued, zero)
         loc, hic = wilson(control, zero)
-        lon, hin = net_interval(rescued, control, zero)
+        res_ids = {q for q, r in rescued_row.items() if r.get("domain") == domain}
+        ctl_ids = {r["question_id"] for r in drows if r.get("control_correct")}
+        both = len(res_ids & ctl_ids)
+        r_only, c_only = len(res_ids) - both, len(ctl_ids) - both
+        lon, hin = net_interval(both, r_only, c_only, zero - both - r_only - c_only)
         out["domains"][domain] = {
             "questions": n_q,
             "pass_at_1": pass1,
@@ -239,7 +257,6 @@ def compute(records: List[dict], rows: List[dict], gate: dict, pool=None) -> dic
         out["blind"] = {
             "n": n,
             "sighted_rate": 100.0 if n else 0.0,
-            "sighted_ci": [100 * x for x in wilson(n, n)],
             "blind_rescued": b["rescued"],
             "blind_rate": b["rate"],
             "blind_ci": [100 * x for x in wilson(b["rescued"], n)],
@@ -276,6 +293,8 @@ def fig_rescue_vs_control(data: dict, fig_dir: Path) -> None:
     top = 5.0
     for i, d in enumerate(doms):
         v = data["domains"][d]
+        if not v["zero_of_n"]:
+            continue
         for j, (key, ci, colour) in enumerate(
             (("rescue_rate", "rescue_ci", RESCUE), ("control_rate", "control_ci", CONTROL))
         ):
@@ -285,7 +304,14 @@ def fig_rescue_vs_control(data: dict, fig_dir: Path) -> None:
             top = max(top, v[ci][1])
     for i, d in enumerate(doms):
         v = data["domains"][d]
-        ax.text(i, top + 3, f"net {v['net_points']:+.1f} points", ha="center", color=TEXT)
+        ax.text(
+            i,
+            top + 3 if v["zero_of_n"] else top * 0.3,
+            net_label(v),
+            ha="center",
+            color=TEXT if v["zero_of_n"] else "#777777",
+        )
+    ax.set_xlim(-0.6, len(doms) - 0.4)
     ax.set_xticks(range(len(doms)))
     ax.set_xticklabels([f"{d}\n(0-of-3: {data['domains'][d]['zero_of_n']})" for d in doms])
     ax.set_ylabel("share of 0-of-3 questions solved (%)")
@@ -299,8 +325,12 @@ def fig_rescue_vs_control(data: dict, fig_dir: Path) -> None:
         loc="upper left",
         ncol=2,
     )
+    thr_y = data["threshold_points"] * 0.5
     for i, d in enumerate(doms):
         v = data["domains"][d]
+        if not v["zero_of_n"]:
+            ax2.text(i, thr_y, net_label(v), ha="center", color="#777777")
+            continue
         ax2.bar(i, v["net_points"], 0.4, color=RESCUE)
         ax2.errorbar(
             i,
@@ -313,11 +343,13 @@ def fig_rescue_vs_control(data: dict, fig_dir: Path) -> None:
     thr = data["threshold_points"]
     ax2.axhline(thr, color="#555555", ls="--", lw=0.9, label=f"gate threshold ({thr:g})")
     ax2.axhline(0, color="#999999", lw=0.6)
+    ax2.set_xlim(-0.6, len(doms) - 0.4)
     ax2.set_xticks(range(len(doms)))
     ax2.set_xticklabels(doms)
     ax2.set_ylabel("net rescue (percentage points)")
-    lows = [data["domains"][d]["net_ci"][0] for d in doms] + [0]
-    highs = [data["domains"][d]["net_ci"][1] for d in doms] + [thr]
+    measured = [d for d in doms if data["domains"][d]["zero_of_n"]]
+    lows = [data["domains"][d]["net_ci"][0] for d in measured] + [0]
+    highs = [data["domains"][d]["net_ci"][1] for d in measured] + [thr]
     ax2.set_ylim(min(0, min(lows)) - 4, max(highs) * 1.2 + 4)
     ax2.set_title("Net vs gate")
     ax2.legend(loc="upper right")
@@ -338,9 +370,21 @@ def fig_ceiling(data: dict, fig_dir: Path) -> None:
     for j, (key, label, colour) in enumerate(series):
         xs = [i + (j - 1.5) * (w + gap) for i in range(len(doms))]
         vals = [data["domains"][d][key] for d in doms]
-        ax.bar(xs, vals, w, color=colour, label=label)
-        for x, v in zip(xs, vals):
-            ax.text(x, v + 1, f"{v:.0f}", ha="center", fontsize=6.5, color=TEXT)
+        empty = [not data["domains"][d]["questions"] for d in doms]
+        ax.bar(
+            [x for x, e in zip(xs, empty) if not e],
+            [v for v, e in zip(vals, empty) if not e],
+            w,
+            color=colour,
+            label=label,
+        )
+        for x, v, e in zip(xs, vals, empty):
+            if not e:
+                ax.text(x, v + 1, f"{v:.0f}", ha="center", fontsize=6.5, color=TEXT)
+    for i, d in enumerate(doms):
+        if ceiling_label(data["domains"][d]):
+            ax.text(i, 8, ceiling_label(data["domains"][d]), ha="center", color="#777777")
+    ax.set_xlim(-0.6, len(doms) - 0.4)
     ax.set_xticks(range(len(doms)))
     ax.set_xticklabels([f"{d}\n(n={data['domains'][d]['questions']})" for d in doms])
     ax.set_ylabel("share of all collected questions (%)")
@@ -448,6 +492,9 @@ def fig_fix_step(data: dict, fig_dir: Path) -> None:
             label="not rescued",
         )
         ax.set_xticks(xs)
+        ax.set_xlim(min(xs) - 2, max(xs) + 2)
+        top_count = max(max(steps["rescued"].count(x), steps["not_rescued"].count(x)) for x in xs)
+        ax.set_ylim(0, top_count * 1.35 + 0.5)
         ax.set_xlabel("step of the fixed call (0 = first call)")
         ax.set_ylabel("fixes (count)")
         ax.yaxis.set_major_locator(MaxNLocator(integer=True))
@@ -496,14 +543,15 @@ def fig_blind(data: dict, fig_dir: Path) -> None:
     b = data["blind"]
     fig, ax = plt.subplots(figsize=(4.5, 3.0))
     items = [
-        ("sighted\n(rescued by definition)", b["sighted_rate"], b["sighted_ci"], RESCUE),
+        ("sighted\n(100% by construction)", b["sighted_rate"], None, RESCUE),
         ("blind rescue", b["blind_rate"], b["blind_ci"], RESCUE),
         ("blind no-fix control", b["control_rate"], b["control_ci"], CONTROL),
     ]
     for i, (_, v, ci, colour) in enumerate(items):
         ax.bar(i, v, 0.5, color=colour)
-        ax.errorbar(i, v, yerr=_err(ci, v), color="#333333", lw=0.8, capsize=2)
-        ax.text(i, ci[1] + 2, f"{v:.0f}%", ha="center", color=TEXT)
+        if ci is not None:
+            ax.errorbar(i, v, yerr=_err(ci, v), color="#333333", lw=0.8, capsize=2)
+        ax.text(i, (ci[1] if ci is not None else v) + 2, f"{v:.0f}%", ha="center", color=TEXT)
     ax.set_xticks(range(len(items)))
     ax.set_xticklabels([s for s, *_ in items])
     ax.set_ylabel(f"share of the {b['n']} blind-sample questions (%)")
@@ -676,8 +724,9 @@ def render_md(data: dict, examples: List[dict], comp: Optional[dict], has_blind:
     doms = list(D)
     L = ["# Tool-call intervention report", ""]
     L += [
-        "Rates over the 0-of-3 questions (zero_of_n) are the gate's rates. Intervals are 95% "
-        "Wilson intervals. On a small subset the intervals are wide: read the figures as a "
+        "Rates over the 0-of-3 questions (zero_of_n) are the gate's rates. Rate intervals are 95% "
+        "Wilson intervals; the net interval is Newcombe's paired interval (method 10) over the "
+        "same questions. On a small subset the intervals are wide: read the figures as a "
         "first look at the pipeline, not as the gate decision.",
         "",
         "## Rescue versus no-fix control",
@@ -692,8 +741,8 @@ def render_md(data: dict, examples: List[dict], comp: Optional[dict], has_blind:
         "reflector's fixed call was injected (blue) and when the same step was simply resumed "
         "without a fix (orange), with 95% intervals; the net points are written above each "
         "domain. Right: the net (rescue minus control) on its own axis in percentage points, "
-        "with the gate threshold dashed. A bar whose interval clears the dashed line is "
-        "evidence for the gate.",
+        "with the gate threshold dashed. The gate passes when the bar reaches the "
+        "line; an interval wholly above it means the pass is unlikely to be noise.",
         "",
     ]
     L += _table(
@@ -817,7 +866,8 @@ def render_md(data: dict, examples: List[dict], comp: Optional[dict], has_blind:
         L += _fig("blind")
         L += [
             "The blind check reruns the reflector without the gold answer on a sample of "
-            "questions it rescued while sighted (so the sighted rate is 100% by definition). "
+            "questions it rescued while sighted, so the sighted bar is 100% by construction and "
+            "has no interval. "
             "The blind rescue rate against the blind no-fix control shows how much of the "
             "rescue survives without the answer.",
             "",
