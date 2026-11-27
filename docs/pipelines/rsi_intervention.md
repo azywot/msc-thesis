@@ -1,9 +1,10 @@
 # Tool-call intervention (RSI phase 2) - runbook
 
 Run this on Snellius from the repository root (`$HOME/azywot/msc-thesis`), in the
-order below. The pipeline collects Qwen3-8B trajectories, lets a reflector fix one
-orchestrator tool call in the failed ones, checks that the fixes help, then trains
-two LoRA adapters (arm C and arm I) and compares them.
+order below. The pipeline collects Qwen3-8B trajectories, lets a reflector change one
+orchestrator tool call in the failed ones (rewrite a call, add a follow-up call, or
+insert a call where none was made), checks that the fixes help, then trains two LoRA
+adapters (arm C and arm I) and compares them.
 
 - **Arm C**: SFT on the model's own correct trajectories only.
 - **Arm I**: arm C plus new rows from rescued trajectories, starting at the fixed call.

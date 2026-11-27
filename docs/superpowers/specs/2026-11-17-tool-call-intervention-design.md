@@ -16,10 +16,11 @@ gain was significant (search 42.0% vs 46.5%, p = 0.19; math 62.0% vs 63.5%, p = 
 A prompt is a blunt lever: one edit has to help every question at once.
 
 This design tries a sharper lever. Instead of changing the prompt, the reflector
-**fixes one orchestrator tool call** in a failed trajectory. The trajectory is re-run from
-that point; if it now reaches the gold answer, it becomes training data. Prompts stay at
-the seed throughout, so the fine-tuned model learns the better call directly under the
-prompts it will be evaluated with.
+**changes one orchestrator tool call** in a failed trajectory: it rewrites a call, adds a
+follow-up call before the answer, or inserts a call where none was made (Section 4.1).
+The trajectory is re-run from that point; if it now reaches the gold answer, it becomes
+training data. Prompts stay at the seed throughout, so the fine-tuned model learns the
+better call directly under the prompts it will be evaluated with.
 
 The question it answers: **does training on trajectories rescued by a single fixed tool
 call teach the model more than training on its own correct trajectories alone?**
@@ -122,9 +123,10 @@ The kind is a label for analysis only; the code path is the same.
 - **Output format:** plain text with tags, the tool call in exactly the format the
   orchestrator emits so `parse_tool_call` reads it. No JSON wrapper around free text
   (Phase 1 found JSON replies mangle `\boxed` and `\frac`).
-- **Second attempt:** if the continuation is still wrong, the reflector gets one more try
-  on the same trajectory, shown its first fix and what happened. At most two attempts per
-  question.
+- **Second attempt:** if the first attempt did not rescue the question (the continuation
+  was wrong, or the fix was rejected for leakage or could not be parsed), the reflector
+  gets one more try on the same trajectory, shown its first fix and what happened. At most
+  two attempts per question.
 
 ### 4.4 Leakage guard
 
@@ -148,10 +150,14 @@ determined by the stored planning text and the first `p` actions. Resuming means
 an `ExecutionState` with those fields, `turn = p`, `tool_calls` and `tool_counts`
 recomputed, then executing `call` through the normal tool path (`_execute_tool`,
 `_commit_tool_result`) and entering the normal turn loop. The injected call uses one turn
-of the `max_turns` budget. The turn loop in `run()` needs to accept a starting state; with
-no starting state, behaviour and outputs must be unchanged.
+of the `max_turns` budget. As built, this is a new method,
+`AgenticOrchestrator.resume_batch(states, injected_outputs)`, which takes a batch of
+rebuilt states and, per state, either an injected action text or `None` (continue with no
+injected call, used by the no-fix control). `run()` and `run_batch()` behave as
+before, apart from the system-prompt fix in Section 12.1.
 
-Continuations use the same sampling settings and seeding as collection.
+Continuations use the same sampling settings as collection, with seeds of their own
+(Section 12.4).
 
 ## 5. Training data for arm I
 
@@ -221,9 +227,9 @@ Also report attempts used, leakage rejections, and the kind distribution.
 - **Behaviour (must move in the targeted direction for the gain to be trusted):**
   share of math questions (AIME) where the orchestrator calls `code_generator`, and share
   of search questions (MuSiQue, GAIA) with two or more `web_search` calls, arm I vs arm C.
-- **Blind-reflector check (report):** on a sample of 100 rescued questions, rerun the
-  reflector without the gold answer and report how often it proposes a call that still
-  rescues. A large gap means the fixes lean on hindsight.
+- **Blind-reflector check (report):** on a random sample of up to 100 rescued questions,
+  rerun the reflector without the gold answer and report how often it proposes a call
+  that still rescues. A large gap means the fixes lean on hindsight.
 
 ## 8. What has to be built
 
@@ -317,7 +323,9 @@ settled during the build or its reviews.
 
 - **Reply format:** `<step>N</step>`, `<sub_goal>...</sub_goal>` and
   `<tool_call>{json}</tool_call>`, after the reflector's thinking. `N` is the number of
-  original actions kept (the `p` of Section 4.1), capped at `min(n_actions,
+  original actions kept (the `p` of Section 4.1). Actions are numbered from 0 in the
+  reflector's input, so a rewrite of "Action N" and a follow-up after `N` actions both
+  reply with that `N`, and an insert replies `0`. `N` is capped at `min(n_actions,
   max_turns - 1)` so the injected call always has a turn. The last complete block of each
   tag is used. The call must be `web_search` with a non-empty `query` or `code_generator`
   with a non-empty `task`, nothing else; the sub-goal is at most 500 characters.
@@ -336,13 +344,21 @@ settled during the build or its reviews.
 - **Second attempt:** the reflector is shown its first fix, the step it targeted and the
   wrong answer that followed. If the first fix was rejected for leakage it is told so; a
   parse error passes nothing forward.
-- **Long trajectories:** if the reflector input exceeds 14000 tokens, per-call text is
-  halved down to 200 characters, then middle actions are cut.
+- **Reflector input:** the question, the gold answer and its aliases (hidden in the blind
+  check), the prediction, the automatic failure label, the plan, and every action with its
+  sub-goal, command, result and sub-agent calls. Per-call text starts at 1500 characters.
+  If the input exceeds 14000 tokens, per-call text is halved repeatedly down to 200
+  characters, then all actions but the first and last are cut.
+- **Reflector sampling:** thinking on, temperature 0.6, top-p 0.95, up to 16384 new
+  tokens, context 32768, seeded with the attempt's seed. The 8B reflector shares the
+  team's vLLM instance; the 32B fallback is a separate vLLM server reached over its
+  OpenAI-compatible endpoint (`rescue_qwen3_32b.yaml`, job 006).
 
 ### 12.4 The rescue step
 
-- **Pairing:** for each attempt `a`, the fix continuation and the no-fix control start
-  from separately rebuilt states and use the same sampling seed, `1000 + a`.
+- **Pairing:** for each attempt `a` (1 or 2), the fix continuation and the no-fix
+  control start from separately rebuilt states and use the same sampling seed, `1000 + a`
+  (1001, 1002).
 - **Control step:** the fix's `p`. For a parse error it is `min(n_actions,
   max_turns - 1)`. For a question already rescued at attempt 1, attempt 2 runs the
   control only, at the rescuing fix's step, and writes a row with status
@@ -359,8 +375,10 @@ settled during the build or its reviews.
 - Rescue rate, control rate and net points are over the domain's 0-of-3 questions
   (`zero_of_n`), as in Section 6. The same rates over the candidates only are reported
   next to them but do not decide the gate.
-- **Blind check:** one attempt with the gold answer hidden (seed `1000 + 99`) on up to 100
-  rescued questions. It reports its own no-fix control as the chance baseline.
+- **Blind check** (`--blind`): one attempt with the gold answer hidden (seed `1000 + 99`)
+  on up to 100 rescued questions, sampled with a fixed seed. It starts from the original
+  failed trajectory, not the rescued one, and reports its own no-fix control as the
+  chance baseline.
 
 ### 12.6 Arm I
 
